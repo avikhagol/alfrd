@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alfrd"
+version = "0.1.0"
+description = "Automated Logical FRamework for Dynamic script execution (ALFRD)"
+readme = "README.md"
+requires-python = ">=3.6"
+license = { text = "BSD-3-Clause" }
+authors = [
+  { name = "Avinash Kumar", email = "avialxee@gmail.com" }
+]
+urls = { "Homepage" = "https://github.com/avialxee/alfrd/"}
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.6",
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: BSD License",
+  "Intended Audience :: Science/Research"
+]
+
+dependencies = [
+  "google-api-python-client",
+  "google-auth-httplib2",
+  "google-auth-oauthlib",
+  "gspread",
+  "gspread-formatting",
+  "pandas",
+  "numpy",
+  "psutil",
+  "typer"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=3.7"]
+
+[project.scripts]
+alfrd = "alfrd:alfrd_cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
