@@ -140,16 +140,17 @@ def run(
             idx_to      =   allsteps.index(step_to)+1
             
     steps     =   allsteps[idx_from:idx_to]
+    print(allsteps[idx_from:idx_to])
     print("Following steps will be executed in the sequence:")
     print(steps,"\n")
-    
+    nsteps = len(steps)
     for s,step_name in enumerate(steps):
         if s==0: 
             Pipeline.prev_step_success     =   True
             Pipeline.validation_success    =   True
         Pipeline.step_name                      =   step_name
-    
-        if Pipeline.prev_step_success and VALIDATE_BEFORE[step_name]['functions']:
+        # Pipeline.next_step                      =   steps[s+1] if s<nsteps else None
+        if Pipeline.prev_step_success and (step_name in VALIDATE_BEFORE) and VALIDATE_BEFORE[step_name]['functions']:      
             astrk_v = ".."*len(f"Pre-process ({Pipeline.step_name})")
             print(f"{c['by']}\t .. {astrk_v} ..")
             print(f"\t\t Pre-process ({Pipeline.step_name})")
@@ -169,7 +170,7 @@ def run(
             Pipeline.run_step()
         
         # Run validations post run
-        if Pipeline.validation_success and Pipeline.prev_step_success and VALIDATE_AFTER[step_name]['functions']:
+        if Pipeline.validation_success and Pipeline.prev_step_success and (step_name in VALIDATE_AFTER) and VALIDATE_AFTER[step_name]['functions']:
             astrk_v = ".."*len(f"Post-process ({Pipeline.step_name})")
             print(f"{c['by']}\t .. {astrk_v} ..")
             print(f"\t\t Post-process ({Pipeline.step_name})")

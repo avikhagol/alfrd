@@ -7,6 +7,7 @@ import warnings
 from alfrd import c
 from gspread_formatting import ConditionalFormatRule, GridRange, BooleanCondition, BooleanRule, CellFormat, Color, get_conditional_format_rules
 import numpy as np
+import traceback
 class GSC:
     """
     Creates instance of google Google Spreadsheet Credential to open and update a worksheet
@@ -54,9 +55,9 @@ class GSC:
         sheet_I = [i + 1 + sheet_I_h for i in I]  # Offset by sheet header length
         sheet_J = [j + 1 for j in J]  # 1-based index for columns
 
-        # Ensure that the indices are valid and non-empty
-        if not sheet_I or not sheet_J:
-            print("Error: Row or column indices are empty.")
+        if not sheet_I or not sheet_J:      # ensure non empty values
+            print(" skipped: Identical data - row or column indices for update are empty.")
+            # print("sheet_I :", sheet_I,"\nsheet_J :",sheet_J)
             return
 
         # create a body for batch update
@@ -115,7 +116,11 @@ class LogFrame:
                 'gl': Color(red=0.42,green=0.86,blue=0.31),
                 'gh': Color(red=0.42,green=0.60,blue=0.42)}
 
-    def col_data(self, colname='', data='', count=0, force=False, chk_colname=''):
+    # def col_d(self, colname='', data='', count=0, force=False, chk_colname=''):
+    #     self.df_sheet
+        
+        
+    def col_data(self, colname='', data='', count=0, force=False, chk_colname='', expressions=[]):              # TODO: cannot work with non-unique primary_values, cant we use index as primary_value for uniqueness?
         """
         program to change the column data of dataframe
         checks if primary_value exist and then change the value for empty cell with the given data.
@@ -143,21 +148,33 @@ class LogFrame:
         """
         colname = self.working_col if not colname else colname
         if not self.primary_value : print(f"{c['y']}No primary value given{c['x']}")
-        primary_col_values     = self.df_sheet[self.primary_colname].str.strip()
+        primary_col_values      = self.df_sheet[self.primary_colname].str.strip()
+        # idxs_primary_val        =   primary_col_values==self.primary_value
+        def idx_where(exps):
+            
+            expression          =   f"{' & '.join(exps)}"
+            idxs_primary_val    =   self.df_sheet.query(expression).index
+            return idxs_primary_val
+        idx_pv = idx_where([f'{self.primary_colname}=="{self.primary_value}"']) if not expressions else idx_where([f'{self.primary_colname}=="{self.primary_value}"'] + expressions)
         if (not force) or (primary_col_values.isin([self.primary_value]).any() and not self.df_sheet.loc[primary_col_values==self.primary_value,colname].count()):
             
             if chk_colname :
                 if self.df_sheet.loc[primary_col_values==self.primary_value,chk_colname].count(): 
-                    val = str(self.df_sheet.loc[primary_col_values==self.primary_value,chk_colname].values[0]).strip()          # searching for the first occurance of the value.
+                    located_val = self.df_sheet.loc[idx_pv,chk_colname].values 
+                    
+                    val = str(located_val[0]).strip() if len(located_val) else None          # searching for the first occurance of the value.
                     count+=1
                     return count, val 
                 else:
                     return count, ''
             else:
                 count+=1 
-                self.df_sheet.loc[primary_col_values==self.primary_value,colname] = data
+                idxs        =   idx_pv#primary_col_values==self.primary_value
+                # if sum(idxs)>1:
+                #     print(f"{c['y']}Warning! Primary value used is not unique{c['x']}")
+                self.df_sheet.loc[idxs,colname] = data
         else:
-            print("not updating", self.primary_value, f"{self.df_sheet.loc[primary_col_values==self.primary_value,colname].values}")
+            print("not updating", self.primary_value, f"{self.df_sheet.loc[idx_pv,colname].values}")
         return count
     
     def isval_unique(self, colname=''):
@@ -170,12 +187,12 @@ class LogFrame:
         r = False if int(c)!=1 else True
         return r
     
-    def get_value(self, colname=''):
+    def get_value(self, colname='', where=[]):
         """
         gives the cell value for the colname returns string value
         """
         colname = self.working_col if not colname else colname
-        _, colv = self.col_data(colname='', data='', count=0, chk_colname=colname)
+        _, colv = self.col_data(colname='', data='', count=0, chk_colname=colname, expressions=where)
         r = str(colv).strip()
         return r
     
@@ -195,14 +212,14 @@ class LogFrame:
         v = self.get_value(colname)
         return str(value) == str(v)
     
-    def put_value(self, value, colname='', count=0):
+    def put_value(self, value, colname='', count=0, where=[]):
         """
         puts value to the colname if specified else uses working_col for the colname
         returns +1 for the counter value
         Note: This only modifies data in the DataFrame
         """
         colname = self.working_col if not colname else colname
-        count = self.col_data(colname=colname, data=value, count=count)
+        count = self.col_data(colname=colname, data=value, count=count, expressions=where)
         return count
     
     def update_sheet(self, count, failed, by_cell=True, comment_col='Comment4', csvfile = 'df_sheet.csv'):
@@ -230,6 +247,7 @@ class LogFrame:
             else:
                 print('skipped')
         except Exception as e:
+            traceback.print_exc()
             print(f'failed to update on google sheet: {e}')
             failed  =   self.col_data(colname=comment_col, data=f'failed:{e}', count=failed)
             self.df_sheet.to_csv(csvfile)
