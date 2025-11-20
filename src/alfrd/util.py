@@ -3,6 +3,25 @@ from pathlib import Path
 import os
 import subprocess, glob, shutil, time, json
 from collections import defaultdict
+import sys
+from contextlib import contextmanager
+
+@contextmanager
+def padded_output(padding=4):
+    """Context manager for padded output"""
+    original_write = sys.stdout.write
+    
+    def padded_write(text):
+        if text.strip():  # Only pad non-empty lines
+            original_write(' ' * padding + text)
+        else:
+            original_write(text)
+    
+    sys.stdout.write = padded_write
+    try:
+        yield
+    finally:
+        sys.stdout.write = original_write
 
 def read_inputfile(folder,inputfile='.inp'):
     """Read the input file and return a dictionary with the parameters.

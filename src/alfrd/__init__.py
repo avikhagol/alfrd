@@ -1,9 +1,9 @@
 from pathlib import Path
-import shutil, sys
+import shutil, sys, os
 import typer
 from typing import Optional
 from typing_extensions import Annotated
-import sys
+from alfrd.util import padded_output
 
 if sys.version_info >= (3, 8):
     from importlib.metadata import version
@@ -18,6 +18,15 @@ from alfrd.plugins import load_projects, List, REGISTERED_STEPS, VALIDATE_BEFORE
 
 alfrd_cli = typer.Typer()
 Pipeline = PipelineRun()
+
+try:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    else:
+        sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 0)
+except:
+    pass
 
 c = {
     "x": "\033[0m",   # Reset
@@ -54,6 +63,8 @@ c = {
     "c_": "\033[46m",   # Cyan BG
     "w_": "\033[47m",   # White BG
 }
+B = "\033[1m"
+X = "\033[0m"
 
 # The project/plugin directory
 ALFRD_DIR = Path("~/.alfrd").expanduser()
@@ -111,6 +122,13 @@ def run(
     """Run a specific pipeline step for a project."""    
     _params_found           =   {}
     
+    art = f"""
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║{proj.upper():^66}║
+    ╚══════════════════════════════════════════════════════════════════╝
+    """
+    print(art)
+    
     if params and len(params):
         for param in params:
             if not '=' in param:
@@ -140,49 +158,42 @@ def run(
             idx_to      =   allsteps.index(step_to)+1
             
     steps     =   allsteps[idx_from:idx_to]
-    print(allsteps[idx_from:idx_to])
+    # print(allsteps[idx_from:idx_to])
     print("Following steps will be executed in the sequence:")
-    print(steps,"\n")
+    print( f"{c['bc']}", "-", f"\n - ".join(steps),f"{c['x']}\n")
     nsteps = len(steps)
     for s,step_name in enumerate(steps):
         if s==0: 
             Pipeline.prev_step_success     =   True
             Pipeline.validation_success    =   True
         Pipeline.step_name                      =   step_name
-        # Pipeline.next_step                      =   steps[s+1] if s<nsteps else None
+        
         if Pipeline.prev_step_success and (step_name in VALIDATE_BEFORE) and VALIDATE_BEFORE[step_name]['functions']:      
-            astrk_v = ".."*len(f"Pre-process ({Pipeline.step_name})")
-            print(f"{c['by']}\t .. {astrk_v} ..")
-            print(f"\t\t Pre-process ({Pipeline.step_name})")
-            print(f"\t .. {astrk_v} ..{c['x']}")
-            
-            # Run validations pre run
-            Pipeline.validate_steps         =   VALIDATE_BEFORE
-            Pipeline.run_validations()
+            print(f"\n>  {B}Pre-processing{X} ({Pipeline.step_name})")
+            print(f"""  ─────────────────────────────────────────────────────────────────""")
+            with padded_output(4):
+                Pipeline.validate_steps         =   VALIDATE_BEFORE
+                Pipeline.run_validations()
 
         if Pipeline.prev_step_success and Pipeline.validation_success:
-            # Run the pipeline step
-            astrk_p,astrk_s = "**"*(len(proj)),"**"*len(step_name)
-            
-            print(f"{c['c']}\t ** {astrk_p} {astrk_s} **")
-            print(f"\t\t {proj.upper()} : {step_name}")
-            print(f"\t ** {astrk_p} {astrk_s} **{c['x']}")
-            Pipeline.run_step()
+            print(f"\n>  {B}Processing{X}: {proj.upper()} {step_name}")
+            print("""  ─────────────────────────────────────────────────────────────────""")
+            with padded_output(4):
+                Pipeline.run_step()
         
         # Run validations post run
         if Pipeline.validation_success and Pipeline.prev_step_success and (step_name in VALIDATE_AFTER) and VALIDATE_AFTER[step_name]['functions']:
-            astrk_v = ".."*len(f"Post-process ({Pipeline.step_name})")
-            print(f"{c['by']}\t .. {astrk_v} ..")
-            print(f"\t\t Post-process ({Pipeline.step_name})")
-            print(f"\t .. {astrk_v} ..{c['x']}")
+            print(f"\n>  {B}Post-processing{X} ({Pipeline.step_name})")
+            print("""  ─────────────────────────────────────────────────────────────────""")
 
-            Pipeline.validate_steps         =   VALIDATE_AFTER
-            Pipeline.run_validations()
+            with padded_output(4):
+                Pipeline.validate_steps         =   VALIDATE_AFTER
+                Pipeline.run_validations()
             
         if Pipeline.validation_success:
-            print(f" finished : {step_name}")
+            print(f"{B} finished : {c['bc']}{step_name}{X}")
         else:
-            print(f" skipped  : {step_name}")
+            print(f"{B} skipped  : {c['bc']}{step_name}{X}")
 
 @alfrd_cli.command()
 def add(script_path: str, proj: str,

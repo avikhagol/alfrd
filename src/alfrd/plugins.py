@@ -4,7 +4,7 @@ import inspect
 from typing import Callable, Dict, List
 from functools import wraps
 import typer
-from alfrd.util import update_existing_dict
+from alfrd.util import update_existing_dict, padded_output
 import traceback
 
 REGISTERED_STEPS: Dict[str, Dict[str, str]] = {}
@@ -192,12 +192,13 @@ class PipelineRun:
                 run_count                       =   VALIDATORS[validator_name]['run_count']
                 if not (run_count>0 and VALIDATORS[validator_name]['run_once']) and self.validation_success!=False:
                     try:
-                        print(f"processing.... {validator_name}")
+                        print(f"• {validator_name}")
                         required_params         =   VALIDATORS[validator_name]['required_params']       # taking from global.
                         default_params          =   VALIDATORS[validator_name]['default_params']
                         validator_params        =   self.all_step_params(required_params=required_params, default_params=default_params)
                         self.prev_step_success  =   True                                                # this will change if error is raised.
-                        result                  =   validator_func(**validator_params) if len(validator_params) else validator_func()
+                        with padded_output(3):
+                            result                  =   validator_func(**validator_params) if len(validator_params) else validator_func()
                         
                         if self.validation_success is None: self.validation_success = result
                         VALIDATORS[validator_name]['run_count'] += 1
