@@ -70,14 +70,18 @@ X = "\033[0m"
 ALFRD_DIR = Path("~/.alfrd").expanduser()
 PROJ_DIR = Path(f"{ALFRD_DIR}/projects")
 
+def load_steps():
+    for i, (name, info) in enumerate(REGISTERED_STEPS.items()):
+        print(f"- {i}\t {c['bc']}{name.ljust(20)}{c['x']}: {info['desc']}")
+
 def list_steps(proj):
     """List all registered steps."""
     print(f"\n\t\t{c['c']}ALFRD ({__version__}){c['x']}\n")
     print(f"  Run following pipeline steps for {c['bc']}{proj.upper()}{c['x']}")
     if not REGISTERED_STEPS:
         print("No pipeline steps registered.")
-    for i, (name, info) in enumerate(REGISTERED_STEPS.items()):
-        print(f"- {i}\t {c['bc']}{name.ljust(20)}{c['x']}: {info['desc']}")
+    else:
+        load_steps()
 
 def proj_dir(proj, create=False):
     
@@ -108,6 +112,23 @@ def ls(proj: str):
     
     load_projects(project_dir)
     list_steps(proj)
+    
+@alfrd_cli.command()
+def lsp():
+    """List all available projects."""
+    project_dirs = list(Path(f"{PROJ_DIR}").glob("*"))
+    
+    if len(project_dirs):
+        print(f"\tAvailable projects:")
+        for proj in project_dirs:
+            print(f"\t\t{proj.name}")
+            try:
+                load_projects(proj)
+                list_steps(proj.name)
+            except:
+                print("\t\t\tsteps not configured properly!")
+    else:
+        print("no projects found!", )
 
 @alfrd_cli.command()
 def run(
@@ -197,7 +218,7 @@ def run(
 
 @alfrd_cli.command()
 def add(script_path: str, proj: str,
-        symlink:    bool    = typer.Option(None, help="instead of copying files a shortcut is placed in the project folder"), 
+        symlink:    bool    = typer.Option(True, help="(instead of copying files a shortcut is placed in the project folder"), 
         ):
     """Add a new plugin to a specific project."""
     
