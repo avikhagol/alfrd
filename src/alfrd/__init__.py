@@ -70,9 +70,9 @@ X = "\033[0m"
 ALFRD_DIR = Path("~/.alfrd").expanduser()
 PROJ_DIR = Path(f"{ALFRD_DIR}/projects")
 
-def load_steps():
+def load_steps(prefix=""):
     for i, (name, info) in enumerate(REGISTERED_STEPS.items()):
-        print(f"- {i}\t {c['bc']}{name.ljust(20)}{c['x']}: {info['desc']}")
+        print(f"{prefix}- {i}\t {c['bc']}{name.ljust(20)}{c['x']}: {info['desc']}")
 
 def list_steps(proj):
     """List all registered steps."""
@@ -124,7 +124,7 @@ def lsp():
             print(f"\t\t{proj.name}")
             try:
                 load_projects(proj)
-                list_steps(proj.name)
+                load_steps(prefix="\t\t\t")
             except:
                 print("\t\t\tsteps not configured properly!")
     else:
@@ -223,7 +223,7 @@ def add(script_path: str, proj: str,
     """Add a new plugin to a specific project."""
     
     project_dir = proj_dir(proj)
-    script_path = Path(script_path)
+    script_path = Path(script_path).absolute()
 
     if not script_path.is_file():
         print(f"File '{script_path}' not found.")

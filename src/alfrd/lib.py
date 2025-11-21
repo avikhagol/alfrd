@@ -90,16 +90,14 @@ class LogFrame:
     :primary_colname:     primary column name for unique identifier
     :registered:        keeps count of success and failed script runs in a tuple (count_success, count_failed)
 
-    TODO :  register scripts to be able to call them from the terminal \
-            e.g:
-            $ alfrd --register alfred-pipe.py
-            $ alfrd --step_name
 
     """
-    def __init__(self, gsc , primary_value='',  primary_colname='FILE_NAME'):
+    def __init__(self, gsc=None , primary_value='',  primary_colname='FILE_NAME', csv=''):
         self.gsc                =   gsc
-        self.df_sheet0          =   self.gsc.df.copy(deep=True)
-        self.df_sheet           =   self.gsc.df
+        # self.df_sheet0          =   self.gsc.df.copy(deep=True) if not gsc is None else pd.read_csv(csv)
+        self.csvmode            =   True if csv and not gsc else False
+        self.df_sheet           =   self.gsc.df if not gsc is None else pd.read_csv(csv)
+        self.df_sheet0          =   self.df_sheet.copy(deep=True)
         self.primary_value      =   primary_value
         self.primary_colname    =   primary_colname
         self.working_col        =   ''

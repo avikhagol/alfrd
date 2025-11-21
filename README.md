@@ -2,15 +2,28 @@
 
 This program is written for the [SMILE project](https://smilescience.info) supported by the ERC starting grant, particularly with following purposes in mind:
 
-- Communicate with google spreadsheets and update progress periodically when required.
-- Run pipeline based on the spreadsheet progress/requirements.
+- Communicate with google spreadsheets(or local csv file) and update progress periodically when required.
+- Execute a pipeline workflow that dynamically operates based on the progress and requirements recorded in the spreadsheet or CSV file.
 
-Contents:
-1. [Create API credentials on Google Cloud](#1-create-api-credentials-on-google-cloud)
-2. [Installing](#2-installing)
-3. [Using ALFRD](#3-using-alfrd)
-4. [Attribution](#4-attribution)
-5. [Acknowledgement](#5-acknowledgement)
+# Contents:
+- [ALFRD : Automated Logical FRamework for Dynamic script execution(ALFRD)](#alfrd--automated-logical-framework-for-dynamic-script-executionalfrd)
+- [Contents:](#contents)
+  - [1. Create API credentials on Google Cloud](#1-create-api-credentials-on-google-cloud)
+  - [2. Installing](#2-installing)
+  - [3. Using ALFRD](#3-using-alfrd)
+    - [3.1 - Basic Usage](#31---basic-usage)
+      - [3.1.1 Example: Google Spreadsheet - Initializing and creating instance](#311-example-google-spreadsheet---initializing-and-creating-instance)
+      - [3.1.2 Example: Google Spreadsheet - Update the data](#312-example-google-spreadsheet---update-the-data)
+      - [3.1.3 Example: CSV - Update the data (more soon)](#313-example-csv---update-the-data-more-soon)
+    - [3.2 - Advance](#32---advance)
+      - [3.2.1 Example : Execute functions using alfrd](#321-example--execute-functions-using-alfrd)
+      - [3.2.2 Example : Pipeline step execution/update using the Spreadsheet/CSV](#322-example--pipeline-step-executionupdate-using-the-spreadsheetcsv)
+  - [4. Attribution](#4-attribution)
+  - [5. Acknowledgement](#5-acknowledgement)
+
+
+-------
+
 
 ## 1. Create API credentials on Google Cloud
 
@@ -76,92 +89,17 @@ NOTE: In order to successfully create a google console project a billing detail 
    pip install .
     ```
 this should install alfrd and all the dependencies automatically.
-    
+
 
 ## 3. Using ALFRD
 
-ALFRD is meant to be used as a tool to create a pipeline/workflow. The pipeline can be visualised as a tabular data e.g in a pandas dataframe table, google spreadsheet etc. For example each column may represent a pipeline step and each row corrosponds to a different dataset. A count of success and failure is kept throughout the code for housekeeping.
+ALFRD can be used for structuring the pipeline/workflow steps, such that each step (e.g., Step A, Step B, Step C) is represented as a column (A, B, C) in a table, with the workflow executing these steps sequentially according to their order in the table.
 
-### 3.1 ALFRD for Pipeline
+### 3.1 - Basic Usage
 
-Use ALFRD decorators for the pipelines, for:
-- *Validator* : using `@validator` decorator on the function which will hold a validation rule i.e function which will be executed on the parameter values before running the pipeline step.
-- *Validate Functions* : using `@validate` decorator on the funciton which will be the pipeline step and requires one of the validator to be executed when the pipeline step is called.
-- *Register Functions* : using `@register` decorator on the funciton which will be the pipeline step
+ALFRD relies on pandas dataframe to read/write tabular data.
 
-> Note: If you are using Validators, then define functions in the following order - `@validator` then `@register` and finally `@validate`.
-
-##### Example : Using the ALFRD Decorators
-```python 
-# pipeline.py
-
-from alfrd.plugins import register, validate, validator
-
-@validator("for general")
-def general(params):
-"""logic for general params validation"""
-    print("general sahab validated!")
-
-@validator("for row operations")
-def row_validation(params):
-"""logic for another params validation"""
-    if "name" in params:
-        print("name validated!")
-        return True
-    else:
-        return False
-
-@validate(v=["general", "row_validation"])
-@register(desc="prints hello by name")
-def hello(name):
-    print("hello",name)
-```
-
-```bash
-$ alfrd init project_name
-$ alfrd add path/to/pipeline.py project_name
-$ alfrd --help
- Usage: alfrd [OPTIONS] COMMAND [ARGS]...                                                                                                                                                                                                                                                                                     
-                                                                                                                                                                                                                                                                                                                              
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ --install-completion          Install completion for the current shell.                                                                                                                                                                                                                                                    │
-│ --show-completion             Show completion for the current shell, to copy it or customize the installation.                                                                                                                                                                                                             │
-│ --help                        Show this message and exit.                                                                                                                                                                                                                                                                  │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ init   Initialize the project-specific plugin directory.                                                                                                                                                                                                                                                                   │
-│ ls     List all available pipeline steps for a project.                                                                                                                                                                                                                                                                    │
-│ run    Run a specific pipeline step for a project.                                                                                                                                                                                                                                                                         │
-│ add    Add a new plugin to a specific project.                                                                                                                                                                                                                                                                             │
-│ rm     Remove a specific project.                                                                                                                                                                                                                                                                                          │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-$ alfrd run hello name=Anonymous
-hello Anonymous
-
-```
-
-```bash
-$ alfrd run --help
-                                                                                                                                                                                                                                                                                                                              
- Usage: alfrd run [OPTIONS] STEP_NAME PROJ [PARAMS]...                                                                                                                                                                                                                                                                        
-                                                                                                                                                                                                                                                                                                                              
- Run a specific pipeline step for a project.                                                                                                                                                                                                                                                                                  
-                                                                                                                                                                                                                                                                                                                              
-╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    step_name      TEXT         [default: None] [required]                                                                                                                                                                                                                                                                │
-│ *    proj           TEXT         [default: None] [required]                                                                                                                                                                                                                                                                │
-│      params         [PARAMS]...  Key-value pairs of parameters or parameter file path (e.g., id=123 name=Test) [default: None]                                                                                                                                                                                                                    │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                                                                                                                                                                                                                                                                │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-
-```
-
-
-##### Example 1 : Initializing and creating instance
+####  3.1.1 Example: Google Spreadsheet - Initializing and creating instance
 
 ```python
 from alfrd.lib import GSC, LogFrame
@@ -174,117 +112,106 @@ gsc = GSC(url=url, wname=worksheet, key='path/to/json/file')      # default path
 df_sheet = gsc.open()
 ```
 
-##### Example 2: Inititalize the framework
+
+####  3.1.2 Example: Google Spreadsheet - Update the data
+
+The instance of LogFrame can be used to manipulate the dataframe and update the Google Sheet.
 
 ```python
-lf = LogFrame(gsc)
-lf.primary_colname          =   'FILE_NAME'
-```
->The dataframe from the sheet can also be accessed through the instance `lf` using `lf.df_sheet`.
 
-##### Example 3: Run - Iterate for each row
+lf = LogFrame(gsc=gsc)
+lf.df_sheet.loc[0, 'TSYS'] = True
 
-```python
-from pathlib import Path
-import time, subprocess
-import glob
-
-count,failed=0,0
-allfiles=[]
-folder_for_fits ='path/to/allfits'
-
-allfiles.extend(glob.glob(f"{folder_for_fits}*/*fits"))
-
-for fitsfile in allfiles:
-    fitsfile_name = Path(fitsfile).name
-    lf.primary_value            =   fitsfile_name
-```
-> Here the variable `count` and `failed` is used for housekeeping the success/failure of each function call. This can be useful for ensuring minimal API calls, communication to the sheet only when there is a new update.
-
-##### Example 4: using column logic and adding values to the cell on success/failures
-
-Let's say we have a `result` that we need to update to the cell corrosponding to the column `Comment` and row corrosponding to the Serial Number `3`. Where `S.No.` is the column name for serial number.
-
-```python
-lf.primary_colname          =   'S.No.'
-lf.primary_value            =   '3'
-if lf.isvalue(value='True', colname='TSYS') and lf.isval_unique('Project'):
-    
-    lf.working_col          =   'Comment'                                          # working column
-    print(lf.get_value())
-
-    result                  =   'test'
-    if result :
-        count               =   lf.put_value(result, count=count)                   
-    else:
-        failed              =   lf.put_value('failed: logfile_path', count=failed)
-    
-    print(lf.get_value())
-```
-
-##### Example 5: Script execution
-
-```python
-def run_picard(cmd):
-    t0 = time.time()
-    subprocess.run(cmd)
-    t1 = time.time()
-    td = timeinmin(t1-t0)
-    return td
-
-def scripted_picard_1(wd_ifolder, count, failed, col='fits to ms'):
-    """
-    converts fitsfile to ms file; checks if conversion was successful; skips if file exists; logs in the spreadsheet;
-    """
-    td=0
-    cmd=["picard",'-n','10',"-l","e",'--input',wd_ifolder]
-       
-    params, files, input_folder = read_inputfile(wd_ifolder, "observation.inp")
-    
-    if not Path(f"{wd_ifolder}").exists():
-        print('input folder missing..')
-    elif not Path(f"{wd_ifolder}/../{params['ms_name']}").exists():
-        td          =   run_picard(cmd)
-        count       =   lf.put_value(colname=col, value=td, count=count)
-    elif Path(f"{wd_ifolder}/../{params['ms_name']}").exists():
-        print('skipped')
-
-    if not Path(f"{wd_ifolder}/../{params['ms_name']}").exists():
-        count-=1
-        failed      =   lf.put_value(colname=col, value='failed',count=failed)
-    return td, count, failed
-
-if lf.isvalue(value='True', colname='TSYS') and lf.isval_unique('Project'):
-    lf.working_col          =   'Comment1'
-    ttaken, count, failed   =   scripted_picard_1(wd_ifolder='path/to/wd/input_template', count=count, failed=failed )
-
-print(lf.get_value(colname='fits to ms'))
-```
-
-##### Example 6: Update the sheet
-
-`lf.update_sheet` updates the changes to the spreadsheet.
-
-```python
-lf.update_sheet(count=count, failed=failed, csvfile='df_sheet.csv')                     # if updating the sheet fails, a copy of the dataframe is saved locally at the csvfile path.
+lf.update_sheet(count=1, failed=0,csvfile='df_sheet.csv')                     # if updating the sheet fails, a copy of the dataframe is saved locally at the csvfile path.
 
 ```
 
->NOTE: The `count` and `failed` parameter corrosponds to a success/fail event on each iteration of update_sheet i.e., if the values of count/fail do not change on the current iteration, the sheet will not be updated and a `skipped` message will appear on the terminal.
+####  3.1.3 Example: CSV - Update the data (more soon)
 
-
-##### Example 7: Conditional Formatting
-need to run only once.
+It is also possible to use just the CSV file as an alternative to the Google Sheet.
 
 ```python
-r1 = lf.create_rule(range='G2:G105', type='TEXT_CONTAINS' ,value='False', c='r')               # check if TSYS == False --> background color = red
-r2 = lf.create_rule(range='G2:G105', type="TEXT_CONTAINS", value='True', custom_clr=lf.create_color(0.56, 0.77, 0.49))
-r3 = lf.create_conditional_format(range='F2:F105', c='g', valtype='timeinmin')              # check if value in XXmYYs format --> background color = green
 
-r4 = lf.create_conditional_format(range='F2:F105', c='r', valtype='fail')                   # check if value contains fail --> background color = red
-r4 = lf.create_rule(range='F2:F105', type='TEXT_CONTAINS', c='r', value='fail')                # similar to above
-print(r1,r2,r3,r4)
-lf.add_conditional_format(r1, r2, r3, r4)
+lf = LogFrame(csv='in.csv')
+lf.df_sheet.loc[0, 'TSYS'] = True
+lf.df_sheet.to_csv('out.csv')
+
+```
+
+### 3.2 - Advance
+
+#### 3.2.1 Example : Execute functions using alfrd
+
+Create `pipe.py` and use the register decorator for creating a pipeline step.
+
+```python 
+# pipe.py
+from alfrd.plugins import register
+
+
+@register("A hello world function")
+def step_hello_world(name):
+  print(f"hello, {name}")
+
+```
+
+Now we should create a pipeline project and add the script to the project, this can be done as follows:
+
+```bash
+alfrd init PROJECT_NAME # change the PROJECT_NAME to something desirable
+alfrd add /path/to/pipe.py PROJECT_NAME
+```
+
+this will create a symlink to the project directory found at  `~/.alfrd/projects/PROJECT_NAME/pipe.py`
+That's it! You have created a pipeline flow, now execute the created script by running the following:
+
+```bash
+alfrd run step_hello_world PROJECT_NAME name=World
+```
+> NOTE: you can create a config file e.g config.txt and modify the above as follows: \
+>   `alfrd run step_hello_world PROJECT_NAME config.txt` \
+> and in the config.txt write something like:
+```
+# config.txt
+name = World
+```
+
+#### 3.2.2 Example : Pipeline step execution/update using the Spreadsheet/CSV
+
+Now modify the `pipe.py` and use the validator decorator for defining functions which can be executed just before and after the main pipeline step. 
+The parameters accessed between the pipeline steps and validators can be defined by the `Pipeline.params`. 
+Also one can use the config file to initialize the parameter values in the execution time.
+
+```python 
+# pipe.py
+
+from alfrd.lib import GSC, LogFrame
+
+from alfrd import Pipeline
+from alfrd.plugins import validator, validate, register
+
+@validator(desc="Update values on the google sheet", run_once=False, after=True)
+def update_sheet(lf, success_count, failed_count):
+    lf.update_sheet(success_count, failed_count)
+  
+@validator(desc="Connect with the google sheet and return an instance for the runtime parameter", run_once=True)
+def connect_sheet(sheet_url, worksheet):
+    gsc = GSC(url=sheet_url, wname=worksheet, key='/path/to/credentials.json')
+    gsc.open()
+    Pipeline.params['lf'] = LogFrame(gsc=gsc)
+
+@validate(by=[connect_sheet, update_sheet])
+@register("A hello world function")
+def modify_tsys(lf):
+  lf.df_sheet.loc[0, 'TSYS'] = True
+  Pipeline.params['success_count'] = 1
+  Pipeline.params['failed_count'] = 0
+
+```
+
+the above can be executed as follows:
+```bash
+ alfrd run modify_tsys PROJECT_NAME sheet_url=/path/to/sheet worksheet=main
 ```
 
 ## 4. Attribution
