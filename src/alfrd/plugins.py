@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import inspect
+import inspect, io, sys
 from typing import Callable, Dict, List
 from functools import wraps
 import typer
@@ -112,6 +112,30 @@ def iterate_over_lst(lst):
             return results  # Return all results
         return wrapper
     return decorator
+
+
+# from contextlib import contextmanager
+
+# @contextmanager
+# def capture_logs(step_name: str, step_params: List):
+#     """Captures stdout and prints it with a clean header/footer."""
+#     captured_output = io.StringIO()
+#     original_stdout = sys.stdout
+#     sys.stdout = captured_output
+#     step_params_store = step_params.copy()
+#     if not 'logfile_path' in step_params_store:
+#         step_params_store['logfile_path'] = str(Path.cwd())
+#     try:
+#         yield
+#     finally:
+#         sys.stdout = original_stdout
+#         logs = captured_output.getvalue().strip()
+#         if logs:
+#             # You can use typer.secho here if you want colors
+#             print(f"\n--- [LOGS: {step_name}] ---")
+#             print(f" ###################################### {step_params_store['logfile_path']} ")
+#             print(logs)
+#             print(f"--- [END LOGS] ---\n")
 
 class PipelineRun:
     def __init__(self):
