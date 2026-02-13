@@ -93,7 +93,7 @@ class ProjectConfiguration:
             loadeddic_data              =   yaml.load(configbuff.read(), Loader=yaml.SafeLoader)
         if self.debug: livelogger.log(f"loaded {self.configfile} : {loadeddic_data}", level="DEBUG")
         
-        loadeddic_data                  =   self.parse_cleanedfata_fromyaml(loadeddic_data)
+        loadeddic_data                  =   self.parse_cleaneddata_fromyaml(loadeddic_data)
         livelogger.log(f"loading.. {self.configfile}")
         
         for key, category in self.thisproject.get_functions().items():
@@ -101,7 +101,7 @@ class ProjectConfiguration:
                 category.update(loadeddic_data[key])
                 livelogger.log(f"loaded {key} : {category}")
             
-    def parse_cleanedfata_fromyaml(self, loadeddic_data):
+    def parse_cleaneddata_fromyaml(self, loadeddic_data):
         if loadeddic_data:
             categories = self.thisproject.get_functions()
             
@@ -153,7 +153,7 @@ class Project:
         self.name                           =   name
         self.use_symlink                    =   use_symlink
         self.verbose                        =   verbose
-                
+            
     def get_projdir(self, create=False):
         proj_dir                            =   Path(f"{PROJ_DIR}/{self.name}")
         if create:
@@ -167,15 +167,22 @@ class Project:
     def create(self):
         self.get_projdir(create=True)
     
-    def add(self, path):
+    def add(self, *paths):
         proj_dir                            =   self.get_projdir()
-        if Path(path).exists():
-            shutil.copytree(src=path, dst=f"{proj_dir}/{Path(path).name}", symlinks=self.use_symlink)
-            livelogger.log(f"{path} is added to {self.name} with symlinks={self.use_symlink}")
-            return True
-        else:
-            livelogger.log(f"{path} not found!", level="SEVERE")
-            return False
+        for path in paths:
+            if Path(path).exists():
+                if Path(path).is_dir():
+                    shutil.copytree(src=path, dst=f"{proj_dir}/{Path(path).name}", symlinks=self.use_symlink)
+                else:
+                    if self.use_symlink:
+                        Path(f"{proj_dir}/{Path(path).name}").symlink_to(f"{Path(path).absolute()}")
+                    else:
+                        shutil.copyfile(src=path, dst=f"{proj_dir}/{Path(path).name}", follow_symlinks=False)
+                livelogger.log(f"{path} is added to {self.name} with symlinks={self.use_symlink}")
+                
+            else:
+                livelogger.log(f"{path} not found!", level="SEVERE")
+                
     
     def rm(self):
         livelogger.log(f"removing project {self.name}")
