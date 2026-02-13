@@ -85,7 +85,7 @@ def load_projects(project_dir: str):
     import importlib.util
     # Check if the project directory exists, if not, create it
     if not project_dir_path.exists():
-        print(f"project directory '{project_dir}' does not exist. Creating it...")
+        print(f"project directory '{project_dir}' does not exist. Creating it... {project_dir_path}")
         project_dir_path.mkdir(parents=True)
     
     # Loop through all Python files in the project directory
