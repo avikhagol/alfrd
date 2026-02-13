@@ -1,6 +1,6 @@
-from src.alfrd.core.project import Project, PROJ_DIR
+from alfrd.core.project import Project, PROJ_DIR
 from pathlib import Path
-from src.alfrd.core.logger import livelogger
+from alfrd.core.logger import livelogger
 
 def test_project_basic():
     """creates a project and checks all the functionso of the project:
