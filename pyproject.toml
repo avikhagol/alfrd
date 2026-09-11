@@ -1,51 +1,60 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfrd"
-version = "0.2.0.0"
+version = "0.2.1.0"
 description = "Automated Logical FRamework for Dynamic script execution (ALFRD)"
 readme = "README.md"
-requires-python = ">=3.6"
-license = { text = "BSD-3-Clause" }
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
 authors = [
   { name = "Avinash Kumar", email = "avialxee@gmail.com" }
 ]
-urls = { "Homepage" = "https://github.com/avialxee/alfrd/"}
+urls = { "Homepage" = "https://github.com/avialxee/alfrd/" }
 classifiers = [
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.6",
-  "Programming Language :: Python :: 3.7",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
-  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Intended Audience :: Science/Research"
 ]
 
 dependencies = [
+  "pandas",
+  "numpy",
+  "psutil",
+  "typer",
+  "pyyaml",
+  "platformdirs",
+]
+
+[project.optional-dependencies]
+dev = ["build>=1.2", "pytest>=7"]
+google = [
   "google-api-python-client",
   "google-auth-httplib2",
   "google-auth-oauthlib",
   "gspread",
   "gspread-formatting",
-  "pandas",
-  "numpy",
-  "psutil",
-  "typer",
-  "pyyaml"
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=3.7"]
+gui = ["flask", "flask_sqlalchemy"]
+all = ["alfrd[google,gui]"]
 
 [project.scripts]
-alfrd = "alfrd:alfrd_cli"
+alfrd = "alfrd.cli:alfrd_cli"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"alfrd.gui" = [
+  "templates/dashboard/*.htm",
+  "static/*.css",
+  "model/*.sql",
+]
