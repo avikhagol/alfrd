@@ -6,8 +6,12 @@ import alfrd.core
 
 def test_documented_public_imports():
     from alfrd import (
+        BaseConfig,
+        Config,
         Pipeline,
         Project,
+        ProjectManifest,
+        RepositoryService,
         Workflow,
         get_alfrd_dir,
         get_project_dir,
@@ -16,11 +20,18 @@ def test_documented_public_imports():
         validator,
     )
     from alfrd.core import Project as CoreProject, Workflow as CoreWorkflow
+    from alfrd.core.config import Config as CoreConfig
+    from alfrd.core.manifest import ProjectManifest as CoreProjectManifest
+    from alfrd.core.repository import RepositoryService as CoreRepositoryService
     from alfrd.lib import LogFrame
 
     assert Pipeline is not None
     assert LogFrame is not None
     assert Project is CoreProject
+    assert Config is CoreConfig
+    assert BaseConfig is type(Config)
+    assert ProjectManifest is CoreProjectManifest
+    assert RepositoryService is CoreRepositoryService
     assert Workflow is CoreWorkflow
     assert callable(register) and callable(validate) and callable(validator)
     assert get_project_dir() == get_alfrd_dir() / "projects"
