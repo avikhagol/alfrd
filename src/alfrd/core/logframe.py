@@ -239,7 +239,11 @@ class LogFrame:
         if primary_value is None or self._normalise_key(primary_value) == "":
             raise ValueError("a primary value is required")
         row[self.primary_colname] = primary_value
-        existing = self.primary_row_index(primary_value)
+        existing = (
+            self.primary_row_index(primary_value)
+            if self.primary_colname in self.df.columns
+            else None
+        )
         if existing is not None:
             return existing
 
@@ -485,4 +489,29 @@ class LogFrame:
         return changed
 
 
-__all__ = ["LogFrame", "LogFrameAdapter"]
+class LogFrameEventSink:
+    """Project terminal pipeline events into one status column per step."""
+
+    def __init__(self, logframe: LogFrame, *, sync: bool = False) -> None:
+        self.logframe = logframe
+        self.sync_on_event = sync
+
+    def __call__(self, event: Any) -> None:
+        from alfrd.core.pipeline import StepFailed, StepSkipped, StepSucceeded
+
+        if not isinstance(event, (StepSucceeded, StepFailed, StepSkipped)):
+            return
+        self.logframe.ensure_row(event.dataset_id)
+        self.logframe.put_value(
+            "succeeded" if isinstance(event, StepSucceeded) else (
+                "failed" if isinstance(event, StepFailed) else "skipped"
+            ),
+            event.step_name,
+            force=True,
+            primary_value=event.dataset_id,
+        )
+        if self.sync_on_event:
+            self.logframe.sync()
+
+
+__all__ = ["LogFrame", "LogFrameAdapter", "LogFrameEventSink"]

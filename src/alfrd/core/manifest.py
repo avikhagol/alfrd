@@ -1,6 +1,7 @@
 """Compatibility exports for project manifest APIs."""
 
 from alfrd.manifest import (
+    ArtifactDefinition,
     Entrypoint,
     MANIFEST_FILENAME,
     MANIFEST_VERSION,
@@ -17,6 +18,7 @@ from alfrd.manifest import (
 )
 
 __all__ = [
+    "ArtifactDefinition",
     "Entrypoint",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",

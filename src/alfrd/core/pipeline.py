@@ -65,6 +65,7 @@ class ArtifactRef:
     kind: str = "file"
     description: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    media_type: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))

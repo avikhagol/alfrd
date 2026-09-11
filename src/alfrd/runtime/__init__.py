@@ -1,5 +1,11 @@
 """Durable ALFRD execution state and local worker boundaries."""
 
+from .adapters import (
+    CompositeEventSink,
+    RuntimeEventSink,
+    RuntimePipelineRunner,
+    artifact_ref_from_model,
+)
 from .models import (
     Artifact,
     AuditEvent,
@@ -18,6 +24,7 @@ from .worker import LocalSubprocessWorker
 __all__ = [
     "Artifact",
     "AuditEvent",
+    "CompositeEventSink",
     "Dataset",
     "InvalidTransition",
     "LocalSubprocessWorker",
@@ -25,6 +32,8 @@ __all__ = [
     "Run",
     "RuntimeNotFound",
     "RuntimeOperations",
+    "RuntimeEventSink",
+    "RuntimePipelineRunner",
     "RuntimeService",
     "RuntimeStore",
     "SCHEMA_VERSION",
@@ -34,4 +43,5 @@ __all__ = [
     "StepExecution",
     "StepWorker",
     "WorkflowDefinition",
+    "artifact_ref_from_model",
 ]

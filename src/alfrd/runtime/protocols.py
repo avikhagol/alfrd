@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
-from .models import Artifact, Run, StepExecution
+from .models import Artifact, Dataset, Run, StepExecution, WorkflowDefinition
 from .service import Status
 
 
@@ -23,6 +23,10 @@ class RuntimeOperations(Protocol):
     ) -> Run: ...
 
     def get_run(self, run_id: str) -> Run: ...
+
+    def get_workflow(self, workflow_id: str) -> WorkflowDefinition: ...
+
+    def get_dataset(self, dataset_id: str) -> Dataset: ...
 
     def next_pending_execution(self, run_id: str) -> StepExecution | None: ...
 

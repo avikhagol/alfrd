@@ -16,6 +16,7 @@ EXPECTED_WHEEL_PATHS = {
     "alfrd/schemas/project-manifest-v1.schema.json",
     "alfrd/core/logframe.py",
     "alfrd/core/pipeline.py",
+    "alfrd/runtime/adapters.py",
     "alfrd/gui/templates/dashboard/index.htm",
     "alfrd/gui/templates/dashboard/layout.htm",
     "alfrd/gui/templates/dashboard/project_details.htm",
@@ -85,20 +86,24 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
 from importlib import resources
 from pathlib import Path
 from alfrd import (
-    ArtifactRef, BatchResult, Pipeline, PipelineContext, PipelineCore,
+    ArtifactDefinition, ArtifactRef, BatchResult, Pipeline, PipelineContext, PipelineCore,
     PipelineStepBase, PipelineStepValidatorBase, PipelineStepValidatorResult,
-    LogFrame, Project, ProjectManifest, RepositoryService, StepResult, Workflow,
+    LogFrame, LogFrameEventSink, Project, ProjectManifest, RepositoryService, StepResult, Workflow,
     __version__, register, validate, validator,
 )
 from alfrd.core import LogFrame as CoreLogFrame
 from alfrd.core.logframe import LogFrameAdapter
 from alfrd.core.logging import logger
 from alfrd.lib import LogFrame as LegacyLogFrame
+from alfrd.runtime import RuntimeEventSink, RuntimePipelineRunner, RuntimeService, RuntimeStore
+from alfrd.gui.services import RuntimeCatalogReader
 import logging
 assert __version__ == '0.2.1.0'
 assert Pipeline and Project and ProjectManifest and RepositoryService and Workflow and LogFrame
 assert all((ArtifactRef, BatchResult, PipelineContext, PipelineCore, PipelineStepBase,
             PipelineStepValidatorBase, PipelineStepValidatorResult, StepResult))
+assert all((ArtifactDefinition, LogFrameEventSink, RuntimeEventSink,
+            RuntimePipelineRunner, RuntimeService, RuntimeStore, RuntimeCatalogReader))
 assert LogFrame is CoreLogFrame is LegacyLogFrame
 assert LogFrameAdapter
 assert isinstance(logger, logging.Logger)

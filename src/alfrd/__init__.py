@@ -68,11 +68,12 @@ from alfrd.core.pipeline import (  # noqa: E402
     StepSucceeded,
     write_crash_snapshot,
 )
-from alfrd.core.logframe import LogFrame, LogFrameAdapter  # noqa: E402
+from alfrd.core.logframe import LogFrame, LogFrameAdapter, LogFrameEventSink  # noqa: E402
 from alfrd.core.project import Project  # noqa: E402
 from alfrd.core.workflow import Workflow  # noqa: E402
 from alfrd.config import BaseConfig, CONFIG_MAPPING, Config  # noqa: E402
 from alfrd.manifest import (  # noqa: E402
+    ArtifactDefinition,
     Entrypoint,
     ManifestError,
     ManifestNotFoundError,
@@ -98,6 +99,7 @@ __all__ = [
     "ALFRD_CACHE_DIR",
     "ALFRD_CONFIG_DIR",
     "ALFRD_DIR",
+    "ArtifactDefinition",
     "B",
     "BaseConfig",
     "CONFIG_MAPPING",
@@ -113,6 +115,7 @@ __all__ = [
     "List",
     "LogFrame",
     "LogFrameAdapter",
+    "LogFrameEventSink",
     "ManifestError",
     "ManifestNotFoundError",
     "Pipeline",

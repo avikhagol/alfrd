@@ -267,6 +267,37 @@ step without shell expansion; sequencing remains the caller's responsibility.
 Dataset CSV files use the columns `external_id`, `name`, `uri`, and `metadata`,
 where `metadata` is a JSON object. Dataset identity is scoped to a project.
 
+### Integrated service boundaries
+
+`RuntimeService.register_manifest()` discovers and validates `alfrd.yaml`
+without importing consumer Python. Manifest entrypoints become persisted command
+workflows. Optional artifact declarations describe expected outputs without
+being confused with a produced `ArtifactRef` or a persisted runtime `Artifact`:
+
+```yaml
+name: example
+entrypoint:
+  - name: build
+    cmd: [python, -m, example]
+artifacts:
+  - name: report
+    path_pattern: products/{dataset_id}.json
+    media_type: application/json
+```
+
+`RuntimePipelineRunner` executes typed steps whose names and order match a
+persisted workflow. Its `RuntimeEventSink` maps pipeline lifecycle events and
+`ArtifactRef` values into durable runs, step executions, checksummed artifacts,
+audit events, and run manifests. Add `LogFrameEventSink(logframe)` to the
+runner's `event_sinks` to project terminal step status into a pandas or Polars
+`LogFrame`.
+
+The Flask application remains read-only. Its bundled Flask-SQLAlchemy models
+are a standalone metadata catalog for compatibility; they are not runtime
+execution models. Applications using durable runtime state should pass
+`RuntimeCatalogReader(runtime_service)` as `CATALOG_READER`, avoiding a second
+copy of project/workflow metadata while retaining the same HTTP routes.
+
 ## 4. Attribution
 
 When using ALFRD, please add a link to this repository in a footnote.

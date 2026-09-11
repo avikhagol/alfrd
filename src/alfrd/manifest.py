@@ -65,6 +65,33 @@ ProjectSchema = SchemaDefinition
 
 
 @dataclass(frozen=True)
+class ArtifactDefinition:
+    """A declaration for an artifact a workflow may produce.
+
+    This differs from ``ArtifactRef`` (one produced value) and the runtime
+    ``Artifact`` row (one persisted value).
+    """
+
+    name: str
+    path_pattern: str
+    description: str = ""
+    media_type: str | None = None
+    extra: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "name": self.name,
+            "path_pattern": self.path_pattern,
+        }
+        if self.description:
+            data["description"] = self.description
+        if self.media_type is not None:
+            data["media_type"] = self.media_type
+        data.update(self.extra)
+        return data
+
+
+@dataclass(frozen=True)
 class ProjectManifest:
     """Validated ALFRD project manifest."""
 
@@ -74,15 +101,19 @@ class ProjectManifest:
     version: int = MANIFEST_VERSION
     path: Path | None = field(default=None, compare=False)
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    artifacts: tuple[ArtifactDefinition, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "version": self.version,
             "name": self.name,
             "entrypoint": [entry.to_dict() for entry in self.entrypoint],
             "schema": [definition.to_dict() for definition in self.schema],
-            **dict(self.extra),
         }
+        if self.artifacts:
+            data["artifacts"] = [artifact.to_dict() for artifact in self.artifacts]
+        data.update(self.extra)
+        return data
 
     def get_entrypoint(self, name: str) -> Entrypoint:
         for entry in self.entrypoint:
@@ -140,7 +171,9 @@ def validate_manifest(data: Mapping[str, Any]) -> None:
         raise ManifestError(f"Invalid manifest at {location}: {error.message}")
 
 
-def _unique_names(items: tuple[Entrypoint | SchemaDefinition, ...], section: str) -> None:
+def _unique_names(
+    items: tuple[Entrypoint | SchemaDefinition | ArtifactDefinition, ...], section: str
+) -> None:
     seen: set[str] = set()
     for item in items:
         if item.name in seen:
@@ -174,16 +207,30 @@ def parse_manifest(
         )
         for item in raw.get("schema", [])
     )
+    artifacts = tuple(
+        ArtifactDefinition(
+            name=item["name"],
+            path_pattern=item["path_pattern"],
+            description=item.get("description", ""),
+            media_type=item.get("media_type"),
+            extra=_extras(
+                item, {"name", "path_pattern", "description", "media_type"}
+            ),
+        )
+        for item in raw.get("artifacts", [])
+    )
     _unique_names(entries, "entrypoint")
     _unique_names(schemas, "schema")
+    _unique_names(artifacts, "artifact")
 
     return ProjectManifest(
         version=raw.get("version", MANIFEST_VERSION),
         name=raw["name"],
         entrypoint=entries,
         schema=schemas,
+        artifacts=artifacts,
         path=Path(source).expanduser().resolve() if source is not None else None,
-        extra=_extras(raw, {"version", "name", "entrypoint", "schema"}),
+        extra=_extras(raw, {"version", "name", "entrypoint", "schema", "artifacts"}),
     )
 
 
@@ -201,6 +248,7 @@ def load_manifest(path: str | Path | None = None) -> ProjectManifest:
 
 
 __all__ = [
+    "ArtifactDefinition",
     "Entrypoint",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",

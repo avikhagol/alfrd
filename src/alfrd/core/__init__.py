@@ -1,6 +1,6 @@
 """Public compatibility classes for ALFRD's 0.2.1.0 baseline."""
 
-from alfrd.core.logframe import LogFrame, LogFrameAdapter
+from alfrd.core.logframe import LogFrame, LogFrameAdapter, LogFrameEventSink
 from alfrd.core.project import Project, ProjectConfiguration
 from alfrd.core.pipeline import (
     ArtifactRef,
@@ -31,10 +31,11 @@ from alfrd.core.pipeline import (
 )
 from alfrd.core.workflow import Workflow, WorkflowConfig, WorkflowManager
 from alfrd.config import BaseConfig, CONFIG_MAPPING, Config
-from alfrd.manifest import ProjectManifest, discover_manifest, load_manifest
+from alfrd.manifest import ArtifactDefinition, ProjectManifest, discover_manifest, load_manifest
 from alfrd.repository import RepositoryRecord, RepositoryService
 
 __all__ = [
+    "ArtifactDefinition",
     "BaseConfig",
     "CONFIG_MAPPING",
     "Config",
@@ -56,6 +57,7 @@ __all__ = [
     "PipelineStepValidatorResult",
     "LogFrame",
     "LogFrameAdapter",
+    "LogFrameEventSink",
     "Project",
     "ProjectManifest",
     "ProjectConfiguration",

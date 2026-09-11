@@ -12,6 +12,8 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from alfrd.manifest import ProjectManifest, load_manifest as load_project_manifest
+
 from .models import (
     Artifact,
     AuditEvent,
@@ -105,6 +107,52 @@ class RuntimeService:
             self._audit_entity(session, "project", project.id, "created")
             session.expunge(project)
             return project
+
+    def list_projects(self) -> list[Project]:
+        with self.store.session() as session:
+            return list(session.scalars(select(Project).order_by(Project.name)))
+
+    def get_project_by_name(self, name: str) -> Project:
+        with self.store.session() as session:
+            project = session.scalar(select(Project).where(Project.name == name))
+            if project is None:
+                raise RuntimeNotFound(f"project {name!r} not found")
+            return project
+
+    def register_manifest(
+        self,
+        manifest: ProjectManifest | str | Path,
+        *,
+        root_path: str | Path | None = None,
+    ) -> tuple[Project, list[WorkflowDefinition]]:
+        """Register a discovered project without importing consumer code.
+
+        Each manifest entrypoint becomes a one-step command workflow. Typed
+        Python workflows can use the same persisted definition through
+        ``RuntimePipelineRunner`` when their step names match.
+        """
+
+        document = (
+            manifest if isinstance(manifest, ProjectManifest) else load_project_manifest(manifest)
+        )
+        root = root_path or (document.path.parent if document.path is not None else None)
+        if root is None:
+            raise ValueError("root_path is required for an in-memory manifest")
+        description = document.extra.get("description")
+        project = self.create_project(
+            document.name,
+            root,
+            description if isinstance(description, str) else None,
+        )
+        workflows = [
+            self.create_workflow(
+                project.id,
+                entrypoint.name,
+                [{"key": entrypoint.name, "command": entrypoint.cmd}],
+            )
+            for entrypoint in document.entrypoint
+        ]
+        return project, workflows
 
     def create_workflow(
         self,
