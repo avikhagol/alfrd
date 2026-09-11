@@ -214,6 +214,31 @@ the above can be executed as follows:
  alfrd run modify_tsys PROJECT_NAME sheet_url=/path/to/sheet worksheet=main
 ```
 
+## Runtime persistence API
+
+`alfrd.runtime` provides the storage and execution-state boundary used by future
+pipeline integrations. It is deliberately separate from the legacy `Workflow`
+loop and the optional Flask application.
+
+```python
+from alfrd.runtime import RuntimeService, RuntimeStore
+
+store = RuntimeStore("alfrd-runtime.sqlite")
+store.initialize()
+runtime = RuntimeService(store)
+```
+
+The service persists projects, versioned workflow and step definitions,
+independent datasets, runs, step attempts, artifacts, and audit events. Every run
+also has an atomically refreshed `<run directory>/.alfrd/run.json`, which can
+restore a missing database run with `runtime.recover_manifest(run_directory)`.
+Use `resume_run` to add attempts only for unfinished steps on the same run and
+`retry_run` to create a linked run. `LocalSubprocessWorker` executes one selected
+step without shell expansion; sequencing remains the caller's responsibility.
+
+Dataset CSV files use the columns `external_id`, `name`, `uri`, and `metadata`,
+where `metadata` is a JSON object. Dataset identity is scoped to a project.
+
 ## 4. Attribution
 
 When using ALFRD, please add a link to this repository in a footnote.
