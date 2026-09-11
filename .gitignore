@@ -129,3 +129,10 @@ dmypy.json
 # Pyre type checker
 .pyre/
 README_tmp.html
+.claude/
+.serena/
+uv.lock
+avica.logs/
+reductions/
+.verification/
+.verify-*/
