@@ -140,6 +140,34 @@ lf.df_sheet.to_csv('out.csv')
 
 ### 3.2 - Advance
 
+#### Canonical typed pipeline API
+
+`PipelineCore` executes typed steps in registration order with instance-local
+context. Parameters resolve from `step_name.parameter`, global explicit
+parameters, context, merged configuration, and finally the callable default.
+One dataset failure skips only that dataset's remaining steps.
+
+```python
+from alfrd import PipelineContext, PipelineCore, PipelineStepBase
+
+class Prepare(PipelineStepBase):
+    name = "prepare"
+
+    def execute(self, dataset_id, output_dir="results"):
+        return f"{output_dir}/{dataset_id}"
+
+result = PipelineCore(
+    [Prepare()],
+    context=PipelineContext({"output_dir": "products"}),
+).run([{"dataset_id": "target-a"}, {"dataset_id": "target-b"}])
+```
+
+Typed validators subclass `PipelineStepValidatorBase`; attach instances with
+the step's `before` and `after` arguments. `PipelineStepValidatorResult`, plain
+Booleans, and Boolean/result lists are normalized consistently. Execution
+returns `BatchResult`/`StepResult` objects and can emit lifecycle events or use
+`CrashSnapshotAdapter` and `ResultCSVAdapter` without a database dependency.
+
 #### 3.2.1 Example : Execute functions using alfrd
 
 Create `pipe.py` and use the register decorator for creating a pipeline step.

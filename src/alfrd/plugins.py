@@ -1,13 +1,12 @@
-from pathlib import Path
-
 import hashlib
 import importlib.util
-import inspect, io, sys
-from typing import Callable, Dict, List
+import inspect
+import sys
 from functools import wraps
+from pathlib import Path
+from typing import Callable, Dict, List
+
 import typer
-from alfrd.util import update_existing_dict, padded_output
-import traceback
 
 REGISTERED_STEPS: Dict[str, Dict[str, str]] = {}
 VALIDATE_BEFORE: Dict[str, Dict[str, List[str]]] = {}
@@ -180,100 +179,94 @@ def iterate_over_lst(lst):
 #             print(f"--- [END LOGS] ---\n")
 
 class PipelineRun:
+    """Compatibility facade over :class:`alfrd.core.pipeline.PipelineCore`."""
+
     def __init__(self):
-        self.params                 =   {}
-        self.project_name           =   ''
-        self.step_name              =   ''
-        self.registered_steps       =   {}
-        self.validate_steps         =   {}
-        self.validate_once          =   False
-        self.prev_step_success      =   None
-        self.validation_success     =   None
+        self.params = {}
+        self.project_name = ""
+        self.step_name = ""
+        self.registered_steps = {}
+        self.validate_steps = {}
+        self.validate_once = False
+        self.prev_step_success = None
+        self.validation_success = None
+        self.last_result = None
 
     def init_params(self, params):
-        self.params                 =   {**params, **self.params}
+        self.params = {**params, **self.params}
 
     def update_params(self, params):
-        """_adds new params, if already exists then updates_
+        self.params.update(params)
 
-        Args:
-            params (_dict_): _provided parameters_
-        """
-        self.params = {**self.params, **params}             
+    def _core(self, sequence, *, include_validators=True):
+        from alfrd.core.pipeline import PipelineContext, PipelineCore
+
+        core = PipelineCore.from_legacy_registries(
+            REGISTERED_STEPS,
+            VALIDATE_BEFORE if include_validators else {},
+            VALIDATE_AFTER if include_validators else {},
+            VALIDATORS,
+            sequence=sequence,
+            context=PipelineContext(self.params),
+        )
+        # The legacy singleton exposes a directly mutable params dictionary.
+        core.context.params = self.params
+        return core
 
     def all_step_params(self, required_params, default_params):
-        """updates the params by looking into the current global parameter space
-
-        Args:
-            default_params (_dict_): _the default params dictionary_
-            required_params (_list_): _the required params list_
-
-        Raises:
-            typer.Exit: _if missing required parameters shows an error_
-
-        Returns:
-            _dict_: _updated dictionary_
-        """
-        missing_params          =   [p for p in required_params if p not in self.params]
-        if missing_params:
-            print(f"Missing required parameters: {', '.join(missing_params)}")
+        missing = [name for name in required_params if name not in self.params]
+        if missing:
+            print(f"Missing required parameters: {', '.join(missing)}")
             raise typer.Exit()
-        else:
-            if default_params:    update_existing_dict(default_params,self.params)
-            
-            required_params     =   {k: self.params.get(k, None) for k in required_params}
-            default_params      =   {**default_params, **required_params}
-            
-        return default_params
-        
+        return {
+            **{
+                name: self.params.get(name, value)
+                for name, value in dict(default_params).items()
+            },
+            **{name: self.params[name] for name in required_params},
+        }
+
     def run_step(self):
-        result                              =   None
-        step                                =   REGISTERED_STEPS[self.step_name]
-        default_params                      =   step.get("default_params", {})
-        required_params                     =   step.get("required_params", [])
-        
-        step_params                         =   self.all_step_params(required_params=required_params, default_params=default_params)
-        
-        func                                =   step["function"]
-        
-        try:
-            result                          =   func(**step_params) if len(step_params) else func()
-            self.prev_step_success          =   True
-        except Exception as e:
-            self.prev_step_success          =   False
-            result                          =   str(e)
-            typer.secho(f"Failed! {e}", fg=typer.colors.RED)
-            traceback.print_exc()
+        core = self._core([self.step_name], include_validators=False)
+        self.last_result = core.run(
+            {"dataset_id": self.project_name or "legacy"}, params=self.params
+        )
+        step_result = self.last_result.datasets[0].steps[0]
+        self.prev_step_success = step_result.success
+        self.params["ret"] = step_result.value
+        if not step_result.success:
+            message = step_result.error.message if step_result.error else "unknown error"
+            typer.secho(f"Failed! {message}", fg=typer.colors.RED)
             raise typer.Exit()
-        self.params['ret']                  =   result
 
     def run_validations(self):
-        result                                  =   None
-        if self.step_name in self.validate_steps:
-            this_step                           =   self.validate_steps[self.step_name]
-            
-            for validator_func in this_step["functions"]:
-                
-                validator_name                  =   validator_func.__name__
-                run_count                       =   VALIDATORS[validator_name]['run_count']
-                if not (run_count>0 and VALIDATORS[validator_name]['run_once']) and self.validation_success!=False:
-                    try:
-                        print(f"• {validator_name}")
-                        required_params         =   VALIDATORS[validator_name]['required_params']       # taking from global.
-                        default_params          =   VALIDATORS[validator_name]['default_params']
-                        validator_params        =   self.all_step_params(required_params=required_params, default_params=default_params)
-                        self.prev_step_success  =   True                                                # this will change if error is raised.
-                        with padded_output(3):
-                            result                  =   validator_func(**validator_params) if len(validator_params) else validator_func()
-                        
-                        if result is False:
-                            self.validation_success = False
-                        VALIDATORS[validator_name]['run_count'] += 1
-                        self.params['ret_valid']        =   result
-                    except ValueError as e:
-                        self.prev_step_success  =   False
-                        typer.secho(f"Validation Failed! {e}", fg=typer.colors.RED)
-                        result                  =   str(e)
-                        traceback.print_exc()
-                        raise typer.Exit()
-                
+        from alfrd.core.pipeline import FunctionPipelineStepValidator
+
+        functions = self.validate_steps.get(self.step_name, {}).get("functions", ())
+        validators = []
+        for function in functions:
+            metadata = VALIDATORS[function.__name__]
+            if metadata.get("run_once") and metadata.get("run_count", 0):
+                continue
+            print(f"• {function.__name__}")
+            validators.append(
+                FunctionPipelineStepValidator(
+                    function,
+                    description=metadata.get("desc", ""),
+                    run_once=metadata.get("run_once", False),
+                )
+            )
+        core = self._core([self.step_name], include_validators=False)
+        try:
+            results = core.validate(
+                validators, qualified_name=self.step_name, params=self.params
+            )
+        except (TypeError, ValueError) as error:
+            self.prev_step_success = False
+            typer.secho(f"Validation Failed! {error}", fg=typer.colors.RED)
+            raise typer.Exit() from error
+        self.prev_step_success = True
+        self.validation_success = all(result.success for result in results)
+        self.params["ret_valid"] = results[-1].success if results else None
+        for function in functions[: len(results)]:
+            VALIDATORS[function.__name__]["run_count"] += 1

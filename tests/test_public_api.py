@@ -6,8 +6,16 @@ import alfrd.core
 
 def test_documented_public_imports():
     from alfrd import (
+        ArtifactRef,
+        BatchResult,
         Pipeline,
+        PipelineContext,
+        PipelineCore,
+        PipelineStepBase,
+        PipelineStepValidatorBase,
+        PipelineStepValidatorResult,
         Project,
+        StepResult,
         Workflow,
         get_alfrd_dir,
         get_project_dir,
@@ -15,10 +23,24 @@ def test_documented_public_imports():
         validate,
         validator,
     )
-    from alfrd.core import Project as CoreProject, Workflow as CoreWorkflow
+    from alfrd.core import Project as CoreProject
+    from alfrd.core import Workflow as CoreWorkflow
     from alfrd.lib import LogFrame
 
     assert Pipeline is not None
+    assert all(
+        item is not None
+        for item in (
+            ArtifactRef,
+            BatchResult,
+            PipelineContext,
+            PipelineCore,
+            PipelineStepBase,
+            PipelineStepValidatorBase,
+            PipelineStepValidatorResult,
+            StepResult,
+        )
+    )
     assert LogFrame is not None
     assert Project is CoreProject
     assert Workflow is CoreWorkflow
