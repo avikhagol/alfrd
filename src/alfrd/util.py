@@ -1,3 +1,4 @@
+from __future__ import annotations
 import numpy as np
 from pathlib import Path
 import os
@@ -6,17 +7,22 @@ from collections import defaultdict
 import sys
 from contextlib import contextmanager
 
+import yaml
+
+from typing import Any, Annotated
+
+
 @contextmanager
 def padded_output(padding=4):
     """Context manager for padded output"""
     original_write = sys.stdout.write
-    
+
     def padded_write(text):
         if text.strip():  # Only pad non-empty lines
             original_write(' ' * padding + text)
         else:
             original_write(text)
-    
+
     sys.stdout.write = padded_write
     try:
         yield
@@ -51,7 +57,7 @@ def read_inputfile(folder,inputfile='.inp'):
                             # check for leading zeros
                             if str(v).strip() and v.strip()[0] == '0':
                                 v   =   str(v).strip()
-                                
+
                             else:
                                 try:
                                     v=int(v)
@@ -68,7 +74,7 @@ def read_inputfile(folder,inputfile='.inp'):
                                         else:
                                             v = v.lower() == 'true' if (any(boolv == v.lower() for boolv in ['true', 'false'])) else v
                             params[k.strip()]=v
-                            
+
     return params, files, input_folder
 
 def update_existing_dict(to, from_dic):
@@ -94,7 +100,7 @@ def read_metafile(metafile):
 
 def find_size(fitsfile):
     size = np.round(Path(fitsfile).stat().st_size/(1024*1024),2)
-    if size >= 1024.0 : 
+    if size >= 1024.0 :
         size = size/1024
         size = f"{np.round(size, 2)} GB"
     else:
@@ -117,13 +123,13 @@ def build_path(filepath):
                 *(Path(opt).parent / Path(opt).stem, Path(opt).suffix,numb))
             try :
                 if Path(filepath).exists():
-                    numb += 1 
+                    numb += 1
             except:
                 pass
     return filepath
 
 def symlink_bywd(wd, fitsfile, create=True):
-    rawsymlink          =   f"{wd}/raw/{Path(fitsfile).name}" 
+    rawsymlink          =   f"{wd}/raw/{Path(fitsfile).name}"
     Path(f"{wd}/raw").mkdir(parents=True, exist_ok=True)
     if create : os.symlink(fitsfile, rawsymlink)
     return rawsymlink
@@ -140,20 +146,20 @@ def dir_for_project(fitsfile, tdir='/data/avi/reductions/100test/', ifolder='/da
     if create:
         if not Path(f"{wd}/raw/{Path(lookfile).name}").exists():
             wd                  =   build_path(wd)
-            
+
         try:
             rawsymlink = symlink_bywd(wd, fitsfile)
-               
+
             wd_ifolder          =   f'{wd}/input_template/'
             if not Path(wd_ifolder).exists():shutil.copytree(ifolder,wd_ifolder)
         except Exception as e:
             print(f"exists? : {segment} : {e}")
             new             =   False
-    
+
         new             =   False
     else:
         possible_file = glob.glob(f'{wd}*/raw/{Path(lookfile).name}')
-        
+
         if len(possible_file):
             wd_ifolder = Path(possible_file[0]).parent.parent / "input_template"
             new = False
@@ -173,16 +179,13 @@ def del_extra_wdfolder(wd_ifolder, fitsfile):
 
 def latest_file(path: Path, pattern: str = "*"):
     """
-    to get the last file that was generated, this can be useful for getting any new logfiles.
+    Return the newest matching file, or ``Path("")`` when there are no matches.
     """
-    files = path.glob(pattern)
-    lastf = Path('')
-    
     try:
-        lastf = max(files, key=lambda x: x.stat().st_ctime)
-    finally:
-        return lastf
-    
+        return max(path.glob(pattern), key=lambda candidate: candidate.stat().st_ctime)
+    except ValueError:
+        return Path("")
+
 def timeinmin(td):
     """
     convert timdedelta in XXmYYs format
@@ -217,8 +220,59 @@ def build_logpath(wd_ifolder):
     """
     thisdate = time.strftime('%F-%T', time.gmtime())
     thisdate = thisdate.replace(':', '_')
-    
+
     errlogf = Path(wd_ifolder).parent / f'mpi_and_err.out_{thisdate}'
     casalogf = Path(wd_ifolder).parent / f'casa.log_{thisdate}'
-    
+
     return str(errlogf), str(casalogf)
+
+# ------------------ yaml
+
+def read_yaml(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError("YAML root must be a mapping/object")
+
+    return data
+
+# ------------------ colors
+
+c = {
+    "x": "\033[0m",   # Reset
+    "b": "\033[1m",   # Bold
+    "d": "\033[2m",   # Dim
+
+    # Normal Colors
+    "k": "\033[30m",  # Black
+    "r": "\033[31m",  # Red
+    "g": "\033[32m",  # Green
+    "y": "\033[33m",  # Yellow
+    "bl": "\033[34m", # Blue
+    "m": "\033[35m",  # Magenta
+    "c": "\033[36m",  # Cyan
+    "w": "\033[37m",  # White
+
+    # Bright Colors
+    "bk": "\033[90m",  # Bright Black
+    "br": "\033[91m",  # Bright Red
+    "bg": "\033[92m",  # Bright Green
+    "by": "\033[93m",  # Bright Yellow
+    "bbl": "\033[94m", # Bright Blue
+    "bm": "\033[95m",  # Bright Magenta
+    "bc": "\033[96m",  # Bright Cyan
+    "bw": "\033[97m",  # Bright White
+
+    # Background Colors (Shortened Keys)
+    "bk_": "\033[40m",  # Black BG
+    "r_": "\033[41m",   # Red BG
+    "g_": "\033[42m",   # Green BG
+    "y_": "\033[43m",   # Yellow BG
+    "bl_": "\033[44m",  # Blue BG
+    "m_": "\033[45m",   # Magenta BG
+    "c_": "\033[46m",   # Cyan BG
+    "w_": "\033[47m",   # White BG
+}
+B = "\033[1m"
+X = "\033[0m"
