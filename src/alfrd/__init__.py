@@ -68,6 +68,7 @@ from alfrd.core.pipeline import (  # noqa: E402
     StepSucceeded,
     write_crash_snapshot,
 )
+from alfrd.core.logframe import LogFrame, LogFrameAdapter  # noqa: E402
 from alfrd.core.project import Project  # noqa: E402
 from alfrd.core.workflow import Workflow  # noqa: E402
 from alfrd.config import BaseConfig, CONFIG_MAPPING, Config  # noqa: E402
@@ -110,6 +111,8 @@ __all__ = [
     "DatasetFinished",
     "DatasetStarted",
     "List",
+    "LogFrame",
+    "LogFrameAdapter",
     "ManifestError",
     "ManifestNotFoundError",
     "Pipeline",

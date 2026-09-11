@@ -14,6 +14,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_WHEEL_PATHS = {
     "alfrd/schemas/project-manifest-v1.schema.json",
+    "alfrd/core/logframe.py",
     "alfrd/core/pipeline.py",
     "alfrd/gui/templates/dashboard/index.htm",
     "alfrd/gui/templates/dashboard/layout.htm",
@@ -79,16 +80,20 @@ from pathlib import Path
 from alfrd import (
     ArtifactRef, BatchResult, Pipeline, PipelineContext, PipelineCore,
     PipelineStepBase, PipelineStepValidatorBase, PipelineStepValidatorResult,
-    Project, ProjectManifest, RepositoryService, StepResult, Workflow, __version__,
-    register, validate, validator,
+    LogFrame, Project, ProjectManifest, RepositoryService, StepResult, Workflow,
+    __version__, register, validate, validator,
 )
+from alfrd.core import LogFrame as CoreLogFrame
+from alfrd.core.logframe import LogFrameAdapter
 from alfrd.core.logging import logger
-from alfrd.lib import LogFrame
+from alfrd.lib import LogFrame as LegacyLogFrame
 import logging
 assert __version__ == '0.2.1.0'
 assert Pipeline and Project and ProjectManifest and RepositoryService and Workflow and LogFrame
 assert all((ArtifactRef, BatchResult, PipelineContext, PipelineCore, PipelineStepBase,
             PipelineStepValidatorBase, PipelineStepValidatorResult, StepResult))
+assert LogFrame is CoreLogFrame is LegacyLogFrame
+assert LogFrameAdapter
 assert isinstance(logger, logging.Logger)
 assert register and validate and validator
 root = resources.files('alfrd.gui')

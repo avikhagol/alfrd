@@ -41,7 +41,8 @@ google = [
   "gspread-formatting",
 ]
 gui = ["flask", "flask_sqlalchemy"]
-all = ["alfrd[google,gui]"]
+polars = ["polars"]
+all = ["alfrd[google,gui,polars]"]
 
 [project.scripts]
 alfrd = "alfrd.cli:alfrd_cli"
