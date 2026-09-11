@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import hashlib
+import importlib.util
 import inspect, io, sys
 from typing import Callable, Dict, List
 from functools import wraps
@@ -10,7 +12,43 @@ import traceback
 REGISTERED_STEPS: Dict[str, Dict[str, str]] = {}
 VALIDATE_BEFORE: Dict[str, Dict[str, List[str]]] = {}
 VALIDATE_AFTER: Dict[str, Dict[str, List[str]]] = {}
-VALIDATORS: Dict[str, Dict[str, str]] = {}
+VALIDATORS: Dict[str, Dict[str, str]] = {}                  # choice of name VALIDATORS because, the function returns bool viz, used for the code to proceed.
+
+
+def _module_is_below(module, directory: Path) -> bool:
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return False
+    try:
+        Path(module_file).absolute().relative_to(directory.absolute())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _purge_modules_from_directory(directory: Path) -> None:
+    """Remove only modules that were loaded from ``directory``."""
+    for name, module in list(sys.modules.items()):
+        if _module_is_below(module, directory):
+            sys.modules.pop(name, None)
+
+
+def _load_project_module(project_path: Path) -> str:
+    """Load one plugin under a deterministic project-and-file-scoped name."""
+    project_path = project_path.absolute()
+    project_digest = hashlib.sha256(str(project_path.parent).encode()).hexdigest()[:12]
+    module_name = f"_alfrd_project_{project_digest}_{project_path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, project_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load project module: {project_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module_name
 
 def register(desc: str):
     """Decorator to register a pipeline step with required parameters."""
@@ -82,19 +120,23 @@ def validator(desc: str, after: bool = False, run_once: bool = False):
 def load_projects(project_dir: str):
     """Load projects from a specified directory."""
     project_dir_path = Path(project_dir)
-    import importlib.util
+
     # Check if the project directory exists, if not, create it
     if not project_dir_path.exists():
         print(f"project directory '{project_dir}' does not exist. Creating it... {project_dir_path}")
         project_dir_path.mkdir(parents=True)
     
-    # Loop through all Python files in the project directory
-    for project_path in project_dir_path.glob("*.py"):
-        module_name = project_path.stem
-        
-        spec = importlib.util.spec_from_file_location(module_name, project_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+    path_entry = str(project_dir_path)
+    added_to_path = path_entry not in sys.path
+    if added_to_path:
+        sys.path.insert(0, path_entry)
+    try:
+        # Loop through all Python files in the project directory
+        for project_path in project_dir_path.glob("*.py"):
+            _load_project_module(project_path)
+    finally:
+        if added_to_path and path_entry in sys.path:
+            sys.path.remove(path_entry)
 
     if not REGISTERED_STEPS:
         print("No steps found. Add projects to the projects directory.")
@@ -224,7 +266,8 @@ class PipelineRun:
                         with padded_output(3):
                             result                  =   validator_func(**validator_params) if len(validator_params) else validator_func()
                         
-                        if self.validation_success is None: self.validation_success = result
+                        if result is False:
+                            self.validation_success = False
                         VALIDATORS[validator_name]['run_count'] += 1
                         self.params['ret_valid']        =   result
                     except ValueError as e:
