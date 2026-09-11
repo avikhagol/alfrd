@@ -1,83 +1,84 @@
-import gspread
-from google.oauth2.service_account import Credentials
+from alfrd import ALFRD_DIR
+# import gspread
+# from google.oauth2.service_account import Credentials
 import pandas as pd
 import re, time
 from pathlib import Path
 import warnings
 from alfrd import c
-from gspread_formatting import ConditionalFormatRule, GridRange, BooleanCondition, BooleanRule, CellFormat, Color, get_conditional_format_rules
+# from gspread_formatting import ConditionalFormatRule, GridRange, BooleanCondition, BooleanRule, CellFormat, Color, get_conditional_format_rules
 import numpy as np
 import traceback
-class GSC:
-    """
-    Creates instance of google Google Spreadsheet Credential to open and update a worksheet
-    """
-    def __init__(self, sid='', url='', key=f"{Path().home()}/.alfred/credentials.json", wid=0, wname=''):
-        """
-        if sid is empty, uses url to get the spreadsheet id
-        """
-        self.sid            =   sid
-        self.url            =   url
-        self.key            =   key
-        self.wid            =   wid
-        self.wname          =   wname
-        self.authorized     =   False
-        self.scopes         =   ["https://www.googleapis.com/auth/spreadsheets"]
-        self.creds          =   Credentials.from_service_account_file(key, scopes=self.scopes)
+# class GSC:
+#     """
+#     Creates instance of google Google Spreadsheet Credential to open and update a worksheet
+#     """
+#     def __init__(self, sid='', url='', key=f"{ALFRD_DIR}/credentials.json", wid=0, wname=''):
+#         """
+#         if sid is empty, uses url to get the spreadsheet id
+#         """
+#         self.sid            =   sid
+#         self.url            =   url
+#         self.key            =   key
+#         self.wid            =   wid
+#         self.wname          =   wname
+#         self.authorized     =   False
+#         self.scopes         =   ["https://www.googleapis.com/auth/spreadsheets"]
+#         self.creds          =   Credentials.from_service_account_file(key, scopes=self.scopes)
         
-    def auth(self):
-        self.client         =   gspread.authorize(self.creds)
-        self.authorized     =   True
+#     def auth(self):
+#         self.client         =   gspread.authorize(self.creds)
+#         self.authorized     =   True
 
-    def open(self):
-        if not self.authorized: self.auth()
-        if not self.sid: 
-            regex = "([\w-]){44}"
-            sid_match = re.search(regex,self.url)
-            self.sid = str(sid_match.group())
+#     def open(self):
+#         if not self.authorized: self.auth()
+#         if not self.sid:
+#             regex = "([\w-]){44}"
+#             sid_match = re.search(regex,self.url)
+#             self.sid = str(sid_match.group())
 
-        self.spreadsheet    =   self.client.open_by_key(self.sid)
-        self.sheet          =   self.spreadsheet.get_worksheet(self.w) if not self.wname else self.spreadsheet.worksheet(self.wname)
-        self.df             =   pd.DataFrame(self.sheet.get_all_records(numericise_ignore=['all']))
-        print(f"{c['g']}Success!{c['x']}")
-        return self.df
+#         self.spreadsheet    =   self.client.open_by_key(self.sid)
+#         self.sheet          =   self.spreadsheet.get_worksheet(self.w) if not self.wname else self.spreadsheet.worksheet(self.wname)
+#         self.df             =   pd.DataFrame(self.sheet.get_all_records(numericise_ignore=['all']))
+#         print(f"{c['g']}Success!{c['x']}")
+#         return self.df
 
-    def update(self, dataframe):
-        self.sheet.update([dataframe.columns.values.tolist()] + dataframe.values.tolist())
-        print(f"{c['g']}Updated!{c['x']}")
+#     def update(self, dataframe):
+#         self.sheet.update([dataframe.columns.values.tolist()] + dataframe.values.tolist())
+#         print(f"{c['g']}Updated!{c['x']}")
 
-    def update_cell(self, dataframe: pd.DataFrame, I: list, J: list):
+#     def update_cell(self, dataframe: pd.DataFrame, I: list, J: list):
         
-        # account for header as a row
-        sheet_I_h = len(dataframe.columns.shape[1]) if len(dataframe.columns.shape) > 1 else 1 # checks if there are more than one row else use 1 as the no. of rows in header
+#         # account for header as a row
+#         sheet_I_h = len(dataframe.columns.shape[1]) if len(dataframe.columns.shape) > 1 else 1 # checks if there are more than one row else use 1 as the no. of rows in header
         
-        # Convert row and column indices to Excel-style (1-based index)
-        sheet_I = [i + 1 + sheet_I_h for i in I]  # Offset by sheet header length
-        sheet_J = [j + 1 for j in J]  # 1-based index for columns
+#         # Convert row and column indices to Excel-style (1-based index)
+#         sheet_I = [i + 1 + sheet_I_h for i in I]  # Offset by sheet header length
+#         sheet_J = [j + 1 for j in J]  # 1-based index for columns
 
-        if not sheet_I or not sheet_J:      # ensure non empty values
-            print(" skipped: Identical data - row or column indices for update are empty.")
-            # print("sheet_I :", sheet_I,"\nsheet_J :",sheet_J)
-            return
+#         if not sheet_I or not sheet_J:      # ensure non empty values
+#             print(" skipped: Identical data - row or column indices for update are empty.")
+#             # print("sheet_I :", sheet_I,"\nsheet_J :",sheet_J)
+#             return
 
-        # create a body for batch update
-        update_body     =   []
-        for ci,cj,i,j in zip(sheet_I,sheet_J,I,J):
-            cell    =   gspread.utils.rowcol_to_a1(ci,cj)
-            value   =   dataframe.iat[i,j]
-            update_body.append({
-            'range': cell,
-            'values': [[value]]
-        })
+#         # create a body for batch update
+#         update_body     =   []
+#         for ci,cj,i,j in zip(sheet_I,sheet_J,I,J):
+#             cell    =   gspread.utils.rowcol_to_a1(ci,cj)
+#             value   =   dataframe.iat[i,j]
+#             update_body.append({
+#             'range': cell,
+#             'values': [[value]]
+#         })
 
-        try:
-            # Use batch_update for efficiency
-            self.sheet.batch_update(update_body)
-            print(f"{c['g']}Updated!{c['x']} {len(I)} cells successfully.")
-        except gspread.exceptions.APIError as e:
-            print(f"API Error: {e}")
-        except Exception as e:
-            print(f"Error updating the sheet: {e}")
+#         try:
+#             # Use batch_update for efficiency
+#             self.sheet.batch_update(update_body)
+#             print(f"{c['g']}Updated!{c['x']} {len(I)} cells successfully.")
+#         except gspread.exceptions.APIError as e:
+#             print(f"API Error: {e}")
+#         except Exception as e:
+#             print(f"Error updating the sheet: {e}")
 
 class LogFrame:
     """
@@ -96,7 +97,7 @@ class LogFrame:
         self.gsc                =   gsc
         # self.df_sheet0          =   self.gsc.df.copy(deep=True) if not gsc is None else pd.read_csv(csv)
         self.csvmode            =   True if csv and not gsc else False
-        self.df_sheet           =   self.gsc.df if not gsc is None else pd.read_csv(csv)
+        self.df_sheet           =   self.gsc.df if gsc is not None else pd.read_csv(csv)
         self.df_sheet0          =   self.df_sheet.copy(deep=True)
         self.primary_value      =   primary_value
         self.primary_colname    =   primary_colname
@@ -107,16 +108,18 @@ class LogFrame:
 
         self.registered         =   0,0         # (count_success, count_failed)
         self.update_cooldown_count   =   0
-        self.color ={'g': Color(red=0.56,green=0.77,blue=0.49),
-                'r': Color(red=0.8784314,green=0.4,blue=0.4),
-                'rh': Color(red=0.71,green=0.13,blue=0.0),
-                'rl': Color(red=0.98,green=0.63,blue=0.57),
-                'gl': Color(red=0.42,green=0.86,blue=0.31),
-                'gh': Color(red=0.42,green=0.60,blue=0.42)}
+        # self.color ={'g': Color(red=0.56,green=0.77,blue=0.49),
+        #         'r': Color(red=0.8784314,green=0.4,blue=0.4),
+        #         'rh': Color(red=0.71,green=0.13,blue=0.0),
+        #         'rl': Color(red=0.98,green=0.63,blue=0.57),
+        #         'gl': Color(red=0.42,green=0.86,blue=0.31),
+        #         'gh': Color(red=0.42,green=0.60,blue=0.42)}
 
     # def col_d(self, colname='', data='', count=0, force=False, chk_colname=''):
     #     self.df_sheet
-        
+    @property
+    def is_googlesheet(self):
+        return self.gsc is not None
         
     def col_data(self, colname='', data='', count=0, force=False, chk_colname='', expressions=[]):              # TODO: cannot work with non-unique primary_values, cant we use index as primary_value for uniqueness?
         """
@@ -128,7 +131,7 @@ class LogFrame:
         Input
         ---
 
-        :df_sheet:          pandas dataframe to work on
+        :df_sheet:          pandas dataframe
         :primary_value:     the unique identifier of the row corrosponding to the primary_colname
         :colname:           column name to alter data
         :data:              data to fill in the corrosponding column for the corrosponding identifier row
@@ -251,60 +254,60 @@ class LogFrame:
             self.df_sheet.to_csv(csvfile)
         self.t0                      =   time.time()
 
-    def create_conditional_format(self, range, c='g', valtype='timeinmin', custom_clr=None):
-        clr = self.color[c] if not custom_clr else custom_clr
-        rule ={
-                'timeinmin' : ConditionalFormatRule(
-            ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
-            booleanRule=BooleanRule(
-                condition=BooleanCondition(
-                        type='CUSTOM_FORMULA',values=[f'=AND(ISNUMBER(SEARCH("m", {range})), ISNUMBER(SEARCH("s", {range})))']),
-                format=CellFormat(backgroundColor=clr,
-                ))),
-                'True' :  ConditionalFormatRule(
-            ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
-            booleanRule=BooleanRule(
-                condition=BooleanCondition(
-                        type='TEXT_CONTAINS',values=[f'True']),
-                format=CellFormat(backgroundColor=clr,
-                ))),
-                'False' :  ConditionalFormatRule(
-            ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
-            booleanRule=BooleanRule(
-                condition=BooleanCondition(
-                        type='TEXT_CONTAINS',values=[f'False']),
-                format=CellFormat(backgroundColor=clr,
-                ))),
-                'fail' :  ConditionalFormatRule(
-            ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
-            booleanRule=BooleanRule(
-                condition=BooleanCondition(
-                        type='TEXT_CONTAINS',values=[f'fail']),
-                format=CellFormat(backgroundColor=clr,
-                ))),
-        }
-        return rule[valtype]
+    # def create_conditional_format(self, range, c='g', valtype='timeinmin', custom_clr=None):
+    #     clr = self.color[c] if not custom_clr else custom_clr
+    #     rule ={
+    #             'timeinmin' : ConditionalFormatRule(
+    #         ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
+    #         booleanRule=BooleanRule(
+    #             condition=BooleanCondition(
+    #                     type='CUSTOM_FORMULA',values=[f'=AND(ISNUMBER(SEARCH("m", {range})), ISNUMBER(SEARCH("s", {range})))']),
+    #             format=CellFormat(backgroundColor=clr,
+    #             ))),
+    #             'True' :  ConditionalFormatRule(
+    #         ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
+    #         booleanRule=BooleanRule(
+    #             condition=BooleanCondition(
+    #                     type='TEXT_CONTAINS',values=[f'True']),
+    #             format=CellFormat(backgroundColor=clr,
+    #             ))),
+    #             'False' :  ConditionalFormatRule(
+    #         ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
+    #         booleanRule=BooleanRule(
+    #             condition=BooleanCondition(
+    #                     type='TEXT_CONTAINS',values=[f'False']),
+    #             format=CellFormat(backgroundColor=clr,
+    #             ))),
+    #             'fail' :  ConditionalFormatRule(
+    #         ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
+    #         booleanRule=BooleanRule(
+    #             condition=BooleanCondition(
+    #                     type='TEXT_CONTAINS',values=[f'fail']),
+    #             format=CellFormat(backgroundColor=clr,
+    #             ))),
+    #     }
+    #     return rule[valtype]
 
-    def create_rule(self, range, type='TEXT_CONTAINS', value='True',  c='g', custom_clr=None):
-        clr = self.color[c] if not custom_clr else custom_clr
-        return ConditionalFormatRule(
-            ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
-            booleanRule=BooleanRule(
-                condition=BooleanCondition(
-                        type=type, values=[value]),
-                format=CellFormat(backgroundColor=clr,
-                )))
+    # def create_rule(self, range, type='TEXT_CONTAINS', value='True',  c='g', custom_clr=None):
+    #     clr = self.color[c] if not custom_clr else custom_clr
+    #     return ConditionalFormatRule(
+    #         ranges=[GridRange.from_a1_range(f'{range}', self.gsc.sheet)],
+    #         booleanRule=BooleanRule(
+    #             condition=BooleanCondition(
+    #                     type=type, values=[value]),
+    #             format=CellFormat(backgroundColor=clr,
+    #             )))
     
-    def create_color(self, r=0.56,g=0.77,b=0.49):
-        return Color(red=r,green=g,blue=b)
+    # def create_color(self, r=0.56,g=0.77,b=0.49):
+    #     return Color(red=r,green=g,blue=b)
     
-    def add_conditional_format(self, *new_rules):
-        rules = get_conditional_format_rules(self.gsc.sheet)
-        for rule in new_rules:
-            rules.append(rule)
-        rules.save()
+    # def add_conditional_format(self, *new_rules):
+    #     rules = get_conditional_format_rules(self.gsc.sheet)
+    #     for rule in new_rules:
+    #         rules.append(rule)
+    #     rules.save()
 
-    def clear_conditional_format(self,):
-        rules = get_conditional_format_rules(self.gsc.sheet)
-        rules.clear()
-        rules.save()
+    # def clear_conditional_format(self,):
+    #     rules = get_conditional_format_rules(self.gsc.sheet)
+    #     rules.clear()
+    #     rules.save()
