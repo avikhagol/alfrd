@@ -14,6 +14,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_WHEEL_PATHS = {
     "alfrd/schemas/project-manifest-v1.schema.json",
+    "alfrd/core/pipeline.py",
     "alfrd/gui/templates/dashboard/index.htm",
     "alfrd/gui/templates/dashboard/layout.htm",
     "alfrd/gui/templates/dashboard/project_details.htm",
@@ -75,12 +76,19 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     smoke = """
 from importlib import resources
 from pathlib import Path
-from alfrd import Pipeline, Project, ProjectManifest, RepositoryService, Workflow, __version__, register, validate, validator
+from alfrd import (
+    ArtifactRef, BatchResult, Pipeline, PipelineContext, PipelineCore,
+    PipelineStepBase, PipelineStepValidatorBase, PipelineStepValidatorResult,
+    Project, ProjectManifest, RepositoryService, StepResult, Workflow, __version__,
+    register, validate, validator,
+)
 from alfrd.core.logging import logger
 from alfrd.lib import LogFrame
 import logging
 assert __version__ == '0.2.1.0'
 assert Pipeline and Project and ProjectManifest and RepositoryService and Workflow and LogFrame
+assert all((ArtifactRef, BatchResult, PipelineContext, PipelineCore, PipelineStepBase,
+            PipelineStepValidatorBase, PipelineStepValidatorResult, StepResult))
 assert isinstance(logger, logging.Logger)
 assert register and validate and validator
 root = resources.files('alfrd.gui')
