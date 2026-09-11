@@ -74,12 +74,16 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     smoke = """
 from importlib import resources
 from pathlib import Path
-from alfrd import Pipeline, Project, Workflow, __version__, register, validate, validator
+from alfrd import LogFrame, Pipeline, Project, Workflow, __version__, register, validate, validator
+from alfrd.core import LogFrame as CoreLogFrame
+from alfrd.core.logframe import LogFrameAdapter
 from alfrd.core.logging import logger
-from alfrd.lib import LogFrame
+from alfrd.lib import LogFrame as LegacyLogFrame
 import logging
 assert __version__ == '0.2.1.0'
 assert Pipeline and Project and Workflow and LogFrame
+assert LogFrame is CoreLogFrame is LegacyLogFrame
+assert LogFrameAdapter
 assert isinstance(logger, logging.Logger)
 assert register and validate and validator
 root = resources.files('alfrd.gui')

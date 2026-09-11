@@ -45,6 +45,7 @@ from alfrd.util import B, X, c  # noqa: E402
 
 Pipeline = PipelineRun()
 
+from alfrd.core.logframe import LogFrame, LogFrameAdapter  # noqa: E402
 from alfrd.core.project import Project  # noqa: E402
 from alfrd.core.workflow import Workflow  # noqa: E402
 
@@ -54,6 +55,8 @@ __all__ = [
     "ALFRD_DIR",
     "B",
     "List",
+    "LogFrame",
+    "LogFrameAdapter",
     "Pipeline",
     "PipelineRun",
     "PROJ_DIR",
