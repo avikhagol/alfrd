@@ -14,10 +14,23 @@ def test_cli_help_smoke():
     assert "init" in result.output
     assert "run" in result.output
     assert "inspect" in result.output
+    assert "serve" in result.output
+    assert "gui" in result.output
 
 
 def test_cli_command_help_smoke():
-    for command in ("init", "ls", "lsp", "run", "add", "rm", "inspect", "nrun"):
+    for command in (
+        "init",
+        "ls",
+        "lsp",
+        "run",
+        "add",
+        "rm",
+        "inspect",
+        "nrun",
+        "serve",
+        "gui",
+    ):
         result = runner.invoke(alfrd_cli, [command, "--help"])
         assert result.exit_code == 0, f"{command}: {result.output}"
 
@@ -40,3 +53,36 @@ def test_cli_rm_rejects_paths_outside_project_directory(tmp_path):
     assert result.exit_code != 0
     assert isinstance(result.exception, ValueError)
     assert sentinel.is_dir()
+
+
+def test_cli_serve_runs_app_with_explicit_network_settings(monkeypatch):
+    calls = []
+
+    class FakeApp:
+        def run(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr("alfrd.gui.create_app", lambda: FakeApp())
+
+    result = runner.invoke(
+        alfrd_cli,
+        ["serve", "--host", "127.0.0.2", "--port", "8765", "--debug"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [{"host": "127.0.0.2", "port": 8765, "debug": True}]
+
+
+def test_cli_gui_is_a_serve_alias(monkeypatch):
+    calls = []
+
+    class FakeApp:
+        def run(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr("alfrd.gui.create_app", lambda: FakeApp())
+
+    result = runner.invoke(alfrd_cli, ["gui", "--port", "5050"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [{"host": "127.0.0.1", "port": 5050, "debug": False}]

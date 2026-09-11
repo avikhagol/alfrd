@@ -236,5 +236,38 @@ def nrun(
     executor.run_entrypoint(name, args)
 
 
+def _serve_web(host: str, port: int, debug: bool) -> None:
+    try:
+        from alfrd.gui import create_app
+    except ImportError as error:
+        raise typer.BadParameter(
+            "The web dependencies are not installed; install 'alfrd[gui]'."
+        ) from error
+
+    create_app().run(host=host, port=port, debug=debug)
+
+
+@alfrd_cli.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Interface to bind."),
+    port: int = typer.Option(5000, min=1, max=65535, help="TCP port to bind."),
+    debug: bool = typer.Option(False, help="Enable Flask development debugging."),
+):
+    """Serve the read-only ALFRD catalog web application."""
+
+    _serve_web(host, port, debug)
+
+
+@alfrd_cli.command()
+def gui(
+    host: str = typer.Option("127.0.0.1", help="Interface to bind."),
+    port: int = typer.Option(5000, min=1, max=65535, help="TCP port to bind."),
+    debug: bool = typer.Option(False, help="Enable Flask development debugging."),
+):
+    """Alias for ``alfrd serve``."""
+
+    _serve_web(host, port, debug)
+
+
 if __name__ == "__main__":
     alfrd_cli()

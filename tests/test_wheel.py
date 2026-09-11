@@ -67,7 +67,14 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     alfrd_command = bin_dir / ("alfrd.exe" if os.name == "nt" else "alfrd")
 
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--disable-pip-version-check", str(built_wheel)],
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            f"{built_wheel}[gui]",
+        ],
         cwd=tmp_path,
         check=True,
         capture_output=True,
@@ -108,6 +115,12 @@ for item in (
 assert resources.files('alfrd.schemas').joinpath('project-manifest-v1.schema.json').is_file()
 import alfrd.core
 assert Path(alfrd.core.__file__).name == '__init__.py'
+from alfrd.gui import create_app
+app = create_app({'TESTING': True})
+client = app.test_client()
+assert client.get('/health').get_json() == {'status': 'ok'}
+assert client.get('/api/version').get_json() == {'version': __version__}
+assert client.get('/api/projects').get_json() == {'projects': []}
 """
     environment_vars = os.environ.copy()
     environment_vars.pop("PYTHONPATH", None)
@@ -130,7 +143,19 @@ assert Path(alfrd.core.__file__).name == '__init__.py'
     )
     assert "init" in help_result.stdout
     assert "run" in help_result.stdout
-    for command in ("init", "ls", "lsp", "run", "add", "rm", "inspect", "nrun"):
+    assert "serve" in help_result.stdout
+    for command in (
+        "init",
+        "ls",
+        "lsp",
+        "run",
+        "add",
+        "rm",
+        "inspect",
+        "nrun",
+        "serve",
+        "gui",
+    ):
         subprocess.run(
             [str(alfrd_command), command, "--help"],
             cwd=tmp_path,
