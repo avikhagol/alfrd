@@ -10,6 +10,14 @@ EXPECTED_RESOURCES = (
 )
 
 
+def test_manifest_schema_is_available_from_package():
+    schema = resources.files("alfrd.schemas").joinpath(
+        "project-manifest-v1.schema.json"
+    )
+    assert schema.is_file()
+    assert schema.read_bytes()
+
+
 def test_gui_resources_are_available_from_package():
     gui_root = resources.files("alfrd.gui")
 

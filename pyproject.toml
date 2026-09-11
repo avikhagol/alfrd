@@ -22,6 +22,7 @@ classifiers = [
 ]
 
 dependencies = [
+  "jsonschema>=4.18",
   "pandas",
   "numpy",
   "psutil",
@@ -53,6 +54,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
+"alfrd.schemas" = ["*.json"]
 "alfrd.gui" = [
   "templates/dashboard/*.htm",
   "static/*.css",
