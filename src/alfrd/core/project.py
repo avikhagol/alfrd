@@ -1,21 +1,50 @@
-from alfrd import ALFRD_DIR, PROJ_DIR, REGISTERED_STEPS, VALIDATORS, VALIDATE_AFTER, VALIDATE_BEFORE
+from alfrd import (
+    REGISTERED_STEPS,
+    VALIDATORS,
+    VALIDATE_AFTER,
+    VALIDATE_BEFORE,
+    get_project_dir,
+)
 from pathlib import Path
-from alfrd.core.logger import livelogger
-import importlib
-import traceback
+import logging
+from alfrd.plugins import _load_project_module, _purge_modules_from_directory
 import shutil
 import copy
 from collections import defaultdict
 import yaml
+import sys
 
-CONFIGFILE              =   "config.yaml"
+logger = logging.getLogger(__name__)
 
+PROJ_CONFIGFILE                          =   ".alfrd_project.yaml"
+
+
+def project_directory(project_name: str) -> Path:
+    """Resolve one safe project directory strictly below ``ALFRD_HOME``."""
+    candidate = Path(project_name)
+    if (
+        not project_name
+        or candidate.is_absolute()
+        or project_name in {".", ".."}
+        or "/" in project_name
+        or "\\" in project_name
+        or len(candidate.parts) != 1
+    ):
+        raise ValueError(f"Invalid project name: {project_name!r}")
+
+    root = get_project_dir().resolve()
+    project_dir = (root / project_name).resolve()
+    if project_dir.parent != root:
+        raise ValueError(f"Invalid project name: {project_name!r}")
+    return project_dir
 
 class ProjectConfiguration:
     def __init__(self, thisproject):
         self.thisproject            =   thisproject
         self.fnname                 =   None
-        self.configfile             =   Path(self.thisproject.get_projdir()) / CONFIGFILE
+        self.configfile             =   Path(self.thisproject.get_projdir()) / PROJ_CONFIGFILE
+
+        self.thisproject.configfile =   self.configfile
         
         self.debug                  =   False
         
@@ -29,13 +58,12 @@ class ProjectConfiguration:
     def validate_after(self, *validatornames):
         self.update_validation_functions(VALIDATE_AFTER, validatornames)
         
-    
     def update_validation_functions(self, dict_validation, validatornames):
         """checks and finds the function for the validator names provided, adds a warning in the log if name doesn't exist
 
         Args:
             dict_validation (Dict): the dictionary of validator which runs before/after the registered functions
-            validatornames (list): name of the validators as a list of strings
+            validatornames  (list): name of the validators as a list of strings
 
         Returns:
             Dict: returns the updated dictionary
@@ -50,7 +78,7 @@ class ProjectConfiguration:
                 failedvalidatornames.append(validator_name)
         
         if failedvalidatornames: 
-            livelogger.log(f"These validators don't exist : {failedvalidatornames}", level="WARN")
+            logger.warning("These validators don't exist: %s", failedvalidatornames)
             for failedvalidatorname in failedvalidatornames:
                 validatornames.remove(failedvalidatorname)
                 
@@ -64,42 +92,64 @@ class ProjectConfiguration:
         
         existing_validators.update(validatornames)                                                  # updates the global dictionary and adds a log in the following lines.
         dict_validation[self.fnname]['functions']   =   list(existing_validators)
-        livelogger.log(f"Updated! {dict_validation}")
+        logger.info("Updated validation configuration: %s", dict_validation)
         return dict_validation
         
     def add_param(self, **kwargs):
         for key,value in kwargs.items():
             if key not in REGISTERED_STEPS[self.fnname]:
                 REGISTERED_STEPS[self.fnname][key]  =   value
-                livelogger.log(f"param for {self.fnname} added {key}={value}")
+                logger.info("param for %s added %s=%s", self.fnname, key, value)
     
     def edit(self, **kwargs):
         for key,value in kwargs.items():
             if key in REGISTERED_STEPS[self.fnname]:
                 REGISTERED_STEPS[self.fnname].update({key: value})
-                livelogger.log(f"param for {self.fnname} updated to {key}={value}")
+                logger.info("param for %s updated to %s=%s", self.fnname, key, value)
     
     def save(self):
         ddic                =   self.cleandata_foryaml(self.thisproject.get_functions())
         with open(self.configfile, "w") as configbuff:
             datayaml        =   yaml.dump(ddic, Dumper=yaml.SafeDumper)
             configbuff.write(datayaml)
-        livelogger.log(f"saved {self.configfile}")
+        logger.info("saved %s", self.configfile)
+
+    def save_db(self):
+        from alfrd.gui import create_app
+        from alfrd.gui.model.tables import create_project_row, ProjectDB
+        from alfrd.gui.model import db
+        application = create_app()
+        with application.app_context():
+            row = create_project_row(self.thisproject, self)
+            existing_proj = db.session.query(ProjectDB).filter_by(name=self.thisproject.name).first()
+            if existing_proj:
+                for column in ProjectDB.__table__.columns:
+                    if column.primary_key:# or column.name == 'name'
+                        continue
+
+                    newval = getattr(row, column.name)
+                    setattr(existing_proj, column.name, newval)
+                db.session.commit()
+                logger.info("Project '%s' updated in the database.", self.thisproject.name)
+            else:
+                db.session.add(row)
+                db.session.commit()
+                logger.info("Project '%s' added to the database.", self.thisproject.name)
         
     def load(self):
         loadeddic_data                  =   None
-        if self.debug: livelogger.log(f"reading {self.configfile}", level="DEBUG")
+        if self.debug: logger.debug("reading %s", self.configfile)
         with open(self.configfile, "r") as configbuff:
             loadeddic_data              =   yaml.load(configbuff.read(), Loader=yaml.SafeLoader)
-        if self.debug: livelogger.log(f"loaded {self.configfile} : {loadeddic_data}", level="DEBUG")
+        if self.debug: logger.debug("loaded %s: %s", self.configfile, loadeddic_data)
         
         loadeddic_data                  =   self.parse_cleaneddata_fromyaml(loadeddic_data)
-        livelogger.log(f"loading.. {self.configfile}")
+        logger.info("loading %s", self.configfile)
         
         for key, category in self.thisproject.get_functions().items():
             if key in loadeddic_data:
                 category.update(loadeddic_data[key])
-                livelogger.log(f"loaded {key} : {category}")
+                logger.info("loaded %s: %s", key, category)
             
     def parse_cleaneddata_fromyaml(self, loadeddic_data):
         if loadeddic_data:
@@ -122,7 +172,7 @@ class ProjectConfiguration:
                                         if isinstance(funclname, str):
                                             loadeddic_data[loadedcategory_name][funclname][fky][i]    =   fnobjs[funclname]
             else:
-                livelogger.log(f"could not map function objects to the function name", level="SEVERE")
+                logger.error("could not map function objects to the function name")
                                             
             for category_name, category_dictdefault in categories.items():
                 if not category_name in loadeddic_data:
@@ -153,14 +203,16 @@ class Project:
         self.name                           =   name
         self.use_symlink                    =   use_symlink
         self.verbose                        =   verbose
+        self.desc                           =   ""
             
     def get_projdir(self, create=False):
-        proj_dir                            =   Path(f"{PROJ_DIR}/{self.name}")
+        proj_dir                            =   project_directory(self.name)
+
         if create:
            Path(proj_dir).mkdir(parents=True,exist_ok=True)
-           livelogger.log(f"project {self.name} created!", level="INFO")
+           logger.info("project %s created!", self.name)
         elif (not self.name) or (not proj_dir.exists()):
-            livelogger.log(f"project {self.name} not found!", level="SEVERE")
+            logger.error("project %s not found!", self.name)
             raise ModuleNotFoundError(f"Project '{str(self.name)}' not found!")                    
         return proj_dir
         
@@ -178,49 +230,57 @@ class Project:
                         Path(f"{proj_dir}/{Path(path).name}").symlink_to(f"{Path(path).absolute()}")
                     else:
                         shutil.copyfile(src=path, dst=f"{proj_dir}/{Path(path).name}", follow_symlinks=False)
-                livelogger.log(f"{path} is added to {self.name} with symlinks={self.use_symlink}")
+                logger.info("%s is added to %s with symlinks=%s", path, self.name, self.use_symlink)
                 
             else:
-                livelogger.log(f"{path} not found!", level="SEVERE")
+                logger.error("%s not found!", path)
                 
     
     def rm(self):
-        livelogger.log(f"removing project {self.name}")
+        logger.info("removing project %s", self.name)
         shutil.rmtree(self.get_projdir(), ignore_errors=True)
     
     def list_projects(self):
-        projects                            =   [Path(projdir).name for projdir in Path(f"{PROJ_DIR}").glob("*") if Path(projdir).is_dir()]
-        livelogger.log(f"found projects : {projects}")
+        projects                            =   sorted(projdir.name for projdir in get_project_dir().glob("*") if projdir.is_dir())
+        logger.info("found projects: %s", projects)
         return projects
     
-    def load_project(self):
+    def load_project(self, purge_existing=False):
+        """loads the modules from within the added project.
+        Args:
+            purge_existing (bool, optional): if True, clears existing modules that matches name with the one in the project being loaded. Defaults to False.
+        """
         proj_dir                            =   self.get_projdir()
         if REGISTERED_STEPS or VALIDATORS:
-            livelogger.log(f"Warning! previous project was not cleared.", level="WARN")
-        if Path(proj_dir).is_dir():
-            init_file                       =   proj_dir / "__init__.py"            
-            module_name                     =   proj_dir.name if init_file.exists() else proj_dir.stem
-            
-            livelogger.log(f"loading project: {module_name}")
+            logger.warning("previous project was not cleared")
+        if proj_dir.is_dir():
+            logger.info("loading project: %s", self.name)
+            path_entry = str(proj_dir)
+            added_to_path = path_entry not in sys.path
+            if added_to_path:
+                sys.path.insert(0, path_entry)
             try:
+                if purge_existing:
+                    _purge_modules_from_directory(proj_dir)
                 for proj_file in proj_dir.glob("*.py"):
-                    spec                    =   importlib.util.spec_from_file_location(module_name, proj_file)
-                    module                  =   importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
+                    logger.info("reading %s", proj_file)
+                    _load_project_module(proj_file)
                     
                 if REGISTERED_STEPS:
-                    livelogger.log(f"Registered functions: {list(REGISTERED_STEPS.keys())}")
-                    livelogger.log(f"Validator functions: {list(VALIDATORS.keys())}")
-            except ValueError as err:
-                traceback.print_exc()
-                livelogger.log(f"FAILED!", level="FAIL")
+                    logger.info("Registered functions: %s", list(REGISTERED_STEPS))
+                    logger.info("Validator functions: %s", list(VALIDATORS))
+            except ValueError:
+                logger.exception("failed to load project %s", self.name)
+            finally:
+                if added_to_path and path_entry in sys.path:
+                    sys.path.remove(path_entry)
                 
     def clear_project(self):
         """_clears functions loaded in the validators and registered catagories_
         """
         for catname, category in self.get_functions().items():
             category.clear()
-            livelogger.log(f"{catname} cleared!")
+            logger.info("%s cleared!", catname)
             
     
     def get_functions(self):    
@@ -228,5 +288,5 @@ class Project:
     
     def configure(self):
         if not any(catdic for catdic in self.get_functions().values()):
-            livelogger.log(f"attempting to work without loading a project", level="SEVERE")
+            logger.error("attempting to work without loading a project")
         return ProjectConfiguration(self)
