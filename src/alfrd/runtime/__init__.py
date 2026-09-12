@@ -17,17 +17,26 @@ from .models import (
     WorkflowDefinition,
 )
 from .protocols import RuntimeOperations, StepWorker
-from .service import InvalidTransition, RuntimeNotFound, RuntimeService, Status
+from .service import (
+    DuplicateRunError,
+    InvalidTransition,
+    ParameterValidationError,
+    RuntimeNotFound,
+    RuntimeService,
+    Status,
+)
 from .store import SCHEMA_VERSION, RuntimeStore, SchemaVersionError
-from .worker import LocalSubprocessWorker
+from .worker import LocalSubprocessWorker, run_workflow
 
 __all__ = [
     "Artifact",
     "AuditEvent",
     "CompositeEventSink",
     "Dataset",
+    "DuplicateRunError",
     "InvalidTransition",
     "LocalSubprocessWorker",
+    "ParameterValidationError",
     "Project",
     "Run",
     "RuntimeNotFound",
@@ -44,4 +53,5 @@ __all__ = [
     "StepWorker",
     "WorkflowDefinition",
     "artifact_ref_from_model",
+    "run_workflow",
 ]
