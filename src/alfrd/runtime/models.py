@@ -101,6 +101,8 @@ class Run(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    pid: Mapped[int | None] = mapped_column(Integer)
+    hostname: Mapped[str | None] = mapped_column(String(255))
 
     workflow: Mapped[WorkflowDefinition] = relationship(back_populates="runs")
     dataset: Mapped[Dataset] = relationship(back_populates="runs")
@@ -126,6 +128,7 @@ class StepExecution(Base):
     stdout: Mapped[str | None] = mapped_column(Text)
     stderr: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+    log_path: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

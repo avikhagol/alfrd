@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import shutil
+import subprocess
 import sys
 from typing import Optional, Annotated
 
@@ -15,6 +16,7 @@ from alfrd import (
     X,
     __version__,
     c,
+    get_alfrd_dir,
     get_project_dir,
 )
 from alfrd.plugins import List, load_projects
@@ -267,6 +269,162 @@ def gui(
     """Alias for ``alfrd serve``."""
 
     _serve_web(host, port, debug)
+
+
+runtime_cli = typer.Typer(help="Start, resume, retry, and cancel durable runtime runs.")
+alfrd_cli.add_typer(runtime_cli, name="runtime")
+
+
+def _default_runtime_db() -> Path:
+    return get_alfrd_dir() / "runtime.sqlite"
+
+
+def _runtime_service(db: Optional[str]):
+    from alfrd.runtime import RuntimeService, RuntimeStore
+
+    store = RuntimeStore(db or _default_runtime_db())
+    store.initialize()
+    return RuntimeService(store)
+
+
+def _print_run(run) -> None:
+    print(f"run {run.id}: status={run.status} attempt={run.attempt}")
+    for step in run.step_executions:
+        print(f"  - {step.step_definition.key}: {step.status}")
+
+
+@runtime_cli.command("start")
+def runtime_start(
+    workflow_id: str,
+    dataset_id: str,
+    db: Optional[str] = typer.Option(None, help="Path to the runtime SQLite database."),
+    allow_concurrent: bool = typer.Option(
+        False, help="Allow starting even if the dataset already has an active run."
+    ),
+    spawn: bool = typer.Option(
+        True, help="Spawn a detached worker process to execute the run immediately."
+    ),
+):
+    """Start a workflow run for one dataset via the runtime service."""
+    from alfrd.runtime import DuplicateRunError, ParameterValidationError
+
+    service = _runtime_service(db)
+    try:
+        run = service.start_run(workflow_id, dataset_id, allow_concurrent=allow_concurrent)
+    except ParameterValidationError as error:
+        print(f"parameter validation failed: {error}")
+        raise typer.Exit(code=1)
+    except DuplicateRunError as error:
+        print(f"duplicate run rejected: {error}")
+        raise typer.Exit(code=1)
+    _print_run(run)
+    if spawn:
+        _spawn_worker(run.id, db)
+
+
+@runtime_cli.command("resume")
+def runtime_resume(run_id: str, db: Optional[str] = typer.Option(None), spawn: bool = typer.Option(True)):
+    """Resume a failed or interrupted run from its first unfinished step."""
+    service = _runtime_service(db)
+    run = service.resume_run(run_id)
+    _print_run(run)
+    if spawn:
+        _spawn_worker(run.id, db)
+
+
+@runtime_cli.command("retry")
+def runtime_retry(run_id: str, db: Optional[str] = typer.Option(None), spawn: bool = typer.Option(True)):
+    """Retry a failed, cancelled, or interrupted run as a new run."""
+    service = _runtime_service(db)
+    run = service.retry_run(run_id)
+    _print_run(run)
+    if spawn:
+        _spawn_worker(run.id, db)
+
+
+@runtime_cli.command("retry-step")
+def runtime_retry_step(
+    run_id: str,
+    step_key: str,
+    db: Optional[str] = typer.Option(None),
+    spawn: bool = typer.Option(True),
+):
+    """Retry one step in place, respecting the workflow's step order."""
+    run = _runtime_service(db).retry_step(run_id, step_key)
+    _print_run(run)
+    if spawn:
+        _spawn_worker(run.id, db)
+
+
+@runtime_cli.command("cancel")
+def runtime_cancel(
+    run_id: str,
+    db: Optional[str] = typer.Option(None),
+    yes: bool = typer.Option(
+        False, "--yes", help="Confirm cancellation without an interactive prompt."
+    ),
+    reason: Optional[str] = typer.Option(None, help="Optional cancellation reason to record."),
+):
+    """Cancel a pending or running run, requiring explicit confirmation."""
+    if not yes:
+        confirmed = typer.confirm(f"Cancel run {run_id}?", default=False)
+        if not confirmed:
+            print("Cancellation aborted.")
+            raise typer.Exit(code=1)
+    run = _runtime_service(db).cancel_run(run_id, reason=reason)
+    _print_run(run)
+
+
+@runtime_cli.command("logs")
+def runtime_logs(run_id: str, db: Optional[str] = typer.Option(None)):
+    """Print live or completed logs for every step in a run."""
+    for entry in _runtime_service(db).run_logs(run_id):
+        print(f"--- {entry['step_key']} ({entry['status']}) ---")
+        print(entry["content"] or "(no output captured)")
+
+
+@runtime_cli.command("status")
+def runtime_status(run_id: str, db: Optional[str] = typer.Option(None)):
+    """Print the current status of a run and its steps."""
+    _print_run(_runtime_service(db).get_run(run_id))
+
+
+@runtime_cli.command("execute", hidden=True)
+def runtime_execute(run_id: str, db: Optional[str] = typer.Option(None)):
+    """Drive one pending/running run to completion using the local worker.
+
+    This is the entrypoint spawned as a detached subprocess by ``start``,
+    ``resume``, and ``retry``; it is not meant to be invoked synchronously
+    from within a Flask request.
+    """
+    from alfrd.runtime import run_workflow
+
+    service = _runtime_service(db)
+    status = run_workflow(service, run_id)
+    print(f"run {run_id} finished with status {status.value}")
+
+
+def _spawn_worker(run_id: str, db: Optional[str]) -> None:
+    """Launch a detached subprocess that drives one run to completion.
+
+    Never executes pipeline code in-process; the browser/CLI caller returns
+    immediately while the spawned process owns the actual run.
+    """
+    command = [sys.executable, "-m", "alfrd.cli", "runtime", "execute", run_id]
+    if db:
+        command.extend(["--db", db])
+    kwargs: dict = {}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    else:  # pragma: no cover - Windows-only branch
+        kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0)
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **kwargs,
+    )
 
 
 if __name__ == "__main__":

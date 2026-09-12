@@ -16,11 +16,12 @@ def create_app(config=None):
     if config:
         app.config.update(config)
 
-    from alfrd.gui.routes import api, dashboard, system
+    from alfrd.gui.routes import api, control, dashboard, system
 
     app.register_blueprint(api)
     app.register_blueprint(dashboard)
     app.register_blueprint(system)
+    app.register_blueprint(control)
 
     from alfrd.gui.model import db
     # Register every model before create_all(), including in an installed wheel

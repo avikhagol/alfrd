@@ -13,7 +13,9 @@ from alfrd.runtime import (
     RuntimeService,
     RuntimeStore,
     Status,
+    run_workflow,
 )
+from alfrd.runtime.service import DuplicateRunError, ParameterValidationError
 
 
 @pytest.fixture
@@ -162,3 +164,182 @@ def test_local_worker_executes_only_claimed_step(runtime, tmp_path):
     assert result.exit_code == 0
     assert result.stdout.strip() == "worker-output"
     assert service.get_run(run.id).status == "running"  # orchestration remains external
+
+
+def test_local_worker_writes_live_log_and_clears_pid_on_finish(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(
+        project.id,
+        "wf",
+        [{"key": "one", "command": [sys.executable, "-c", "print('worker-output')"]}],
+    )
+    dataset = service.create_dataset(project.id, "a")
+    run = service.create_run(workflow.id, dataset.id)
+    service.transition_run(run.id, Status.RUNNING)
+    execution = service.next_pending_execution(run.id)
+
+    result = LocalSubprocessWorker(service).execute(execution.id)
+
+    assert result.log_path is not None
+    assert Path(result.log_path).is_file()
+    assert Path(result.log_path).read_text().strip() == "worker-output"
+    logs = service.step_logs(execution.id)
+    assert logs["content"].strip() == "worker-output"
+    # pid was attached while running, and cleared once the run finished.
+    service.transition_run(run.id, Status.SUCCEEDED)
+    assert service.get_run(run.id).pid is None
+
+
+def test_start_run_validates_parameters_before_enqueue(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "a")
+
+    with pytest.raises(ParameterValidationError):
+        service.start_run(workflow.id, dataset.id, parameters={"bad": object()})
+
+    with pytest.raises(ParameterValidationError):
+        service.start_run("missing-workflow", dataset.id)
+
+    run = service.start_run(workflow.id, dataset.id, parameters={"good": 1})
+    assert run.status == "pending"
+    assert [event.action for event in service.audit_events(run.id)] == [
+        "created", "start_requested"
+    ]
+
+
+def test_start_run_rejects_duplicate_active_run_for_same_dataset(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "a")
+
+    first = service.start_run(workflow.id, dataset.id)
+    with pytest.raises(DuplicateRunError):
+        service.start_run(workflow.id, dataset.id)
+
+    service.transition_run(first.id, Status.RUNNING)
+    with pytest.raises(DuplicateRunError):
+        service.start_run(workflow.id, dataset.id)
+
+    execution = service.next_pending_execution(first.id)
+    service.transition_execution(execution.id, Status.RUNNING)
+    service.transition_execution(execution.id, Status.SUCCEEDED, exit_code=0)
+    service.transition_run(first.id, Status.SUCCEEDED)
+    second = service.start_run(workflow.id, dataset.id)
+    assert second.id != first.id
+
+
+def test_cancel_run_requires_active_status_and_is_audited(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "a")
+    run = service.create_run(workflow.id, dataset.id)
+
+    cancelled = service.cancel_run(run.id, reason="user requested")
+    assert cancelled.status == "cancelled"
+    assert cancelled.error == "user requested"
+    actions = [event.action for event in service.audit_events(run.id)]
+    assert "cancel_requested" in actions
+    assert "status_changed" in actions
+
+    with pytest.raises(InvalidTransition):
+        service.cancel_run(run.id)
+
+
+def test_retry_step_requires_earlier_steps_succeeded_and_respects_order(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(
+        project.id,
+        "wf",
+        [
+            {"key": "one", "command": ["false"]},
+            {"key": "two", "command": ["false"]},
+        ],
+    )
+    dataset = service.create_dataset(project.id, "a")
+    run = service.create_run(workflow.id, dataset.id)
+    service.transition_run(run.id, Status.RUNNING)
+    first = service.next_pending_execution(run.id)
+    service.transition_execution(first.id, Status.RUNNING)
+    service.transition_execution(first.id, Status.FAILED, exit_code=1, error="boom")
+    second = service.next_pending_execution(run.id)
+    service.transition_execution(second.id, Status.SKIPPED, error="skipped after failure")
+    service.transition_run(run.id, Status.FAILED, error="boom")
+
+    with pytest.raises(InvalidTransition):
+        service.retry_step(run.id, "two")
+
+    retried = service.retry_step(run.id, "one")
+    assert retried.status == "pending"
+    assert retried.attempt == 2
+    retried_execution = service.next_pending_execution(retried.id)
+    assert retried_execution.step_definition.key == "one"
+    assert retried_execution.attempt == 2
+    actions = [event.action for event in service.audit_events(run.id)]
+    assert "step_retry_requested" in actions
+
+
+def test_run_logs_prefers_log_path_and_falls_back_to_stdout(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "a")
+    run = service.create_run(workflow.id, dataset.id)
+    service.transition_run(run.id, Status.RUNNING)
+    execution = service.next_pending_execution(run.id)
+    service.transition_execution(execution.id, Status.RUNNING)
+    service.transition_execution(execution.id, Status.SUCCEEDED, exit_code=0, stdout="from-stdout")
+
+    logs = service.run_logs(run.id)
+    assert len(logs) == 1
+    assert logs[0]["content"] == "from-stdout"
+    assert logs[0]["log_path"] is None
+
+
+def test_run_workflow_drives_a_pending_run_to_completion(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(
+        project.id,
+        "wf",
+        [
+            {"key": "one", "command": [sys.executable, "-c", "print('a')"]},
+            {"key": "two", "command": [sys.executable, "-c", "print('b')"]},
+        ],
+    )
+    dataset = service.create_dataset(project.id, "a")
+    run = service.start_run(workflow.id, dataset.id)
+
+    final_status = run_workflow(service, run.id)
+
+    assert final_status == Status.SUCCEEDED
+    finished = service.get_run(run.id)
+    assert finished.status == "succeeded"
+    assert [item.status for item in finished.step_executions] == ["succeeded", "succeeded"]
+
+
+def test_run_workflow_stops_at_first_failed_step(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(
+        project.id,
+        "wf",
+        [
+            {"key": "one", "command": ["false"]},
+            {"key": "two", "command": ["true"]},
+        ],
+    )
+    dataset = service.create_dataset(project.id, "a")
+    run = service.start_run(workflow.id, dataset.id)
+
+    final_status = run_workflow(service, run.id)
+
+    assert final_status == Status.FAILED
+    finished = service.get_run(run.id)
+    assert finished.status == "failed"
+    assert [item.status for item in finished.step_executions] == ["failed", "skipped"]
