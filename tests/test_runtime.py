@@ -147,7 +147,10 @@ def test_dataset_csv_round_trip_keeps_datasets_independent(runtime, tmp_path):
 
 def test_local_worker_executes_only_claimed_step(runtime, tmp_path):
     store, service = runtime
-    project = service.create_project("demo", tmp_path / "demo")
+    project = service.create_project(
+        "demo",
+        tmp_path / "demo",
+    )
     workflow = service.create_workflow(
         project.id,
         "wf",
@@ -343,3 +346,85 @@ def test_run_workflow_stops_at_first_failed_step(runtime, tmp_path):
     finished = service.get_run(run.id)
     assert finished.status == "failed"
     assert [item.status for item in finished.step_executions] == ["failed", "skipped"]
+
+
+def test_record_artifact_persists_directory_artifacts_by_stable_digest(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "d1")
+    run = service.create_run(workflow.id, dataset.id)
+    output_dir = tmp_path / "diagnostics"
+    output_dir.mkdir()
+    (output_dir / "a.png").write_bytes(b"a")
+
+    artifact = service.record_artifact(
+        run.id,
+        output_dir,
+        media_type=None,
+        metadata={"kind": "image_collection"},
+    )
+
+    assert artifact.size_bytes == 0
+    assert len(artifact.sha256) == 64
+    # The digest is a stable function of the resolved path, not file content,
+    # since a directory has no single byte stream to hash.
+    again = service.record_artifact(run.id, output_dir, metadata={"kind": "image_collection"})
+    assert again.sha256 == artifact.sha256
+
+
+def test_record_artifact_missing_path_raises(runtime, tmp_path):
+    store, service = runtime
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "d1")
+    run = service.create_run(workflow.id, dataset.id)
+
+    with pytest.raises(FileNotFoundError):
+        service.record_artifact(run.id, tmp_path / "never-created.txt")
+
+
+def test_declared_artifacts_resolve_and_persist_with_viewer_ready_metadata(runtime, tmp_path):
+    """End-to-end: manifest declaration -> declarative resolution -> the same
+    persisted Artifact row a pipeline-produced ArtifactRef would create, and
+    the persisted path is safe input to a generic viewer.
+    """
+    from alfrd.core.artifacts import resolve_declared_artifacts
+    from alfrd.core.viewers import render_table
+    from alfrd.manifest import ArtifactDefinition
+
+    store, service = runtime
+    project_root = tmp_path / "demo"
+    project = service.create_project("demo", project_root)
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "target-a")
+    run = service.create_run(workflow.id, dataset.id)
+
+    (Path(run.working_directory) / "products").mkdir()
+    csv_path = Path(run.working_directory) / "products" / "target-a_result.csv"
+    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    definition = ArtifactDefinition(
+        name="result_table",
+        path_pattern="products/{dataset_id}_result.csv",
+        kind="table",
+        media_type="text/csv",
+    )
+    resolved = resolve_declared_artifacts(
+        [definition], run.working_directory, {"dataset_id": "target-a"}
+    )
+    assert resolved[0].exists is True
+
+    artifact = service.record_artifact(
+        run.id,
+        resolved[0].ref.path,
+        media_type=resolved[0].ref.media_type,
+        metadata={"kind": resolved[0].ref.kind, **resolved[0].ref.metadata},
+    )
+
+    assert artifact.media_type == "text/csv"
+    assert artifact.metadata_json["kind"] == "table"
+
+    table = render_table(run.working_directory, "products/target-a_result.csv")
+    assert table["columns"] == ["a", "b"]
+    assert table["rows"] == [["1", "2"]]
