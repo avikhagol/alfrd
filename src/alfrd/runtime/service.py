@@ -76,6 +76,27 @@ EXECUTION_TRANSITIONS = {
 }
 
 
+def _validate_run_directory_component(identifier: str) -> None:
+    """Reject a run identifier that could escape the project's ``runs`` root.
+
+    ``create_run`` joins a caller-supplied or generated ``run_id`` directly
+    below ``<project_root>/runs/`` whenever an explicit ``working_directory``
+    is not supplied. Without this check a run id containing path separators
+    or ``..`` segments (e.g. supplied through a future public API) could
+    write run state and artifacts outside the project's directory tree.
+    """
+    candidate = Path(identifier)
+    if (
+        not identifier
+        or candidate.is_absolute()
+        or identifier in {".", ".."}
+        or "/" in identifier
+        or "\\" in identifier
+        or len(candidate.parts) != 1
+    ):
+        raise ValueError(f"Invalid run id: {identifier!r}")
+
+
 def _status(value: Status | str) -> str:
     try:
         return Status(value).value
@@ -274,6 +295,8 @@ class RuntimeService:
         working_directory: str | Path | None = None,
     ) -> Run:
         identifier = run_id or new_id()
+        if working_directory is None:
+            _validate_run_directory_component(identifier)
         with self.store.session() as session:
             workflow = session.scalar(select(WorkflowDefinition).options(
                 selectinload(WorkflowDefinition.steps), selectinload(WorkflowDefinition.project)
