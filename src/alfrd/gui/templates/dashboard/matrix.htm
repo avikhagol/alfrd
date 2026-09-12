@@ -1,0 +1,125 @@
+{% extends "dashboard/layout.htm" %}
+{% block content %}
+<nav aria-label="breadcrumb"><ol class="breadcrumb">
+  <li class="breadcrumb-item"><a href="{{ url_for('dashboard.index_dashboard') }}">Projects</a></li>
+  <li class="breadcrumb-item"><a href="{{ url_for('dashboard.project_details', project_name=project.name) }}">{{ project.name }}</a></li>
+  <li class="breadcrumb-item active">{{ workflow_name }} matrix</li>
+</ol></nav>
+<h1>{{ project.name }} / {{ workflow_name }}</h1>
+
+<div class="row mb-4">
+  <div class="col-auto"><span class="badge bg-secondary">{{ matrix.summary.total_datasets }} datasets</span></div>
+  {% for status, count in matrix.summary.status_counts.items() %}
+    {% if count %}<div class="col-auto"><span class="badge bg-light text-dark border">{{ status }}: {{ count }}</span></div>{% endif %}
+  {% endfor %}
+  {% if matrix.summary.elapsed_seconds is not none %}
+    <div class="col-auto"><span class="badge bg-light text-dark border">elapsed: {{ "%.1f"|format(matrix.summary.elapsed_seconds) }}s</span></div>
+  {% endif %}
+</div>
+
+<form class="row g-2 mb-3" method="get">
+  <div class="col-auto">
+    <select name="status" class="form-select form-select-sm">
+      <option value="">All statuses</option>
+      {% for status in statuses %}
+        <option value="{{ status }}" {% if status_filter == status %}selected{% endif %}>{{ status }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search dataset id" value="{{ search }}">
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-sm btn-outline-primary">Filter</button>
+  </div>
+  <div class="col-auto ms-auto">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_csv_api', project_name=project.name, workflow_name=workflow_name) }}">Export matrix CSV</a>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_details_csv_api', project_name=project.name, workflow_name=workflow_name) }}">Export details CSV</a>
+  </div>
+</form>
+
+<div class="card border-0 shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover mb-0" id="matrix-table"
+           data-matrix-url="{{ url_for('api.matrix_api', project_name=project.name, workflow_name=workflow_name) }}">
+      <thead>
+        <tr>
+          <th>Dataset</th>
+          <th>Run status</th>
+          {% for step in matrix.steps %}<th>{{ step }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in matrix.rows %}
+        <tr data-dataset-id="{{ row.dataset_external_id }}">
+          <td><strong>{{ row.dataset_external_id }}</strong>{% if row.dataset_name %}<div class="text-muted small">{{ row.dataset_name }}</div>{% endif %}</td>
+          <td><span class="badge bg-secondary matrix-run-status">{{ row.run_status }}</span></td>
+          {% for step in matrix.steps %}
+            {% set cell = row.cells[step] %}
+            <td class="matrix-cell" data-step="{{ step }}" data-execution-id="{{ cell.execution_id or '' }}">
+              <span class="badge matrix-status-badge">{{ cell.status }}</span>
+              {% if cell.artifact_count %}<span class="badge bg-info text-dark">{{ cell.artifact_count }} artifact{{ 's' if cell.artifact_count != 1 else '' }}</span>{% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      {% else %}
+        <tr><td colspan="{{ 2 + matrix.steps|length }}" class="text-center py-5 text-muted">No datasets found.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal" tabindex="-1" id="cell-detail-modal">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Cell detail</h5>
+        <button type="button" class="btn-close" onclick="document.getElementById('cell-detail-modal').classList.remove('show')"></button>
+      </div>
+      <div class="modal-body"><pre id="cell-detail-body">Select a cell to see details.</pre></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var table = document.getElementById("matrix-table");
+  if (!table) { return; }
+  var matrixUrl = table.dataset.matrixUrl;
+
+  function refresh() {
+    fetch(matrixUrl).then(function (response) { return response.json(); }).then(function (payload) {
+      var rows = payload.rows || [];
+      rows.forEach(function (row) {
+        var tr = table.querySelector('tr[data-dataset-id="' + CSS.escape(row.dataset_external_id) + '"]');
+        if (!tr) { return; }
+        var runBadge = tr.querySelector(".matrix-run-status");
+        if (runBadge) { runBadge.textContent = row.run_status; }
+        Object.keys(row.cells).forEach(function (step) {
+          var td = tr.querySelector('.matrix-cell[data-step="' + step + '"]');
+          if (!td) { return; }
+          var cell = row.cells[step];
+          var badge = td.querySelector(".matrix-status-badge");
+          if (badge) { badge.textContent = cell.status; }
+          td.dataset.executionId = cell.execution_id || "";
+        });
+      });
+    }).catch(function () { /* polling best-effort; ignore transient errors */ });
+  }
+
+  table.addEventListener("click", function (event) {
+    var cell = event.target.closest(".matrix-cell");
+    if (!cell || !cell.dataset.executionId) { return; }
+    var executionsUrl = "/api/projects/{{ project.name }}/executions/" + cell.dataset.executionId;
+    fetch(executionsUrl).then(function (response) { return response.json(); }).then(function (detail) {
+      document.getElementById("cell-detail-body").textContent = JSON.stringify(detail, null, 2);
+      document.getElementById("cell-detail-modal").classList.add("show");
+      document.getElementById("cell-detail-modal").style.display = "block";
+    });
+  });
+
+  setInterval(refresh, 5000);
+})();
+</script>
+{% endblock %}
