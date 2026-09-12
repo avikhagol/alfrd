@@ -1,0 +1,4 @@
+target_dir = reductions/
+folder_for_fits = /data/fits/
+size_limit = 2000.0
+mpi_cores_rpicard = 3

@@ -238,7 +238,7 @@ def nrun(
     executor.run_entrypoint(name, args)
 
 
-def _serve_web(host: str, port: int, debug: bool) -> None:
+def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -246,7 +246,17 @@ def _serve_web(host: str, port: int, debug: bool) -> None:
             "The web dependencies are not installed; install 'alfrd[gui]'."
         ) from error
 
-    create_app().run(host=host, port=port, debug=debug)
+    config = None
+    if runtime_db:
+        from alfrd.gui.services import RuntimeCatalogReader
+
+        service = _runtime_service(runtime_db)
+        config = {
+            "RUNTIME_DATABASE": str(Path(runtime_db).expanduser().resolve()),
+            "RUNTIME_SERVICE": service,
+            "CATALOG_READER": RuntimeCatalogReader(service),
+        }
+    create_app(config).run(host=host, port=port, debug=debug)
 
 
 @alfrd_cli.command()
@@ -254,10 +264,13 @@ def serve(
     host: str = typer.Option("127.0.0.1", help="Interface to bind."),
     port: int = typer.Option(5000, min=1, max=65535, help="TCP port to bind."),
     debug: bool = typer.Option(False, help="Enable Flask development debugging."),
+    runtime_db: Optional[str] = typer.Option(
+        None, help="Path to the runtime SQLite database that backs matrix routes."
+    ),
 ):
     """Serve the read-only ALFRD catalog web application."""
 
-    _serve_web(host, port, debug)
+    _serve_web(host, port, debug, runtime_db)
 
 
 @alfrd_cli.command()
@@ -265,10 +278,13 @@ def gui(
     host: str = typer.Option("127.0.0.1", help="Interface to bind."),
     port: int = typer.Option(5000, min=1, max=65535, help="TCP port to bind."),
     debug: bool = typer.Option(False, help="Enable Flask development debugging."),
+    runtime_db: Optional[str] = typer.Option(
+        None, help="Path to the runtime SQLite database that backs matrix routes."
+    ),
 ):
     """Alias for ``alfrd serve``."""
 
-    _serve_web(host, port, debug)
+    _serve_web(host, port, debug, runtime_db)
 
 
 runtime_cli = typer.Typer(help="Start, resume, retry, and cancel durable runtime runs.")
@@ -285,6 +301,68 @@ def _runtime_service(db: Optional[str]):
     store = RuntimeStore(db or _default_runtime_db())
     store.initialize()
     return RuntimeService(store)
+
+
+manifest_cli = typer.Typer(help="Validate import-free ALFRD project manifests.")
+import_cli = typer.Typer(help="Import completed external workflow output into the runtime database.")
+alfrd_cli.add_typer(manifest_cli, name="manifest")
+alfrd_cli.add_typer(import_cli, name="import")
+
+
+@manifest_cli.command("validate")
+def manifest_validate(path: str = typer.Argument(..., help="Path to alfrd.yaml.")):
+    """Validate a project manifest against project-manifest-v1."""
+    from alfrd.manifest import ManifestError, load_manifest
+
+    try:
+        manifest = load_manifest(path)
+    except ManifestError as error:
+        print(f"invalid project-manifest-v1: {error}")
+        raise typer.Exit(code=1)
+    print(f"valid project-manifest-v1: {manifest.path}")
+
+
+@import_cli.command("avica-run")
+def import_avica_run_command(
+    reductions_dir: str = typer.Argument(..., help="AVICA target_dir containing *_result.csv files."),
+    project: str = typer.Option(..., "--project", help="Runtime project name to create."),
+    manifest: str = typer.Option(..., "--manifest", help="Validated ALFRD manifest attached to this import."),
+    db: Optional[str] = typer.Option(None, help="Path to the runtime SQLite database."),
+):
+    """Import an existing AVICA output directory without importing AVICA."""
+    from alfrd.manifest import ManifestError, load_manifest
+    from alfrd.runtime.avica import DEFAULT_AVICA_STEPS, import_avica_run
+
+    try:
+        document = load_manifest(manifest)
+    except ManifestError as error:
+        print(f"invalid manifest: {error}")
+        raise typer.Exit(code=1)
+    workflows = document.extra.get("workflows", [])
+    workflow_spec = next(
+        (item for item in workflows if isinstance(item, dict) and item.get("name") == "avica"),
+        None,
+    )
+    steps = workflow_spec.get("steps") if workflow_spec else list(DEFAULT_AVICA_STEPS)
+    if not isinstance(steps, list) or not all(isinstance(item, str) for item in steps):
+        print("invalid manifest: workflows.avica.steps must be a list of step names")
+        raise typer.Exit(code=1)
+    try:
+        result = import_avica_run(
+            _runtime_service(db),
+            reductions_dir,
+            project_name=project,
+            steps=steps,
+            project_root=document.path.parent if document.path else Path(manifest).parent,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        print(f"AVICA import failed: {error}")
+        raise typer.Exit(code=1)
+    print(
+        f"Imported {result.dataset_count} dataset(s) into project={result.project.name} "
+        f"workflow={result.workflow.name}; artifacts={result.artifact_count}; "
+        f"missing_artifacts={result.skipped_artifact_count}"
+    )
 
 
 def _print_run(run) -> None:

@@ -455,6 +455,96 @@ class RuntimeService:
         self._write_manifest(identifier)
         return self.get_run(identifier)
 
+    def import_historical_run(
+        self,
+        workflow_id: str,
+        dataset_id: str,
+        *,
+        working_directory: str | Path,
+        status: Status | str,
+        executions: Sequence[Mapping[str, Any]],
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        error: str | None = None,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> Run:
+        """Persist an already-completed external run without executing it.
+
+        Unlike :meth:`create_run`, this import boundary does not create or
+        write anything below ``working_directory``.  It is intended for
+        attaching read-only legacy output trees to runtime persistence.
+        """
+        run_status = _status(status)
+        if run_status not in {
+            Status.SUCCEEDED.value,
+            Status.FAILED.value,
+            Status.CANCELLED.value,
+            Status.INTERRUPTED.value,
+        }:
+            raise ValueError("a historical run must have a terminal status")
+        workdir = Path(working_directory).expanduser().resolve()
+        with self.store.session() as session:
+            workflow = session.scalar(
+                select(WorkflowDefinition)
+                .options(selectinload(WorkflowDefinition.steps))
+                .where(WorkflowDefinition.id == workflow_id)
+            )
+            dataset = session.get(Dataset, dataset_id)
+            if workflow is None:
+                raise RuntimeNotFound(f"workflow {workflow_id!r} not found")
+            if dataset is None:
+                raise RuntimeNotFound(f"dataset {dataset_id!r} not found")
+            if workflow.project_id != dataset.project_id:
+                raise ValueError("workflow and dataset must belong to the same project")
+            definitions = {step.key: step for step in workflow.steps}
+            supplied = {str(item["key"]): item for item in executions}
+            unknown = sorted(set(supplied) - set(definitions))
+            if unknown:
+                raise ValueError(f"historical run contains unknown steps: {', '.join(unknown)}")
+            now = finished_at or started_at or utcnow()
+            run = Run(
+                workflow_id=workflow_id,
+                dataset_id=dataset_id,
+                status=run_status,
+                working_directory=str(workdir),
+                parameters_json=dict(parameters or {}),
+                error=error,
+                started_at=started_at,
+                finished_at=finished_at,
+                heartbeat_at=now,
+            )
+            for key, definition in definitions.items():
+                item = supplied.get(key)
+                execution_status = (
+                    _status(item.get("status", Status.SKIPPED.value))
+                    if item is not None
+                    else Status.SKIPPED.value
+                )
+                run.step_executions.append(
+                    StepExecution(
+                        step_definition_id=definition.id,
+                        sequence=definition.position,
+                        attempt=int(item.get("attempt", 1)) if item else 1,
+                        status=execution_status,
+                        command_json=list(
+                            item.get("command", ["external-import", key]) if item else ["external-import", key]
+                        ),
+                        cwd=str(workdir),
+                        exit_code=item.get("exit_code") if item else None,
+                        stdout=item.get("stdout") if item else None,
+                        stderr=item.get("stderr") if item else None,
+                        error=item.get("error") if item else None,
+                        log_path=item.get("log_path") if item else None,
+                        started_at=item.get("started_at") if item else None,
+                        finished_at=item.get("finished_at") if item else None,
+                    )
+                )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            self._audit(session, run_id, "historical_run_imported", to_status=run_status)
+        return self.get_run(run_id)
+
     def get_run(self, run_id: str) -> Run:
         with self.store.session() as session:
             run = session.scalar(
@@ -637,6 +727,7 @@ class RuntimeService:
         name: str | None = None,
         media_type: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        write_manifest: bool = True,
     ) -> Artifact:
         """Persist artifact existence/size/media-type/metadata for one path.
 
@@ -684,7 +775,8 @@ class RuntimeService:
                 "artifact_id": artifact.id, "path": artifact.path
             })
             session.expunge(artifact)
-        self._write_manifest(run_id)
+        if write_manifest:
+            self._write_manifest(run_id)
         return artifact
 
     def audit_events(self, run_id: str) -> list[AuditEvent]:

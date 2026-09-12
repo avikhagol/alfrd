@@ -31,7 +31,20 @@
 </div>
 {% endmacro %}
 
-{{ catalog_table("Workflows", workflows, (("name", "Name"), ("description", "Description"), ("sequence", "Sequence"))) }}
+<div class="card mb-4">
+  <div class="card-header">Workflows</div>
+  <div class="card-body p-0">
+    <table class="table table-sm mb-0">
+      <thead><tr><th>Name</th><th>Description</th><th>Sequence</th><th>Monitor</th></tr></thead>
+      <tbody>
+      {% for workflow in workflows %}<tr>
+        <td>{{ workflow.name }}</td><td>{{ workflow.description or "" }}</td><td>{{ workflow.sequence }}</td>
+        <td><a href="{{ url_for('dashboard.matrix_dashboard', project_name=project.name, workflow_name=workflow.name) }}">Dataset × step matrix</a></td>
+      </tr>{% else %}<tr><td colspan="4" class="text-muted">None recorded.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 {{ catalog_table("Steps", steps, (("position", "Order"), ("name", "Name"), ("description", "Description"))) }}
 {{ catalog_table("Validators", validators, (("name", "Name"), ("phase", "Phase"), ("description", "Description"))) }}
 {{ catalog_table("Parameters", parameters, (("name", "Name"), ("type", "Type"), ("required", "Required"), ("default", "Default"))) }}

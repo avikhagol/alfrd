@@ -240,12 +240,33 @@ class RuntimeCatalogReader:
         )
 
     def list_dataset_columns(self, project_id: str) -> list[dict[str, Any]]:
-        del project_id
-        return []
+        from alfrd.manifest import ManifestError, load_manifest
+
+        project = self.service.get_project(project_id)
+        try:
+            columns = load_manifest(project.root_path).extra.get("dataset_columns", [])
+        except ManifestError:
+            return []
+        if not isinstance(columns, list):
+            return []
+        return [
+            {
+                "id": f"{project_id}:dataset-column:{item['name']}",
+                "project_id": project_id,
+                "name": item["name"],
+                "type": item.get("type", "string"),
+                "required": bool(item.get("required", False)),
+                "description": item.get("description"),
+            }
+            for item in columns
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
 
     def get_dataset_column(self, project_id: str, name: str) -> dict[str, Any] | None:
-        del project_id, name
-        return None
+        return next(
+            (item for item in self.list_dataset_columns(project_id) if item["name"] == name),
+            None,
+        )
 
     def list_artifact_definitions(self, project_id: str) -> list[dict[str, Any]]:
         from alfrd.manifest import ManifestError, load_manifest

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from alfrd import get_project_dir
@@ -57,12 +59,15 @@ def test_cli_rm_rejects_paths_outside_project_directory(tmp_path):
 
 def test_cli_serve_runs_app_with_explicit_network_settings(monkeypatch):
     calls = []
+    configs = []
 
     class FakeApp:
         def run(self, **kwargs):
             calls.append(kwargs)
 
-    monkeypatch.setattr("alfrd.gui.create_app", lambda: FakeApp())
+    monkeypatch.setattr(
+        "alfrd.gui.create_app", lambda config=None: configs.append(config) or FakeApp()
+    )
 
     result = runner.invoke(
         alfrd_cli,
@@ -71,6 +76,7 @@ def test_cli_serve_runs_app_with_explicit_network_settings(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert calls == [{"host": "127.0.0.2", "port": 8765, "debug": True}]
+    assert configs == [None]
 
 
 def test_cli_gui_is_a_serve_alias(monkeypatch):
@@ -80,12 +86,83 @@ def test_cli_gui_is_a_serve_alias(monkeypatch):
         def run(self, **kwargs):
             calls.append(kwargs)
 
-    monkeypatch.setattr("alfrd.gui.create_app", lambda: FakeApp())
+    monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
 
     result = runner.invoke(alfrd_cli, ["gui", "--port", "5050"])
 
     assert result.exit_code == 0, result.output
     assert calls == [{"host": "127.0.0.1", "port": 5050, "debug": False}]
+
+
+def test_cli_serve_configures_runtime_database(monkeypatch, tmp_path):
+    configs = []
+
+    class FakeApp:
+        def run(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(
+        "alfrd.gui.create_app", lambda config=None: configs.append(config) or FakeApp()
+    )
+    database = tmp_path / "runtime.sqlite"
+    result = runner.invoke(alfrd_cli, ["serve", "--runtime-db", str(database)])
+
+    assert result.exit_code == 0, result.output
+    assert configs[0]["RUNTIME_DATABASE"] == str(database.resolve())
+    assert configs[0]["RUNTIME_SERVICE"].store.schema_version == 1
+    assert configs[0]["CATALOG_READER"].service is configs[0]["RUNTIME_SERVICE"]
+
+
+def test_cli_manifest_validate_example():
+    manifest = Path(__file__).parents[1] / "examples" / "avica_0.3" / "alfrd.yaml"
+    result = runner.invoke(alfrd_cli, ["manifest", "validate", str(manifest)])
+    assert result.exit_code == 0, result.output
+    assert "valid project-manifest-v1" in result.output
+
+
+def test_cli_import_avica_run(tmp_path):
+    source = Path(__file__).parent / "fixtures" / "avica_run" / "reductions"
+    manifest = Path(__file__).parents[1] / "examples" / "avica_0.3" / "alfrd.yaml"
+    database = tmp_path / "runtime.sqlite"
+    result = runner.invoke(
+        alfrd_cli,
+        [
+            "import",
+            "avica-run",
+            str(source),
+            "--project",
+            "avica-cli",
+            "--manifest",
+            str(manifest),
+            "--db",
+            str(database),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Imported 1 dataset" in result.output
+    assert "workflow=avica" in result.output
+
+
+def test_cli_import_avica_run_reports_duplicate_project(tmp_path):
+    source = Path(__file__).parent / "fixtures" / "avica_run" / "reductions"
+    manifest = Path(__file__).parents[1] / "examples" / "avica_0.3" / "alfrd.yaml"
+    database = tmp_path / "runtime.sqlite"
+    args = [
+        "import",
+        "avica-run",
+        str(source),
+        "--project",
+        "duplicate",
+        "--manifest",
+        str(manifest),
+        "--db",
+        str(database),
+    ]
+
+    assert runner.invoke(alfrd_cli, args).exit_code == 0
+    duplicate = runner.invoke(alfrd_cli, args)
+    assert duplicate.exit_code == 1
+    assert "AVICA import failed: project 'duplicate' already exists" in duplicate.output
 
 
 def test_runtime_help_smoke():
