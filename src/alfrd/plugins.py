@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import inspect
 import sys
+import warnings
 from functools import wraps
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -179,9 +180,23 @@ def iterate_over_lst(lst):
 #             print(f"--- [END LOGS] ---\n")
 
 class PipelineRun:
-    """Compatibility facade over :class:`alfrd.core.pipeline.PipelineCore`."""
+    """Compatibility facade over :class:`alfrd.core.pipeline.PipelineCore`.
+
+    .. deprecated:: 0.2.1.0
+       Use :class:`alfrd.core.pipeline.PipelineCore` directly. This facade is
+       retained as a tested thin wrapper during the ``0.2.x`` series and will
+       be removed in a future major release.
+    """
 
     def __init__(self):
+        warnings.warn(
+            "alfrd.plugins.PipelineRun (and the module-level 'Pipeline' "
+            "singleton) is deprecated; use alfrd.core.pipeline.PipelineCore "
+            "directly. This compatibility facade will be removed in a "
+            "future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.params = {}
         self.project_name = ""
         self.step_name = ""

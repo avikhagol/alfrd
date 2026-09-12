@@ -43,7 +43,13 @@ from alfrd.plugins import (  # noqa: E402
 )
 from alfrd.util import B, X, c  # noqa: E402
 
-Pipeline = PipelineRun()
+import warnings as _warnings  # noqa: E402
+
+with _warnings.catch_warnings():
+    # The module-level singleton is a documented compatibility surface;
+    # only warn when *user* code constructs PipelineRun directly.
+    _warnings.simplefilter("ignore", DeprecationWarning)
+    Pipeline = PipelineRun()
 
 from alfrd.core.pipeline import (  # noqa: E402
     ArtifactRef,
