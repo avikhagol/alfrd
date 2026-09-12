@@ -24,6 +24,7 @@ class RuntimeStore:
     """
 
     def __init__(self, database: str | Path = ":memory:") -> None:
+        self.database = database
         if str(database) == ":memory:":
             url = "sqlite+pysqlite:///:memory:"
         else:

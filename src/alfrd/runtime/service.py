@@ -47,6 +47,21 @@ class RuntimeNotFound(LookupError):
     pass
 
 
+class DuplicateRunError(RuntimeError):
+    """Raised when a dataset already has an active (non-terminal) run."""
+
+
+class ParameterValidationError(ValueError):
+    """Raised when start parameters fail validation before enqueue."""
+
+    def __init__(self, errors: list[str]) -> None:
+        self.errors = list(errors)
+        super().__init__("; ".join(self.errors))
+
+
+ACTIVE_RUN_STATUSES = {Status.PENDING.value, Status.RUNNING.value}
+
+
 RUN_TRANSITIONS = {
     Status.PENDING.value: {Status.RUNNING.value, Status.CANCELLED.value},
     Status.RUNNING.value: {
@@ -263,6 +278,111 @@ class RuntimeService:
                 raise RuntimeNotFound(f"dataset {dataset_id!r} not found")
             return dataset
 
+    def get_workflow_by_name(self, project_id: str, name: str) -> WorkflowDefinition:
+        matches = [
+            workflow for workflow in self.list_workflows(project_id) if workflow.name == name
+        ]
+        if not matches:
+            raise RuntimeNotFound(f"workflow {name!r} not found in project {project_id!r}")
+        return matches[-1]
+
+    def get_dataset_by_external_id(self, project_id: str, external_id: str) -> Dataset:
+        with self.store.session() as session:
+            dataset = session.scalar(select(Dataset).where(
+                Dataset.project_id == project_id, Dataset.external_id == external_id
+            ))
+            if dataset is None:
+                raise RuntimeNotFound(
+                    f"dataset {external_id!r} not found in project {project_id!r}"
+                )
+            return dataset
+
+    def active_run_for_dataset(self, workflow_id: str, dataset_id: str) -> Run | None:
+        """Return the currently pending/running run for this workflow+dataset, if any."""
+        with self.store.session() as session:
+            run = session.scalar(
+                select(Run)
+                .where(
+                    Run.workflow_id == workflow_id,
+                    Run.dataset_id == dataset_id,
+                    Run.status.in_(ACTIVE_RUN_STATUSES),
+                )
+                .order_by(Run.created_at.desc())
+            )
+            if run is None:
+                return None
+            return self.get_run(run.id)
+
+    def validate_start_parameters(
+        self,
+        workflow_id: str,
+        dataset_id: str,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> list[str]:
+        """Validate parameters before enqueue without importing consumer code.
+
+        Confirms the workflow and dataset exist, belong to the same project,
+        and that supplied parameters are a JSON-serializable mapping.
+        """
+        errors: list[str] = []
+        try:
+            workflow = self.get_workflow(workflow_id)
+        except RuntimeNotFound as exc:
+            return [str(exc)]
+        try:
+            dataset = self.get_dataset(dataset_id)
+        except RuntimeNotFound as exc:
+            return [str(exc)]
+        if workflow.project_id != dataset.project_id:
+            errors.append("workflow and dataset must belong to the same project")
+        if parameters is not None:
+            if not isinstance(parameters, Mapping):
+                errors.append("parameters must be a mapping of name to value")
+            else:
+                for key, value in parameters.items():
+                    if not isinstance(key, str) or not key:
+                        errors.append(f"parameter name {key!r} must be a non-empty string")
+                    try:
+                        json.dumps(value)
+                    except (TypeError, ValueError):
+                        errors.append(f"parameter {key!r} is not JSON-serializable")
+        return errors
+
+    def start_run(
+        self,
+        workflow_id: str,
+        dataset_id: str,
+        *,
+        parameters: Mapping[str, Any] | None = None,
+        working_directory: str | Path | None = None,
+        allow_concurrent: bool = False,
+    ) -> Run:
+        """Validate, guard against duplicate runs, and enqueue a new run.
+
+        This is the sole entry point browser/CLI control surfaces should use to
+        start a workflow; it never executes pipeline code itself.
+        """
+        errors = self.validate_start_parameters(workflow_id, dataset_id, parameters=parameters)
+        if errors:
+            raise ParameterValidationError(errors)
+        if not allow_concurrent:
+            active = self.active_run_for_dataset(workflow_id, dataset_id)
+            if active is not None:
+                raise DuplicateRunError(
+                    f"dataset {dataset_id!r} already has an active run {active.id!r} "
+                    f"in status {active.status!r}"
+                )
+        run = self.create_run(
+            workflow_id,
+            dataset_id,
+            parameters=parameters,
+            working_directory=working_directory,
+        )
+        with self.store.session() as session:
+            self._audit(session, run.id, "start_requested", to_status=Status.PENDING.value)
+        return self.get_run(run.id)
+
     def create_run(
         self,
         workflow_id: str,
@@ -401,9 +521,46 @@ class RuntimeService:
                 run.finished_at = None
             elif target in {Status.SUCCEEDED.value, Status.FAILED.value, Status.CANCELLED.value}:
                 run.finished_at = now
+                run.pid = None
             self._audit(session, run.id, "status_changed", previous, target, {"error": error} if error else {})
         self._write_manifest(run_id)
         return self.get_run(run_id)
+
+    def attach_process(self, run_id: str, *, pid: int, hostname: str | None = None) -> Run:
+        """Record subprocess ownership metadata for a running run.
+
+        Used by local worker orchestration so the GUI can display which
+        process/host owns an in-flight run.
+        """
+        with self.store.session() as session:
+            run = session.get(Run, run_id)
+            if run is None:
+                raise RuntimeNotFound(f"run {run_id!r} not found")
+            if run.status != Status.RUNNING.value:
+                raise InvalidTransition("process ownership can only be attached to a running run")
+            run.pid = pid
+            run.hostname = hostname
+            self._audit(session, run.id, "process_attached", payload={"pid": pid, "hostname": hostname})
+        self._write_manifest(run_id)
+        return self.get_run(run_id)
+
+    def cancel_run(self, run_id: str, *, reason: str | None = None) -> Run:
+        """Safely cancel a pending or running run.
+
+        Callers (Flask routes, CLI) are responsible for collecting explicit
+        user confirmation before calling this; the service itself performs no
+        confirmation prompt and only records the cancellation intent/result.
+        """
+        with self.store.session() as session:
+            run = session.get(Run, run_id)
+            if run is None:
+                raise RuntimeNotFound(f"run {run_id!r} not found")
+            if run.status not in {Status.PENDING.value, Status.RUNNING.value}:
+                raise InvalidTransition(
+                    f"run in status {run.status!r} cannot be cancelled"
+                )
+            self._audit(session, run.id, "cancel_requested", payload={"reason": reason} if reason else {})
+        return self.transition_run(run_id, Status.CANCELLED, error=reason)
 
     def transition_execution(
         self,
@@ -414,6 +571,7 @@ class RuntimeService:
         stdout: str | None = None,
         stderr: str | None = None,
         error: str | None = None,
+        log_path: str | Path | None = None,
     ) -> StepExecution:
         target = _status(status)
         now = utcnow()
@@ -432,6 +590,8 @@ class RuntimeService:
             execution.stdout = stdout
             execution.stderr = stderr
             execution.error = error
+            if log_path is not None:
+                execution.log_path = str(log_path)
             if target == Status.RUNNING.value:
                 execution.started_at = now
             else:
@@ -572,6 +732,106 @@ class RuntimeService:
             parent_run_id=original.id,
         )
 
+    def retry_step(self, run_id: str, step_key: str) -> Run:
+        """Retry one failed/cancelled/interrupted step in place.
+
+        Allowed only when the run itself is not active and every step earlier
+        in sequence already succeeded or was skipped, so retrying respects the
+        workflow's linear dependency order instead of re-running everything.
+        """
+        with self.store.session() as session:
+            run = session.scalar(
+                select(Run).options(selectinload(Run.step_executions)).where(Run.id == run_id)
+            )
+            if run is None:
+                raise RuntimeNotFound(f"run {run_id!r} not found")
+            if run.status not in {Status.FAILED.value, Status.CANCELLED.value, Status.INTERRUPTED.value}:
+                raise InvalidTransition(
+                    "only a failed, cancelled, or interrupted run allows step retry"
+                )
+            latest: dict[str, StepExecution] = {}
+            for execution in run.step_executions:
+                candidate = latest.get(execution.step_definition_id)
+                if candidate is None or execution.attempt > candidate.attempt:
+                    latest[execution.step_definition_id] = execution
+            ordered = sorted(latest.values(), key=lambda item: item.sequence)
+            target = next(
+                (item for item in ordered if item.step_definition.key == step_key), None
+            )
+            if target is None:
+                raise RuntimeNotFound(f"step {step_key!r} not found in run {run_id!r}")
+            if target.status not in {Status.FAILED.value, Status.CANCELLED.value, Status.INTERRUPTED.value}:
+                raise InvalidTransition(
+                    f"step {step_key!r} is in status {target.status!r}; only a failed, "
+                    "cancelled, or interrupted step can be retried"
+                )
+            blocking = [
+                item
+                for item in ordered
+                if item.sequence < target.sequence
+                and item.status not in {Status.SUCCEEDED.value, Status.SKIPPED.value}
+            ]
+            if blocking:
+                raise InvalidTransition(
+                    "earlier steps must succeed or be skipped before this step can be retried: "
+                    + ", ".join(item.step_definition.key for item in blocking)
+                )
+            previous = run.status
+            session.add(StepExecution(
+                run_id=run.id,
+                step_definition_id=target.step_definition_id,
+                sequence=target.sequence,
+                attempt=target.attempt + 1,
+                status=Status.PENDING.value,
+                command_json=list(target.command_json),
+                cwd=target.cwd,
+            ))
+            run.status = Status.PENDING.value
+            run.attempt += 1
+            run.error = None
+            run.finished_at = None
+            run.heartbeat_at = utcnow()
+            self._audit(
+                session,
+                run.id,
+                "step_retry_requested",
+                previous,
+                Status.PENDING.value,
+                {"step_key": step_key},
+            )
+        self._write_manifest(run_id)
+        return self.get_run(run_id)
+
+    def run_logs(self, run_id: str) -> list[dict[str, Any]]:
+        """Return live/completed logs for every step execution in a run.
+
+        Prefers an on-disk ``log_path`` (live worker output) and falls back to
+        the persisted ``stdout``/``stderr`` captured at completion.
+        """
+        run = self.get_run(run_id)
+        entries: list[dict[str, Any]] = []
+        for execution in run.step_executions:
+            entries.append(self.step_logs(execution.id))
+        return entries
+
+    def step_logs(self, execution_id: str) -> dict[str, Any]:
+        execution = self.get_execution(execution_id)
+        content: str | None = None
+        if execution.log_path:
+            path = Path(execution.log_path)
+            if path.is_file():
+                content = path.read_text(encoding="utf-8", errors="replace")
+        if content is None:
+            parts = [part for part in (execution.stdout, execution.stderr) if part]
+            content = "\n".join(parts) if parts else None
+        return {
+            "step_execution_id": execution.id,
+            "step_key": execution.step_definition.key,
+            "status": execution.status,
+            "log_path": execution.log_path,
+            "content": content,
+        }
+
     def export_datasets_csv(self, project_id: str, path: str | Path) -> Path:
         destination = Path(path).expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -660,6 +920,8 @@ class RuntimeService:
                 working_directory=str(manifest_workdir),
                 parameters_json=manifest.get("parameters", {}),
                 error=manifest.get("error"),
+                pid=manifest.get("pid"),
+                hostname=manifest.get("hostname"),
             )
             for item in manifest.get("steps", []):
                 if item["step_definition_id"] not in definitions:
@@ -676,6 +938,7 @@ class RuntimeService:
                     stdout=item.get("stdout"),
                     stderr=item.get("stderr"),
                     error=item.get("error"),
+                    log_path=item.get("log_path"),
                 ))
             for item in manifest.get("artifacts", []):
                 run.artifacts.append(Artifact(
@@ -712,6 +975,8 @@ class RuntimeService:
             "started_at": _iso(run.started_at),
             "finished_at": _iso(run.finished_at),
             "heartbeat_at": _iso(run.heartbeat_at),
+            "pid": run.pid,
+            "hostname": run.hostname,
             "steps": [{
                 "id": item.id,
                 "step_definition_id": item.step_definition_id,
@@ -725,6 +990,7 @@ class RuntimeService:
                 "stdout": item.stdout,
                 "stderr": item.stderr,
                 "error": item.error,
+                "log_path": item.log_path,
             } for item in run.step_executions],
             "artifacts": [{
                 "id": item.id,

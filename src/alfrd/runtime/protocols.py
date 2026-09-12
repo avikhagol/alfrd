@@ -41,7 +41,10 @@ class RuntimeOperations(Protocol):
         stdout: str | None = None,
         stderr: str | None = None,
         error: str | None = None,
+        log_path: str | Path | None = None,
     ) -> StepExecution: ...
+
+    def attach_process(self, run_id: str, *, pid: int, hostname: str | None = None) -> Run: ...
 
     def record_artifact(
         self,
