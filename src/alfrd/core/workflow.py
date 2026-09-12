@@ -1,4 +1,5 @@
 import logging
+import warnings
 from pathlib import Path
 
 import typer
@@ -69,8 +70,22 @@ class WorkflowConfig:
 class WorkflowManager:
     """
     To define the workflow and execute each functions.
+
+    .. deprecated:: 0.2.1.0
+       Use :class:`alfrd.core.pipeline.PipelineCore` directly (see
+       ``alfrd.runtime.RuntimePipelineRunner`` for persisted execution).
+       ``WorkflowManager``/``Workflow`` are retained as tested thin wrappers
+       during the ``0.2.x`` series and will be removed in a future major
+       release.
     """
     def __init__(self, name, proj : Project = None):
+        warnings.warn(
+            "alfrd.core.workflow.WorkflowManager (and its 'Workflow' alias) "
+            "is deprecated; use alfrd.core.pipeline.PipelineCore directly. "
+            "This compatibility wrapper will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.params                 =   {}
         self.name                   =   name
         self.proj                   =   proj
