@@ -86,3 +86,78 @@ def test_cli_gui_is_a_serve_alias(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert calls == [{"host": "127.0.0.1", "port": 5050, "debug": False}]
+
+
+def test_runtime_help_smoke():
+    result = runner.invoke(alfrd_cli, ["runtime", "--help"])
+    assert result.exit_code == 0, result.output
+    for command in ("start", "resume", "retry", "retry-step", "cancel", "logs", "status"):
+        assert command in result.output
+
+
+def _runtime_db(tmp_path):
+    return str(tmp_path / "runtime.sqlite")
+
+
+def test_runtime_start_spawns_worker_and_reports_status(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "alfrd.cli.subprocess.Popen", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    db = _runtime_db(tmp_path)
+
+    from alfrd.runtime import RuntimeService, RuntimeStore
+
+    store = RuntimeStore(db)
+    store.initialize()
+    service = RuntimeService(store)
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "a")
+
+    result = runner.invoke(
+        alfrd_cli, ["runtime", "start", workflow.id, dataset.id, "--db", db]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "status=pending" in result.output
+    assert len(calls) == 1
+
+
+def test_runtime_start_reports_validation_errors_without_spawning(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "alfrd.cli.subprocess.Popen", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    db = _runtime_db(tmp_path)
+
+    result = runner.invoke(
+        alfrd_cli, ["runtime", "start", "missing-workflow", "missing-dataset", "--db", db]
+    )
+
+    assert result.exit_code != 0
+    assert "parameter validation failed" in result.output
+    assert calls == []
+
+
+def test_runtime_cancel_requires_confirmation(tmp_path):
+    db = _runtime_db(tmp_path)
+    from alfrd.runtime import RuntimeService, RuntimeStore
+
+    store = RuntimeStore(db)
+    store.initialize()
+    service = RuntimeService(store)
+    project = service.create_project("demo", tmp_path / "demo")
+    workflow = service.create_workflow(project.id, "wf", [{"key": "one", "command": ["true"]}])
+    dataset = service.create_dataset(project.id, "a")
+    run = service.create_run(workflow.id, dataset.id)
+
+    declined = runner.invoke(
+        alfrd_cli, ["runtime", "cancel", run.id, "--db", db], input="n\n"
+    )
+    assert declined.exit_code != 0
+    assert service.get_run(run.id).status == "pending"
+
+    confirmed = runner.invoke(alfrd_cli, ["runtime", "cancel", run.id, "--db", db, "--yes"])
+    assert confirmed.exit_code == 0, confirmed.output
+    assert service.get_run(run.id).status == "cancelled"
