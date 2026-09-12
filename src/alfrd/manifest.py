@@ -64,18 +64,25 @@ class SchemaDefinition:
 ProjectSchema = SchemaDefinition
 
 
+DEFAULT_ARTIFACT_KIND = "file"
+
+
 @dataclass(frozen=True)
 class ArtifactDefinition:
     """A declaration for an artifact a workflow may produce.
 
     This differs from ``ArtifactRef`` (one produced value) and the runtime
-    ``Artifact`` row (one persisted value).
+    ``Artifact`` row (one persisted value). ``path_pattern`` may contain glob
+    metacharacters (``*``, ``?``, ``[``), in which case discovery resolves it
+    to zero or more matches; see ``alfrd.core.artifacts.resolve_declared_artifacts``.
     """
 
     name: str
     path_pattern: str
     description: str = ""
     media_type: str | None = None
+    kind: str = DEFAULT_ARTIFACT_KIND
+    viewer: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -87,6 +94,10 @@ class ArtifactDefinition:
             data["description"] = self.description
         if self.media_type is not None:
             data["media_type"] = self.media_type
+        if self.kind != DEFAULT_ARTIFACT_KIND:
+            data["kind"] = self.kind
+        if self.viewer is not None:
+            data["viewer"] = self.viewer
         data.update(self.extra)
         return data
 
@@ -213,8 +224,10 @@ def parse_manifest(
             path_pattern=item["path_pattern"],
             description=item.get("description", ""),
             media_type=item.get("media_type"),
+            kind=item.get("kind", DEFAULT_ARTIFACT_KIND),
+            viewer=item.get("viewer"),
             extra=_extras(
-                item, {"name", "path_pattern", "description", "media_type"}
+                item, {"name", "path_pattern", "description", "media_type", "kind", "viewer"}
             ),
         )
         for item in raw.get("artifacts", [])
@@ -249,6 +262,7 @@ def load_manifest(path: str | Path | None = None) -> ProjectManifest:
 
 __all__ = [
     "ArtifactDefinition",
+    "DEFAULT_ARTIFACT_KIND",
     "Entrypoint",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",

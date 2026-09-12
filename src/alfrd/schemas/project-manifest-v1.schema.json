@@ -57,7 +57,24 @@
           "name": {"type": "string", "minLength": 1},
           "path_pattern": {"type": "string", "minLength": 1},
           "description": {"type": "string"},
-          "media_type": {"type": ["string", "null"]}
+          "media_type": {"type": ["string", "null"]},
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "directory",
+              "table",
+              "json",
+              "yaml",
+              "text",
+              "log",
+              "image",
+              "image_collection",
+              "html",
+              "archive"
+            ]
+          },
+          "viewer": {"type": ["string", "null"]}
         },
         "additionalProperties": true
       }

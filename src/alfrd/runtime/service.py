@@ -455,13 +455,27 @@ class RuntimeService:
         media_type: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> Artifact:
+        """Persist artifact existence/size/media-type/metadata for one path.
+
+        Both files and directories are supported (a directory artifact, e.g.
+        ``kind: directory`` or ``image_collection``, has no single content
+        hash to verify against; its ``sha256`` is instead a stable digest of
+        its resolved path so identity checks remain deterministic without
+        reading every contained file).
+        """
         artifact_path = Path(path).expanduser().resolve()
-        if not artifact_path.is_file():
+        if artifact_path.is_file():
+            digest = hashlib.sha256()
+            with artifact_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            size_bytes = artifact_path.stat().st_size
+            sha256 = digest.hexdigest()
+        elif artifact_path.is_dir():
+            size_bytes = 0
+            sha256 = hashlib.sha256(str(artifact_path).encode("utf-8")).hexdigest()
+        else:
             raise FileNotFoundError(artifact_path)
-        digest = hashlib.sha256()
-        with artifact_path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
         with self.store.session() as session:
             run = session.get(Run, run_id)
             if run is None:
@@ -477,8 +491,8 @@ class RuntimeService:
                 name=name or artifact_path.name,
                 path=str(artifact_path),
                 media_type=media_type,
-                size_bytes=artifact_path.stat().st_size,
-                sha256=digest.hexdigest(),
+                size_bytes=size_bytes,
+                sha256=sha256,
                 metadata_json=dict(metadata or {}),
             )
             session.add(artifact)

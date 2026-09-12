@@ -2,6 +2,7 @@
 
 from alfrd.manifest import (
     ArtifactDefinition,
+    DEFAULT_ARTIFACT_KIND,
     Entrypoint,
     MANIFEST_FILENAME,
     MANIFEST_VERSION,
@@ -19,6 +20,7 @@ from alfrd.manifest import (
 
 __all__ = [
     "ArtifactDefinition",
+    "DEFAULT_ARTIFACT_KIND",
     "Entrypoint",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
