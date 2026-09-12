@@ -18,6 +18,8 @@ This program is written for the [SMILE project](https://smilescience.info) suppo
     - [3.2 - Advance](#32---advance)
       - [3.2.1 Example : Execute functions using alfrd](#321-example--execute-functions-using-alfrd)
       - [3.2.2 Example : Pipeline step execution/update using the Spreadsheet/CSV](#322-example--pipeline-step-executionupdate-using-the-spreadsheetcsv)
+  - [Runtime persistence API](#runtime-persistence-api)
+  - [Public API surface (0.2.1.0)](#public-api-surface-0210)
   - [4. Attribution](#4-attribution)
   - [5. Acknowledgement](#5-acknowledgement)
 
@@ -101,28 +103,31 @@ ALFRD relies on pandas dataframe to read/write tabular data.
 
 ####  3.1.1 Example: Google Spreadsheet - Initializing and creating instance
 
+Google Sheets support is provided as an optional storage adapter implementing
+the `LogFrameAdapter` protocol (`df`, `update`, `update_cell`). ALFRD no longer
+ships a bundled Google Sheets client class; consumers wire their own adapter
+(for example using `gspread`, installed via the `alfrd[google]` extra) and
+pass it as `gsc=` to `LogFrame`.
+
 ```python
-from alfrd.lib import GSC, LogFrame
-from alfrd.util import timeinmin, read_inputfile
+from alfrd.core.logframe import LogFrame
 
-url='https://spreadsheet/link'
-worksheet='worksheet-name'
-
-gsc = GSC(url=url, wname=worksheet, key='path/to/json/file')      # default path for key = home/usr/.alfred
-df_sheet = gsc.open()
+# `sheet_adapter` implements the LogFrameAdapter protocol: .df, .update(df),
+# .update_cell(df, rows, columns). See alfrd.core.logframe.LogFrameAdapter.
+lf = LogFrame(gsc=sheet_adapter)
 ```
 
 
 ####  3.1.2 Example: Google Spreadsheet - Update the data
 
-The instance of LogFrame can be used to manipulate the dataframe and update the Google Sheet.
+The instance of LogFrame can be used to manipulate the dataframe and sync it
+back to the adapter.
 
 ```python
 
-lf = LogFrame(gsc=gsc)
-lf.df_sheet.loc[0, 'TSYS'] = True
+lf.df.loc[0, 'TSYS'] = True
 
-lf.update_sheet(count=1, failed=0,csvfile='df_sheet.csv')                     # if updating the sheet fails, a copy of the dataframe is saved locally at the csvfile path.
+lf.update_sheet(count=1, failed=0, csvfile='df_sheet.csv')                     # if updating the sheet fails, a copy of the dataframe is saved locally at the csvfile path.
 
 ```
 
@@ -131,10 +136,11 @@ lf.update_sheet(count=1, failed=0,csvfile='df_sheet.csv')                     # 
 It is also possible to use just the CSV file as an alternative to the Google Sheet.
 
 ```python
+from alfrd.core.logframe import LogFrame
 
-lf = LogFrame(csv='in.csv')
-lf.df_sheet.loc[0, 'TSYS'] = True
-lf.df_sheet.to_csv('out.csv')
+lf = LogFrame('in.csv')
+lf.df.loc[0, 'TSYS'] = True
+lf.df.to_csv('out.csv')
 
 ```
 
@@ -213,25 +219,23 @@ Also one can use the config file to initialize the parameter values in the execu
 ```python 
 # pipe.py
 
-from alfrd.lib import GSC, LogFrame
+from alfrd.core.logframe import LogFrame
 
 from alfrd import Pipeline
 from alfrd.plugins import validator, validate, register
 
-@validator(desc="Update values on the google sheet", run_once=False, after=True)
+@validator(desc="Update values on the log/CSV table", run_once=False, after=True)
 def update_sheet(lf, success_count, failed_count):
     lf.update_sheet(success_count, failed_count)
   
-@validator(desc="Connect with the google sheet and return an instance for the runtime parameter", run_once=True)
-def connect_sheet(sheet_url, worksheet):
-    gsc = GSC(url=sheet_url, wname=worksheet, key='/path/to/credentials.json')
-    gsc.open()
-    Pipeline.params['lf'] = LogFrame(gsc=gsc)
+@validator(desc="Connect an adapter and return an instance for the runtime parameter", run_once=True)
+def connect_sheet(sheet_adapter):
+    Pipeline.params['lf'] = LogFrame(gsc=sheet_adapter)
 
 @validate(by=[connect_sheet, update_sheet])
 @register("A hello world function")
 def modify_tsys(lf):
-  lf.df_sheet.loc[0, 'TSYS'] = True
+  lf.df.loc[0, 'TSYS'] = True
   Pipeline.params['success_count'] = 1
   Pipeline.params['failed_count'] = 0
 
@@ -239,8 +243,13 @@ def modify_tsys(lf):
 
 the above can be executed as follows:
 ```bash
- alfrd run modify_tsys PROJECT_NAME sheet_url=/path/to/sheet worksheet=main
+ alfrd run modify_tsys PROJECT_NAME sheet_adapter=/path/to/adapter/config
 ```
+
+> NOTE: `alfrd.Pipeline` (and the underlying `alfrd.plugins.PipelineRun`) are
+> a deprecated compatibility facade over `alfrd.core.pipeline.PipelineCore`
+> retained for `0.2.x`; see [Public API surface](#public-api-surface-0210)
+> for the frozen/deprecated boundary.
 
 ## Runtime persistence API
 
@@ -297,6 +306,95 @@ are a standalone metadata catalog for compatibility; they are not runtime
 execution models. Applications using durable runtime state should pass
 `RuntimeCatalogReader(runtime_service)` as `CATALOG_READER`, avoiding a second
 copy of project/workflow metadata while retaining the same HTTP routes.
+
+## Public API surface (0.2.1.0)
+
+This section freezes the `0.2.x` compatibility surface for the consolidated
+`0.2.1.0` release candidate. Anything listed as **stable** is covered by
+`tests/test_public_api.py`; a compatible change may add fields/methods but
+must not remove or rename what is listed. Anything listed as **deprecated**
+still works, emits `DeprecationWarning`, and is scheduled for removal in a
+future major release, not during `0.2.x`.
+
+### Stable — `alfrd` (top-level)
+
+`ALFRD_CACHE_DIR`, `ALFRD_CONFIG_DIR`, `ALFRD_DIR`, `PROJ_DIR`,
+`get_alfrd_dir`, `get_project_dir`, `__version__`, `B`, `X`, `c`.
+
+### Stable — typed pipeline engine (`alfrd.core.pipeline`, re-exported from `alfrd`)
+
+`PipelineCore`, `PipelineContext`, `PipelineStepBase`,
+`PipelineStepValidatorBase`, `PipelineStepValidatorResult`, `StepResult`,
+`DatasetResult`, `BatchResult`, `ArtifactRef`, `ColName`,
+`CrashSnapshotAdapter`, `ResultCSVAdapter`, `write_crash_snapshot`,
+`append_step_result_csv`, execution events (`RunStarted`, `DatasetStarted`,
+`StepStarted`, `StepSucceeded`, `StepFailed`, `StepSkipped`,
+`DatasetFinished`, `RunFinished`), `FunctionPipelineStep`,
+`FunctionPipelineStepValidator`, `PipelineError`.
+
+### Stable — configuration (`alfrd.config`)
+
+`BaseConfig`, `Config`, `CONFIG_MAPPING`.
+
+### Stable — Project Manifest (`alfrd.manifest`, re-exported from `alfrd.core.manifest`)
+
+`ProjectManifest`, `Entrypoint`, `SchemaDefinition` (alias `ProjectSchema`),
+`ArtifactDefinition`, `ManifestError`, `ManifestNotFoundError`,
+`discover_manifest`, `load_manifest`, `parse_manifest`, `validate_manifest`,
+`get_manifest_schema`, `MANIFEST_FILENAME`, `MANIFEST_VERSION`.
+
+### Stable — repository registration (`alfrd.repository`, re-exported from `alfrd.core.repository`)
+
+`RepositoryService` (alias `Repository`), `RepositoryRecord`,
+`RepositoryNotFoundError`, `add_repository`, `sync_repository`,
+`inspect_repository`.
+
+### Stable — LogFrame (`alfrd.core.logframe`, re-exported from `alfrd.lib`)
+
+`LogFrame`, `LogFrameAdapter` (protocol), `LogFrameEventSink`.
+
+### Stable — durable runtime (`alfrd.runtime`)
+
+`RuntimeStore`, `RuntimeService`, `Status`, `InvalidTransition`,
+`RuntimeNotFound`, `SchemaVersionError`, `SCHEMA_VERSION`,
+`LocalSubprocessWorker`, `RuntimeOperations`, `StepWorker` (protocols),
+`RuntimePipelineRunner`, `RuntimeEventSink`, `CompositeEventSink`,
+`artifact_ref_from_model`, ORM models `Project`, `WorkflowDefinition`,
+`Dataset`, `StepDefinition`, `Run`, `StepExecution`, `Artifact`,
+`AuditEvent`.
+
+### Stable — web application (`alfrd.gui`, optional `alfrd[gui]`)
+
+`create_app()` application factory; `CatalogReader` protocol,
+`SqlAlchemyCatalogReader`, `RuntimeCatalogReader`
+(`alfrd.gui.services`); read-only routes under `/api/*` and `/dashboard/*`
+plus `/health` and `/version`; `alfrd serve` / `alfrd gui` CLI commands.
+
+### Stable — legacy decorator adapters (`alfrd.plugins`)
+
+`register`, `validate`, `validator` decorators and the module-level
+`REGISTERED_STEPS`, `VALIDATORS`, `VALIDATE_BEFORE`, `VALIDATE_AFTER`
+registries remain a supported compatibility adapter boundary into
+`PipelineCore` (via `PipelineCore.from_legacy_registries`), not the engine's
+internal state model.
+
+### Deprecated (still functional, emits `DeprecationWarning`)
+
+- `alfrd.plugins.PipelineRun` and the module-level `alfrd.Pipeline` singleton
+  it backs — use `alfrd.core.pipeline.PipelineCore` directly.
+- `alfrd.core.workflow.WorkflowManager` and its `Workflow` alias — use
+  `PipelineCore` directly, or `alfrd.runtime.RuntimePipelineRunner` for
+  persisted execution.
+- `alfrd.core.logger` — use `alfrd.core.logging` (`logger = getLogger("alfrd")`).
+
+### Explicitly out of scope for `0.2.x` compatibility guarantees
+
+- `alfrd.gui.model.tables` internal SQLAlchemy row shapes (`ProjectDB`,
+  `WorkflowDB`, etc.) are a standalone catalog projection, not the runtime's
+  source of truth; prefer `RuntimeCatalogReader` over depending on these rows
+  directly.
+- Flask template internals under `alfrd/gui/templates/` may change without a
+  major version bump.
 
 ## 4. Attribution
 
