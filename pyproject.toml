@@ -22,12 +22,14 @@ classifiers = [
 ]
 
 dependencies = [
+  "jsonschema>=4.18",
   "pandas",
   "numpy",
   "psutil",
   "typer",
   "pyyaml",
   "platformdirs",
+  "sqlalchemy>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +42,8 @@ google = [
   "gspread-formatting",
 ]
 gui = ["flask", "flask_sqlalchemy"]
-all = ["alfrd[google,gui]"]
+polars = ["polars"]
+all = ["alfrd[google,gui,polars]"]
 
 [project.scripts]
 alfrd = "alfrd.cli:alfrd_cli"
@@ -53,6 +56,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
+"alfrd.schemas" = ["*.json"]
 "alfrd.gui" = [
   "templates/dashboard/*.htm",
   "static/*.css",

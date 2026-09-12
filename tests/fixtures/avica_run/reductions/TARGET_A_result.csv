@@ -1,0 +1,6 @@
+name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp
+preprocess_fitsidi,1,0,2026-01-01T10:00:00,,,"[true]",2026-01-01T10:00:01
+fits_to_ms,1,0,2026-01-01T10:00:01,"{""0"": ""outputs/VLBI.ms""}","[""converted""]",[true],2026-01-01T10:00:02
+avica_avg,0,1,2026-01-01T10:00:02,,"[""old failure""]",[false],2026-01-01T10:00:03
+avica_avg,2,0,2026-01-01T10:00:04,"{""X"": ""outputs/VLBI_X.ms"", ""S"": ""outputs/VLBI_S.ms""}","[""X"", ""S""]","[true, true]",2026-01-01T10:00:06
+rpicard,0,1,2026-01-01T10:00:07,"{""X"": ""outputs/X_calibrated.uvf"", ""S"": ""outputs/S_calibrated.uvf""}","[""Unhandled exception: calibration failed""]",[false],2026-01-01T10:00:09

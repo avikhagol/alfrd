@@ -1,0 +1,75 @@
+version: 1
+name: avica-0.3
+
+description: Existing AVICA 0.3 reduction results, imported without loading AVICA.
+primary_key: TARGET_NAME
+
+dataset_columns:
+  - name: TARGET_NAME
+    type: string
+    required: true
+    description: Source/target name, derived from <TARGET>_result.csv.
+  - name: FILENAMES
+    type: string
+    required: false
+  - name: Project
+    type: string
+    required: false
+  - name: SIZE_GB
+    type: number
+    required: false
+  - name: search_source_flux
+    type: number
+    required: false
+  - name: TSYS
+    type: string
+    required: false
+
+workflows:
+  - name: avica
+    description: AVICA processing status imported from per-target result CSV files.
+    steps:
+      - preprocess_fitsidi
+      - fits_to_ms
+      - phaseshift
+      - avica_avg
+      - avicameta_ms
+      - avica_snr
+      - avica_fill_input
+      - avica_split_ms
+      - rpicard
+
+artifacts:
+  - name: result_csv
+    path_pattern: "{target_dir}/*_result.csv"
+    description: Per-target AVICA step execution history.
+    media_type: text/csv
+    kind: table
+    viewer: table
+  - name: avica_logs
+    path_pattern: "avica.logs/*.log"
+    description: AVICA run logs.
+    media_type: text/plain
+    kind: log
+    viewer: text
+  - name: measurement_sets
+    path_pattern: "{target_dir}/**/*.ms"
+    description: CASA measurement-set directories produced by AVICA.
+    kind: directory
+  - name: calibrated_uvfits
+    path_pattern: "{target_dir}/**/*.uvf"
+    description: Calibrated UVFITS products produced by rPicard.
+    media_type: application/fits
+    kind: file
+
+schema:
+  - name: avica_result_csv
+    definitions:
+      - name
+      - success_count
+      - failed_count
+      - start_stamp
+      - detail
+      - desc
+      - success
+      - end_stamp

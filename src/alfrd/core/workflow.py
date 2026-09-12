@@ -1,13 +1,13 @@
-from alfrd import REGISTERED_STEPS, VALIDATE_AFTER, VALIDATE_BEFORE, VALIDATORS, c, B, X
+import logging
+import warnings
 from pathlib import Path
 
-from alfrd.core.project import Project
-import logging
+import typer
 import yaml
 
-from typing import Callable, Dict, List
-import typer
-from alfrd.util import update_existing_dict, padded_output, read_inputfile
+from alfrd import B, X, REGISTERED_STEPS, VALIDATE_AFTER, VALIDATE_BEFORE, VALIDATORS, c
+from alfrd.core.project import Project
+from alfrd.util import padded_output, read_inputfile, update_existing_dict
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +70,22 @@ class WorkflowConfig:
 class WorkflowManager:
     """
     To define the workflow and execute each functions.
+
+    .. deprecated:: 0.2.1.0
+       Use :class:`alfrd.core.pipeline.PipelineCore` directly (see
+       ``alfrd.runtime.RuntimePipelineRunner`` for persisted execution).
+       ``WorkflowManager``/``Workflow`` are retained as tested thin wrappers
+       during the ``0.2.x`` series and will be removed in a future major
+       release.
     """
     def __init__(self, name, proj : Project = None):
+        warnings.warn(
+            "alfrd.core.workflow.WorkflowManager (and its 'Workflow' alias) "
+            "is deprecated; use alfrd.core.pipeline.PipelineCore directly. "
+            "This compatibility wrapper will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.params                 =   {}
         self.name                   =   name
         self.proj                   =   proj
@@ -88,7 +102,7 @@ class WorkflowManager:
         
         self.data_dict              =   {self.name: {'params': self.params, 'sequence': self.sequence}}
 
-    def init_params(self, params : Dict):
+    def init_params(self, params: dict):
         self.params                 =   {**params, **self.params}
         logger.info("Initialized workflow parameters: %s", ", ".join(params))
 
@@ -208,9 +222,10 @@ class WorkflowManager:
         return steps
         
     def run_sequence(self, step_name):
-        """Run a specific pipeline step for a project."""    
-        _params_found           =   {}
-        
+        """Run the selected legacy workflow through ``PipelineCore``."""
+        from alfrd.core.pipeline import PipelineContext, PipelineCore
+
+        _params_found = {}
         art = f"""
         ╔══════════════════════════════════════════════════════════════════╗
         ║{self.proj.name.upper():^66}║
@@ -219,52 +234,52 @@ class WorkflowManager:
         print(art)
         logger.info("Starting workflow %s for project: %s", self.name, self.proj.name.upper())
         if self.params and len(self.params):
-            for param in self.params:
-                if not '=' in param:
+            original_params = self.params
+            for param in original_params:
+                if isinstance(param, str) and '=' not in param:
                     if Path(param).exists():
                         logger.info("Loading parameters from file: %s", param)
                         _params_found, _, _ = read_inputfile(Path(param).absolute().parent,Path(param).name)
                         self.update_params(_params_found)
-
-            _params_found = {param.split("=")[0]: param.split("=")[1] for param in self.params if '=' in param}
+            if not isinstance(original_params, dict):
+                _params_found = {
+                    param.split("=", 1)[0]: param.split("=", 1)[1]
+                    for param in original_params
+                    if isinstance(param, str) and '=' in param
+                }
+                self.params = {}
         self.update_params(_params_found)
         logger.info("Final workflow parameters: %s", ", ".join(self.params))
-        
-        steps                               =   self.get_sequence(step_name)
+
+        steps = self.get_sequence(step_name)
         logger.info("Workflow sequence determined: %s", ", ".join(steps))
-        for s,step_name in enumerate(steps):
-            if s==0: 
-                self.prev_step_success     =   True
-                self.validation_success    =   True
-            self.step_name                      =   step_name
-            
-            if self.prev_step_success and (step_name in VALIDATE_BEFORE) and VALIDATE_BEFORE[step_name]['functions']:      
-                print(f"\n>  {B}Pre-processing{X} ({self.step_name})")
-                print(f"""  ─────────────────────────────────────────────────────────────────""")
-                with padded_output(4):
-                    self.validate_steps         =   VALIDATE_BEFORE
-                    self.run_validations()
-
-            if self.prev_step_success and self.validation_success:
-                print(f"\n>  {B}Processing{X}: {self.proj.name.upper()} {step_name}")
-                print("""  ─────────────────────────────────────────────────────────────────""")
-                with padded_output(4):
-                    self.run_step()
-            
-            # Run validations post run
-            if self.validation_success and self.prev_step_success and (step_name in VALIDATE_AFTER) and VALIDATE_AFTER[step_name]['functions']:
-                print(f"\n>  {B}Post-processing{X} ({self.step_name})")
-                print("""  ─────────────────────────────────────────────────────────────────""")
-
-                with padded_output(4):
-                    self.validate_steps         =   VALIDATE_AFTER
-                    self.run_validations()
-                
-            if self.validation_success:
-                print(f"{B} finished : {c['bc']}{step_name}{X}")
-            else:
-                print(f"{B} skipped  : {c['bc']}{step_name}{X}")
-                logger.warning("Step '%s' skipped due to failed validation", step_name)
+        core = PipelineCore.from_legacy_registries(
+            REGISTERED_STEPS,
+            VALIDATE_BEFORE,
+            VALIDATE_AFTER,
+            VALIDATORS,
+            sequence=steps,
+            context=PipelineContext(self.params),
+        )
+        core.context.params = self.params
+        self.last_result = core.run(
+            {"dataset_id": self.project_name or self.name}, params=self.params
+        )
+        results = self.last_result.datasets[0].steps
+        self.prev_step_success = all(
+            result.status in {"succeeded", "skipped"} for result in results
+        )
+        self.validation_success = not any(
+            result.error and result.error.type == "ValidationError" for result in results
+        )
+        completed = [result for result in results if result.status != "skipped"]
+        if completed:
+            self.step_name = completed[-1].step_name
+            self.params["ret"] = completed[-1].value
+        for result in results:
+            state = "finished" if result.success else result.status
+            print(f"{B} {state:8}: {c['bc']}{result.step_name}{X}")
+        return self.last_result
     
 
 

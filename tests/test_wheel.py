@@ -13,6 +13,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_WHEEL_PATHS = {
+    "alfrd/schemas/project-manifest-v1.schema.json",
+    "alfrd/core/logframe.py",
+    "alfrd/core/pipeline.py",
+    "alfrd/runtime/adapters.py",
     "alfrd/gui/templates/dashboard/index.htm",
     "alfrd/gui/templates/dashboard/layout.htm",
     "alfrd/gui/templates/dashboard/project_details.htm",
@@ -64,7 +68,14 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     alfrd_command = bin_dir / ("alfrd.exe" if os.name == "nt" else "alfrd")
 
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--disable-pip-version-check", str(built_wheel)],
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            f"{built_wheel}[gui]",
+        ],
         cwd=tmp_path,
         check=True,
         capture_output=True,
@@ -74,12 +85,27 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     smoke = """
 from importlib import resources
 from pathlib import Path
-from alfrd import Pipeline, Project, Workflow, __version__, register, validate, validator
+from alfrd import (
+    ArtifactDefinition, ArtifactRef, BatchResult, Pipeline, PipelineContext, PipelineCore,
+    PipelineStepBase, PipelineStepValidatorBase, PipelineStepValidatorResult,
+    LogFrame, LogFrameEventSink, Project, ProjectManifest, RepositoryService, StepResult, Workflow,
+    __version__, register, validate, validator,
+)
+from alfrd.core import LogFrame as CoreLogFrame
+from alfrd.core.logframe import LogFrameAdapter
 from alfrd.core.logging import logger
-from alfrd.lib import LogFrame
+from alfrd.lib import LogFrame as LegacyLogFrame
+from alfrd.runtime import RuntimeEventSink, RuntimePipelineRunner, RuntimeService, RuntimeStore
+from alfrd.gui.services import RuntimeCatalogReader
 import logging
 assert __version__ == '0.2.1.0'
-assert Pipeline and Project and Workflow and LogFrame
+assert Pipeline and Project and ProjectManifest and RepositoryService and Workflow and LogFrame
+assert all((ArtifactRef, BatchResult, PipelineContext, PipelineCore, PipelineStepBase,
+            PipelineStepValidatorBase, PipelineStepValidatorResult, StepResult))
+assert all((ArtifactDefinition, LogFrameEventSink, RuntimeEventSink,
+            RuntimePipelineRunner, RuntimeService, RuntimeStore, RuntimeCatalogReader))
+assert LogFrame is CoreLogFrame is LegacyLogFrame
+assert LogFrameAdapter
 assert isinstance(logger, logging.Logger)
 assert register and validate and validator
 root = resources.files('alfrd.gui')
@@ -91,8 +117,15 @@ for item in (
     'model/schema.sql',
 ):
     assert root.joinpath(*item.split('/')).is_file(), item
+assert resources.files('alfrd.schemas').joinpath('project-manifest-v1.schema.json').is_file()
 import alfrd.core
 assert Path(alfrd.core.__file__).name == '__init__.py'
+from alfrd.gui import create_app
+app = create_app({'TESTING': True})
+client = app.test_client()
+assert client.get('/health').get_json() == {'status': 'ok'}
+assert client.get('/api/version').get_json() == {'version': __version__}
+assert client.get('/api/projects').get_json() == {'projects': []}
 """
     environment_vars = os.environ.copy()
     environment_vars.pop("PYTHONPATH", None)
@@ -115,7 +148,19 @@ assert Path(alfrd.core.__file__).name == '__init__.py'
     )
     assert "init" in help_result.stdout
     assert "run" in help_result.stdout
-    for command in ("init", "ls", "lsp", "run", "add", "rm", "inspect", "nrun"):
+    assert "serve" in help_result.stdout
+    for command in (
+        "init",
+        "ls",
+        "lsp",
+        "run",
+        "add",
+        "rm",
+        "inspect",
+        "nrun",
+        "serve",
+        "gui",
+    ):
         subprocess.run(
             [str(alfrd_command), command, "--help"],
             cwd=tmp_path,

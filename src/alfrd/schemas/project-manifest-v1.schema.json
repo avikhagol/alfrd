@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alfrd.dev/schemas/project-manifest-v1.schema.json",
+  "title": "ALFRD Project Manifest v1",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "default": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entrypoint": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["name", "cmd"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "cmd": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "schema": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["name", "definitions"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "definitions": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["name", "path_pattern"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "path_pattern": {"type": "string", "minLength": 1},
+          "description": {"type": "string"},
+          "media_type": {"type": ["string", "null"]},
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "directory",
+              "table",
+              "json",
+              "yaml",
+              "text",
+              "log",
+              "image",
+              "image_collection",
+              "html",
+              "archive"
+            ]
+          },
+          "viewer": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
