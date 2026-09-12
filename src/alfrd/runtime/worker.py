@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import threading
 from pathlib import Path
 from typing import Mapping
 
@@ -17,8 +18,11 @@ class LocalSubprocessWorker:
     Output is streamed to a per-execution log file under
     ``<cwd>/.alfrd/logs/<execution_id>.log`` so browser/CLI control surfaces
     can tail live output while the process runs, in addition to the
-    stdout/stderr captured on the persisted ``StepExecution`` once it
-    finishes.
+    stdout/stderr captured separately on the persisted ``StepExecution``
+    once it finishes. A ``timeout`` is enforced against wall-clock time
+    (not just the final ``process.wait``), so a child that produces no
+    output is still killed promptly instead of blocking until it exits on
+    its own.
     """
 
     def __init__(self, runtime: RuntimeOperations) -> None:
@@ -28,6 +32,18 @@ class LocalSubprocessWorker:
         directory = Path(execution.cwd) / ".alfrd" / "logs"
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"{execution.id}.log"
+
+    @staticmethod
+    def _pump(stream, sink: list[str], log_stream, log_lock: threading.Lock) -> None:
+        """Read a text stream line-by-line into ``sink`` and the shared log."""
+        try:
+            for line in stream:
+                sink.append(line)
+                with log_lock:
+                    log_stream.write(line)
+                    log_stream.flush()
+        finally:
+            stream.close()
 
     def execute(
         self,
@@ -48,7 +64,7 @@ class LocalSubprocessWorker:
                     cwd=execution.cwd,
                     env=process_env,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stderr=subprocess.PIPE,
                     text=True,
                 )
                 attach = getattr(self.runtime, "attach_process", None)
@@ -58,21 +74,34 @@ class LocalSubprocessWorker:
                     except Exception:  # noqa: BLE001 - ownership metadata is best-effort
                         pass
                 assert process.stdout is not None
-                lines: list[str] = []
+                assert process.stderr is not None
+                log_lock = threading.Lock()
+                stdout_lines: list[str] = []
+                stderr_lines: list[str] = []
+                stdout_thread = threading.Thread(
+                    target=self._pump, args=(process.stdout, stdout_lines, log_stream, log_lock)
+                )
+                stderr_thread = threading.Thread(
+                    target=self._pump, args=(process.stderr, stderr_lines, log_stream, log_lock)
+                )
+                stdout_thread.start()
+                stderr_thread.start()
                 try:
-                    for line in process.stdout:
-                        lines.append(line)
-                        log_stream.write(line)
-                        log_stream.flush()
                     returncode = process.wait(timeout=timeout)
+                    stdout_thread.join(timeout=timeout)
+                    stderr_thread.join(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
-                    combined = "".join(lines)
+                    stdout_thread.join()
+                    stderr_thread.join()
+                    combined_stdout = "".join(stdout_lines)
+                    combined_stderr = "".join(stderr_lines)
                     return self.runtime.transition_execution(
                         execution_id,
                         Status.FAILED,
-                        stdout=combined,
+                        stdout=combined_stdout,
+                        stderr=combined_stderr,
                         error=f"command timed out after {timeout} seconds",
                         log_path=log_path,
                     )
@@ -83,13 +112,15 @@ class LocalSubprocessWorker:
                 error=str(exc),
                 log_path=log_path,
             )
-        combined_output = "".join(lines)
+        combined_stdout = "".join(stdout_lines)
+        combined_stderr = "".join(stderr_lines)
         status = Status.SUCCEEDED if returncode == 0 else Status.FAILED
         return self.runtime.transition_execution(
             execution_id,
             status,
             exit_code=returncode,
-            stdout=combined_output,
+            stdout=combined_stdout,
+            stderr=combined_stderr,
             error=None if returncode == 0 else f"command exited with code {returncode}",
             log_path=log_path,
         )
