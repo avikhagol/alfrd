@@ -67,6 +67,12 @@ def create_app(config=None):
     if config:
         app.config.update(config)
 
+    # ``dict.setdefault`` does not replace Flask's initial ``None`` value.
+    if not app.config.get("SECRET_KEY"):
+        import secrets
+
+        app.config["SECRET_KEY"] = secrets.token_hex(32)
+
     from alfrd.gui.routes import api, control, dashboard, system
 
     app.register_blueprint(api)
@@ -90,6 +96,23 @@ def create_app(config=None):
 
         reader = SqlAlchemyCatalogReader()
     app.extensions["alfrd_catalog_reader"] = reader
+
+    from alfrd.gui.security import (
+        csrf_token,
+        mutations_enabled,
+        protect_mutation,
+        runtime_enabled,
+    )
+
+    app.before_request(protect_mutation)
+
+    @app.context_processor
+    def dashboard_runtime_context():
+        return {
+            "runtime_enabled": runtime_enabled(),
+            "mutations_enabled": mutations_enabled(),
+            "csrf_token": csrf_token(),
+        }
 
     @app.errorhandler(HTTPException)
     def api_http_error(error):

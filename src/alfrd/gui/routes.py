@@ -3,12 +3,24 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from flask import Blueprint, Response, abort, current_app, jsonify, render_template, request
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from alfrd import __version__
 from alfrd.runtime import RuntimeNotFound
@@ -18,12 +30,16 @@ from alfrd.runtime.matrix import (
     MatrixQueryService,
     cell_detail,
 )
+from alfrd.gui.services import resolve_artifact_path, resolve_selected_manifest
+from alfrd.gui.summaries import build_dataset_summary, build_summaries
+from alfrd.manifest import ManifestError, load_manifest
 
 
 api = Blueprint("api", __name__, url_prefix="/api")
 dashboard = Blueprint("dashboard", __name__, url_prefix="/dashboard")
 system = Blueprint("system", __name__)
 control = Blueprint("control", __name__, url_prefix="/api/runtime")
+_SAFE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
 
 
 def _reader():
@@ -104,6 +120,11 @@ def health():
 @api.get("/version")
 def version():
     return {"version": __version__}
+
+
+@system.get("/")
+def root():
+    return redirect(url_for("dashboard.index_dashboard"))
 
 
 @api.get("/")
@@ -203,6 +224,60 @@ def index_dashboard():
     )
 
 
+def _connect_form(path: str = "", errors: list[str] | None = None, status: int = 200):
+    return (
+        render_template(
+            "dashboard/connect.htm",
+            title="Connect project",
+            form={"path": path},
+            errors=list(errors or []),
+        ),
+        status,
+    )
+
+
+@dashboard.route("/connect", methods=["GET", "POST"])
+def connect_project():
+    if request.method == "GET":
+        return _connect_form()
+    path = request.form.get("path", "").strip()
+    try:
+        manifest_path = resolve_selected_manifest(path)
+        manifest = load_manifest(manifest_path)
+        if _SAFE_PROJECT_NAME.fullmatch(manifest.name) is None:
+            raise ValueError(
+                "Project name must start with a letter or digit and contain only "
+                "letters, digits, dots, underscores, or hyphens."
+            )
+    except (ManifestError, OSError, ValueError) as error:
+        return _connect_form(path, [str(error)], 400)
+
+    service = _runtime_service()
+    if service is None:  # also enforced by the global mutation gate
+        abort(403, description="runtime mutations are disabled")
+    try:
+        existing = service.get_project_by_name(manifest.name)
+    except RuntimeNotFound:
+        existing = None
+    root_path = manifest_path.parent.resolve()
+    if existing is not None:
+        if Path(existing.root_path).resolve() != root_path:
+            return _connect_form(
+                path,
+                [f"Project name {manifest.name!r} is already connected to another directory."],
+                409,
+            )
+    else:
+        try:
+            service.register_manifest(manifest, root_path=root_path, create_root=False)
+        except Exception as error:
+            # Database uniqueness errors can still occur if another request
+            # connects the same name concurrently; present them as conflicts.
+            return _connect_form(path, [f"Could not connect project: {error}"], 409)
+    flash(f"Project {manifest.name!r} connected.", "success")
+    return redirect(url_for("dashboard.project_details", project_name=manifest.name))
+
+
 @dashboard.get("/project/<project_name>")
 def project_details(project_name: str):
     project = _project_or_404(project_name)
@@ -218,7 +293,121 @@ def project_details(project_name: str):
         parameters=_reader().list_parameters(project_id),
         dataset_columns=_reader().list_dataset_columns(project_id),
         artifact_definitions=_reader().list_artifact_definitions(project_id),
+        summaries=build_summaries(project, _runtime_service()),
     )
+
+
+def _project_runs(project_id: str) -> list[dict]:
+    service = _runtime_service()
+    if service is None:
+        return []
+    datasets = {item.id: item.external_id for item in service.list_datasets(project_id)}
+    return [
+        {
+            "id": run.id,
+            "label": f"{datasets.get(run.dataset_id, run.dataset_id)} — {run.status}",
+            "working_directory": run.working_directory,
+            "steps": [
+                {"id": step.id, "label": step.step_definition.key}
+                for step in run.step_executions
+            ],
+        }
+        for run in service.list_runs(project_id=project_id)
+    ]
+
+
+def _artifact_rows(project_id: str) -> list[dict]:
+    service = _runtime_service()
+    if service is None:
+        return []
+    return [
+        {
+            "id": artifact.id,
+            "name": artifact.name,
+            "path": artifact.path,
+            "run_id": run.id,
+            "step_execution_id": artifact.step_execution_id,
+            "media_type": artifact.media_type,
+            "size_bytes": artifact.size_bytes,
+        }
+        for run in service.list_runs(project_id=project_id)
+        for artifact in run.artifacts
+    ]
+
+
+def _artifact_form(project: dict, form: dict[str, str], errors=None, status: int = 200):
+    return (
+        render_template(
+            "dashboard/artifacts.htm",
+            title=f"{project['name']} artifacts",
+            project=project,
+            runs=_project_runs(project["id"]),
+            artifacts=_artifact_rows(project["id"]),
+            form=form,
+            errors=list(errors or []),
+        ),
+        status,
+    )
+
+
+@dashboard.route("/project/<project_name>/artifacts", methods=["GET", "POST"])
+def project_artifacts(project_name: str):
+    project = _project_or_404(project_name)
+    runs = _project_runs(project["id"])
+    owned_runs = {item["id"]: item for item in runs}
+    if request.method == "GET":
+        run_id = request.args.get("run_id", "")
+        if run_id not in owned_runs:
+            run_id = ""
+        step_id = request.args.get("step_execution_id", "")
+        if not run_id or step_id not in {step["id"] for step in owned_runs[run_id]["steps"]}:
+            step_id = ""
+        return _artifact_form(
+            project,
+            {"run_id": run_id, "step_execution_id": step_id, "path": "", "name": "", "media_type": ""},
+        )
+
+    form = {
+        key: request.form.get(key, "").strip()
+        for key in ("run_id", "step_execution_id", "path", "name", "media_type")
+    }
+    errors: list[str] = []
+    selected = owned_runs.get(form["run_id"])
+    if selected is None:
+        errors.append("Select a run belonging to this project.")
+    step_ids = {step["id"] for step in selected["steps"]} if selected else set()
+    if form["step_execution_id"] and form["step_execution_id"] not in step_ids:
+        errors.append("Select a step belonging to the selected run.")
+    if len(form["name"]) > 255:
+        errors.append("Artifact name must be at most 255 characters.")
+    if len(form["media_type"]) > 255:
+        errors.append("Media type must be at most 255 characters.")
+    artifact_path = None
+    if selected is not None:
+        try:
+            artifact_path = resolve_artifact_path(selected["working_directory"], form["path"])
+        except ValueError as error:
+            errors.append(str(error))
+    elif not form["path"]:
+        errors.append("Artifact path is required.")
+    if errors:
+        return _artifact_form(project, form, errors, 400)
+
+    service = _runtime_service()
+    assert service is not None and artifact_path is not None
+    try:
+        service.record_artifact(
+            form["run_id"],
+            artifact_path,
+            step_execution_id=form["step_execution_id"] or None,
+            name=form["name"] or None,
+            media_type=form["media_type"] or None,
+            write_manifest=False,
+        )
+    except (RuntimeNotFound, OSError, ValueError) as error:
+        return _artifact_form(project, form, [str(error)], 400)
+    flash("Artifact registered.", "success")
+    return redirect(url_for("dashboard.project_artifacts", project_name=project_name))
 
 
 @dashboard.get("/project/<project_name>/workflows/<workflow_name>/matrix")
@@ -241,6 +430,18 @@ def matrix_dashboard(project_name: str, workflow_name: str):
 def matrix_api(project_name: str, workflow_name: str):
     _service, matrix = _matrix_or_404(project_name, workflow_name)
     return jsonify(matrix.to_dict())
+
+
+@api.get("/projects/<project_name>/workflows/<workflow_name>/datasets/<dataset_id>")
+def dataset_result_api(project_name: str, workflow_name: str, dataset_id: str):
+    service = _runtime_service()
+    if service is None:
+        abort(404, description="dataset results require a configured runtime service")
+    project_id, workflow_id = _workflow_id_or_404(project_name, workflow_name)
+    try:
+        return jsonify(build_dataset_summary(service, project_id, workflow_id, dataset_id))
+    except (RuntimeNotFound, ValueError) as error:
+        abort(404, description=str(error))
 
 
 @api.get("/projects/<project_name>/workflows/<workflow_name>/matrix.csv")
@@ -288,11 +489,16 @@ def matrix_details_csv_api(project_name: str, workflow_name: str):
 
 @api.get("/projects/<project_name>/executions/<execution_id>")
 def execution_detail_api(project_name: str, execution_id: str):
-    _project_or_404(project_name)
+    project = _project_or_404(project_name)
     service = _runtime_service()
     if service is None:
         abort(404, description="the sheet-like matrix requires a configured runtime service")
     try:
+        execution = service.get_execution(execution_id)
+        run = service.get_run(execution.run_id)
+        workflow = service.get_workflow(run.workflow_id)
+        if workflow.project_id != project["id"]:
+            abort(404, description=f"execution {execution_id!r} not found in project")
         return jsonify(cell_detail(service, execution_id))
     except RuntimeNotFound as error:
         abort(404, description=str(error))

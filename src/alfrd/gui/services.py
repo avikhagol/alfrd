@@ -15,6 +15,76 @@ from alfrd.gui.model.tables import (
     ValidatorDB,
     WorkflowDB,
 )
+from alfrd.manifest import MANIFEST_ALIAS_FILENAME, MANIFEST_FILENAME, ManifestNotFoundError
+
+
+def resolve_selected_manifest(path: str | Path) -> Path:
+    """Resolve only the selected directory or supported named manifest file."""
+
+    if not str(path).strip():
+        raise ValueError("Project path is required.")
+    selected = Path(path).expanduser()
+    if selected.is_symlink() and not selected.is_dir():
+        raise ValueError("Select a regular manifest file, not a symbolic link.")
+    try:
+        selected = selected.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError(f"Project path does not exist: {selected}") from error
+    if selected.is_dir():
+        for filename in (MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME):
+            candidate = selected / filename
+            if candidate.is_symlink():
+                raise ValueError("Manifest symbolic links are not accepted by the dashboard.")
+            if candidate.is_file():
+                return candidate.resolve()
+        raise ManifestNotFoundError(
+            f"No {MANIFEST_FILENAME!r} or {MANIFEST_ALIAS_FILENAME!r} exists in {selected}"
+        )
+    if not selected.is_file():
+        raise ValueError("Project path must be a directory or regular manifest file.")
+    if selected.name not in {MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME}:
+        raise ValueError(
+            f"Manifest filename must be {MANIFEST_FILENAME!r} or {MANIFEST_ALIAS_FILENAME!r}."
+        )
+    legacy = selected.parent / MANIFEST_FILENAME
+    if selected.name == MANIFEST_ALIAS_FILENAME and legacy.is_file():
+        if legacy.is_symlink():
+            raise ValueError("Manifest symbolic links are not accepted by the dashboard.")
+        return legacy.resolve()
+    return selected
+
+
+def resolve_artifact_path(working_directory: str | Path, relative_path: str) -> Path:
+    """Validate a non-sensitive existing artifact contained by one run."""
+
+    if not relative_path.strip():
+        raise ValueError("Artifact path is required.")
+    relative = Path(relative_path)
+    if relative.is_absolute() or "\\" in relative_path or relative in {Path("."), Path("..")}:
+        raise ValueError("Artifact path must be relative to the selected run directory.")
+    for part in relative.parts:
+        lowered = part.casefold()
+        if (
+            part in {"", ".", ".."}
+            or part.startswith(".")
+            or "secret" in lowered
+            or "credential" in lowered
+        ):
+            raise ValueError("Dotfiles, secret paths, and traversal are not allowed.")
+    try:
+        root = Path(working_directory).expanduser().resolve(strict=True)
+        candidate = (root / relative).resolve(strict=True)
+        resolved_relative = candidate.relative_to(root)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise ValueError("Artifact must exist inside the selected run directory.") from error
+    if resolved_relative == Path(".") or any(
+        part.startswith(".") or "secret" in part.casefold() or "credential" in part.casefold()
+        for part in resolved_relative.parts
+    ):
+        raise ValueError("Dotfiles and secret paths cannot be registered through aliases.")
+    if not (candidate.is_file() or candidate.is_dir()):
+        raise ValueError("Artifact must be an existing regular file or directory.")
+    return candidate
 
 
 class CatalogReader(Protocol):
@@ -160,17 +230,26 @@ class RuntimeCatalogReader:
 
         project = self.service.get_project(project_id)
         try:
-            manifest = load_manifest(project.root_path)
-        except ManifestError as error:
+            manifest = load_manifest(resolve_selected_manifest(project.root_path))
+        except (ManifestError, OSError, ValueError) as error:
             return {
                 "path": str(Path(project.root_path) / "alfrd.yaml"),
                 "validation": {"valid": False, "errors": [str(error)]},
                 "sync": {"state": "invalid"},
             }
+        expected = {
+            entrypoint.name: (entrypoint.name, list(entrypoint.cmd))
+            for entrypoint in manifest.entrypoint
+        }
+        persisted = {
+            workflow.name: (workflow.steps[0].key, list(workflow.steps[0].command_json))
+            for workflow in self.service.list_workflows(project_id)
+            if len(workflow.steps) == 1
+        }
         return {
             "path": str(manifest.path),
             "validation": {"valid": True, "errors": []},
-            "sync": {"state": "synced"},
+            "sync": {"state": "synced" if expected == persisted else "out_of_sync"},
         }
 
     def list_workflows(self, project_id: str) -> list[dict[str, Any]]:
@@ -244,8 +323,8 @@ class RuntimeCatalogReader:
 
         project = self.service.get_project(project_id)
         try:
-            columns = load_manifest(project.root_path).extra.get("dataset_columns", [])
-        except ManifestError:
+            columns = load_manifest(resolve_selected_manifest(project.root_path)).extra.get("dataset_columns", [])
+        except (ManifestError, OSError, ValueError):
             return []
         if not isinstance(columns, list):
             return []
@@ -273,8 +352,8 @@ class RuntimeCatalogReader:
 
         project = self.service.get_project(project_id)
         try:
-            artifacts = load_manifest(project.root_path).artifacts
-        except ManifestError:
+            artifacts = load_manifest(resolve_selected_manifest(project.root_path)).artifacts
+        except (ManifestError, OSError, ValueError):
             return []
         return [
             {
@@ -297,4 +376,10 @@ class RuntimeCatalogReader:
         )
 
 
-__all__ = ["CatalogReader", "RuntimeCatalogReader", "SqlAlchemyCatalogReader"]
+__all__ = [
+    "CatalogReader",
+    "RuntimeCatalogReader",
+    "SqlAlchemyCatalogReader",
+    "resolve_artifact_path",
+    "resolve_selected_manifest",
+]

@@ -11,6 +11,9 @@ class DefaultConfig:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     JSON_SORT_KEYS = False
     CATALOG_CREATE_SCHEMA = True
+    RUNTIME_MUTATIONS_ENABLED = True
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = "Lax"
 
     @staticmethod
     def database_uri() -> str:

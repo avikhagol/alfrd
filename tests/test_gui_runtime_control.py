@@ -54,7 +54,18 @@ def client(runtime_service, spawner, tmp_path):
             "RUNTIME_SPAWN": spawner,
         }
     )
-    return app.test_client()
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["_alfrd_csrf_token"] = "test-token"
+    original_post = client.post
+
+    def csrf_post(*args, **kwargs):
+        headers = kwargs.setdefault("headers", {})
+        headers.setdefault("X-CSRF-Token", "test-token")
+        return original_post(*args, **kwargs)
+
+    client.post = csrf_post
+    return client
 
 
 def test_control_routes_are_503_without_a_configured_runtime_service():
@@ -63,7 +74,7 @@ def test_control_routes_are_503_without_a_configured_runtime_service():
 
     response = client.post("/api/runtime/runs", json={"workflow_id": "x", "dataset_id": "y"})
 
-    assert response.status_code == 503
+    assert response.status_code == 403
 
 
 def test_start_run_never_executes_synchronously_and_spawns_worker(client, seeded, spawner):

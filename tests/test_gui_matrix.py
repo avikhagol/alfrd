@@ -52,7 +52,18 @@ def app(tmp_path: Path, runtime):
 
 @pytest.fixture
 def client(app):
-    return app.test_client()
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["_alfrd_csrf_token"] = "test-token"
+    original_post = client.post
+
+    def csrf_post(*args, **kwargs):
+        headers = kwargs.setdefault("headers", {})
+        headers.setdefault("X-CSRF-Token", "test-token")
+        return original_post(*args, **kwargs)
+
+    client.post = csrf_post
+    return client
 
 
 def test_matrix_page_renders_rows_and_summary(client, runtime):
@@ -63,6 +74,14 @@ def test_matrix_page_renders_rows_and_summary(client, runtime):
     assert b"active-1" in response.data
     assert b"prepare" in response.data
     assert b"finish" in response.data
+
+
+def test_empty_matrix_cells_are_not_exposed_as_keyboard_buttons(client, runtime):
+    _, _, workflow = runtime
+    response = client.get(f"/dashboard/project/demo/workflows/{workflow.name}/matrix")
+
+    assert response.status_code == 200
+    assert b'data-execution-id="" tabindex="0" role="button"' not in response.data
 
 
 def test_matrix_json_endpoint_returns_statuses(client, runtime):
@@ -103,6 +122,23 @@ def test_matrix_cell_detail_endpoint(client, runtime):
     payload = response.get_json()
     assert payload["execution_id"] == execution.id
     assert payload["step"] == "prepare"
+
+
+def test_dataset_result_endpoint_returns_latest_ladder_and_collapsed_history(client, runtime):
+    service, project, workflow = runtime
+    dataset = service.get_dataset_by_external_id(project.id, "active-1")
+
+    response = client.get(
+        f"/api/projects/demo/workflows/{workflow.name}/datasets/{dataset.id}"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["dataset_external_id"] == "active-1"
+    assert [step["step"] for step in payload["steps"]] == ["prepare", "finish"]
+    assert payload["steps"][0]["status"] == "running"
+    assert payload["next_step"] == "prepare"
+    assert payload["attempt_count"] == len(payload["history"])
 
 
 def test_matrix_csv_export_endpoints(client, runtime):

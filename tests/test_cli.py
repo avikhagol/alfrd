@@ -68,6 +68,7 @@ def test_cli_serve_runs_app_with_explicit_network_settings(monkeypatch):
     monkeypatch.setattr(
         "alfrd.gui.create_app", lambda config=None: configs.append(config) or FakeApp()
     )
+    monkeypatch.setattr("alfrd.cli.webbrowser.open", lambda url: True)
 
     result = runner.invoke(
         alfrd_cli,
@@ -76,7 +77,8 @@ def test_cli_serve_runs_app_with_explicit_network_settings(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert calls == [{"host": "127.0.0.2", "port": 8765, "debug": True}]
-    assert configs == [None]
+    assert configs[0]["RUNTIME_SERVICE"] is not None
+    assert "ALFRD dashboard: http://127.0.0.2:8765/dashboard/" in result.output
 
 
 def test_cli_gui_is_a_serve_alias(monkeypatch):
@@ -87,6 +89,7 @@ def test_cli_gui_is_a_serve_alias(monkeypatch):
             calls.append(kwargs)
 
     monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
+    monkeypatch.setattr("alfrd.cli.webbrowser.open", lambda url: True)
 
     result = runner.invoke(alfrd_cli, ["gui", "--port", "5050"])
 
@@ -104,6 +107,7 @@ def test_cli_serve_configures_runtime_database(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "alfrd.gui.create_app", lambda config=None: configs.append(config) or FakeApp()
     )
+    monkeypatch.setattr("alfrd.cli.webbrowser.open", lambda url: True)
     database = tmp_path / "runtime.sqlite"
     result = runner.invoke(alfrd_cli, ["serve", "--runtime-db", str(database)])
 
@@ -113,11 +117,74 @@ def test_cli_serve_configures_runtime_database(monkeypatch, tmp_path):
     assert configs[0]["CATALOG_READER"].service is configs[0]["RUNTIME_SERVICE"]
 
 
+def test_cli_no_browser_skips_browser_and_wildcard_prints_loopback(monkeypatch):
+    calls = []
+
+    class FakeApp:
+        def run(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
+    monkeypatch.setattr("alfrd.cli.webbrowser.open", lambda url: (_ for _ in ()).throw(AssertionError(url)))
+    result = runner.invoke(alfrd_cli, ["serve", "--host", "0.0.0.0", "--no-browser"])
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:5000/dashboard/" in result.output
+    assert calls == [{"host": "0.0.0.0", "port": 5000, "debug": False}]
+
+
 def test_cli_manifest_validate_example():
     manifest = Path(__file__).parents[1] / "examples" / "avica_0.3" / "alfrd.yaml"
     result = runner.invoke(alfrd_cli, ["manifest", "validate", str(manifest)])
     assert result.exit_code == 0, result.output
     assert "valid project-manifest-v1" in result.output
+
+
+def test_browser_opens_only_after_http_readiness(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from alfrd.cli import _open_dashboard_when_ready
+
+    calls = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(("http", self.path))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr("alfrd.cli.webbrowser.open", lambda url: calls.append(("browser", url)) or True)
+    url = f"http://127.0.0.1:{server.server_port}/dashboard/"
+    try:
+        _open_dashboard_when_ready(url, threading.Event())
+        assert calls == [("http", "/dashboard/"), ("browser", url)]
+        stopped = threading.Event()
+        stopped.set()
+        _open_dashboard_when_ready(url, stopped)
+        assert len(calls) == 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_cli_formats_ipv6_and_rejects_remote_debug(monkeypatch):
+    class FakeApp:
+        def run(self, **kwargs):
+            pass
+
+    monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
+    result = runner.invoke(alfrd_cli, ["serve", "--host", "::1", "--no-browser"])
+    assert result.exit_code == 0, result.output
+    assert "http://[::1]:5000/dashboard/" in result.output
+    result = runner.invoke(alfrd_cli, ["serve", "--host", "0.0.0.0", "--debug", "--no-browser"])
+    assert result.exit_code != 0
+    assert "loopback" in result.output
 
 
 def test_cli_import_avica_run(tmp_path):

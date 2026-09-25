@@ -6,6 +6,7 @@ import pytest
 
 from alfrd.runtime import RuntimeService, RuntimeStore
 from alfrd.runtime.matrix import MatrixQueryService, cell_detail
+from alfrd.gui.summaries import build_dataset_summary
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "avica_run"
@@ -75,6 +76,23 @@ def test_import_avica_run_latest_wins_status_timing_errors_artifacts_and_paramet
         "X: X_calibrated.uvf",
         "S: S_calibrated.uvf",
     }
+
+    summary = build_dataset_summary(
+        service, result.project.id, result.workflow.id, row.dataset_id
+    )
+    assert summary["source"] == "AVICA result CSV"
+    assert [item["step"] for item in summary["steps"]] == [
+        "preprocess_fitsidi",
+        "fits_to_ms",
+        "avica_avg",
+        "rpicard",
+    ]
+    assert summary["complete"] is False  # latest rpicard attempt in the fixture failed
+    avica_avg = next(item for item in summary["steps"] if item["step"] == "avica_avg")
+    assert avica_avg["status"] == "ok"
+    assert avica_avg["attempt_count"] == 2
+    assert avica_avg["items"] == [True, True]
+    assert [item["attempt"] for item in summary["history"] if item["step"] == "avica_avg"] == [1, 2]
 
 
 def test_import_avica_run_never_writes_source_tree(tmp_path):

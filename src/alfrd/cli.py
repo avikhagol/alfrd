@@ -3,6 +3,9 @@ import os
 import shutil
 import subprocess
 import sys
+import webbrowser
+import ipaddress
+import threading
 from typing import Optional, Annotated
 
 import typer
@@ -238,7 +241,32 @@ def nrun(
     executor.run_entrypoint(name, args)
 
 
-def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None) -> None:
+def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
+    """Open once the local HTTP server responds; stop if serving exits early."""
+    from urllib.error import URLError
+    from urllib.request import ProxyHandler, build_opener
+
+    opener = build_opener(ProxyHandler({}))
+    for _ in range(50):
+        if stopped.wait(0.1):
+            return
+        try:
+            with opener.open(url, timeout=0.25) as response:
+                ready = response.status == 200
+        except (OSError, URLError):
+            continue
+        if ready and not stopped.is_set():
+            try:
+                if not webbrowser.open(url):
+                    print("Could not open a browser; open the dashboard URL above manually.")
+            except Exception as error:
+                print(f"Could not open a browser ({error}); open the dashboard URL above manually.")
+            return
+    if not stopped.is_set():
+        print("Browser launch timed out; open the dashboard URL above manually.")
+
+
+def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -246,17 +274,42 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None)
             "The web dependencies are not installed; install 'alfrd[gui]'."
         ) from error
 
-    config = None
-    if runtime_db:
-        from alfrd.gui.services import RuntimeCatalogReader
+    from alfrd.gui.services import RuntimeCatalogReader
 
-        service = _runtime_service(runtime_db)
-        config = {
-            "RUNTIME_DATABASE": str(Path(runtime_db).expanduser().resolve()),
-            "RUNTIME_SERVICE": service,
-            "CATALOG_READER": RuntimeCatalogReader(service),
-        }
-    create_app(config).run(host=host, port=port, debug=debug)
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.lower() == "localhost"
+    if debug and not loopback:
+        raise typer.BadParameter("Debug mode is only available on a loopback interface.")
+    database = Path(runtime_db).expanduser().resolve() if runtime_db else _default_runtime_db().resolve()
+    service = _runtime_service(str(database))
+    config = {
+        "RUNTIME_DATABASE": str(database),
+        "RUNTIME_SERVICE": service,
+        "CATALOG_READER": RuntimeCatalogReader(service),
+        "CATALOG_CREATE_SCHEMA": False,
+        "RUNTIME_MUTATIONS_ENABLED": loopback,
+    }
+    browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    authority = f"[{browser_host}]" if ":" in browser_host else browser_host
+    url = f"http://{authority}:{port}/dashboard/"
+    print(f"ALFRD dashboard: {url}")
+    app = create_app(config)
+    stopped = threading.Event()
+    browser_thread = None
+    if (not no_browser and (loopback or host in {"0.0.0.0", "::"})
+            and (not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true")):
+        browser_thread = threading.Thread(
+            target=_open_dashboard_when_ready, args=(url, stopped), daemon=True,
+        )
+        browser_thread.start()
+    try:
+        app.run(host=host, port=port, debug=debug)
+    finally:
+        stopped.set()
+        if browser_thread is not None:
+            browser_thread.join(timeout=1)
 
 
 @alfrd_cli.command()
@@ -267,10 +320,11 @@ def serve(
     runtime_db: Optional[str] = typer.Option(
         None, help="Path to the runtime SQLite database that backs matrix routes."
     ),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the dashboard in a browser."),
 ):
-    """Serve the read-only ALFRD catalog web application."""
+    """Serve the local ALFRD dashboard backed by the runtime SQLite database."""
 
-    _serve_web(host, port, debug, runtime_db)
+    _serve_web(host, port, debug, runtime_db, no_browser)
 
 
 @alfrd_cli.command()
@@ -281,10 +335,11 @@ def gui(
     runtime_db: Optional[str] = typer.Option(
         None, help="Path to the runtime SQLite database that backs matrix routes."
     ),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the dashboard in a browser."),
 ):
     """Alias for ``alfrd serve``."""
 
-    _serve_web(host, port, debug, runtime_db)
+    _serve_web(host, port, debug, runtime_db, no_browser)
 
 
 runtime_cli = typer.Typer(help="Start, resume, retry, and cancel durable runtime runs.")

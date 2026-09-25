@@ -1,16 +1,15 @@
 {% extends "dashboard/layout.htm" %}
 {% block content %}
-<nav aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="{{ url_for('dashboard.index_dashboard') }}">Projects</a></li><li class="breadcrumb-item active">{{ project.name }}</li></ol></nav>
-<h1>{{ project.name }}</h1>
-<p class="lead text-muted">{{ project.description or "No description provided." }}</p>
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="{{ url_for('dashboard.index_dashboard') }}">Projects</a><span aria-hidden="true">/</span><span aria-current="page">{{ project.name }}</span></nav>
+<div class="page-heading"><div><p class="eyebrow">Project workspace</p><h1>{{ project.name }}</h1><p>{{ project.description or "No description provided." }}</p></div>{% if runtime_enabled %}<a class="button" href="{{ url_for('dashboard.project_artifacts', project_name=project.name) }}">Register artifact</a>{% endif %}</div>
 
 <div class="card mb-4">
   <div class="card-header">Manifest validation and synchronization</div>
   <div class="card-body">
-    <dl class="row mb-0">
+    <dl class="metadata-grid">
       <dt class="col-sm-3">Path</dt><dd class="col-sm-9"><code>{{ manifest.path or "Not recorded" }}</code></dd>
-      <dt class="col-sm-3">Manifest validation</dt><dd class="col-sm-9">{% if manifest.validation.valid is sameas true %}valid{% elif manifest.validation.valid is sameas false %}invalid{% else %}unknown{% endif %}</dd>
-      <dt class="col-sm-3">Synchronization</dt><dd class="col-sm-9">{{ manifest.sync.state }}</dd>
+      <dt class="col-sm-3">Manifest validation</dt><dd class="col-sm-9">{% if manifest.validation.valid is sameas true %}<span class="status status-succeeded">valid</span>{% elif manifest.validation.valid is sameas false %}<span class="status status-failed">invalid</span>{% else %}<span class="status status-pending">unknown</span>{% endif %}</dd>
+      <dt class="col-sm-3">Synchronization</dt><dd class="col-sm-9"><span class="status status-{{ manifest.sync.state }}">{{ manifest.sync.state }}</span></dd>
     </dl>
     {% if manifest.validation.errors %}<ul class="text-danger mt-3 mb-0">{% for error in manifest.validation.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
   </div>
@@ -19,7 +18,7 @@
 {% macro catalog_table(title, rows, fields) %}
 <div class="card mb-4">
   <div class="card-header">{{ title }}</div>
-  <div class="card-body p-0">
+  <div class="table-scroll">
     <table class="table table-sm mb-0">
       <thead><tr>{% for field, label in fields %}<th>{{ label }}</th>{% endfor %}</tr></thead>
       <tbody>
@@ -31,15 +30,24 @@
 </div>
 {% endmacro %}
 
+{% macro summary_table(summary) %}
+<section class="card mb-4"><div class="card-header">{{ summary.title }}</div>
+{% if summary.error %}<div class="empty-state"><p class="error-text">{{ summary.error }}</p></div>
+{% elif summary.rows %}<div class="table-scroll"><table><thead><tr>{% for column in summary.columns %}<th>{{ column.label }}</th>{% endfor %}</tr></thead><tbody>{% for row in summary.rows %}<tr>{% for column in summary.columns %}<td>{% if column.key == 'status' %}<span class="status status-{{ row[column.key] }}">{{ row[column.key] }}</span>{% elif column.key == 'duration_seconds' and row[column.key] is not none %}{{ "%.2f"|format(row[column.key]) }} s{% elif column.key == 'finished_at' and row[column.key] %}<time datetime="{{ row[column.key] }}" data-local-time>{{ row[column.key] }}</time>{% else %}{{ row[column.key] if row[column.key] is not none else '—' }}{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="empty-state"><p>No {{ summary.title|lower }} is available for this project.</p></div>{% endif %}</section>
+{% endmacro %}
+
+{% if summaries is defined %}{{ summary_table(summaries.config) }}{{ summary_table(summaries.result) }}{% endif %}
+
 <div class="card mb-4">
   <div class="card-header">Workflows</div>
-  <div class="card-body p-0">
+  <div class="table-scroll">
     <table class="table table-sm mb-0">
       <thead><tr><th>Name</th><th>Description</th><th>Sequence</th><th>Monitor</th></tr></thead>
       <tbody>
       {% for workflow in workflows %}<tr>
-        <td>{{ workflow.name }}</td><td>{{ workflow.description or "" }}</td><td>{{ workflow.sequence }}</td>
-        <td><a href="{{ url_for('dashboard.matrix_dashboard', project_name=project.name, workflow_name=workflow.name) }}">Dataset × step matrix</a></td>
+        <td><strong>{{ workflow.name }}</strong></td><td>{{ workflow.description or "" }}</td><td><ol class="sequence-list">{% for step in workflow.sequence %}<li>{{ step }}</li>{% endfor %}</ol></td>
+        <td><a class="button button-secondary button-small" href="{{ url_for('dashboard.matrix_dashboard', project_name=project.name, workflow_name=workflow.name) }}">Dataset × step matrix</a></td>
       </tr>{% else %}<tr><td colspan="4" class="text-muted">None recorded.</td></tr>{% endfor %}
       </tbody>
     </table>
@@ -50,4 +58,5 @@
 {{ catalog_table("Parameters", parameters, (("name", "Name"), ("type", "Type"), ("required", "Required"), ("default", "Default"))) }}
 {{ catalog_table("Dataset columns", dataset_columns, (("name", "Name"), ("type", "Type"), ("required", "Required"))) }}
 {{ catalog_table("Artifact definitions", artifact_definitions, (("name", "Name"), ("path_pattern", "Path pattern"), ("media_type", "Media type"))) }}
+<script>document.querySelectorAll('[data-local-time]').forEach(function (item) { var date = new Date(item.dateTime); if (!isNaN(date.getTime())) { item.textContent = date.toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'}); item.title = item.dateTime; } });</script>
 {% endblock %}

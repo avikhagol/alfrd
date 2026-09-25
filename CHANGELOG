@@ -1,0 +1,33 @@
+# Changelog
+
+All notable changes for this project are documented in this file.
+
+## [0.2.1.0] - Unreleased
+
+### Added
+- Isolated project and workflow tests that use temporary ALFRD homes.
+- Public import, logging, CLI, package-resource, and installed-wheel smoke tests.
+- Python 3.10–3.13 CI matrix.
+
+### Changed
+- Standardized the release version on the roadmap's four-component scheme.
+- Replaced the custom `LiveLog` controller with Python's standard `logging` hierarchy under the `alfrd` logger.
+- Packaged Flask templates, static CSS, and the SQL schema.
+- Moved the experimental `src/alfrd/core.py` implementation out of the import package.
+- Updated README examples to use APIs available in this release.
+
+### Fixed
+- Corrected GitHub Actions Python setup.
+- Corrected Python requirement metadata to `>=3.10`.
+- Prevented tests and runtime overrides from being pinned to the real `~/.alfrd/projects` path at import time.
+- Rejected project names that could escape `ALFRD_HOME` during create or remove operations.
+- Preserved multiple named workflows in a project's workflow configuration.
+- Honored validators that return `False` and isolated loaded plugin module identities.
+
+## [0.2.0] - Unreleased
+
+### Added
+- Initial decorator-based workflow runner, project management, and GUI scaffold.
+
+### Migration notes
+- Configure logging with Python's standard `logging` API. `alfrd.core.logger` remains only as a deprecated shim that re-exports the standard package logger.

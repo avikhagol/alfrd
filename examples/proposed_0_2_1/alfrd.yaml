@@ -1,0 +1,79 @@
+alfrd_manifest: "1.0"
+
+project:
+  id: demo-science
+  name: Demo Science Pipeline
+  description: Design fixture for the consolidated ALFRD 0.2.1.0 interface
+  package: pipeline
+  minimum_alfrd: "0.2.1.0"
+
+entrypoints:
+  run:
+    command: [python, -m, pipeline]
+
+providers:
+  pipeline: "pipeline:build_pipeline"
+
+datasets:
+  primary_key: TARGET_NAME
+  source:
+    type: csv
+    path: datasets.csv
+  columns:
+    TARGET_NAME:
+      type: string
+      required: true
+      display:
+        label: Target
+        frozen: true
+    INPUT_FILE:
+      type: path
+      required: true
+      display:
+        label: Input file
+    WORKDIR:
+      type: path
+      required: true
+      display:
+        label: Working directory
+
+workflows:
+  calibration:
+    label: Example calibration
+    provider: "pipeline:build_pipeline"
+    steps:
+      - id: prepare
+        label: Prepare input
+      - id: calibrate
+        label: Calibrate
+      - id: summarize
+        label: Build summary
+
+artifacts:
+  - id: prepared_data
+    label: Prepared data
+    produced_by: prepare
+    path: "{dataset.WORKDIR}/prepared.json"
+    kind: json
+    viewer: json
+
+  - id: calibration_log
+    label: Calibration log
+    produced_by: calibrate
+    path: "{dataset.WORKDIR}/calibration.log"
+    kind: log
+    viewer: text
+
+  - id: diagnostic_plots
+    label: Diagnostic plots
+    produced_by: calibrate
+    glob: "{dataset.WORKDIR}/plots/*.png"
+    kind: image_collection
+    viewer: gallery
+
+  - id: summary_table
+    label: Summary
+    produced_by: summarize
+    path: "{dataset.WORKDIR}/summary.csv"
+    kind: table
+    viewer: table

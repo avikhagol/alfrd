@@ -12,6 +12,7 @@ import yaml
 from jsonschema import Draft202012Validator
 
 MANIFEST_FILENAME = "alfrd.yaml"
+MANIFEST_ALIAS_FILENAME = ".alfrd.yaml"
 MANIFEST_VERSION = 1
 _SCHEMA_FILENAME = "project-manifest-v1.schema.json"
 
@@ -134,20 +135,28 @@ class ProjectManifest:
 
 
 def discover_manifest(start: str | Path | None = None) -> Path:
-    """Find ``alfrd.yaml`` by walking from *start* toward the filesystem root."""
+    """Find a project manifest by walking toward the filesystem root.
+
+    The historical ``alfrd.yaml`` name takes precedence when both supported
+    names exist in the same directory.
+    """
 
     candidate = Path.cwd() if start is None else Path(start).expanduser()
     if candidate.is_file():
-        if candidate.name == MANIFEST_FILENAME:
+        if candidate.name in {MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME}:
+            legacy = candidate.parent / MANIFEST_FILENAME
+            if candidate.name == MANIFEST_ALIAS_FILENAME and legacy.is_file():
+                return legacy.resolve()
             return candidate.resolve()
         candidate = candidate.parent
     else:
         candidate = candidate.resolve()
 
     for directory in (candidate, *candidate.parents):
-        manifest = directory / MANIFEST_FILENAME
-        if manifest.is_file():
-            return manifest.resolve()
+        for filename in (MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME):
+            manifest = directory / filename
+            if manifest.is_file():
+                return manifest.resolve()
 
     raise ManifestNotFoundError(
         f"Could not find {MANIFEST_FILENAME!r} from {candidate} or any parent directory"
@@ -253,7 +262,7 @@ def load_manifest(path: str | Path | None = None) -> ProjectManifest:
     manifest_path = discover_manifest(path)
     try:
         data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ManifestError(f"Could not read YAML manifest {manifest_path}: {exc}") from exc
     if not isinstance(data, Mapping):
         raise ManifestError(f"YAML manifest root must be a mapping/object: {manifest_path}")
@@ -264,6 +273,7 @@ __all__ = [
     "ArtifactDefinition",
     "DEFAULT_ARTIFACT_KIND",
     "Entrypoint",
+    "MANIFEST_ALIAS_FILENAME",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
     "ManifestError",

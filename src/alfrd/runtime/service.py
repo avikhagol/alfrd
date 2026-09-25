@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from alfrd.manifest import ProjectManifest, load_manifest as load_project_manifest
+from alfrd.manifest import ProjectManifest, load_manifest as load_project_manifest, parse_manifest
 
 from .models import (
     Artifact,
@@ -160,6 +160,7 @@ class RuntimeService:
         manifest: ProjectManifest | str | Path,
         *,
         root_path: str | Path | None = None,
+        create_root: bool = True,
     ) -> tuple[Project, list[WorkflowDefinition]]:
         """Register a discovered project without importing consumer code.
 
@@ -174,20 +175,38 @@ class RuntimeService:
         root = root_path or (document.path.parent if document.path is not None else None)
         if root is None:
             raise ValueError("root_path is required for an in-memory manifest")
+        # Validate even caller-constructed typed manifests before persisting.
+        parse_manifest(document.to_dict())
+        root = Path(root).expanduser().resolve()
+        if create_root:
+            root.mkdir(parents=True, exist_ok=True)
+        elif not root.is_dir():
+            raise ValueError("The selected project directory no longer exists.")
         description = document.extra.get("description")
-        project = self.create_project(
-            document.name,
-            root,
-            description if isinstance(description, str) else None,
-        )
-        workflows = [
-            self.create_workflow(
-                project.id,
-                entrypoint.name,
-                [{"key": entrypoint.name, "command": entrypoint.cmd}],
+        # One transaction: a failed workflow must not strand a partially
+        # connected project that would be mistaken for an idempotent retry.
+        with self.store.session() as session:
+            project = Project(
+                name=document.name, root_path=str(root),
+                description=description if isinstance(description, str) else None,
             )
-            for entrypoint in document.entrypoint
-        ]
+            session.add(project)
+            session.flush()
+            self._audit_entity(session, "project", project.id, "created")
+            workflows = []
+            for entrypoint in document.entrypoint:
+                workflow = WorkflowDefinition(
+                    project_id=project.id, name=entrypoint.name, version=1,
+                    parameters_json={},
+                    steps=[StepDefinition(
+                        key=entrypoint.name, position=0,
+                        command_json=list(entrypoint.cmd), parameters_json={},
+                    )],
+                )
+                session.add(workflow)
+                session.flush()
+                self._audit_entity(session, "workflow_definition", workflow.id, "created")
+                workflows.append(workflow)
         return project, workflows
 
     def create_workflow(

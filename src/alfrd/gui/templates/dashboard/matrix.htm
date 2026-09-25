@@ -1,45 +1,49 @@
 {% extends "dashboard/layout.htm" %}
 {% block content %}
-<nav aria-label="breadcrumb"><ol class="breadcrumb">
-  <li class="breadcrumb-item"><a href="{{ url_for('dashboard.index_dashboard') }}">Projects</a></li>
-  <li class="breadcrumb-item"><a href="{{ url_for('dashboard.project_details', project_name=project.name) }}">{{ project.name }}</a></li>
-  <li class="breadcrumb-item active">{{ workflow_name }} matrix</li>
-</ol></nav>
-<h1>{{ project.name }} / {{ workflow_name }}</h1>
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+  <a href="{{ url_for('dashboard.index_dashboard') }}">Projects</a><span aria-hidden="true">/</span>
+  <a href="{{ url_for('dashboard.project_details', project_name=project.name) }}">{{ project.name }}</a><span aria-hidden="true">/</span>
+  <span aria-current="page">{{ workflow_name }} matrix</span>
+</nav>
+<div class="page-heading matrix-heading"><div><p class="eyebrow">Workflow monitor</p><h1>{{ workflow_name }}</h1><p>{{ project.name }} · Live dataset progress refreshes every 5 seconds.</p></div></div>
 
-<div class="row mb-4">
-  <div class="col-auto"><span class="badge bg-secondary">{{ matrix.summary.total_datasets }} datasets</span></div>
+<div class="summary-strip" aria-label="Workflow summary">
+  <div class="summary-item"><strong>{{ matrix.summary.total_datasets }}</strong><span>datasets</span></div>
   {% for status, count in matrix.summary.status_counts.items() %}
-    {% if count %}<div class="col-auto"><span class="badge bg-light text-dark border">{{ status }}: {{ count }}</span></div>{% endif %}
+    {% if count %}<div class="summary-item"><strong>{{ count }}</strong><span class="status status-{{ status }}">{{ status }}</span></div>{% endif %}
   {% endfor %}
   {% if matrix.summary.elapsed_seconds is not none %}
-    <div class="col-auto"><span class="badge bg-light text-dark border">elapsed: {{ "%.1f"|format(matrix.summary.elapsed_seconds) }}s</span></div>
+    {% set elapsed = matrix.summary.elapsed_seconds %}
+    <div class="summary-item"><strong>{% if elapsed >= 86400 %}{{ "%.1f"|format(elapsed / 86400) }} d{% elif elapsed >= 3600 %}{{ "%.1f"|format(elapsed / 3600) }} h{% elif elapsed >= 60 %}{{ "%.1f"|format(elapsed / 60) }} min{% else %}{{ "%.1f"|format(elapsed) }} s{% endif %}</strong><span>elapsed</span></div>
   {% endif %}
 </div>
 
-<form class="row g-2 mb-3" method="get">
-  <div class="col-auto">
-    <select name="status" class="form-select form-select-sm">
+<form class="matrix-toolbar" method="get">
+  <div class="filter-field filter-status">
+    <label for="matrix-status">Status</label>
+    <select id="matrix-status" name="status" class="form-select form-select-sm">
       <option value="">All statuses</option>
       {% for status in statuses %}
         <option value="{{ status }}" {% if status_filter == status %}selected{% endif %}>{{ status }}</option>
       {% endfor %}
     </select>
   </div>
-  <div class="col-auto">
-    <input type="text" name="search" class="form-control form-control-sm" placeholder="Search dataset id" value="{{ search }}">
+  <div class="filter-field filter-search">
+    <label for="matrix-search">Dataset search</label>
+    <input id="matrix-search" type="text" name="search" class="form-control form-control-sm" placeholder="Search dataset id" value="{{ search }}">
   </div>
-  <div class="col-auto">
+  <div class="filter-submit">
     <button type="submit" class="btn btn-sm btn-outline-primary">Filter</button>
   </div>
-  <div class="col-auto ms-auto">
+  <div class="filter-actions">
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_csv_api', project_name=project.name, workflow_name=workflow_name) }}">Export matrix CSV</a>
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_details_csv_api', project_name=project.name, workflow_name=workflow_name) }}">Export details CSV</a>
   </div>
 </form>
 
+<p id="matrix-refresh-status" role="status" aria-live="polite"></p>
 <div class="card border-0 shadow-sm">
-  <div class="card-body p-0">
+  <div class="table-scroll">
     <table class="table table-hover mb-0" id="matrix-table"
            data-matrix-url="{{ url_for('api.matrix_api', project_name=project.name, workflow_name=workflow_name) }}">
       <thead>
@@ -52,13 +56,13 @@
       <tbody>
       {% for row in matrix.rows %}
         <tr data-dataset-id="{{ row.dataset_external_id }}">
-          <td><strong>{{ row.dataset_external_id }}</strong>{% if row.dataset_name %}<div class="text-muted small">{{ row.dataset_name }}</div>{% endif %}</td>
-          <td><span class="badge bg-secondary matrix-run-status">{{ row.run_status }}</span></td>
+          <td><button type="button" class="dataset-result-button" data-dataset-key="{{ row.dataset_id }}"><strong>{{ row.dataset_external_id }}</strong>{% if row.dataset_name and row.dataset_name != row.dataset_external_id %}<span class="dataset-name">{{ row.dataset_name }}</span>{% endif %}<span class="dataset-open-hint">View result →</span></button></td>
+          <td><span class="status status-{{ row.run_status }} matrix-run-status">{{ row.run_status }}</span></td>
           {% for step in matrix.steps %}
             {% set cell = row.cells[step] %}
-            <td class="matrix-cell" data-step="{{ step }}" data-execution-id="{{ cell.execution_id or '' }}">
-              <span class="badge matrix-status-badge">{{ cell.status }}</span>
-              {% if cell.artifact_count %}<span class="badge bg-info text-dark">{{ cell.artifact_count }} artifact{{ 's' if cell.artifact_count != 1 else '' }}</span>{% endif %}
+            <td class="matrix-cell" data-step="{{ step }}" data-execution-id="{{ cell.execution_id or '' }}"{% if cell.execution_id %} tabindex="0" role="button" aria-label="{{ row.dataset_external_id }} / {{ step }} details"{% endif %}>
+              <span class="status status-{{ cell.status }} matrix-status-badge">{{ cell.status }}</span>
+              <span class="artifact-count matrix-artifact-count"{% if not cell.artifact_count %} hidden{% endif %}>{{ cell.artifact_count }} artifact{{ 's' if cell.artifact_count != 1 else '' }}</span>
             </td>
           {% endfor %}
         </tr>
@@ -70,52 +74,260 @@
   </div>
 </div>
 
-<div class="modal" tabindex="-1" id="cell-detail-modal">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title">Cell detail</h5>
-        <button type="button" class="btn-close" onclick="document.getElementById('cell-detail-modal').classList.remove('show')"></button>
+<div class="modal" id="dataset-result-modal" role="dialog" aria-modal="true" aria-labelledby="dataset-result-title" aria-describedby="dataset-result-context" hidden>
+  <div class="modal-dialog modal-dialog-wide" role="document"><div class="modal-content">
+    <div class="modal-header"><div><p class="eyebrow">Pipeline result</p><h2 id="dataset-result-title">Dataset result</h2><p id="dataset-result-context" class="modal-context"></p></div><button type="button" class="modal-close" aria-label="Close dataset result" data-close-dataset-modal>×</button></div>
+    <div class="modal-body" aria-live="polite">
+      <p class="modal-error" id="dataset-result-error" role="alert" hidden></p>
+      <p id="dataset-result-loading">Loading pipeline result…</p>
+      <div id="dataset-result-content" hidden>
+        <div class="result-tally" id="dataset-result-tally"></div>
+        <div class="table-scroll result-table-scroll"><table class="result-table"><thead><tr><th>#</th><th>Step</th><th>Status</th><th>ok</th><th>failed</th><th>Items</th><th>Duration</th><th>Finished</th><th>Note</th></tr></thead><tbody id="dataset-result-steps"></tbody></table></div>
+        <p class="result-outcome" id="dataset-result-outcome"></p>
+        <details class="history-panel" id="dataset-history-panel"><summary><span>Run history</span><span class="count-pill" id="dataset-history-count"></span></summary><p>Every recorded attempt, grouped by pipeline step.</p><div class="table-scroll"><table class="history-table"><thead><tr><th>Step</th><th>Try</th><th>Status</th><th>ok</th><th>failed</th><th>Duration</th><th>Started</th><th>Note</th></tr></thead><tbody id="dataset-history-rows"></tbody></table></div></details>
       </div>
-      <div class="modal-body"><pre id="cell-detail-body">Select a cell to see details.</pre></div>
     </div>
-  </div>
+  </div></div>
+</div>
+
+<div class="modal" id="cell-detail-modal" role="dialog" aria-modal="true" aria-labelledby="cell-detail-title" aria-describedby="cell-detail-context" hidden>
+  <div class="modal-dialog" role="document"><div class="modal-content">
+    <div class="modal-header"><div><p class="eyebrow">Execution detail</p><h2 id="cell-detail-title">Step execution</h2><p id="cell-detail-context" class="modal-context"></p></div><button type="button" class="modal-close" aria-label="Close cell detail" data-close-modal>×</button></div>
+    <div class="modal-body" id="cell-detail-body" aria-live="polite">
+      <p class="modal-error" id="cell-detail-error" role="alert" hidden></p>
+      <p id="cell-detail-loading">Loading execution details…</p>
+      <div id="cell-detail-content" hidden>
+        <dl class="detail-grid">
+          <div><dt>Status</dt><dd id="detail-status"></dd></div>
+          <div><dt>Attempt</dt><dd id="detail-attempt"></dd></div>
+          <div><dt>Duration</dt><dd id="detail-duration"></dd></div>
+          <div><dt>Exit code</dt><dd id="detail-exit-code"></dd></div>
+          <div><dt>Started</dt><dd id="detail-started"></dd></div>
+          <div><dt>Finished</dt><dd id="detail-finished"></dd></div>
+        </dl>
+        <section class="detail-section"><h3>Command</h3><pre class="code-block" id="detail-command"></pre></section>
+        <section class="detail-callout detail-callout-error" id="detail-error-section" hidden><h3>Error</h3><p id="detail-error-message"></p></section>
+        <div class="output-grid">
+          <section class="detail-section"><h3>Standard output</h3><pre class="output-block" id="detail-stdout"></pre></section>
+          <section class="detail-section"><h3>Standard error</h3><pre class="output-block" id="detail-stderr"></pre></section>
+        </div>
+        <section class="detail-section"><div class="section-heading"><h3>Artifacts</h3><span class="count-pill" id="detail-artifact-count"></span></div><div id="detail-artifacts"></div></section>
+        <details class="raw-detail"><summary>Raw execution identifiers</summary><dl class="raw-identifiers"><dt>Execution ID</dt><dd><code id="detail-execution-id"></code></dd></dl></details>
+      </div>
+    </div>
+  </div></div>
 </div>
 
 <script>
 (function () {
   var table = document.getElementById("matrix-table");
   if (!table) { return; }
-  var matrixUrl = table.dataset.matrixUrl;
+  var matrixUrl = table.dataset.matrixUrl + window.location.search;
+  var refreshStatus = document.getElementById("matrix-refresh-status");
+  var modal = document.getElementById("cell-detail-modal");
+  var close = modal.querySelector("[data-close-modal]");
+  var detailError = document.getElementById("cell-detail-error");
+  var detailLoading = document.getElementById("cell-detail-loading");
+  var detailContent = document.getElementById("cell-detail-content");
+  var datasetModal = document.getElementById("dataset-result-modal");
+  var datasetClose = datasetModal.querySelector("[data-close-dataset-modal]");
+  var datasetError = document.getElementById("dataset-result-error");
+  var datasetLoading = document.getElementById("dataset-result-loading");
+  var datasetContent = document.getElementById("dataset-result-content");
+  var opener = null;
+  var datasetOpener = null;
+  var detailRequest = 0;
+  function displayValue(value, fallback) { return value === null || value === undefined || value === '' ? (fallback || '—') : String(value); }
+  function formatDate(value) {
+    if (!value) { return '—'; }
+    var date = new Date(value);
+    return isNaN(date.getTime()) ? value : date.toLocaleString([], {dateStyle: 'medium', timeStyle: 'medium'});
+  }
+  function formatTime(value) {
+    if (!value) { return '—'; }
+    var date = new Date(value);
+    return isNaN(date.getTime()) ? value : date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  }
+  function formatDuration(value) {
+    if (value === null || value === undefined) { return '—'; }
+    if (value < 60) { return value.toFixed(1) + ' s'; }
+    if (value < 3600) { return Math.floor(value / 60) + 'm ' + String(Math.floor(value % 60)).padStart(2, '0') + 's'; }
+    return Math.floor(value / 3600) + 'h ' + String(Math.floor((value % 3600) / 60)).padStart(2, '0') + 'm';
+  }
+  function statusNode(value) {
+    var badge = document.createElement('span');
+    badge.className = 'status status-' + displayValue(value, 'unknown').toLowerCase();
+    badge.textContent = displayValue(value, 'unknown');
+    return badge;
+  }
+  function textCell(row, value, className) {
+    var cell = document.createElement('td');
+    if (className) { cell.className = className; }
+    cell.textContent = displayValue(value);
+    row.appendChild(cell);
+    return cell;
+  }
+  function itemStrip(values) {
+    var strip = document.createElement('span'); strip.className = 'item-strip';
+    if (!values.length) { strip.textContent = '—'; return strip; }
+    values.slice(0, 12).forEach(function (value) { var mark = document.createElement('span'); mark.className = value ? 'item-ok' : 'item-failed'; mark.textContent = value ? '✓' : '×'; mark.setAttribute('aria-label', value ? 'passed' : 'failed'); strip.appendChild(mark); });
+    if (values.length > 12) { var more = document.createElement('small'); more.textContent = '+' + (values.length - 12); strip.appendChild(more); }
+    return strip;
+  }
+  function renderResultRow(target, step, history) {
+    var row = document.createElement('tr');
+    if (!history) { textCell(row, step.position, 'numeric-cell'); }
+    textCell(row, step.step, 'step-cell');
+    if (history) { textCell(row, step.attempt, 'numeric-cell'); }
+    var statusCell = document.createElement('td'); statusCell.appendChild(statusNode(step.status)); row.appendChild(statusCell);
+    textCell(row, step.success_count, 'numeric-cell count-ok');
+    textCell(row, step.failed_count, 'numeric-cell count-failed');
+    if (!history) { var items = document.createElement('td'); items.appendChild(itemStrip(step.items || [])); row.appendChild(items); }
+    textCell(row, formatDuration(step.duration_seconds), 'numeric-cell');
+    textCell(row, history ? formatDate(step.started_at) : formatTime(step.finished_at), 'date-cell');
+    var note = textCell(row, step.note || '', 'note-cell'); note.title = step.note || '';
+    target.appendChild(row);
+  }
+  function renderDatasetResult(result) {
+    document.getElementById('dataset-result-title').textContent = result.dataset_external_id;
+    document.getElementById('dataset-result-context').textContent = result.workflow + ' · ' + result.source;
+    var tally = document.getElementById('dataset-result-tally'); tally.replaceChildren();
+    ['ok', 'partial', 'failed', 'pending', 'running', 'skipped', 'interrupted'].forEach(function (status) {
+      if (!result.status_counts[status]) { return; }
+      var item = document.createElement('span'); item.className = 'tally-item'; item.append(document.createTextNode(result.status_counts[status] + ' '), statusNode(status)); tally.appendChild(item);
+    });
+    var steps = document.getElementById('dataset-result-steps'); steps.replaceChildren();
+    result.steps.forEach(function (step) { renderResultRow(steps, step, false); });
+    var outcome = document.getElementById('dataset-result-outcome');
+    outcome.className = 'result-outcome ' + (result.complete ? 'result-complete' : 'result-incomplete');
+    outcome.textContent = result.complete ? '✓ All pipeline steps completed successfully' : '▸ Next step: ' + displayValue(result.next_step, 'none');
+    var history = document.getElementById('dataset-history-rows'); history.replaceChildren();
+    var previousStep = null;
+    result.history.forEach(function (attempt) {
+      var displayed = Object.assign({}, attempt, {step: attempt.step === previousStep ? '' : attempt.step});
+      renderResultRow(history, displayed, true); previousStep = attempt.step;
+    });
+    document.getElementById('dataset-history-count').textContent = result.attempt_count + (result.attempt_count === 1 ? ' attempt' : ' attempts');
+    document.getElementById('dataset-history-panel').open = false;
+    datasetLoading.hidden = true; datasetContent.hidden = false;
+  }
+  function renderArtifacts(artifacts) {
+    var target = document.getElementById('detail-artifacts');
+    var count = document.getElementById('detail-artifact-count');
+    target.replaceChildren(); count.textContent = artifacts.length + (artifacts.length === 1 ? ' file' : ' files');
+    if (!artifacts.length) { var empty = document.createElement('p'); empty.className = 'muted-copy'; empty.textContent = 'No artifacts were registered for this step.'; target.appendChild(empty); return; }
+    var list = document.createElement('ul'); list.className = 'artifact-list';
+    artifacts.forEach(function (artifact) { var item = document.createElement('li'); var name = document.createElement('strong'); var path = document.createElement('code'); name.textContent = displayValue(artifact.name, 'Unnamed artifact'); path.textContent = displayValue(artifact.path); item.append(name, path); list.appendChild(item); });
+    target.appendChild(list);
+  }
+  function renderDetail(detail) {
+    var statusTarget = document.getElementById('detail-status'); statusTarget.replaceChildren(statusNode(detail.status));
+    document.getElementById('detail-attempt').textContent = displayValue(detail.attempt);
+    document.getElementById('detail-duration').textContent = detail.duration_seconds == null ? '—' : detail.duration_seconds.toFixed(2) + ' s';
+    document.getElementById('detail-exit-code').textContent = displayValue(detail.exit_code);
+    document.getElementById('detail-started').textContent = formatDate(detail.started_at);
+    document.getElementById('detail-finished').textContent = formatDate(detail.finished_at);
+    document.getElementById('detail-command').textContent = (detail.command || []).join(' ');
+    document.getElementById('detail-stdout').textContent = displayValue(detail.stdout, 'No output captured.');
+    document.getElementById('detail-stderr').textContent = displayValue(detail.stderr, 'No output captured.');
+    var errorSection = document.getElementById('detail-error-section'); errorSection.hidden = !detail.error;
+    document.getElementById('detail-error-message').textContent = displayValue(detail.error);
+    document.getElementById('detail-execution-id').textContent = displayValue(detail.execution_id);
+    document.getElementById('cell-detail-title').textContent = displayValue(detail.step, 'Step execution');
+    renderArtifacts(detail.artifacts || []);
+    detailLoading.hidden = true; detailContent.hidden = false;
+  }
+  function closeModal() { detailRequest++; modal.hidden = true; detailError.hidden = true; if (opener) { opener.focus(); } }
+  function closeDatasetModal() { detailRequest++; datasetModal.hidden = true; datasetError.hidden = true; if (datasetOpener) { datasetOpener.focus(); } }
+  close.addEventListener("click", closeModal);
+  datasetClose.addEventListener("click", closeDatasetModal);
+  modal.addEventListener("click", function (event) { if (event.target === modal) { closeModal(); } });
+  datasetModal.addEventListener("click", function (event) { if (event.target === datasetModal) { closeDatasetModal(); } });
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape") { if (!modal.hidden) { closeModal(); } else if (!datasetModal.hidden) { closeDatasetModal(); } } });
+  modal.addEventListener("keydown", function (event) {
+    if (event.key !== "Tab") { return; }
+    var focusable = Array.from(modal.querySelectorAll('button, summary')).filter(function (element) { return !element.hidden; });
+    if (!focusable.length) { return; }
+    var first = focusable[0]; var last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+  table.addEventListener("keydown", function (event) {
+    if (event.target.matches('.matrix-cell') && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault(); event.target.click();
+    }
+  });
+  datasetModal.addEventListener("keydown", function (event) {
+    if (event.key !== "Tab") { return; }
+    var focusable = Array.from(datasetModal.querySelectorAll('button, summary')).filter(function (element) { return !element.hidden; });
+    if (!focusable.length) { return; }
+    var first = focusable[0]; var last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
 
   function refresh() {
-    fetch(matrixUrl).then(function (response) { return response.json(); }).then(function (payload) {
+    fetch(matrixUrl).then(function (response) {
+      if (!response.ok) { throw new Error('Refresh failed'); }
+      return response.json();
+    }).then(function (payload) {
+      refreshStatus.textContent = '';
       var rows = payload.rows || [];
+      var visibleIds = Array.from(table.querySelectorAll('tbody tr[data-dataset-id]'), function (row) {
+        return row.dataset.datasetId;
+      }).sort();
+      var incomingIds = rows.map(function (row) { return row.dataset_external_id; }).sort();
+      if (JSON.stringify(visibleIds) !== JSON.stringify(incomingIds)) {
+        window.location.reload(); return;
+      }
       rows.forEach(function (row) {
         var tr = table.querySelector('tr[data-dataset-id="' + CSS.escape(row.dataset_external_id) + '"]');
         if (!tr) { return; }
         var runBadge = tr.querySelector(".matrix-run-status");
-        if (runBadge) { runBadge.textContent = row.run_status; }
+        if (runBadge) { runBadge.textContent = row.run_status; runBadge.className = 'status status-' + row.run_status + ' matrix-run-status'; }
         Object.keys(row.cells).forEach(function (step) {
-          var td = tr.querySelector('.matrix-cell[data-step="' + step + '"]');
+          var td = tr.querySelector('.matrix-cell[data-step="' + CSS.escape(step) + '"]');
           if (!td) { return; }
           var cell = row.cells[step];
           var badge = td.querySelector(".matrix-status-badge");
-          if (badge) { badge.textContent = cell.status; }
+          if (badge) { badge.textContent = cell.status; badge.className = 'status status-' + cell.status + ' matrix-status-badge'; }
           td.dataset.executionId = cell.execution_id || "";
+          var artifacts = td.querySelector('.matrix-artifact-count');
+          artifacts.hidden = !cell.artifact_count;
+          artifacts.textContent = cell.artifact_count + ' artifact' + (cell.artifact_count === 1 ? '' : 's');
         });
       });
-    }).catch(function () { /* polling best-effort; ignore transient errors */ });
+    }).catch(function () { refreshStatus.textContent = 'Live refresh unavailable. Showing the last loaded state; retrying automatically.'; });
   }
 
   table.addEventListener("click", function (event) {
+    var datasetButton = event.target.closest('.dataset-result-button');
+    if (datasetButton) {
+      datasetOpener = datasetButton;
+      var datasetRequest = ++detailRequest;
+      var datasetUrl = {{ url_for('api.dataset_result_api', project_name=project.name, workflow_name=workflow_name, dataset_id='DATASET_ID')|tojson }}.replace(/DATASET_ID$/, encodeURIComponent(datasetButton.dataset.datasetKey));
+      datasetError.hidden = true; datasetContent.hidden = true; datasetLoading.hidden = false; datasetModal.hidden = false; datasetClose.focus();
+      fetch(datasetUrl).then(function (response) { if (!response.ok) { throw new Error('Could not load dataset result (' + response.status + ').'); } return response.json(); }).then(function (result) {
+        if (datasetRequest === detailRequest) { renderDatasetResult(result); }
+      }).catch(function (error) {
+        if (datasetRequest !== detailRequest) { return; }
+        datasetLoading.hidden = true; datasetError.textContent = error.message; datasetError.hidden = false;
+      });
+      return;
+    }
     var cell = event.target.closest(".matrix-cell");
     if (!cell || !cell.dataset.executionId) { return; }
-    var executionsUrl = "/api/projects/{{ project.name }}/executions/" + cell.dataset.executionId;
-    fetch(executionsUrl).then(function (response) { return response.json(); }).then(function (detail) {
-      document.getElementById("cell-detail-body").textContent = JSON.stringify(detail, null, 2);
-      document.getElementById("cell-detail-modal").classList.add("show");
-      document.getElementById("cell-detail-modal").style.display = "block";
+    opener = cell;
+    var requestNumber = ++detailRequest;
+    var executionsUrl = {{ url_for('api.execution_detail_api', project_name=project.name, execution_id='EXECUTION_ID')|tojson }}.replace(/EXECUTION_ID$/, encodeURIComponent(cell.dataset.executionId));
+    detailError.hidden = true; detailContent.hidden = true; detailLoading.hidden = false;
+    document.getElementById('cell-detail-context').textContent = cell.getAttribute('aria-label').replace(/ details$/, '');
+    modal.hidden = false; close.focus();
+    fetch(executionsUrl).then(function (response) { if (!response.ok) { throw new Error("Could not load cell detail (" + response.status + ")."); } return response.json(); }).then(function (detail) {
+      if (requestNumber === detailRequest) { renderDetail(detail); }
+    }).catch(function (error) {
+      if (requestNumber !== detailRequest) { return; }
+      detailLoading.hidden = true; detailError.textContent = error.message; detailError.hidden = false;
     });
   });
 
