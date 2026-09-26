@@ -1,0 +1,167 @@
+# ALFRD Studio template: avica
+#
+# Loaded when alfrd.yaml says `template: avica`. Everything here is a default:
+# alfrd.yaml wins for any key it sets (stages, a step's label/category/stage/
+# description/metadata/logs, overview.ms_path, project_settings, artifacts).
+# Copy a block into alfrd.yaml to change it.
+#
+# Placeholders in patterns:
+#   {target_dir}  resolved AVICA target_dir        {workdir}  a work dir (e.g. reductions/RDV41/wd)
+#   {meta_dir}    {workdir}/<avica.meta_dir>        {logs}     avica.logs (alfrd.yaml avica.logs)
+#   {band} {target} {project_code} {n} {step}       *  ?       shell-style wildcards in one folder
+# Metadata `file:` entries are relative to {meta_dir}; `require:` lists JSON keys
+# that must be present and non-empty (dot paths allowed).
+
+template: avica
+description: AVICA VLBI pipeline (avica.pipe.steps) read from the files it leaves on disk.
+
+stages:
+  - {id: ingest, title: Ingestion & Format Conversion}
+  - {id: reduce, title: Astrometry & Reduction}
+  - {id: meta, title: Meta Synthesis & Quality Control}
+  - {id: calib, title: Calibration Setup & Execution}
+
+overview:
+  # "MS Storage Path" column: first match per target (all matches in the tooltip).
+  ms_path:
+    - "{workdir}/wd_{band}_{target}/VLBI_{band}.ms"
+    - "{workdir}/wd_{band}/VLBI_{band}.ms"
+    - "{workdir}/VLBI.ms"
+
+step_defaults:
+  # Added to every step's logs.
+  logs:
+    - "{logs}/avica_crash_{step}.json"
+
+steps:
+  preprocess_fitsidi:
+    label: FITS-IDI data ingestion
+    short: fitsidi
+    category: Preprocessing
+    stage: ingest
+    icon: file
+    description: Fixes FITS-IDI data and headers, selects sources, splits by frequency ID and attaches ANTAB calibration.
+    inputs: ["folder_for_fits → FITS-IDI"]
+    outputs: ["{workdir}/raw/*", "{meta_dir}/fitsfiles_used.avica"]
+    metadata:
+      - {file: fitsfiles_used.avica, label: FITS files used, require: [filepath]}
+      - {file: listobs.json, label: listobs (scans), require: [listobs]}
+      - {file: listobs_fits.out, label: listobs (FITS)}
+  fits_to_ms:
+    label: Convert FITS to CASA Measurement Set
+    short: fits2ms
+    category: Preprocessing
+    stage: ingest
+    icon: convert
+    description: importfitsidi into a CASA Measurement Set (and flag it).
+    inputs: ["preprocess_fitsidi → {workdir}/raw/*"]
+    outputs: ["{workdir}/VLBI.ms", "{meta_dir}/available_wd_ifolder.avica"]
+    metadata:
+      - {file: available_wd_ifolder.avica, label: Work dirs and input templates, require: [input_folder, fitsfiles]}
+    logs:
+      - "{workdir}/fits_to_ms_*log*"
+  phaseshift:
+    label: Phase shifting
+    short: phaseshift
+    category: Astrometry
+    stage: reduce
+    icon: shift
+    description: Phase-shift sources that are more than 1 arcsecond off the catalogue position.
+    inputs: ["fits_to_ms → {workdir}/VLBI.ms"]
+    outputs: ["{workdir}/VLBI.ms"]
+    logs:
+      - "{workdir}/phaseshift_*log*"
+  avica_avg:
+    label: Data averaging
+    short: avg
+    category: Reduction
+    stage: reduce
+    icon: average
+    description: Average to 2 s / 500 kHz per band and split out flagged antennas (CASA mstransform).
+    inputs: ["phaseshift → {workdir}/VLBI.ms"]
+    outputs: ["{workdir}/wd_{band}/VLBI_{band}.ms", "{meta_dir}/msmeta_sources.avica"]
+    metadata:
+      - {file: msmeta_sources.avica, label: "MS metadata (bands, spws)", require: [bands_dict]}
+    logs:
+      - "{workdir}/wd_{band}/avica_avg_*log*"
+  avicameta_ms:
+    label: Metafile generation
+    short: meta
+    category: Metadata
+    stage: meta
+    icon: braces
+    description: Identify sources in each band's MS and save msmeta and calibrator roles.
+    inputs: ["avica_avg → {workdir}/wd_{band}/VLBI_{band}.ms"]
+    outputs: ["{meta_dir}/msmeta_sources_{band}_{target}.avica", "{meta_dir}/sources_ms_{band}_{target}.avica"]
+    metadata:
+      - {file: "msmeta_sources_{band}_{target}.avica", label: MS metadata per band, require: [bands_dict]}
+      - {file: "sources_ms_{band}_{target}.avica", label: Calibrator roles from the MS}
+    logs:
+      - "{workdir}/wd_{band}/avicameta_ms_*log*"
+  avica_snr:
+    label: SNR & visibility validation
+    short: snr
+    category: Quality Control
+    stage: meta
+    icon: snr
+    description: Short fringe-fit per band to rate calibrator signal-to-noise and pick reference antennas.
+    inputs: ["avicameta_ms → {meta_dir}/msmeta_sources_{band}_{target}.avica", "avica_avg → {workdir}/wd_{band}/VLBI_{band}.ms"]
+    outputs: ["{meta_dir}/sources_{band}_{target}.avica", "{meta_dir}/refants_{band}_{target}.avica", "{meta_dir}/snrating_{band}_{target}.out"]
+    metadata:
+      - {file: "sources_{band}_{target}.avica", label: SNR-rated sources, require: [NAME]}
+      - {file: "refants_{band}_{target}.avica", label: Reference antennas, require: [refant]}
+      - {file: "snrating_{band}_{target}.out", label: SNR rating table}
+    logs:
+      - "{workdir}/wd_{band}/avica_snr_*log*"
+  avica_fill_input:
+    label: Fill calibration parameters
+    short: fill
+    category: Calibration
+    stage: calib
+    icon: fill
+    description: Fill the rPicard input files from the SNR rating metadata.
+    inputs: ["avica_snr → {meta_dir}/sources_{band}_{target}.avica", "avica_snr → {meta_dir}/refants_{band}_{target}.avica"]
+    outputs: ["{workdir}/wd_{band}_{target}/input_template_{band}_{target}/*.inp", "{meta_dir}/sources_snr_{band}_{target}.avica"]
+    metadata:
+      - {file: "sources_snr_{band}_{target}.avica", label: Calibrator roles after SNR rating}
+    logs:
+      - "{workdir}/wd_{band}/avica_fill_input_*log*"
+  avica_split_ms:
+    label: Split target MS
+    short: split
+    category: Calibration
+    stage: calib
+    icon: split
+    description: Split each band's MS so it only holds the selected sources (CASA mstransform).
+    inputs: ["avica_avg → {workdir}/wd_{band}/VLBI_{band}.ms"]
+    outputs: ["{workdir}/wd_{band}_{target}/VLBI_{band}.ms"]
+    logs:
+      - "{workdir}/wd_{band}_{target}/avica_split_ms_*log*"
+  rpicard:
+    label: VLBI calibration (rPicard)
+    short: rpicard
+    category: Calibration
+    stage: calib
+    icon: pipeline
+    description: Run the complete rPicard calibration framework.
+    inputs: ["avica_fill_input → input_template_{band}_{target}/*.inp", "picard_input_template_update → *.inp", "avica_split_ms → {workdir}/wd_{band}_{target}/VLBI_{band}.ms"]
+    outputs: ["{workdir}/wd_{band}_{target}/*_calibrated.uvf"]
+    logs:
+      - "{workdir}/wd_{band}_{target}/casa.log_*"
+      - "{workdir}/wd_{band}_{target}/mpi_and_err.out_*"
+      - "{workdir}/wd_{band}_{target}/diagnostics_*/casa.log_*"
+
+artifacts:
+  - name: avica_logs
+    path_pattern: "{logs}/avica__log-*.log"
+    description: AVICA run logs
+    kind: log
+  - name: crash_snapshots
+    path_pattern: "{logs}/avica_crash_*.json"
+    description: Crash snapshot per step
+    kind: json
+    show_in_logs: true
+  - name: casa_logs
+    path_pattern: "casa-*.log"
+    description: CASA logs next to alfrd.yaml
+    kind: log

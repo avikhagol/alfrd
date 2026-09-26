@@ -1,0 +1,201 @@
+// Optional live data source: when the Studio is served by `alfrd serve`, the
+// same origin exposes the ALFRD runtime API. On GitHub Pages or `alfrd studio`
+// these requests simply 404 and the app stays in browser-only mode.
+
+import { manifestToWorkflows, normalizeStatus } from "./model.js";
+
+const API = "/api";
+
+async function getJson(path, init) {
+  const response = await fetch(`${API}${path}`, { credentials: "same-origin", headers: { Accept: "application/json" }, ...init });
+  const type = response.headers.get("content-type") || "";
+  const body = type.includes("json") ? await response.json() : null;
+  if (!response.ok) {
+    const message = body?.error?.message || `${response.status} ${response.statusText}`;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+  return body;
+}
+
+export const server = {
+  session: null,
+
+  /** Detect a same-origin ALFRD server. Resolves to the session or null. */
+  async detect() {
+    if (location.protocol === "file:") return null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const session = await getJson("/studio/session", { signal: controller.signal });
+      clearTimeout(timer);
+      if (session && session.app === "alfrd") {
+        this.session = session;
+        return session;
+      }
+    } catch {
+      /* not served by alfrd serve */
+    }
+    return null;
+  },
+
+  async mutate(path, payload) {
+    if (!this.session?.mutations_enabled) throw new Error("Runtime mutations are disabled on this server (loopback only).");
+    return getJson(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": this.session.csrf_token },
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  /** Register a project directory or alfrd.yaml path with the server. */
+  async connect(path) {
+    const project = await this.mutate("/projects/connect", { path });
+    if (Array.isArray(this.session?.projects) && project?.name && !this.session.projects.includes(project.name)) this.session.projects.push(project.name);
+    return project;
+  },
+
+  retryStep(runId, stepKey) {
+    return this.mutate(`/runtime/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepKey)}/retry`, {});
+  },
+
+  avicaLayout(project) {
+    return getJson(`/studio/avica/${encodeURIComponent(project)}/layout`);
+  },
+
+  avicaWorkdir(project, code, target) {
+    const q = new URLSearchParams({ code, ...(target ? { target } : {}) });
+    return getJson(`/studio/avica/${encodeURIComponent(project)}/workdir?${q}`);
+  },
+
+  avicaSummary(project) {
+    return this.mutate(`/studio/avica/${encodeURIComponent(project)}/summary`, {});
+  },
+
+  async avicaLog(project, name) {
+    const response = await fetch(`${API}/studio/avica/${encodeURIComponent(project)}/logs/${encodeURIComponent(name)}`, { credentials: "same-origin" });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return response.text();
+  },
+
+  /** Files the Studio reads for a connected project (alfrd.yaml-driven; logs listed only). */
+  projectScan(project) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/scan`);
+  },
+
+  async projectFile(project, rel) {
+    const response = await fetch(`${API}/studio/projects/${encodeURIComponent(project)}/file?${new URLSearchParams({ path: rel })}`, { credentials: "same-origin" });
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try { message = (await response.json()).error?.message || message; } catch { /* text body */ }
+      throw new Error(message);
+    }
+    return response.text();
+  },
+
+  saveManifest(project, text) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/manifest`, { text });
+  },
+
+  avicaConfig(project, changes) {
+    return this.mutate(`/studio/avica/${encodeURIComponent(project)}/config`, { changes });
+  },
+
+  /** Every project remembered in the runtime database (not only the ones shown). */
+  async listProjects() {
+    return (await getJson("/projects")).projects || [];
+  },
+
+  async forgetProject(project) {
+    const res = await this.mutate(`/studio/projects/${encodeURIComponent(project)}/forget`, {});
+    if (Array.isArray(this.session?.projects)) this.session.projects = this.session.projects.filter((p) => p !== project);
+    return res;
+  },
+
+  quit() {
+    return this.mutate("/studio/quit", {});
+  },
+
+  runLogs(runId) {
+    return getJson(`/runtime/runs/${encodeURIComponent(runId)}/logs`);
+  },
+
+  datasetSummary(project, workflow, datasetId) {
+    return getJson(`/projects/${encodeURIComponent(project)}/workflows/${encodeURIComponent(workflow)}/datasets/${encodeURIComponent(datasetId)}`);
+  },
+
+  /** Load every project/workflow matrix into an import bundle. */
+  async loadAll() {
+    const { projects: all = [] } = await getJson("/projects");
+    // `alfrd serve` started for one project shows only that one (see --all-projects).
+    const scope = Array.isArray(this.session?.projects) ? this.session.projects : null;
+    const projects = scope ? all.filter((p) => scope.includes(p.name)) : all;
+    const targets = [];
+    const workflows = [];
+    const messages = [];
+    for (const project of projects) {
+      let list = [];
+      try {
+        list = (await getJson(`/projects/${encodeURIComponent(project.name)}/workflows`)).workflows || [];
+      } catch (error) {
+        messages.push({ level: "warn", text: `${project.name}: ${error.message}` });
+        continue;
+      }
+      if (!list.length) messages.push({ level: "info", text: `${project.name}: connected, but its manifest declares no runtime workflows.` });
+      for (const wf of list) {
+        const info = manifestToWorkflows({ name: project.name, workflows: [{ name: wf.name, description: wf.description, steps: wf.sequence || [] }] }, `${project.name} (server)`, { aliases: false });
+        const workflow = info.workflows[0];
+        if (workflow) workflows.push({ project: project.name, ...workflow });
+        let matrix;
+        try {
+          matrix = await getJson(`/projects/${encodeURIComponent(project.name)}/workflows/${encodeURIComponent(wf.name)}/matrix`);
+        } catch (error) {
+          messages.push({ level: "warn", text: `${project.name}/${wf.name}: ${error.message}` });
+          continue;
+        }
+        if (!(matrix.rows || []).length) {
+          messages.push({ level: "info", text: `${project.name}/${wf.name}: no datasets yet — import results with \`alfrd import avica-run\` or start a run.` });
+        }
+        (matrix.rows || []).forEach((row) => {
+          const steps = {};
+          Object.entries(row.cells || {}).forEach(([key, cell]) => {
+            const status = normalizeStatus(cell.status);
+            steps[key] = {
+              step: key,
+              status: cell.status === "queued" ? "queued" : status,
+              attempt: cell.attempt,
+              attempts: [],
+              started: cell.started_at,
+              finished: cell.finished_at,
+              duration: cell.duration_seconds,
+              note: cell.error_summary || cell.result_summary || "",
+              executionId: cell.execution_id,
+              artifactCount: cell.artifact_count,
+            };
+          });
+          const name = row.dataset_external_id || row.dataset_name || row.dataset_id;
+          targets.push({
+            id: `${project.name}/${name}`,
+            name,
+            project: project.name,
+            projectTitle: project.description || null,
+            workflow: wf.name,
+            datasetId: row.dataset_id,
+            runId: row.run_id,
+            runStatus: row.run_status,
+            msPath: null,
+            fitsidi: null,
+            meta: null,
+            steps,
+            history: [],
+            artifacts: [],
+            columns: {},
+            source: { kind: "server", file: `${API}/projects/${project.name}/workflows/${wf.name}/matrix`, origin: "server" },
+          });
+        });
+      }
+    }
+    return { targets, workflows, messages, projects, aliases: [] };
+  },
+};

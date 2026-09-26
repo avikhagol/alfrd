@@ -1,0 +1,9 @@
+{
+ "target_dir": "reductions/",
+ "target": "0742+103",
+ "primary_value": "0742+103",
+ "picard_input_template_update": "",
+ "result_csv_file": "reductions/0742+103_result.csv",
+ "first_col": "rpicard",
+ "_exception": "Traceback (most recent call last):\n  File \"steps.py\", line 1650, in run\nRuntimeError: rPicard exited with status 1"
+}

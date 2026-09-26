@@ -1,0 +1,37 @@
+version: 1
+name: avica-compat-fixture
+
+entrypoint:
+  - name: runner
+    cmd:
+      - fixture
+      - pipe
+      - run
+  - name: config
+    cmd:
+      - fixture
+      - pipe
+      - config
+
+schema:
+  - name: steps
+    definitions:
+      - avica_compat_fixture.pipeline
+
+artifacts:
+  - name: result_table
+    path_pattern: "{dataset.WORKDIR}/{dataset.TARGET_NAME}_result.csv"
+    description: Per-dataset result table written by the summarize step
+    media_type: text/csv
+  - name: pipeline_log
+    path_pattern: "{dataset.WORKDIR}/calibration.log"
+    description: Calibration log written by the calibrate step
+    media_type: text/plain
+  - name: diagnostic_plots
+    path_pattern: "{dataset.WORKDIR}/plots/*.png"
+    description: Diagnostic plots produced by the calibrate step
+    media_type: image/png
+  - name: prepared_data
+    path_pattern: "{dataset.WORKDIR}/prepared.json"
+    description: Prepared input metadata
+    media_type: application/json

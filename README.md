@@ -1,223 +1,327 @@
-# ALFRD : Automated Logical FRamework for Dynamic script execution(ALFRD)
+# ALFRD
 
-This program is written for the [SMILE project](https://smilescience.info) supported by the ERC starting grant, particularly with following purposes in mind:
+**A**utomated **L**ogical **FR**amework for **D**ynamic script execution.
 
-- Communicate with google spreadsheets(or local csv file) and update progress periodically when required.
-- Execute a pipeline workflow that dynamically operates based on the progress and requirements recorded in the spreadsheet or CSV file.
+Run pipeline steps. Track their progress in a table. See it all in a web UI.
 
-# Contents:
-- [ALFRD : Automated Logical FRamework for Dynamic script execution(ALFRD)](#alfrd--automated-logical-framework-for-dynamic-script-executionalfrd)
-- [Contents:](#contents)
-  - [1. Create API credentials on Google Cloud](#1-create-api-credentials-on-google-cloud)
-  - [2. Installing](#2-installing)
-  - [3. Using ALFRD](#3-using-alfrd)
-    - [3.1 - Basic Usage](#31---basic-usage)
-      - [3.1.1 Example: Google Spreadsheet - Initializing and creating instance](#311-example-google-spreadsheet---initializing-and-creating-instance)
-      - [3.1.2 Example: Google Spreadsheet - Update the data](#312-example-google-spreadsheet---update-the-data)
-      - [3.1.3 Example: CSV - Update the data (more soon)](#313-example-csv---update-the-data-more-soon)
-    - [3.2 - Advance](#32---advance)
-      - [3.2.1 Example : Execute functions using alfrd](#321-example--execute-functions-using-alfrd)
-      - [3.2.2 Example : Pipeline step execution/update using the Spreadsheet/CSV](#322-example--pipeline-step-executionupdate-using-the-spreadsheetcsv)
-  - [4. Attribution](#4-attribution)
-  - [5. Acknowledgement](#5-acknowledgement)
+Built for the [SMILE project](https://smilescience.info) (ERC grant).
 
+---
 
--------
+## Contents
 
+- [Install](#install)
+- [Quick start: the web UI](#quick-start-the-web-ui)
+- [`alfrd serve` examples](#alfrd-serve-examples)
+- [Tell the Studio about your pipeline (`alfrd.yaml`)](#tell-the-studio-about-your-pipeline-alfrdyaml)
+- [Run steps from Python](#run-steps-from-python)
+- [Track progress in a table](#track-progress-in-a-table)
+- [Runtime database](#runtime-database)
+- [Public API](#public-api)
+- [Google Sheets setup](#google-sheets-setup)
+- [Credits](#credits)
 
-## 1. Create API credentials on Google Cloud
+---
 
+## Install
 
-A similar guide is available [here](https://developers.google.com/workspace/guides/create-credentials) or [https://developers.google.com/workspace/guides/create-credentials](https://developers.google.com/workspace/guides/create-credentials)
-
-NOTE: In order to successfully create a google console project a billing detail is usually required. But the sheets API service is available for free, refer [here](https://developers.google.com/sheets/api/limits)
-
-- step 1:
-  Go to https://console.cloud.google.com/
-
-- step 2: 
-	click on the drop-down to create a new project 
-		- can choose organization or leave on default
-
-- step 3
-  Search in the top bar (or press / ) and type : "Google sheets api"
-  
-- step 4
-  In the search results - under Marketplace select the first result which should be the same : Google sheets api
-  
-- step 5
-  Enable the service In the product details page 
-  
-- step 6
-  Now select create credentials > Application Data
-  
-- step 7
-  Create an account name
-  Select create and continue
-  
-- step 8
-  Search and select "Editor" in role > Continue
-  
-- step 9
-  Skip next optional step
-  Select Done
-  
-- step 10
-  The Credentials are successfully created
-  Select "Credentials" on the left menu
-  
-- step 11
-  select/edit account that was just created
-  also copy the email address that is shown
-  
-- step 12
-  Select keys tab > Add keys > Create New Keys > JSON > save
-  
-- step 13
-  Go to the Google spreadsheet and "share" the sheet to the email address that was copied, as Editor.
-
-## 2. Installing
-
-- Install using the pip package manager:
-  ```bash
-  pip install alfrd
-  ```
-- Alternatively Download [ALFRD](https://github.com/avialxee/alfrd) and unzip / Or 
-    ```bash
-   git clone https://github.com/avialxee/alfrd
-   cd alfrd/
-   pip install .
-    ```
-this should install alfrd and all the dependencies automatically.
-
-
-## 3. Using ALFRD
-
-ALFRD can be used for structuring the pipeline/workflow steps, such that each step (e.g., Step A, Step B, Step C) is represented as a column (A, B, C) in a table, with the workflow executing these steps sequentially according to their order in the table.
-
-### 3.1 - Basic Usage
-
-ALFRD relies on pandas dataframe to read/write tabular data.
-
-####  3.1.1 Example: Google Spreadsheet - Initializing and creating instance
-
-```python
-from alfrd.lib import GSC, LogFrame
-from alfrd.util import timeinmin, read_inputfile
-
-url='https://spreadsheet/link'
-worksheet='worksheet-name'
-
-gsc = GSC(url=url, wname=worksheet, key='path/to/json/file')      # default path for key = home/usr/.alfred
-df_sheet = gsc.open()
+```bash
+pip install "alfrd[gui]"     # with the web UI (recommended)
+pip install alfrd            # core only
 ```
 
+From source:
 
-####  3.1.2 Example: Google Spreadsheet - Update the data
-
-The instance of LogFrame can be used to manipulate the dataframe and update the Google Sheet.
-
-```python
-
-lf = LogFrame(gsc=gsc)
-lf.df_sheet.loc[0, 'TSYS'] = True
-
-lf.update_sheet(count=1, failed=0,csvfile='df_sheet.csv')                     # if updating the sheet fails, a copy of the dataframe is saved locally at the csvfile path.
-
+```bash
+git clone https://github.com/avialxee/alfrd
+cd alfrd
+pip install ".[gui]"
 ```
 
-####  3.1.3 Example: CSV - Update the data (more soon)
+Needs Python 3.10+.
 
-It is also possible to use just the CSV file as an alternative to the Google Sheet.
+---
 
-```python
+## Quick start: the web UI
 
-lf = LogFrame(csv='in.csv')
-lf.df_sheet.loc[0, 'TSYS'] = True
-lf.df_sheet.to_csv('out.csv')
+Go to the folder that holds your `alfrd.yaml`. Run:
 
+```bash
+alfrd serve
 ```
 
-### 3.2 - Advance
+Your browser opens **ALFRD Studio**.
 
-#### 3.2.1 Example : Execute functions using alfrd
+- It reads the project in that folder.
+- It never runs your pipeline. It only reads files.
+- The URL is `http://127.0.0.1:5000/studio/`.
 
-Create `pipe.py` and use the register decorator for creating a pipeline step.
+What you get:
 
-```python 
+| View | Shows |
+|---|---|
+| **Overview** | All targets × steps. Status, MS path, notes. |
+| **Workflow** | Steps as a list or graph. Step parameters and logs. |
+| **Metadata** | Metadata health per step. Config. Input files. |
+| **Results** | Timings and progress. Latest run or full history. |
+| **Logs** | Every log file, grouped. Click to open. Expand to full screen. |
+| **Settings** | Edit and save `alfrd.yaml`. |
+
+No server? Use browser mode:
+
+```bash
+alfrd studio        # opens http://127.0.0.1:8080/, then Import → Open project folder
+```
+
+Full guide: [docs/studio-guide.md](https://github.com/avialxee/alfrd/blob/HEAD/docs/studio-guide.md)
+
+---
+
+## `alfrd serve` examples
+
+```bash
+# Open the project in the current folder
+cd /data/vasco_0.3
+alfrd serve
+
+# Open a project somewhere else
+alfrd serve --project /data/vasco_0.3
+
+# Another port, no browser pop-up (e.g. over SSH)
+alfrd serve --port 8050 --no-browser
+
+# Try it with demo data
+alfrd serve --demo
+
+# Keep the runtime database in a chosen file
+alfrd serve --runtime-db ~/alfrd/runtime.sqlite
+
+# Also show every project connected before
+alfrd serve --all-projects
+```
+
+Projects are remembered in `~/.alfrd/runtime.sqlite`:
+
+```bash
+alfrd projects list              # what is remembered
+alfrd projects forget OLD_NAME   # remove one (files stay on disk)
+```
+
+Or in the Studio: **⚙ Settings → Known projects → Forget**.
+
+Stop the server: **Ctrl+C**, or the **⏻ Quit** button (top right, same machine only). Quit also closes the tab when the browser allows it (the tab `alfrd serve` opened).
+
+Working on a remote machine? Forward the port:
+
+```bash
+ssh -L 5000:127.0.0.1:5000 user@cluster   # then run `alfrd serve --no-browser` there
+```
+
+Good to know:
+
+- Saving `alfrd.yaml` or `avica.inp` from the UI only works from the same machine (loopback).
+- The old dashboard is still at `/dashboard/`.
+- `alfrd gui` is the same as `alfrd serve`.
+
+---
+
+## Tell the Studio about your pipeline (`alfrd.yaml`)
+
+The Studio has no built-in pipeline. `alfrd.yaml` describes it.
+
+Minimal:
+
+```yaml
+name: my-project
+workflows:
+  - name: main
+    steps: [prepare, calibrate, image]
+```
+
+Richer (AVICA example):
+
+```yaml
+name: avica-t-0.3
+template: avica                      # AVICA defaults: labels, stages, metadata, logs
+
+project_settings:
+  field_aliases:                     # old names → new names
+    vasco_avg: avica_avg
+    "vasco*": "avica*"
+
+overview:
+  ms_path:                           # "MS Storage Path" column
+    - "{workdir}/wd_{band}_{target}/VLBI_{band}.ms"
+
+stages:
+  - {id: ingest, title: Ingestion}
+
+workflows:
+  - name: avica
+    steps:
+      - id: preprocess_fitsidi
+        stage: ingest
+        category: Preprocessing
+        label: FITS-IDI data ingestion
+        metadata:                    # → Metadata health
+          - {file: fitsfiles_used.avica, require: [filepath]}
+      - id: avica_avg
+        logs:                        # → step logs
+          - "{workdir}/wd_{band}/avica_avg_*log*"
+      - rpicard
+```
+
+Placeholders you can use:
+
+- `{workdir}` – a work folder, e.g. `reductions/RDV41/wd`
+- `{band}`, `{target}`, `{step}`, `{logs}`, `{meta_dir}`, `{target_dir}`
+- `*` and `?` – wildcards inside one folder
+
+Tips:
+
+- A step can be just a name, or a mapping that overrides the template.
+- Artifacts with `kind: log` show up in the **Logs** view.
+- The AVICA template lives in `src/alfrd/web/assets/templates/avica.yaml`.
+- Check a file: `alfrd manifest validate alfrd.yaml`
+
+AVICA helpers:
+
+```bash
+alfrd avica summary                     # cache `avica pipe config --summary`
+alfrd avica scan . --bundle scan.json   # pack a remote tree for the Studio
+```
+
+---
+
+## Run steps from Python
+
+Typed pipeline:
+
+```python
+from alfrd import PipelineContext, PipelineCore, PipelineStepBase
+
+class Prepare(PipelineStepBase):
+    name = "prepare"
+
+    def execute(self, dataset_id, output_dir="results"):
+        return f"{output_dir}/{dataset_id}"
+
+result = PipelineCore(
+    [Prepare()],
+    context=PipelineContext({"output_dir": "products"}),
+).run([{"dataset_id": "target-a"}, {"dataset_id": "target-b"}])
+```
+
+- Steps run in order.
+- One failed dataset skips only its own remaining steps.
+- Parameters come from `step.param`, then global values, then defaults.
+
+Decorator style (older, still supported):
+
+```python
 # pipe.py
 from alfrd.plugins import register
 
-
 @register("A hello world function")
 def step_hello_world(name):
-  print(f"hello, {name}")
-
+    print(f"hello, {name}")
 ```
-
-Now we should create a pipeline project and add the script to the project, this can be done as follows:
 
 ```bash
-alfrd init PROJECT_NAME # change the PROJECT_NAME to something desirable
-alfrd add /path/to/pipe.py PROJECT_NAME
+alfrd init MYPROJ
+alfrd add pipe.py MYPROJ
+alfrd run step_hello_world MYPROJ name=World
+alfrd run step_hello_world MYPROJ config.txt    # config.txt: name = World
 ```
 
-this will create a symlink to the project directory found at  `~/.alfrd/projects/PROJECT_NAME/pipe.py`
-That's it! You have created a pipeline flow, now execute the created script by running the following:
+---
+
+## Track progress in a table
+
+`LogFrame` wraps a pandas table (CSV or Google Sheet).
+
+```python
+from alfrd.core.logframe import LogFrame
+
+lf = LogFrame("in.csv")
+lf.df.loc[0, "TSYS"] = True
+lf.df.to_csv("out.csv")
+```
+
+Google Sheet: pass your own adapter (for example with `gspread`, via `alfrd[google]`).
+
+```python
+lf = LogFrame(gsc=sheet_adapter)
+lf.df.loc[0, "TSYS"] = True
+lf.update_sheet(count=1, failed=0, csvfile="backup.csv")   # backup if the sheet update fails
+```
+
+---
+
+## Runtime database
+
+Stores projects, runs, steps, artifacts and events in SQLite.
+
+```python
+from alfrd.runtime import RuntimeService, RuntimeStore
+
+store = RuntimeStore("alfrd-runtime.sqlite")
+store.initialize()
+runtime = RuntimeService(store)
+```
+
+- `resume_run` – continue unfinished steps.
+- `retry_run` – start a linked new run.
+- Each run writes `.alfrd/run.json`. `recover_manifest()` restores a lost run.
+
+CLI:
 
 ```bash
-alfrd run step_hello_world PROJECT_NAME name=World
-```
-> NOTE: you can create a config file e.g config.txt and modify the above as follows: \
->   `alfrd run step_hello_world PROJECT_NAME config.txt` \
-> and in the config.txt write something like:
-```
-# config.txt
-name = World
+alfrd runtime start ...     # see: alfrd runtime --help
+alfrd import avica-run reductions/ --project my-project --manifest alfrd.yaml
 ```
 
-#### 3.2.2 Example : Pipeline step execution/update using the Spreadsheet/CSV
+---
 
-Now modify the `pipe.py` and use the validator decorator for defining functions which can be executed just before and after the main pipeline step. 
-The parameters accessed between the pipeline steps and validators can be defined by the `Pipeline.params`. 
-Also one can use the config file to initialize the parameter values in the execution time.
+## Public API
 
-```python 
-# pipe.py
+Stable in `0.2.x` (tested in `tests/test_public_api.py`):
 
-from alfrd.lib import GSC, LogFrame
+- `alfrd` – `PipelineCore`, `PipelineContext`, `PipelineStepBase`, validators, results, events.
+- `alfrd.config` – `BaseConfig`, `Config`.
+- `alfrd.manifest` – `load_manifest`, `validate_manifest`, `ProjectManifest`, …
+- `alfrd.repository` – `RepositoryService`, `add_repository`, …
+- `alfrd.core.logframe` – `LogFrame`, `LogFrameAdapter`, `LogFrameEventSink`.
+- `alfrd.runtime` – `RuntimeStore`, `RuntimeService`, `RuntimePipelineRunner`, models.
+- `alfrd.gui` – `create_app()`, catalog readers, `/api/*`, `/studio/`.
+- `alfrd.plugins` – `register`, `validate`, `validator`.
 
-from alfrd import Pipeline
-from alfrd.plugins import validator, validate, register
+Deprecated (still work, warn):
 
-@validator(desc="Update values on the google sheet", run_once=False, after=True)
-def update_sheet(lf, success_count, failed_count):
-    lf.update_sheet(success_count, failed_count)
-  
-@validator(desc="Connect with the google sheet and return an instance for the runtime parameter", run_once=True)
-def connect_sheet(sheet_url, worksheet):
-    gsc = GSC(url=sheet_url, wname=worksheet, key='/path/to/credentials.json')
-    gsc.open()
-    Pipeline.params['lf'] = LogFrame(gsc=gsc)
+- `alfrd.Pipeline` / `PipelineRun` → use `PipelineCore`.
+- `alfrd.core.workflow.WorkflowManager` → use `PipelineCore`.
+- `alfrd.core.logger` → use `alfrd.core.logging`.
 
-@validate(by=[connect_sheet, update_sheet])
-@register("A hello world function")
-def modify_tsys(lf):
-  lf.df_sheet.loc[0, 'TSYS'] = True
-  Pipeline.params['success_count'] = 1
-  Pipeline.params['failed_count'] = 0
+---
 
-```
+## Google Sheets setup
 
-the above can be executed as follows:
-```bash
- alfrd run modify_tsys PROJECT_NAME sheet_url=/path/to/sheet worksheet=main
-```
+Only needed for Google Sheets. Full guide: [Google: create credentials](https://developers.google.com/workspace/guides/create-credentials).
 
-## 4. Attribution
+1. Open https://console.cloud.google.com/ and create a project.
+2. Search **Google Sheets API**. Enable it.
+3. **Create credentials → Application data**.
+4. Name the account. Role: **Editor**. Finish.
+5. Open the account. Copy its email.
+6. **Keys → Add key → JSON**. Save the file.
+7. Share your sheet with that email as **Editor**.
 
-When using ALFRD, please add a link to this repository in a footnote.
+The Sheets API is free. Google may still ask for billing details.
 
-## 5. Acknowledgement
+---
 
-ALFRD was developed within the "Search for Milli-Lenses" (SMILE) project. SMILE has received funding from the European Research Council (ERC) under the HORIZON ERC Grants 2021 programme (grant agreement No. 101040021).
+## Credits
+
+If you use ALFRD, please link to this repository in a footnote.
+
+ALFRD was built in the SMILE project ("Search for Milli-Lenses"). SMILE is funded by the European Research Council (ERC), HORIZON ERC Grants 2021, grant agreement No. 101040021.

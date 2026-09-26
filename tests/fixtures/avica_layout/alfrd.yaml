@@ -1,0 +1,19 @@
+name: avica pipeline
+
+entrypoint:
+  - name: runner
+    cmd:
+      - avica
+      - pipe
+      - run
+
+  - name: config
+    cmd:
+      - avica
+      - pipe
+      - config
+
+schema:
+  - name: steps
+    definitions:
+      - avica.pipe.steps

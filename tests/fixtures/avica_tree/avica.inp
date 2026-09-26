@@ -1,0 +1,4 @@
+target_dir = reductions/
+picard_input_template_update = input_temp_update
+snr_threshold_phref = 7
+rpicard.mpi_cores = 3

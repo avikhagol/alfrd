@@ -1,0 +1,1 @@
+{"bands_dict": {"X": {"spws": [0, 1, 2, 3], "reffreqs": [8.3e9, 8.4e9, 8.5e9, 8.6e9], "nobs": 1}}, "sources": {"J0319+4130": {"scans": [1, 2, 3]}}, "refants": ["EF", "WB"]}
