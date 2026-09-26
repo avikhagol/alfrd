@@ -100,7 +100,7 @@ export function render(el, ctx) {
   }).join("");
 
   $("#rs", el).innerHTML = `
-    <div class="card"><div class="row gap wrap"><h2>Results &amp; Analytics</h2><span class="chip">${st.targets.length} target${st.targets.length === 1 ? "" : "s"} · ${one ? esc(t.name) : ctx.state.selectedProject === "all" ? "all projects" : esc(ctx.state.selectedProject)}</span><span class="grow"></span>
+    <div class="card"><div class="row gap wrap"><h2>Results &amp; Analytics</h2><span class="chip">${st.targets.length} target${st.targets.length === 1 ? "" : "s"} · ${one ? esc(t.name) : ctx.state.selectedProject === "all" ? "all projects" : esc(ctx.projectName(ctx.state.selectedProject))}</span><span class="grow"></span>
       <div class="seg" role="group" aria-label="Targets counted"><button data-scope="all" class="${ui.targetOnly ? "" : "on"}" title="Every target of the selected project">All targets</button><button data-scope="target" class="${ui.targetOnly ? "on" : ""}" ${t ? "" : "disabled"} title="${t ? `Only ${esc(t.name)} (selected in the header)` : "Select a target in the header"}">Target only</button></div>
       <div class="seg" role="group" aria-label="Attempts counted"><button data-hist="recent" class="${H ? "" : "on"}" title="Most recent attempt of each step">Most Recent</button><button data-hist="all" class="${H ? "on" : ""}" title="Every attempt in the result CSVs, including earlier failures">Full history</button></div></div>
       <div class="kpis">

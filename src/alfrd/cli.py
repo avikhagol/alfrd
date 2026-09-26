@@ -344,7 +344,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     config["STUDIO_START_FOLDER"] = str(_startup_folder(project)) if config["STUDIO_DEFAULT_PROJECT"] else None
     # Started for one project: the Studio shows only that one (unless --all-projects).
     config["STUDIO_PROJECTS"] = None if all_projects or not config["STUDIO_DEFAULT_PROJECT"] else [config["STUDIO_DEFAULT_PROJECT"]]
-    others = [p.name for p in service.list_projects() if p.name != config["STUDIO_DEFAULT_PROJECT"]]
+    # STUDIO_DEFAULT_PROJECT is the location identifier; print the alfrd.yaml names.
+    others = [p.name for p in service.list_projects() if p.identifier != config["STUDIO_DEFAULT_PROJECT"]]
     if config["STUDIO_PROJECTS"] and others:
         print(f"Also remembered in {database}: {', '.join(others)} (show them with --all-projects; remove with `alfrd projects forget NAME`).")
     elif not config["STUDIO_DEFAULT_PROJECT"] and others:

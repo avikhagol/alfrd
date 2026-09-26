@@ -189,23 +189,23 @@ export const server = {
       try {
         list = (await getJson(`/projects/${encodeURIComponent(project.name)}/workflows`)).workflows || [];
       } catch (error) {
-        messages.push({ level: "warn", text: `${project.name}: ${error.message}` });
+        messages.push({ level: "warn", text: `${project.title}: ${error.message}` });
         continue;
       }
-      if (!list.length) messages.push({ level: "info", text: `${project.name}: connected, but its manifest declares no runtime workflows.` });
+      if (!list.length) messages.push({ level: "info", text: `${project.title}: connected, but its manifest declares no runtime workflows.` });
       for (const wf of list) {
-        const info = manifestToWorkflows({ name: project.name, workflows: [{ name: wf.name, description: wf.description, steps: wf.sequence || [] }] }, `${project.name} (server)`, { aliases: false });
+        const info = manifestToWorkflows({ name: project.name, workflows: [{ name: wf.name, description: wf.description, steps: wf.sequence || [] }] }, `${project.title} (server)`, { aliases: false });
         const workflow = info.workflows[0];
         if (workflow) workflows.push({ project: project.name, ...workflow });
         let matrix;
         try {
           matrix = await getJson(`/projects/${encodeURIComponent(project.name)}/workflows/${encodeURIComponent(wf.name)}/matrix`);
         } catch (error) {
-          messages.push({ level: "warn", text: `${project.name}/${wf.name}: ${error.message}` });
+          messages.push({ level: "warn", text: `${project.title}/${wf.name}: ${error.message}` });
           continue;
         }
         if (!(matrix.rows || []).length) {
-          messages.push({ level: "info", text: `${project.name}/${wf.name}: no datasets yet — import results with \`alfrd import avica-run\` or start a run.` });
+          messages.push({ level: "info", text: `${project.title}/${wf.name}: no datasets yet — import results with \`alfrd import avica-run\` or start a run.` });
         }
         (matrix.rows || []).forEach((row) => {
           const steps = {};

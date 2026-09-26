@@ -46,6 +46,9 @@ const state = {
   view: "overview",
   targets: [],
   projectTitles: {},
+  // Project key → ALFRD project name shown in the UI. In server mode the key is the
+  // long location identifier (host.path.name); the label is the alfrd.yaml `name`.
+  projectNames: {},
   workflow: defaultWorkflow(),
   workflowFile: { name: "no alfrd.yaml loaded", validated: true, errors: [], warnings: [], text: null, modified: false },
   serverWorkflows: [],
@@ -126,10 +129,14 @@ export const ctx = {
   target(id = state.selectedTarget) {
     return state.targets.find((t) => t.id === id) || null;
   },
+  /** Label for a project key: the ALFRD project name, never the long identifier. */
+  projectName(key) {
+    return (key && state.projectNames[key]) || key || "";
+  },
   projects() {
     const map = new Map();
     state.targets.forEach((t) => {
-      if (!map.has(t.project)) map.set(t.project, { id: t.project, title: t.projectTitle || state.projectTitles[t.project] || "", targets: [] });
+      if (!map.has(t.project)) map.set(t.project, { id: t.project, name: ctx.projectName(t.project), title: t.projectTitle || state.projectTitles[t.project] || "", targets: [] });
       map.get(t.project).targets.push(t);
     });
     return Array.from(map.values());
@@ -246,6 +253,7 @@ function persist() {
       trees: stripTrees(state.trees),
       configs: state.configs,
       projectTitles: state.projectTitles,
+      projectNames: state.projectNames,
       importFiles: state.importFiles,
     });
     if (!ok) ctx.log("warn", "Imported data is too large for browser storage; it will not survive a reload.");
@@ -411,6 +419,7 @@ async function loadDemo({ quiet = false } = {}) {
   }
   const bundle = demoBundle();
   state.projectTitles = { [DEMO_ALFRD_PROJECT]: "AVICA demo reductions" };
+  state.projectNames = {};
   state.selectedTarget = `${DEMO_ALFRD_PROJECT}/J1440+0127`;
   applyBundle(bundle, { replace: true, source: "demo", provider: "demo" });
   if (!quiet) ctx.toast("Demo data loaded — 18 targets under 3 AVICA project codes", "ok");
@@ -422,25 +431,26 @@ async function loadServer() {
     const data = await server.loadAll();
     state.serverWorkflows = data.workflows;
     state.projectTitles = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.description || p.name]));
+    state.projectNames = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.manifest_name || p.name]));
     applyBundle({ targets: data.targets, messages: data.messages, aliases: [], configs: [], logs: [], files: [] }, { replace: true, source: "server", provider: "server" });
     if (data.workflows.length) {
       const wf = data.workflows[0];
       state.workflow = wf;
-      state.workflowFile = { name: `${wf.project} / ${wf.name} (runtime)`, validated: true, errors: [], warnings: [], text: null, modified: false };
+      state.workflowFile = { name: `${ctx.projectName(wf.project)} / ${wf.name} (runtime)`, validated: true, errors: [], warnings: [], text: null, modified: false };
     }
     // Each connected project's tree, read by the server exactly as alfrd.yaml describes it.
     const scans = await Promise.all(data.projects.map(async (p) => {
       try {
         return { p, scan: await server.projectScan(p.name) };
       } catch (error) {
-        ctx.log("warn", `${p.name}: project folder not readable (${error.message}).`, "server");
+        ctx.log("warn", `${p.title || p.name}: project folder not readable (${error.message}).`, "server");
         return { p, scan: null };
       }
     }));
     for (const { p, scan } of scans) {
       if (!scan) continue;
       const bundle = await applyServerScan(p.name, scan, { runtimeRows: state.targets.filter((t) => t.project === p.name) });
-      ctx.log("info", `${p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
+      ctx.log("info", `${p.title || p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
     }
     const def = server.session?.default_project;
     if (def && state.targets.some((t) => t.project === def) && (state.selectedProject === "all" || !state.targets.some((t) => t.project === state.selectedProject))) {
@@ -497,7 +507,7 @@ function keepWorkflow(project, bundle) {
     return;
   }
   if (state.selectedProject !== "all" && state.selectedProject !== project) delete bundle.workflowInfo;
-  else ctx.log("info", `${project}: alfrd.yaml changed on disk — workflow reloaded.`, "live");
+  else ctx.log("info", `${ctx.projectName(project)}: alfrd.yaml changed on disk — workflow reloaded.`, "live");
 }
 
 /** Fetch the templates an alfrd.yaml refers to before it is parsed. */
@@ -518,6 +528,7 @@ function restoreSaved() {
       trees: saved.trees || {},
       configs: saved.configs || [],
       projectTitles: saved.projectTitles || {},
+      projectNames: saved.projectNames || {},
       importFiles: saved.importFiles || [],
       source: "imported",
     });
@@ -763,6 +774,7 @@ function exportSnapshot() {
     source: state.source,
     targets: state.targets,
     projectTitles: state.projectTitles,
+    projectNames: state.projectNames,
     aliases: state.aliases,
     notes: state.notes,
     workflow: serializeWorkflow(),
@@ -776,6 +788,7 @@ function restoreSnapshot(snap) {
   try {
     const info = manifestToWorkflows(snap.workflow, "snapshot workflow");
     state.projectTitles = snap.projectTitles || {};
+    state.projectNames = snap.projectNames || {};
     state.notes = { ...state.notes, ...(snap.notes || {}) };
     storage.set("notes", state.notes);
     applyBundle({ targets: snap.targets || [], aliases: snap.aliases || [], avica: null, configs: snap.configs || [], workflowInfo: info, manifestFile: "snapshot" }, { replace: true, source: "imported" });
@@ -983,7 +996,7 @@ async function drawProjects(root) {
   table.innerHTML = `<thead><tr><th>Project</th><th>Folder</th><th></th></tr></thead><tbody>${list.map((p) => { const key = p.identifier || p.name; return `<tr>
       <td class="mono"><b>${esc(p.display_name || p.name)}</b>${key === server.session?.default_project ? ' <span class="badge tone-run">opened</span>' : shown.has(key) ? ' <span class="badge">shown</span>' : ' <span class="badge tone-muted">hidden</span>'}</td>
       <td class="mono small">${esc(p.root_path || "")}</td>
-      <td class="right"><button class="btn sm danger" data-forget="${esc(key)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`; }).join("") || (lost.length ? "" : '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>')}${lostRows}</tbody>`;
+      <td class="right"><button class="btn sm danger" data-forget="${esc(key)}" data-label="${esc(p.display_name || p.name)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`; }).join("") || (lost.length ? "" : '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>')}${lostRows}</tbody>`;
   const restore = async (rootPath, b) => {
     if (b) b.disabled = true;
     try {
@@ -1005,11 +1018,12 @@ async function drawProjects(root) {
     const b = e.target.closest("[data-forget]");
     if (!b) return;
     const name = b.dataset.forget;
-    if (!confirm(`Forget "${name}"?\n\nIt is removed from the runtime database with its runs. Files in its folder are not touched. Rediscover (here) connects it again.`)) return;
+    const label = b.dataset.label || name;
+    if (!confirm(`Forget "${label}"?\n\nIt is removed from the runtime database with its runs. Files in its folder are not touched. Rediscover (here) connects it again.`)) return;
     b.disabled = true;
     try {
       const res = await server.forgetProject(name);
-      ctx.toast(`Forgot ${name} (${res.runs} run(s), ${res.datasets} dataset(s))`, "ok");
+      ctx.toast(`Forgot ${label} (${res.runs} run(s), ${res.datasets} dataset(s))`, "ok");
       ctx.log("info", `Project ${name} forgotten (runtime database only).`, "server");
       state.avica = { ...state.avica };
       delete state.avica[name];
@@ -1099,7 +1113,7 @@ async function runRefresh() {
       try {
         touched = (await refreshProject(project, job)) || touched;
       } catch (error) {
-        ctx.log("warn", `Live update of ${project} failed: ${error.message}`, "live");
+        ctx.log("warn", `Live update of ${ctx.projectName(project)} failed: ${error.message}`, "live");
       }
     }
   } finally {
@@ -1125,7 +1139,7 @@ async function refreshProject(project, job) {
     }
     forgetLogs(project, [...job.removed]);
     await applyServerScan(project, scan, { live: true });
-    ctx.log("info", `${project}: ${job.full ? "re-read" : `${job.changed.size} file(s) re-read, ${job.removed.size} gone`} (live).`, "live");
+    ctx.log("info", `${ctx.projectName(project)}: ${job.full ? "re-read" : `${job.changed.size} file(s) re-read, ${job.removed.size} gone`} (live).`, "live");
     return true;
   }
   const folder = state.folders[project] || (await loadFolderHandle(project));
@@ -1136,7 +1150,7 @@ async function refreshProject(project, job) {
   keepWorkflow(project, bundle);
   forgetLogs(project, [...job.removed]);
   applyBundle(bundle, { replace: "project", source: "imported", quiet: true, render: false });
-  ctx.log("info", `${project}: folder re-read (${job.changed.size} changed, ${job.removed.size} gone; live).`, "live");
+  ctx.log("info", `${ctx.projectName(project)}: folder re-read (${job.changed.size} changed, ${job.removed.size} gone; live).`, "live");
   return true;
 }
 
@@ -1378,10 +1392,10 @@ function renderHeader() {
   badge.title = live ? "alfrd: projects come from the runtime database; re-queue runs through the runtime API." : "Everything runs in this browser; no pipeline code is executed.";
 
   const projects = ctx.projects();
-  $("#pick-project").innerHTML = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === state.selectedProject ? "selected" : ""}>${esc(p.title || p.id)}</option>`).join("")}`;
+  $("#pick-project").innerHTML = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === state.selectedProject ? "selected" : ""}>${esc(p.title || p.name)}</option>`).join("")}`;
   const targets = ctx.scopedTargets();
   $("#pick-target").innerHTML = targets.length
-    ? targets.map((t) => `<option value="${esc(t.id)}" ${t.id === state.selectedTarget ? "selected" : ""}>${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || t.project)}` : ""}</option>`).join("")
+    ? targets.map((t) => `<option value="${esc(t.id)}" ${t.id === state.selectedTarget ? "selected" : ""}>${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || ctx.projectName(t.project))}` : ""}</option>`).join("")
     : `<option value="">No targets</option>`;
 
   $$(".rail a").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));
@@ -1475,8 +1489,10 @@ async function boot() {
   state.demoEnabled = Boolean(session?.demo) || new URLSearchParams(location.search).has("demo");
   if (session) {
     state.mode = "server";
-    ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}${session.default_project ? `, project ${session.default_project}` : ""}).`, "server");
+    ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();
+    // default_project is the location identifier; name it once projectNames are known.
+    if (session.default_project) ctx.log("info", `Opened project ${ctx.projectName(session.default_project)}.`, "server");
     if (!data || !data.targets.length) {
       if (state.demoEnabled) await loadDemo({ quiet: true });
       else ctx.log("info", "No project yet. Start `alfrd serve` in the folder that holds alfrd.yaml (or use Import → Connect).", "server");

@@ -62,7 +62,7 @@ export function render(el, ctx) {
   const p = project(ctx);
   const all = projectLogs(ctx, p);
   $("#lg-head", el).innerHTML = `
-    <div class="row gap wrap"><h2>Logs</h2>${p ? `<span class="chip">${esc(p)}</span>` : ""}
+    <div class="row gap wrap"><h2>Logs</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}
       <div class="seg" role="group" aria-label="Scope"><button data-scope="target" class="${ui.scope === "target" ? "on" : ""}">${icon("target")} ${esc(t?.name || "Selected target")}</button><button data-scope="all" class="${ui.scope === "all" ? "on" : ""}">All files (${all.length})</button></div>
       <div class="seg" role="group" aria-label="Group by"><button data-by="group" class="${ui.by === "group" ? "on" : ""}">By step / artifact</button><button data-by="folder" class="${ui.by === "folder" ? "on" : ""}">By folder</button></div>
       <span class="grow"></span>
@@ -79,7 +79,7 @@ function renderBody(el, ctx) {
   const gs = groups(ctx);
   const body = $("#lg-body", el);
   if (!projectLogs(ctx, p).length) {
-    body.innerHTML = `<div class="card empty">${p ? `No log files found for <b>${esc(p)}</b>. Declare them in alfrd.yaml (a step's <code>logs:</code> list, or an artifact with <code>kind: log</code>) and Re-scan.` : "Open a project folder (Import) to see its logs."}</div>`;
+    body.innerHTML = `<div class="card empty">${p ? `No log files found for <b>${esc(ctx.projectName(p))}</b>. Declare them in alfrd.yaml (a step's <code>logs:</code> list, or an artifact with <code>kind: log</code>) and Re-scan.` : "Open a project folder (Import) to see its logs."}</div>`;
     return;
   }
   body.innerHTML = gs.map((g) => {

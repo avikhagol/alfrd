@@ -122,7 +122,7 @@ export function render(el, ctx) {
   const codes = targetCodes(ctx, t);
   const code = activeCode(ctx, t);
   head.innerHTML = `
-    <div class="row gap wrap"><h2>Metadata</h2><span class="chip">${esc(t.name)}</span><span class="muted small">ALFRD project <b>${esc(t.project)}</b></span><span class="grow"></span>
+    <div class="row gap wrap"><h2>Metadata</h2><span class="chip">${esc(t.name)}</span><span class="muted small">ALFRD project <b>${esc(ctx.projectName(t.project))}</b></span><span class="grow"></span>
       <span class="small muted">AVICA project code${codes.length === 1 ? "" : "s"}:</span> <span class="codes">${codeChips(ctx, t, { editable: true })}</span></div>
     ${codes.length > 1 ? `<div class="seg md-codes" role="tablist" aria-label="Project code">${codes.map((c) => `<button data-code-tab="${esc(c.code)}" class="${c.code === code ? "on" : ""}">${esc(c.code)}</button>`).join("")}</div>` : ""}
     <p class="muted small">${index && !index.error ? `target_dir <code>${esc(index.targetDir)}/</code> · ${Object.keys(index.codes || {}).length} project code folder(s)${index.logs?.length ? ` · ${index.logs.length} file(s) in ${esc(index.logsDir || "avica.logs")}/` : ""}` : "Open the folder that contains alfrd.yaml (Import → Open project folder) to read avica.meta."}</p>`;

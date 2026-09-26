@@ -227,7 +227,7 @@ function renderHead(el, ctx) {
     </div>
     <div class="row gap wrap ov-filters">
       <label class="search grow">${icon("search")}<input id="ov-search" type="search" placeholder="Search projects, targets, filenames, comments…" value="${esc(ui.search)}" aria-label="Search"></label>
-      <label class="select-wrap">${icon("folder")}<select id="ov-project" aria-label="Project filter"><option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${ui.project === p.id ? "selected" : ""}>${esc(p.title || p.id)}</option>`).join("")}</select></label>
+      <label class="select-wrap">${icon("folder")}<select id="ov-project" aria-label="Project filter"><option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${ui.project === p.id ? "selected" : ""}>${esc(p.title || p.name)}</option>`).join("")}</select></label>
       <label class="select-wrap">${icon("filter")}<select id="ov-status" aria-label="Status filter">${["all", "completed", "failed", "warning", "running", "unknown"].map((s) => `<option value="${s}" ${ui.status === s ? "selected" : ""}>Status: ${s === "all" ? "All" : OVERALL_STATUS[s].label}</option>`).join("")}</select></label>
       <button class="pill warn ${ui.preset === "attention" ? "on" : ""}" data-preset="attention">Needs attention (${nAttention})</button>
       <button class="pill ${ui.preset === "nometa" ? "on" : ""}" data-preset="nometa">No work folder (${nNoMeta})</button>
@@ -276,8 +276,8 @@ function renderGrid(el, ctx) {
     const pct = everyone.length ? Math.round((doneAll / (everyone.length * Math.max(1, steps.length))) * 100) : 0;
     const collapsed = ui.collapsed.has(project);
     const head = `<tr class="grp"><td colspan="${totalCols}"><div class="grp-in">
-        <button class="icon-btn sm ${collapsed ? "" : "open"}" data-group="${esc(project)}" aria-expanded="${!collapsed}" aria-label="Toggle ${esc(project)}">${icon("caret")}</button>
-        ${ui.groupBy === "code" ? `<span class="proj-chip" style="--h:${hue(project)}">${esc(project)}</span>` : `<span class="alfrd-chip">${esc(projectTitle(project) || project)}</span>`}
+        <button class="icon-btn sm ${collapsed ? "" : "open"}" data-group="${esc(project)}" aria-expanded="${!collapsed}" aria-label="Toggle ${esc(ui.groupBy === "code" ? project : ctx.projectName(project))}">${icon("caret")}</button>
+        ${ui.groupBy === "code" ? `<span class="proj-chip" style="--h:${hue(project)}">${esc(project)}</span>` : `<span class="alfrd-chip">${esc(projectTitle(project) || ctx.projectName(project))}</span>`}
         <b>${everyone.length} Target${everyone.length === 1 ? "" : "s"}</b>
         <span class="muted">(${esc(parts)})</span>
         <span class="mini-bar" title="${pct}% of steps complete"><i style="width:${pct}%"></i></span><span class="muted small tabular">${pct}%</span>
@@ -291,7 +291,7 @@ function renderGrid(el, ctx) {
         <td class="fz fz0"><input type="checkbox" data-check="${esc(t.id)}" ${ui.checked.has(t.id) ? "checked" : ""} aria-label="Select ${esc(t.name)}"></td>
         <td class="fz fz1 tname">${sel ? '<i class="sel-dot"></i>' : ""}${esc(t.name)}</td>
         ${cols.map((c) => {
-          if (c.id === "project") return `<td><span class="alfrd-chip">${esc(t.project)}</span></td>`;
+          if (c.id === "project") return `<td><span class="alfrd-chip">${esc(ctx.projectName(t.project))}</span></td>`;
           if (c.id === "codes") return `<td class="codes">${codeChips(ctx, t)}</td>`;
           if (c.id === "ms") return `<td class="mono path">${t.msPath ? `<span class="trunc" title="${esc((t.msPaths?.length ? t.msPaths : [t.msPath]).join("\n"))}">${esc(t.msPath)}</span>${t.msPaths?.length > 1 ? `<span class="muted small">+${t.msPaths.length - 1}</span>` : ""}<button class="icon-btn xs" data-copy="${esc(t.msPath)}" aria-label="Copy path">${icon("copy")}</button>` : '<span class="muted">—</span>'}</td>`;
           if (c.id === "status") return `<td>${badge(r.status, statusLabel)}</td>`;
@@ -364,7 +364,7 @@ function renderDrawer(el, ctx) {
 
   d.innerHTML = `
     <header class="dr-h">
-      <span class="alfrd-chip" title="ALFRD project">${esc(t.project)}</span>
+      <span class="alfrd-chip" title="ALFRD project">${esc(ctx.projectName(t.project))}</span>
       <h3>${esc(t.name)}</h3>
       <span class="grow"></span>
       ${badge(r.status)}

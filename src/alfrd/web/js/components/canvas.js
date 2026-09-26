@@ -651,7 +651,7 @@ function renderInfo(el, ctx) {
   const facts = [c.RA && `RA: ${c.RA}`, c.DEC && `Dec: ${c.DEC}`, c.FREQ && `Freq: ${c.FREQ}`, c.BASELINES && `Baselines: ${c.BASELINES}`].filter(Boolean);
   $("#wf-info", el).innerHTML = `
     <span class="info-ic">${icon("target")}</span>
-    <div class="grow"><b>${esc(t ? `${t.project} / Target: ${t.name}` : "No target selected")}</b>${c.CORRELATOR ? ` <span class="chip">${esc(c.CORRELATOR)}</span>` : ""}
+    <div class="grow"><b>${esc(t ? `${ctx.projectName(t.project)} / Target: ${t.name}` : "No target selected")}</b>${c.CORRELATOR ? ` <span class="chip">${esc(c.CORRELATOR)}</span>` : ""}
       <div class="muted small">${facts.length ? esc(facts.join(" | ")) : t ? `Status overlay from ${esc(t.source?.kind === "server" ? "ALFRD runtime" : t.source?.file || "import")}` : "Pick a target in the header to overlay its results."}</div></div>
     <div class="info-stat"><span class="muted small">Elapsed Sim Time</span><b id="wf-elapsed" class="tabular">${sim.active ? elapsed(sim.elapsed) : "—"}</b></div>
     <div class="info-stat"><span class="muted small">Step parameters from</span><b class="small mono">${esc(paramSource)}</b></div>
