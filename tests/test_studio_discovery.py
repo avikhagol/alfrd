@@ -270,3 +270,44 @@ def test_connected_project_joins_server_scope(app_client, tmp_path: Path):
     assert client.get("/api/studio/session").get_json()["projects"] == [ident]
     client.post("/api/projects/connect", json={"path": str(bare)}, headers=h)
     assert client.get("/api/studio/session").get_json()["projects"] == [ident]
+
+
+def test_project_visibility_hidden_shown_opened(app_client, parent: Path):
+    """Studio settings → Known projects: switch opened / shown / hidden without re-connecting."""
+    app, client, h = app_client
+    from alfrd.manifest_default import register_project_folder
+
+    service = app.config["RUNTIME_SERVICE"]
+    alma = register_project_folder(service, parent / "alma")[0].identifier
+    pipe = register_project_folder(service, parent / "pipe_comparison")[0].identifier
+    app.config["STUDIO_PROJECTS"] = [pipe]
+    app.config["STUDIO_DEFAULT_PROJECT"] = pipe
+    url = lambda key: f"/api/studio/projects/{key}/visibility"  # noqa: E731
+    session = lambda: client.get("/api/studio/session").get_json()  # noqa: E731
+
+    res = client.post(url(alma), json={"state": "shown"}, headers=h)
+    assert res.status_code == 200 and res.get_json()["projects"] == [pipe, alma]
+    assert session()["default_project"] == pipe
+    client.post(url(alma), json={"state": "shown"}, headers=h)  # idempotent
+    assert session()["projects"] == [pipe, alma]
+
+    body = client.post(url(alma), json={"state": "opened"}, headers=h).get_json()
+    assert body["default_project"] == alma and session()["projects"] == [pipe, alma]
+
+    body = client.post(url(alma), json={"state": "shown"}, headers=h).get_json()
+    assert body["default_project"] is None and body["projects"] == [pipe, alma]
+
+    client.post(url(pipe), json={"state": "opened"}, headers=h)
+    body = client.post(url(pipe), json={"state": "hidden"}, headers=h).get_json()
+    assert body["projects"] == [alma] and body["default_project"] is None
+    # Still remembered: runtime database untouched, no rediscover candidate.
+    assert {p.identifier for p in service.list_projects()} == {alma, pipe}
+
+    # --all-projects (scope None): hiding one turns the scope into an explicit list.
+    app.config["STUDIO_PROJECTS"] = None
+    assert client.post(url(pipe), json={"state": "shown"}, headers=h).get_json()["projects"] is None
+    assert client.post(url(alma), json={"state": "hidden"}, headers=h).get_json()["projects"] == [pipe]
+
+    assert client.post(url(alma), json={"state": "bogus"}, headers=h).status_code == 400
+    assert client.post(url("nope"), json={"state": "shown"}, headers=h).status_code == 404
+    assert client.post(url(alma), json={"state": "shown"}).status_code == 403  # no CSRF token

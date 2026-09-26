@@ -180,6 +180,11 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; line-height:
 .badge.tone-warn { background: var(--warn-bg); border-color: #FDE68A; }
 .badge.tone-run { background: var(--accent-bg); border-color: #BFDBFE; }
 .badge.tone-muted { background: var(--muted-bg); border-color: var(--border); }
+.vis-badge { cursor: pointer; font: inherit; font-size: 12px; font-weight: 500; background: var(--subtle); border-color: var(--border); color: inherit; }
+.vis-badge.tone-run { color: var(--accent); }
+.vis-badge.tone-muted { color: var(--muted); }
+.vis-badge:hover { border-color: var(--accent); }
+.vis-badge .ic { width: 11px; height: 11px; opacity: .7; }
 .count { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--subtle); color: var(--text-2); font-size: 13px; font-weight: 500; cursor: pointer; font-variant-numeric: tabular-nums; }
 span.count { cursor: default; }
 .count i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }

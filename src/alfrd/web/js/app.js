@@ -973,7 +973,7 @@ function openSettings() {
         <dt>Local storage</dt><dd>${bytes(storage.size())} used by this Studio in this browser</dd>
       </dl>
       ${state.mode === "server" ? `<div class="row gap"><h3>${icon("database")} Known projects</h3><span class="grow"></span><button class="btn sm" id="set-rediscover" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine'"} title="Register the alfrd serve folder and projects forgotten since the server started again">${icon("sync")} Rediscover</button></div>
-      <p class="muted small">Every project connected to <code>alfrd serve</code> is kept in the runtime database. <b>Forget</b> removes it (and its runs) from there. Files on disk are not touched. <b>Rediscover</b> / <b>Restore</b> connect a forgotten project again without restarting <code>alfrd serve</code>.</p>
+      <p class="muted small">Every project connected to <code>alfrd serve</code> is kept in the runtime database. Click a project's <b>opened / shown / hidden</b> badge to change how this Studio lists it (no re-connect). <b>Forget</b> removes it (and its runs) from there. Files on disk are not touched. <b>Rediscover</b> / <b>Restore</b> connect a forgotten project again without restarting <code>alfrd serve</code>.</p>
       <table class="tbl small" id="set-projects"><tbody><tr><td class="muted">Loading…</td></tr></tbody></table>` : ""}
       <label class="check set-live"><input type="checkbox" id="set-live" ${live.enabled ? "checked" : ""}> <span><b>Live updates</b> — follow the project folder and open logs without Re-scan${state.mode === "server" ? (server.session?.live?.enabled === false ? " (off on this server: <code>alfrd serve --live-interval 0</code>)" : ` (server checks every ${server.session?.live?.interval ?? 2} s while busy, ${server.session?.live?.idle ?? 5} s when idle)`) : " (the remembered folder is checked every 5–30 s)"}. Nothing runs while this tab is hidden.</span></label>
       <label class="field"><span>Rows per page</span><select id="set-page" class="input">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
@@ -1007,7 +1007,20 @@ function openSettings() {
   });
 }
 
-/** Remembered projects with Forget buttons (Studio settings, server mode). */
+const VIS_STATES = [
+  { id: "opened", label: "Opened", icon: "play", tone: "tone-run", hint: "shown and selected when the Studio loads" },
+  { id: "shown", label: "Shown", icon: "check", tone: "", hint: "listed in this Studio" },
+  { id: "hidden", label: "Hidden", icon: "minus", tone: "tone-muted", hint: "remembered, not listed" },
+];
+
+/** Opened / shown / hidden badge; a button (state menu) when this browser may change it. */
+function visBadge(current, key, label, canWrite) {
+  const st = VIS_STATES.find((s) => s.id === current);
+  if (!canWrite) return `<span class="badge ${st.tone}">${st.id}</span>`;
+  return `<button type="button" class="badge vis-badge ${st.tone}" data-vis="${esc(key)}" data-label="${esc(label)}" data-current="${st.id}" title="Change: opened / shown / hidden" aria-haspopup="menu">${st.id}${icon("chevron")}</button>`;
+}
+
+/** Remembered projects with visibility and Forget buttons (Studio settings, server mode). */
 async function drawProjects(root) {
   const table = $("#set-projects", root);
   if (!table) return;
@@ -1020,7 +1033,9 @@ async function drawProjects(root) {
   }
   let lost = [];
   try { lost = await server.rediscoverable(); } catch { /* older server */ }
-  const shown = new Set(ctx.projects().map((p) => p.id));
+  // Scope of this server (null: --all-projects, everything is shown).
+  const scope = Array.isArray(server.session?.projects) ? new Set(server.session.projects) : null;
+  const visOf = (key) => (key === server.session?.default_project ? "opened" : !scope || scope.has(key) ? "shown" : "hidden");
   const canWrite = server.session?.mutations_enabled;
   const btn = $("#set-rediscover", root);
   if (btn) btn.hidden = !lost.length;
@@ -1029,7 +1044,7 @@ async function drawProjects(root) {
       <td class="mono small">${esc(c.root)}${c.exists ? "" : ' <span class="fail-t">(folder missing)</span>'}</td>
       <td class="right"><button class="btn sm" data-restore="${esc(c.root)}" ${canWrite && c.exists ? "" : "disabled"}>${icon("sync")} Restore</button></td></tr>`).join("");
   table.innerHTML = `<thead><tr><th>Project</th><th>Folder</th><th></th></tr></thead><tbody>${list.map((p) => { const key = p.identifier || p.name; return `<tr>
-      <td class="mono"><b>${esc(p.display_name || p.name)}</b>${key === server.session?.default_project ? ' <span class="badge tone-run">opened</span>' : shown.has(key) ? ' <span class="badge">shown</span>' : ' <span class="badge tone-muted">hidden</span>'}</td>
+      <td class="mono"><b>${esc(p.display_name || p.name)}</b> ${visBadge(visOf(key), key, p.display_name || p.name, canWrite)}</td>
       <td class="mono small">${esc(p.root_path || "")}</td>
       <td class="right"><button class="btn sm danger" data-forget="${esc(key)}" data-label="${esc(p.display_name || p.name)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`; }).join("") || (lost.length ? "" : '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>')}${lostRows}</tbody>`;
   const restore = async (rootPath, b) => {
@@ -1047,7 +1062,41 @@ async function drawProjects(root) {
     }
   };
   if (btn) btn.onclick = () => restore(null, btn);
+  const setVis = async (key, label, want) => {
+    try {
+      await server.setProjectVisibility(key, want);
+      ctx.log("info", `Project ${label} ${want} in the Studio (runtime database and files unchanged).`, "server");
+      if (want === "hidden") {
+        state.avica = { ...state.avica };
+        delete state.avica[key];
+        delete state.trees[key];
+        if (state.selectedProject === key) state.selectedProject = "all";
+      }
+      await loadServer();
+      if (want === "opened" && state.targets.some((t) => t.project === key)) {
+        state.selectedProject = key;
+        const inScope = ctx.scopedTargets();
+        if (!inScope.some((t) => t.id === state.selectedTarget)) state.selectedTarget = inScope[0]?.id || null;
+        scheduleRender();
+      }
+      ctx.toast(`${label}: ${want}${want !== "hidden" && !state.targets.some((t) => t.project === key) ? " (no targets yet, so not in the header picker)" : ""}`, "ok");
+    } catch (error) {
+      ctx.toast(error.message, "fail");
+    }
+    drawProjects(root);
+  };
   table.onclick = async (e) => {
+    const v = e.target.closest("[data-vis]");
+    if (v) {
+      e.stopPropagation();
+      const { vis: key, label, current } = v.dataset;
+      const items = VIS_STATES.map((st) => ({
+        icon: st.icon, label: st.label, hint: st.id === current ? "current" : st.hint, disabled: st.id === current,
+        run: () => setVis(key, label, st.id),
+      }));
+      menu(v, items);
+      return;
+    }
     const r = e.target.closest("[data-restore]");
     if (r) { restore(r.dataset.restore, r); return; }
     const b = e.target.closest("[data-forget]");

@@ -140,6 +140,16 @@ export const server = {
     return res;
   },
 
+  /** Show, hide or open a remembered project here (`state`: "hidden" | "shown" | "opened"). No re-connect needed. */
+  async setProjectVisibility(project, state) {
+    const res = await this.mutate(`/studio/projects/${encodeURIComponent(project)}/visibility`, { state });
+    if (this.session) {
+      this.session.projects = Array.isArray(res.projects) ? res.projects : null;
+      this.session.default_project = res.default_project || null;
+    }
+    return res;
+  },
+
   /** Forgotten projects (and the `alfrd serve` folder) that Rediscover can register again. */
   async rediscoverable() {
     return (await getJson("/studio/projects/rediscover")).candidates || [];

@@ -436,6 +436,51 @@ def project_forget(project_name: str):
     return jsonify(forgotten=project_name, **counts)
 
 
+PROJECT_VISIBILITY = ("hidden", "shown", "opened")
+
+
+@studio_api.post("/studio/projects/<project_name>/visibility")
+def project_visibility(project_name: str):
+    """Show, hide or open a remembered project in this server's Studio (loopback + CSRF).
+
+    ``{"state": "hidden" | "shown" | "opened"}``. Only the server's scope
+    (``STUDIO_PROJECTS``) and opened project (``STUDIO_DEFAULT_PROJECT``) change:
+    the runtime database and the project folder are not touched, so a hidden
+    project is shown again without Import → Connect.
+    """
+    from alfrd.runtime import RuntimeNotFound
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(RuntimeError("no runtime database"), 404)
+    state = str((request.get_json(silent=True) or {}).get("state") or "").strip().lower()
+    if state not in PROJECT_VISIBILITY:
+        return _json_error(ValueError(f"state must be one of {', '.join(PROJECT_VISIBILITY)}"), 400)
+    try:
+        row = service.get_project_by_selector(project_name)
+    except RuntimeNotFound as error:
+        return _json_error(error, 404)
+    key = row.identifier or row.name
+    scope = current_app.config.get("STUDIO_PROJECTS")
+    if scope is None and state == "hidden":
+        # --all-projects shows everything: hiding one turns that into an explicit list.
+        scope = [p.identifier or p.name for p in service.list_projects()]
+        current_app.config["STUDIO_PROJECTS"] = scope
+    if isinstance(scope, list):
+        if state == "hidden":
+            while key in scope:
+                scope.remove(key)
+        elif key not in scope:
+            scope.append(key)
+    default = current_app.config.get("STUDIO_DEFAULT_PROJECT")
+    if state == "opened":
+        current_app.config["STUDIO_DEFAULT_PROJECT"] = key
+    elif default == key:
+        current_app.config["STUDIO_DEFAULT_PROJECT"] = None
+    return jsonify(project=key, state=state, projects=current_app.config.get("STUDIO_PROJECTS"),
+                   default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"))
+
+
 def _rediscover_candidates() -> list[dict]:
     """Folders Rediscover may register again: the `alfrd serve` folder (or the
     sub-projects it discovered) and projects forgotten since start."""
