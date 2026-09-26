@@ -5,10 +5,6 @@
 #### Fixed
 
 - The Studio shows the ALFRD project name (`name` in alfrd.yaml, or `name (folder)` when two connected projects share it) instead of the long identifier (`<host>.<path>.<name>`) in pickers, headers, chips, logs and the Forget dialog. The identifier is still the internal key.
-- `alfrd serve` no longer lists the opened project under "Also remembered".
-
-#### Fixed
-
 - `taret_dir` supports `"."`.
 
 
