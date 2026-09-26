@@ -100,7 +100,11 @@ workflows:
           - {file: fitsfiles_used.avica, label: FITS files used, require: [filepath]}
           - {file: listobs.json, label: listobs (scans), require: [listobs]}
           - {file: listobs_fits.out, label: listobs (FITS)}
-      - fits_to_ms
+      - id: fits_to_ms
+        stage: loading
+        category: MeasurementSet
+        metadata:
+          -  {file: available_wd_ifolder.avica, label: available input_template}
       - phaseshift
       - id: avica_avg
         # Step logs: a list per step, shown in Workflow → Logs and the Logs view.
