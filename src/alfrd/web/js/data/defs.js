@@ -133,7 +133,9 @@ export function normalizePattern(p) {
 }
 
 export function fillPattern(pattern, fixed = {}) {
-  return String(pattern).replace(/\{(\w+)\}/g, (all, k) => (fixed[k] != null && fixed[k] !== "" ? String(fixed[k]).replace(/^\/+|\/+$/g, "") : all));
+  const text = String(pattern).replace(/\{(\w+)\}/g, (all, k) => (fixed[k] != null && fixed[k] !== "" ? String(fixed[k]).replace(/^\/+|\/+$/g, "") : all));
+  // A root target_dir (".") leaves "./" segments behind; drop them (mirrors studio_defs.fill).
+  return text.replace(/(^|\/)\.(\/|$)/g, "$1").replace(/\/$/, "");
 }
 
 function tokensToRegex(text, known = {}) {

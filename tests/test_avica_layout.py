@@ -209,3 +209,46 @@ def test_cli_avica_scan_bundle(tmp_path, monkeypatch):
     monkeypatch.setenv("ALFRD_DEFAULT_MANIFEST", str(tmp_path / "none.yaml"))
     missing = CliRunner().invoke(alfrd_cli, ["avica", "scan", str(tmp_path), "--bundle", str(tmp_path / "y.json")])
     assert missing.exit_code == 1
+
+
+def _old_root_layout(base: Path, target_value: str | None = None) -> Path:
+    """Old AVICA projects: ``<CODE>/wd*/`` directly next to ``avica.inp`` (target_dir = .)."""
+    (base / "alfrd.yaml").write_text(
+        "version: 1\n"
+        "name: 1ktest\n"
+        "template: avica\n"
+        "avica:\n"
+        '  target_dir: "."\n'
+        "  meta_dir: vasco.meta\n"
+        '  band_dir: ["wd_{band}", "wd_{band}/wd_{band}_{target}"]\n',
+        encoding="utf-8",
+    )
+    (base / "avica.inp").write_text(f"target_dir = {target_value or '.'}\n", encoding="utf-8")
+    for rel in ("BV019/wd/wd_X/wd_X_0742+103", "BV019/wd_1/wd_X/wd_X_1309+555", "BV019/wd/vasco.meta", "RDV41/wd/wd_S/wd_S_3C274"):
+        (base / rel).mkdir(parents=True)
+    (base / "BV019/wd/vasco.meta/listobs.json").write_text("{}", encoding="utf-8")
+    return base
+
+
+@pytest.mark.parametrize("target_value", [".", "./", "ABSOLUTE"])
+def test_target_dir_can_be_the_project_root(tmp_path, target_value):
+    from alfrd.studio_defs import fill, studio_context
+
+    root = tmp_path / "1ktest"
+    root.mkdir()
+    value = str(root) + "/" if target_value == "ABSOLUTE" else target_value
+    _old_root_layout(root, value)
+    layout = scan_layout(root)
+    codes = {c["id"]: c for c in layout["project_codes"]}
+    assert set(codes) == {"BV019/wd", "BV019/wd_1", "RDV41"}
+    assert codes["BV019/wd"]["targets"] == ["0742+103"]
+    assert codes["BV019/wd"]["bands"] == ["X"]
+    assert codes["BV019/wd_1"]["targets"] == ["1309+555"]
+    assert codes["RDV41"]["bands"] == ["S"]
+    assert codes["RDV41"]["targets"] == ["3C274"]
+    assert codes["BV019/wd"]["meta_files"] == ["listobs.json"]
+    assert layout["result_csvs"] == []
+    ctx = studio_context(root)
+    assert ctx["target_dir"] == "."
+    assert {wd["rel"] for wd in ctx["workdirs"]} == {"BV019/wd", "BV019/wd_1", "RDV41/wd"}
+    assert fill("{target_dir}/{target}_result.csv", ctx) == "{target}_result.csv"

@@ -170,7 +170,9 @@ def fill(pattern: str, fixed: Mapping[str, Any]) -> str:
         value = fixed.get(match.group(1))
         return str(value).strip("/") if value not in (None, "") else match.group(0)
 
-    return _PLACEHOLDER.sub(repl, pattern)
+    text = _PLACEHOLDER.sub(repl, pattern)
+    # A root target_dir (".") leaves "./" segments behind; drop them.
+    return re.sub(r"(?:^|(?<=/))\.(?:/|$)", "", text)
 
 
 def _segment_regex(seg: str, known: Mapping[str, str]) -> re.Pattern[str]:

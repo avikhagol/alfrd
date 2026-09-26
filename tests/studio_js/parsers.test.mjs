@@ -373,3 +373,40 @@ test("default alfrd.yaml: used for a picked folder without one, name = folder", 
   assert.equal(buildBundle(one).manifest, null);
   defsMod.registerDefaultManifest(null);
 });
+
+test("target_dir can be the project root (old AVICA layout: <CODE>/wd* next to avica.inp)", async () => {
+  const { buildAvicaIndex, patternRegex } = await import(path.join(web, "data/avica.js"));
+  const manifest = parseYaml([
+    "version: 1",
+    "name: 1ktest",
+    "template: avica",
+    "avica:",
+    '  target_dir: "."',
+    "  meta_dir: vasco.meta",
+    '  band_dir: ["wd_{band}", "wd_{band}/wd_{band}_{target}"]',
+  ].join("\n"));
+  const dir = (rel) => ({ rel: `${rel}/.dir`, name: ".dir", size: 0, marker: true });
+  const entries = [
+    { rel: "avica.inp", name: "avica.inp", size: 12, text: "target_dir = .\n" },
+    dir("BV019/wd/wd_X/wd_X_0742+103"),
+    dir("BV019/wd_1/wd_X/wd_X_1309+555"),
+    { rel: "BV019/wd/vasco.meta/listobs.json", name: "listobs.json", size: 2, text: "{}" },
+    dir("RDV41/wd/wd_S/wd_S_3C274"),
+  ];
+  for (const target_dir of [".", "./", "/data/avi/reductions/1ktest/"]) {
+    const index = buildAvicaIndex(entries, { manifestAvica: manifest.avica, manifest, config: { target_dir } });
+    assert.equal(index.targetDir, ".", target_dir);
+    assert.deepEqual(Object.keys(index.codes).sort(), ["BV019/wd", "BV019/wd_1", "RDV41"], target_dir);
+    assert.deepEqual(index.codes["BV019/wd"].targets, ["0742+103"]);
+    assert.deepEqual(index.codes["BV019/wd"].bands, ["X"]);
+    assert.deepEqual(index.codes["BV019/wd_1"].targets, ["1309+555"]);
+    assert.deepEqual(index.codes.RDV41.bands, ["S"]);
+    assert.deepEqual(index.codes.RDV41.targets, ["3C274"]);
+  }
+  // A real sub-folder target_dir still works...
+  assert.ok(patternRegex("{target_dir}/{project_code}/wd", { target_dir: "reductions" }).test("reductions/BV019/wd"));
+  assert.ok(!patternRegex("{target_dir}/{project_code}/wd", { target_dir: "reductions" }).test("BV019/wd"));
+  // ...and fillPattern drops the "./" a root target_dir leaves behind.
+  assert.equal(defsMod.fillPattern("{target_dir}/{target}_result.csv", { target_dir: "." }), "{target}_result.csv");
+  assert.equal(defsMod.fillPattern("{target_dir}/BV019/wd", { target_dir: "./" }), "BV019/wd");
+});

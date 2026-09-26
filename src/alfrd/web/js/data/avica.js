@@ -30,6 +30,13 @@ const reEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Compile a layout pattern (repeated placeholders must match the same text). */
 export function patternRegex(pattern, fixed = {}) {
+  // A target_dir of "." / "./" / "" is the project root: drop "{target_dir}/" so
+  // root-relative paths like "BV019/wd" match (mirrors avica_layout.pattern_regex).
+  if (fixed && "target_dir" in fixed && fixed.target_dir != null && /^\/*\.?\/*$/.test(String(fixed.target_dir))) {
+    pattern = pattern.split("{target_dir}/").join("");
+    fixed = { ...fixed };
+    delete fixed.target_dir;
+  }
   const seen = new Set();
   let out = "";
   let pos = 0;
@@ -143,9 +150,11 @@ function parseMeta(name, text, size) {
   return entry;
 }
 
+/** Normalise a relative dir value; "." is the canonical project root. */
 function resolveRel(value) {
   if (!value) return null;
-  return String(value).replace(/^\.\//, "").replace(/\/+$/, "");
+  const rel = String(value).replace(/^(?:\.\/+)+/, "").replace(/\/+$/, "");
+  return rel === "" || rel === "." ? "." : rel;
 }
 
 /**
@@ -158,14 +167,25 @@ export function buildAvicaIndex(entries, { manifestAvica = {}, manifest = null, 
   // Core parameters: the `other` section plus rows whose source is `<origin>/core`.
   if (summary) summary.rows.filter((r) => !r.step || r.step === "other" || /\/core$/.test(String(r.source || ""))).forEach((r) => { values[r.parameter] = r.value; });
   let targetDir = resolveRel(values.target_dir) || "reductions";
+  const pats = layoutPatterns(manifest);
+  // True when some entry path prefix (1-6 segments) is a work dir under `dir`.
+  const holdsWorkdirs = (dir) => {
+    const res = pats.workdir.map((p) => patternRegex(p, { target_dir: dir }));
+    return entries.some((e) => {
+      const parts = e.rel.split("/");
+      for (let k = 1; k <= Math.min(parts.length - 1, 6); k += 1) if (matchAny(res, parts.slice(0, k).join("/"))) return true;
+      return false;
+    });
+  };
   // Fall back to the folder that actually holds project work dirs / result CSVs.
-  const hasUnder = (dir) => entries.some((e) => e.rel.startsWith(`${dir}/`));
-  if (!hasUnder(targetDir)) {
-    const guess = entries.map((e) => (/^([^/]+)\/[^/]+\/wd(_\d+)?\//.exec(e.rel) || [])[1]).find(Boolean)
+  // An absolute target_dir cannot be mapped onto browser entries, so it always guesses.
+  const hasUnder = (dir) => (dir === "." ? holdsWorkdirs(".") : entries.some((e) => e.rel.startsWith(`${dir}/`)));
+  if (entries.length && (targetDir.startsWith("/") || !hasUnder(targetDir))) {
+    const guess = (holdsWorkdirs(".") && ".")
+      || entries.map((e) => (/^([^/]+)\/[^/]+\/wd(_\d+)?\//.exec(e.rel) || [])[1]).find(Boolean)
       || entries.map((e) => (/^([^/]+)\/[^/]+_result\.csv$/.exec(e.rel) || [])[1]).find(Boolean);
     if (guess) targetDir = guess;
   }
-  const pats = layoutPatterns(manifest);
   const metaDir = pats.meta_dir[0] || "avica.meta";
   const metaNames = metaDirNames(metaDir);
   const wdRes = pats.workdir.map((p) => patternRegex(p, { target_dir: targetDir }));

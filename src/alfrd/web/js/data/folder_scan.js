@@ -208,11 +208,16 @@ export async function scanProjectFolder(root, { onProgress = () => {}, statOnly 
   const summary = summaryEntry ? parseSummaryFile(summaryEntry.name, summaryEntry.text || "") : null;
   const pre = buildAvicaIndex([], { manifestAvica: block, manifest: parsed, config, summary });
   let targetDir = pre.targetDir;
-  if (!(await dirAt(base, targetDir))) {
-    // target_dir missing: look for the folder holding <CODE>/wd*/ (same fallback as the index).
-    for (const c of top.filter((x) => x.kind === "directory" && !/^\.|\.logs$/.test(x.name))) {
-      const hit = await expandPatterns(c.handle, pats.workdir.map((p) => p.replace(/^\{target_dir\}\//, "")), {}, "directory");
-      if (hit.length) { targetDir = c.name; break; }
+  if (targetDir.startsWith("/") || !(await dirAt(base, targetDir))) {
+    // target_dir absolute (can't be mapped in the browser) or missing: first try the
+    // project root itself, then the folder holding <CODE>/wd*/ (same fallback as the index).
+    const rootPats = pats.workdir.map((p) => p.replace(/^\{target_dir\}\//, ""));
+    if ((await expandPatterns(base, rootPats, {}, "directory")).length) targetDir = ".";
+    else {
+      for (const c of top.filter((x) => x.kind === "directory" && !/^\.|\.logs$/.test(x.name))) {
+        const hit = await expandPatterns(c.handle, rootPats, {}, "directory");
+        if (hit.length) { targetDir = c.name; break; }
+      }
     }
   }
   onProgress(`target_dir = ${targetDir}/`);

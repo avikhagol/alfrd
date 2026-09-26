@@ -366,7 +366,12 @@ def layout_patterns(root: str | Path) -> dict[str, list[str]]:
 
 def pattern_regex(pattern: str, fixed: Mapping[str, str] | None = None) -> re.Pattern[str]:
     """Compile a layout pattern; repeated placeholders must match the same text."""
-    fixed = fixed or {}
+    fixed = dict(fixed or {})
+    # A target_dir of "." (or "./", "") means the project root itself: drop the
+    # "{target_dir}/" prefix so root-relative paths like "BV019/wd" still match.
+    if "target_dir" in fixed and str(fixed["target_dir"]).strip("/") in ("", "."):
+        pattern = pattern.replace("{target_dir}/", "")
+        fixed.pop("target_dir")
     seen: set[str] = set()
     out = []
     pos = 0
