@@ -18,6 +18,7 @@ def test_cli_help_smoke():
     assert "inspect" in result.output
     assert "serve" in result.output
     assert "gui" in result.output
+    assert "studio" in result.output
 
 
 def test_cli_command_help_smoke():
@@ -32,6 +33,7 @@ def test_cli_command_help_smoke():
         "nrun",
         "serve",
         "gui",
+        "studio",
     ):
         result = runner.invoke(alfrd_cli, [command, "--help"])
         assert result.exit_code == 0, f"{command}: {result.output}"
@@ -129,6 +131,7 @@ def test_cli_no_browser_skips_browser_and_wildcard_prints_loopback(monkeypatch):
     result = runner.invoke(alfrd_cli, ["serve", "--host", "0.0.0.0", "--no-browser"])
     assert result.exit_code == 0, result.output
     assert "http://127.0.0.1:5000/dashboard/" in result.output
+    assert "http://127.0.0.1:5000/studio/" in result.output
     assert calls == [{"host": "0.0.0.0", "port": 5000, "debug": False}]
 
 

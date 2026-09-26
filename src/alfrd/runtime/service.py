@@ -148,6 +148,26 @@ class RuntimeService:
         with self.store.session() as session:
             return list(session.scalars(select(Project).order_by(Project.name)))
 
+    def forget_project(self, name: str) -> dict[str, int]:
+        """Remove a project from the runtime database (its runs, datasets, workflows).
+
+        Only database rows are deleted; files in the project folder are never touched.
+        """
+        with self.store.session() as session:
+            project = session.scalar(select(Project).where(Project.name == name))
+            if project is None:
+                raise RuntimeNotFound(f"project {name!r} not found")
+            workflow_ids = [w.id for w in project.workflows]
+            dataset_ids = [d.id for d in project.datasets]
+            runs = list(session.scalars(select(Run).where((Run.workflow_id.in_(workflow_ids)) | (Run.dataset_id.in_(dataset_ids))))) if (workflow_ids or dataset_ids) else []
+            for run in sorted(runs, key=lambda r: r.parent_run_id is None):  # children first
+                session.delete(run)
+            session.flush()
+            counts = {"runs": len(runs), "datasets": len(dataset_ids), "workflows": len(workflow_ids)}
+            self._audit_entity(session, "project", project.id, "forgotten")
+            session.delete(project)
+            return counts
+
     def get_project_by_name(self, name: str) -> Project:
         with self.store.session() as session:
             project = session.scalar(select(Project).where(Project.name == name))

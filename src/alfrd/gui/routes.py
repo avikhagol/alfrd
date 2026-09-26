@@ -124,6 +124,11 @@ def version():
 
 @system.get("/")
 def root():
+    """The client-side Workflow Studio is the default UI; /dashboard/ remains."""
+    from alfrd.gui.studio import studio_available
+
+    if studio_available():
+        return redirect(url_for("studio.studio_index"))
     return redirect(url_for("dashboard.index_dashboard"))
 
 
@@ -236,11 +241,12 @@ def _connect_form(path: str = "", errors: list[str] | None = None, status: int =
     )
 
 
-@dashboard.route("/connect", methods=["GET", "POST"])
-def connect_project():
-    if request.method == "GET":
-        return _connect_form()
-    path = request.form.get("path", "").strip()
+def connect_manifest_path(path: str):
+    """Validate and register a project directory/manifest with the runtime.
+
+    Returns ``(project_dict, errors, status)``; shared by the HTML form and the
+    Studio's JSON endpoint so both enforce identical rules.
+    """
     try:
         manifest_path = resolve_selected_manifest(path)
         manifest = load_manifest(manifest_path)
@@ -250,7 +256,7 @@ def connect_project():
                 "letters, digits, dots, underscores, or hyphens."
             )
     except (ManifestError, OSError, ValueError) as error:
-        return _connect_form(path, [str(error)], 400)
+        return None, [str(error)], 400
 
     service = _runtime_service()
     if service is None:  # also enforced by the global mutation gate
@@ -262,8 +268,8 @@ def connect_project():
     root_path = manifest_path.parent.resolve()
     if existing is not None:
         if Path(existing.root_path).resolve() != root_path:
-            return _connect_form(
-                path,
+            return (
+                None,
                 [f"Project name {manifest.name!r} is already connected to another directory."],
                 409,
             )
@@ -273,9 +279,21 @@ def connect_project():
         except Exception as error:
             # Database uniqueness errors can still occur if another request
             # connects the same name concurrently; present them as conflicts.
-            return _connect_form(path, [f"Could not connect project: {error}"], 409)
-    flash(f"Project {manifest.name!r} connected.", "success")
-    return redirect(url_for("dashboard.project_details", project_name=manifest.name))
+            return None, [f"Could not connect project: {error}"], 409
+    project = _reader().get_project(manifest.name) or {"name": manifest.name, "root_path": str(root_path)}
+    return project, [], 200
+
+
+@dashboard.route("/connect", methods=["GET", "POST"])
+def connect_project():
+    if request.method == "GET":
+        return _connect_form()
+    path = request.form.get("path", "").strip()
+    project, errors, status = connect_manifest_path(path)
+    if errors:
+        return _connect_form(path, errors, status)
+    flash(f"Project {project['name']!r} connected.", "success")
+    return redirect(url_for("dashboard.project_details", project_name=project["name"]))
 
 
 @dashboard.get("/project/<project_name>")

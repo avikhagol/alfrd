@@ -13,7 +13,58 @@ series (see `docs/plans/ALFRD_0.2_ROADMAP.md`).
 release candidate suitable for real ALFRD workflows and subsequent AVICA
 integration.
 
+### Fixed
+
+- CI / PyPI: the `dev` extra now installs Flask (GUI tests failed to import it
+  in a clean `pip install ".[dev]"`), pytest only collects `tests/`, and the
+  workflows run `twine check` on the built distributions.
+- GitHub Pages workflow moved to `.github/workflows/pages.yml`.
+- `alfrd serve` started in a project folder shows only that project; every
+  project ever connected stays in `~/.alfrd/runtime.sqlite` and used to appear
+  too. `--all-projects` shows them all; `alfrd projects list` /
+  `alfrd projects forget NAME` manage them (database rows only).
+
 ### Added
+
+- **Studio driven by alfrd.yaml** (`alfrd.studio_defs`, `web/js/data/defs.js`):
+  `template: avica` (defaults in `web/assets/templates/avica.yaml`), per-step
+  `label`/`category`/`stage`/`description`/`icon`, `metadata:` (Metadata
+  health replaces the HDU checks), `logs:` (collapsible, scrollable step logs
+  with a full-screen view; new **Logs** workspace grouping step logs and
+  `kind: log` artifacts), `overview.ms_path` (MS Storage Path column) and
+  `project_settings.field_aliases` (replaces the built-in VASCO → AVICA rules).
+  **Project settings** edits and saves alfrd.yaml; the Workflow inspector shows
+  step parameters from `alfrd avica summary` and writes changes to avica.inp.
+  Results default to the most recent attempt per step with a *Full history*
+  switch; the Workflow opens in list view. Demo data only with
+  `alfrd serve --demo` / `alfrd studio --demo`; `alfrd serve` connects the
+  alfrd.yaml in the current folder (or `--project DIR`). New endpoints:
+  `GET /api/studio/projects/<p>/scan`, `GET …/file?path=` (declared logs
+  only), `POST …/manifest`, `POST /api/studio/avica/<p>/config`.
+- **AVICA & ALFRD Workflow Studio** (`alfrd.web`): a client-side, light-mode
+  web UI (vanilla ES modules, no runtime dependencies) with Overview grid and
+  target drawer, Workflow canvas (node graph, mini-map, inspector, browser
+  simulation), Metadata HDU health checks, Results analytics and ALFRD
+  project/validator configuration. Served by `alfrd serve` at `/studio/`
+  (now the default page; `/dashboard/` is kept), by the new dependency-free
+  `alfrd studio` command, or from GitHub Pages (`.github/workflows/pages.yml`,
+  `alfrd studio --export DIR`). Legacy VASCO step names are resolved to AVICA
+  with alias warnings. New JSON endpoints: `GET /api/studio/session`,
+  `POST /api/projects/connect`.
+- **AVICA tree reader** (`alfrd.avica_layout`, import-free): resolves
+  `target_dir` from `avica pipe config --summary` / `avica.inp`, finds AVICA
+  project-code work dirs, `avica.meta/`, rPicard templates and
+  `picard_input_template_update` overrides, and `avica.logs/`. Layout patterns
+  (`workdir`, `band_dir`, `meta_dir`, `input_templates`, `result_csv`) are read
+  from alfrd.yaml's `avica:` block. New CLI `alfrd avica summary|scan` and
+  Studio endpoints `/api/studio/avica/<project>/{layout,workdir,summary,logs/<name>}`.
+  The Studio separates ALFRD projects from AVICA project codes, lets you attach
+  work folders to targets, and remembers view state.
+  Opening a project folder is a targeted scan (File System Access API): the
+  Studio reads alfrd.yaml first and opens only the artifacts it points to,
+  never listing measurement sets; the folder is remembered for **Re-scan** and
+  for reading logs after a reload. `alfrd avica scan ROOT --bundle scan.json`
+  packs the same files for importing a tree from another machine.
 
 - **Typed pipeline engine** (`alfrd.core.pipeline`): `PipelineCore`,
   `PipelineContext`, `PipelineStepBase`, `PipelineStepValidatorBase`,

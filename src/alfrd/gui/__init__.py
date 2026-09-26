@@ -74,7 +74,10 @@ def create_app(config=None):
         app.config["SECRET_KEY"] = secrets.token_hex(32)
 
     from alfrd.gui.routes import api, control, dashboard, system
+    from alfrd.gui.studio import studio, studio_api
 
+    app.register_blueprint(studio)
+    app.register_blueprint(studio_api)
     app.register_blueprint(api)
     app.register_blueprint(dashboard)
     app.register_blueprint(system)

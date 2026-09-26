@@ -136,3 +136,9 @@ avica.logs/
 reductions/
 .verification/
 .verify-*/
+
+# Test fixtures mirror real AVICA trees (keep them tracked)
+!tests/fixtures/**/reductions/
+!tests/fixtures/**/avica.logs/
+!tests/fixtures/**/avica.logs/*.log
+!tests/fixtures/**/reductions/**/*.log

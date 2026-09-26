@@ -4,6 +4,10 @@ name: avica-0.3
 description: Existing AVICA 0.3 reduction results, imported without loading AVICA.
 primary_key: TARGET_NAME
 
+# Studio template: labels, stages, metadata files and logs of the AVICA steps
+# (alfrd/web/assets/templates/avica.yaml). Override any of them per step below.
+template: avica
+
 dataset_columns:
   - name: TARGET_NAME
     type: string

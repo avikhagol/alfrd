@@ -1,6 +1,6 @@
 # ALFRD dashboard guide
 
-Start the local dashboard with `alfrd serve` (`alfrd gui` is an alias). It uses the canonical runtime SQLite database by default, prints its dashboard URL, and opens the browser after HTTP startup. `/` redirects to `/dashboard/`. Use `--runtime-db PATH` to select another database, or `--no-browser` for headless use. Debug browser opening happens only in the reloader child; debug mode is restricted to loopback interfaces.
+Start the local dashboard with `alfrd serve` (`alfrd gui` is an alias). It uses the canonical runtime SQLite database by default, prints the Studio and dashboard URLs, and opens the Workflow Studio after HTTP startup. `/` redirects to `/studio/` (see [studio-guide.md](studio-guide.md)); this server-rendered dashboard remains at `/dashboard/`. Use `--runtime-db PATH` to select another database, or `--no-browser` for headless use. Debug browser opening happens only in the reloader child; debug mode is restricted to loopback interfaces.
 
 The dashboard is usable without network access: its styles and interaction code are packaged with ALFRD. On a narrow display, tables scroll horizontally rather than hiding values.
 

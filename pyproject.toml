@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfrd"
-version = "0.2.1.0"
+version = "0.2.0.0"
 description = "Automated Logical FRamework for Dynamic script execution (ALFRD)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1.2", "pytest>=7"]
+dev = ["build>=1.2", "pytest>=7", "flask", "flask_sqlalchemy"]
 google = [
   "google-api-python-client",
   "google-auth-httplib2",
@@ -62,3 +62,16 @@ where = ["src"]
   "static/*.css",
   "model/*.sql",
 ]
+"alfrd.web" = [
+  "*.html",
+  "css/*.css",
+  "js/*.js",
+  "js/components/*.js",
+  "js/data/*.js",
+  "js/utils/*.js",
+  "assets/*.svg",
+  "assets/templates/*.yaml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

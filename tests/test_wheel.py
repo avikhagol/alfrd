@@ -22,6 +22,14 @@ EXPECTED_WHEEL_PATHS = {
     "alfrd/gui/templates/dashboard/project_details.htm",
     "alfrd/gui/static/alfrd.css",
     "alfrd/gui/model/schema.sql",
+    "alfrd/gui/studio.py",
+    "alfrd/web/__init__.py",
+    "alfrd/web/index.html",
+    "alfrd/web/css/studio.css",
+    "alfrd/web/js/app.js",
+    "alfrd/web/js/components/canvas.js",
+    "alfrd/web/js/utils/yaml_parser.js",
+    "alfrd/web/assets/templates/avica.yaml",
 }
 
 

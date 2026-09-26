@@ -266,7 +266,40 @@ def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
         print("Browser launch timed out; open the dashboard URL above manually.")
 
 
-def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False) -> None:
+def _connect_startup_project(service, project: str | None) -> str | None:
+    """Register the folder `alfrd serve` was started for (``--project`` or the cwd)."""
+    from alfrd.manifest import ManifestError, load_manifest
+    from alfrd.runtime import RuntimeNotFound
+    from alfrd.studio_defs import manifest_file
+
+    folder = Path(project).expanduser().resolve() if project else Path.cwd().resolve()
+    if folder.is_file():
+        folder = folder.parent
+    path = manifest_file(folder)
+    if path is None:
+        if project:
+            raise typer.BadParameter(f"No alfrd.yaml in {folder}")
+        return None
+    try:
+        manifest = load_manifest(path)
+    except (ManifestError, OSError) as error:
+        print(f"alfrd.yaml in {folder} was not loaded: {error}")
+        return None
+    try:
+        existing = service.get_project_by_name(manifest.name)
+    except RuntimeNotFound:
+        existing = None
+    if existing is not None and Path(existing.root_path).resolve() != folder:
+        print(f"Project {manifest.name!r} is already connected to {existing.root_path}; showing that one.")
+        return manifest.name
+    if existing is None:
+        service.register_manifest(manifest, root_path=folder, create_root=False)
+    print(f"Project {manifest.name}: {folder}")
+    return manifest.name
+
+
+def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
+               demo: bool = False, project: str | None = None, all_projects: bool = False) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -290,11 +323,21 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         "CATALOG_READER": RuntimeCatalogReader(service),
         "CATALOG_CREATE_SCHEMA": False,
         "RUNTIME_MUTATIONS_ENABLED": loopback,
+        "STUDIO_DEMO": demo,
+        "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
     }
+    # Started for one project: the Studio shows only that one (unless --all-projects).
+    config["STUDIO_PROJECTS"] = None if all_projects or not config["STUDIO_DEFAULT_PROJECT"] else [config["STUDIO_DEFAULT_PROJECT"]]
+    others = [p.name for p in service.list_projects() if p.name != config["STUDIO_DEFAULT_PROJECT"]]
+    if config["STUDIO_PROJECTS"] and others:
+        print(f"Also remembered in {database}: {', '.join(others)} (show them with --all-projects; remove with `alfrd projects forget NAME`).")
+    elif not config["STUDIO_DEFAULT_PROJECT"] and others:
+        print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     authority = f"[{browser_host}]" if ":" in browser_host else browser_host
-    url = f"http://{authority}:{port}/dashboard/"
-    print(f"ALFRD dashboard: {url}")
+    url = f"http://{authority}:{port}/studio/"
+    print(f"ALFRD Workflow Studio: {url}")
+    print(f"ALFRD dashboard: http://{authority}:{port}/dashboard/")
     app = create_app(config)
     stopped = threading.Event()
     browser_thread = None
@@ -321,10 +364,17 @@ def serve(
         None, help="Path to the runtime SQLite database that backs matrix routes."
     ),
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the dashboard in a browser."),
+    demo: bool = typer.Option(False, "--demo", help="Show the built-in demo data in the Studio."),
+    project: Optional[str] = typer.Option(
+        None, "--project", help="Folder with alfrd.yaml to open (default: the current folder when it has one)."
+    ),
+    all_projects: bool = typer.Option(
+        False, "--all-projects", help="Also show every other project remembered in the runtime database."
+    ),
 ):
-    """Serve the local ALFRD dashboard backed by the runtime SQLite database."""
+    """Serve the Workflow Studio (default) and dashboard backed by the runtime database."""
 
-    _serve_web(host, port, debug, runtime_db, no_browser)
+    _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects)
 
 
 @alfrd_cli.command()
@@ -340,6 +390,166 @@ def gui(
     """Alias for ``alfrd serve``."""
 
     _serve_web(host, port, debug, runtime_db, no_browser)
+
+
+def _studio_handler(directory: Path):
+    from http.server import SimpleHTTPRequestHandler
+
+    from alfrd.web import MIME_TYPES
+
+    class StudioHandler(SimpleHTTPRequestHandler):
+        extensions_map = {**SimpleHTTPRequestHandler.extensions_map, **MIME_TYPES}
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(directory), **kwargs)
+
+        def end_headers(self):
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            super().end_headers()
+
+        def log_message(self, format, *args):  # keep the terminal quiet
+            pass
+
+    return StudioHandler
+
+
+@alfrd_cli.command()
+def studio(
+    port: int = typer.Option(8080, min=0, max=65535, help="TCP port to bind (0 picks a free port)."),
+    host: str = typer.Option("127.0.0.1", help="Interface to bind."),
+    open_browser: bool = typer.Option(True, "--open-browser/--no-browser", help="Open the Studio in a browser."),
+    export: Optional[str] = typer.Option(
+        None, "--export", help="Copy the static Studio into this directory (e.g. for GitHub Pages) and exit."
+    ),
+    demo: bool = typer.Option(False, "--demo", help="Open the Studio with the built-in demo data."),
+):
+    """Launch the AVICA & ALFRD Workflow Studio web UI locally (browser-only, no backend)."""
+    from http.server import ThreadingHTTPServer
+
+    from alfrd.web import export_site, missing_assets, web_root
+
+    missing = missing_assets()
+    if missing:
+        raise typer.BadParameter(f"Studio assets missing from this installation: {', '.join(missing)}")
+    if export:
+        target = export_site(export)
+        print(f"Studio exported to {target}")
+        return
+    try:
+        httpd = ThreadingHTTPServer((host, port), _studio_handler(web_root()))
+    except OSError as error:
+        raise typer.BadParameter(f"Could not bind {host}:{port} ({error})") from error
+    bound_host, bound_port = httpd.server_address[:2]
+    browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    authority = f"[{browser_host}]" if ":" in browser_host else browser_host
+    url = f"http://{authority}:{bound_port}/{'?demo=1' if demo else ''}"
+    print(f"ALFRD Workflow Studio (browser mode): {url}")
+    print("Static files only - use `alfrd serve` for live runtime projects. Press Ctrl+C to stop.")
+    stopped = threading.Event()
+    if open_browser:
+        threading.Thread(target=_open_dashboard_when_ready, args=(url, stopped), daemon=True).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stopped.set()
+        httpd.server_close()
+
+
+projects_cli = typer.Typer(help="Projects remembered in the runtime database (used by `alfrd serve`).")
+alfrd_cli.add_typer(projects_cli, name="projects")
+
+
+@projects_cli.command("list")
+def projects_list(db: Optional[str] = typer.Option(None, "--db", help="Path to the runtime SQLite database.")):
+    """List remembered projects and their folders."""
+    service = _runtime_service(db)
+    projects = service.list_projects()
+    if not projects:
+        print("No projects remembered.")
+    for p in projects:
+        exists = "" if Path(p.root_path).is_dir() else "  (folder missing)"
+        print(f"{p.name}\t{p.root_path}{exists}")
+
+
+@projects_cli.command("forget")
+def projects_forget(
+    name: str = typer.Argument(..., help="Project name (see `alfrd projects list`)."),
+    db: Optional[str] = typer.Option(None, "--db", help="Path to the runtime SQLite database."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation."),
+):
+    """Remove a project from the runtime database. Files on disk are not touched."""
+    from alfrd.runtime import RuntimeNotFound
+
+    service = _runtime_service(db)
+    try:
+        project = service.get_project_by_name(name)
+    except RuntimeNotFound:
+        raise typer.BadParameter(f"No project named {name!r}. See `alfrd projects list`.")
+    if not yes and not typer.confirm(f"Forget {name} ({project.root_path})? Its runs in the database are removed too."):
+        raise typer.Abort()
+    counts = service.forget_project(name)
+    print(f"Forgot {name}: {counts['runs']} run(s), {counts['datasets']} dataset(s), {counts['workflows']} workflow(s). Files untouched.")
+
+
+avica_cli = typer.Typer(help="Read an AVICA reduction tree next to alfrd.yaml (never imports AVICA).")
+alfrd_cli.add_typer(avica_cli, name="avica")
+
+
+@avica_cli.command("summary")
+def avica_summary_command(
+    root: str = typer.Argument(".", help="Folder containing alfrd.yaml and avica.inp."),
+    run: bool = typer.Option(True, "--run/--no-run", help="Run `avica pipe config --summary` (else read the cache)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the parsed rows as JSON."),
+):
+    """Cache `avica pipe config --summary` as avica.summary.json for the Studio."""
+    import json as _json
+
+    from alfrd.avica_layout import resolve_config
+
+    try:
+        config = resolve_config(root, run_summary=run)
+    except FileNotFoundError as error:
+        print(f"{error}; save the table manually with `avica pipe config --summary > avica.summary.txt`.")
+        raise typer.Exit(code=1)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        print(f"avica pipe config --summary failed: {error}")
+        raise typer.Exit(code=1)
+    if not config.summary:
+        print("No summary cached; run without --no-run.")
+        raise typer.Exit(code=1)
+    rows = config.summary["rows"]
+    if as_json:
+        print(_json.dumps(rows, indent=1, default=str))
+    else:
+        print(f"{len(rows)} parameters; target_dir={config.get('target_dir')}; cached in {Path(root) / 'avica.summary.json'}")
+
+
+@avica_cli.command("scan")
+def avica_scan_command(
+    root: str = typer.Argument(".", help="Folder containing alfrd.yaml and avica.inp."),
+    bundle: Optional[str] = typer.Option(None, "--bundle", help="Write the files the Studio reads to this JSON (import it in the Studio)."),
+    log_tail: int = typer.Option(64, "--log-tail", help="With --bundle: KiB kept from the end of each avica.logs/*.log (0 = list only)."),
+):
+    """Print the detected layout as JSON, or write a Studio import bundle with --bundle."""
+    import json as _json
+
+    from alfrd.avica_layout import collect_studio_files, scan_layout
+
+    if not bundle:
+        print(_json.dumps(scan_layout(root), indent=1, default=str))
+        return
+    try:
+        data = collect_studio_files(root, log_tail=max(0, log_tail) * 1024)
+    except FileNotFoundError as error:
+        print(error)
+        raise typer.Exit(code=1)
+    out = Path(bundle)
+    out.write_text(_json.dumps(data, default=str), encoding="utf-8")
+    size = out.stat().st_size
+    print(f"{len(data['files'])} file(s) from {data['root']} (target_dir {data['target_dir']}/) -> {out} ({size / 1024:.0f} KiB). Import it in the Studio.")
 
 
 runtime_cli = typer.Typer(help="Start, resume, retry, and cancel durable runtime runs.")

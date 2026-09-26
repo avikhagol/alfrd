@@ -150,11 +150,11 @@ def test_dashboard_context_reports_runtime_and_local_mutation_availability(conne
         assert context["mutations_enabled"] is False
 
 
-def test_root_redirects_to_dashboard(connected_app):
+def test_root_redirects_to_studio(connected_app):
     app, _ = connected_app
     response = app.test_client().get("/")
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/dashboard/")
+    assert response.headers["Location"].endswith("/studio/")
 
 
 def test_manifest_sync_detects_changed_entrypoint_command(connected_app, tmp_path):
