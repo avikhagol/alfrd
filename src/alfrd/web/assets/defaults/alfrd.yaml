@@ -80,9 +80,9 @@ dataset_columns:
 
 # Workflow stages (canvas bands). Remove to use the template's stages.
 stages:
-  - {id: ingest, title: Ingestion & Format Conversion}
-  - {id: reduce, title: Astrometry & Reduction}
-  - {id: meta, title: Meta Synthesis & Quality Control}
+  - {id: preprocessing, title: Loading to MeasurementSet}
+  - {id: average, title: Average MeasurementSet}
+  - {id: automation, title: Automated Metadata and Input generation}
   - {id: calib, title: Calibration Setup & Execution}
 
 workflows:
@@ -92,29 +92,38 @@ workflows:
     # label, category, stage, description, icon, metadata and logs.
     steps:
       - id: preprocess_fitsidi
-        stage: ingest
-        category: Preprocessing
-        label: FITS-IDI data ingestion
-        # Metadata health: files in {meta_dir} (= {workdir}/avica.meta) this step writes.
+        stage: preprocessing
+        category: FITSIDI
+        label: FITS-IDI data processing
         metadata:
           - {file: fitsfiles_used.avica, label: FITS files used, require: [filepath]}
           - {file: listobs.json, label: listobs (scans), require: [listobs]}
           - {file: listobs_fits.out, label: listobs (FITS)}
       - id: fits_to_ms
-        stage: loading
+        stage: preprocessing
         category: MeasurementSet
         metadata:
-          -  {file: available_wd_ifolder.avica, label: available input_template}
-      - phaseshift
+          -  {file: available_wd_ifolder.avica, label: input_template}
+      # - phaseshift
       - id: avica_avg
-        # Step logs: a list per step, shown in Workflow → Logs and the Logs view.
+        stage: average
         logs:
           - "{workdir}/wd_{band}/avica_avg_*log*"
-      - avicameta_ms
-      - avica_snr
-      - avica_fill_input
-      - avica_split_ms
-      - rpicard
+      - id: avicameta_ms
+        stage: automation
+        category: MeasurementSet
+      - id: avica_snr
+        stage: automation
+        category: MeasurementSet
+      - id: avica_fill_input
+        stage: automation
+        category: MeasurementSet
+      - id: avica_split_ms
+        stage: calib
+        category: MeasurementSet
+      - id: rpicard
+        stage: calib
+        category: MeasurementSet
 
 artifacts:
   - name: result_csv

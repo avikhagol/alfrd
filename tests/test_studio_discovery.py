@@ -236,3 +236,37 @@ def test_discovered_folders_are_rediscover_candidates(app_client, parent: Path):
     res = client.post("/api/studio/projects/rediscover", json={}, headers=h).get_json()
     assert sorted(r["name"] for r in res["restored"]) == ["alma-cycle9", "pipe-comparison"]
     assert res["default_project"] is not None
+
+
+def test_connect_folder_without_alfrd_yaml_uses_default(app_client, tmp_path: Path):
+    """Import → Connect / Browse: a folder without alfrd.yaml connects with the default manifest."""
+    app, client, h = app_client
+    assert client.get("/api/studio/session").get_json()["default_manifest"] is True
+    bare = tmp_path / "0742+103_reduction"
+    (bare / "avica.logs").mkdir(parents=True)
+    res = client.post("/api/projects/connect", json={"path": str(bare)}, headers=h)
+    assert res.status_code == 201, res.get_json()
+    body = res.get_json()
+    assert body["default_manifest"] is True and body["name"] == "0742+103_reduction"
+    assert body["root_path"] == str(bare.resolve())
+    scan = client.get(f"/api/studio/projects/{body['identifier']}/scan")
+    assert scan.status_code == 200
+    # Connecting again returns the same project; a local alfrd.yaml is reported as not default.
+    again = client.post("/api/projects/connect", json={"path": str(bare)}, headers=h).get_json()
+    assert again["identifier"] == body["identifier"]
+    local = _project(tmp_path / "local", "local-one")
+    assert client.post("/api/projects/connect", json={"path": str(local)}, headers=h).get_json()["default_manifest"] is False
+    missing = client.post("/api/projects/connect", json={"path": str(tmp_path / "nope")}, headers=h)
+    assert missing.status_code == 400
+
+
+def test_connected_project_joins_server_scope(app_client, tmp_path: Path):
+    """Connect from the Studio: the project stays in STUDIO_PROJECTS (visible after a reload)."""
+    app, client, h = app_client
+    app.config["STUDIO_PROJECTS"] = []
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    ident = client.post("/api/projects/connect", json={"path": str(bare)}, headers=h).get_json()["identifier"]
+    assert client.get("/api/studio/session").get_json()["projects"] == [ident]
+    client.post("/api/projects/connect", json={"path": str(bare)}, headers=h)
+    assert client.get("/api/studio/session").get_json()["projects"] == [ident]

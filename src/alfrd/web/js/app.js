@@ -559,7 +559,7 @@ function restoreSaved() {
 function openImport(tab = "files") {
   const serverBlock = state.mode === "server"
     ? `<section class="imp-sec"><h3>${icon("server")} ALFRD server</h3>
-        <p class="muted">Register a project directory or <code>alfrd.yaml</code> path on the machine running <code>alfrd serve</code>. The server reads the manifest; it never modifies the project.</p>
+        <p class="muted">Register a project directory or <code>alfrd.yaml</code> path on the machine running <code>alfrd serve</code>. The server reads the manifest; it never modifies the project.${server.session?.default_manifest !== false ? " A folder without <code>alfrd.yaml</code> is connected with the built-in default." : ""}</p>
         <form id="imp-connect" class="row gap"><input class="input mono grow" name="path" placeholder="/path/to/project or /path/to/alfrd.yaml" autocomplete="off" required ${server.session?.mutations_enabled ? "" : "disabled"}>${server.canBrowse() ? `<button type="button" class="btn" data-act="browse-server" aria-expanded="false" aria-controls="imp-browse">${icon("folder")} Browse…</button>` : ""}<button class="btn primary" ${server.session?.mutations_enabled ? "" : "disabled"}>Connect</button></form>
         <div id="imp-browse" hidden></div>
         ${server.session?.mutations_enabled ? "" : `<p class="hint warn">Connecting is only allowed from a loopback browser on the server host.</p>`}
@@ -650,8 +650,9 @@ function openImport(tab = "files") {
         try {
           const project = await server.connect(String(path));
           ok += 1;
-          ctx.log("info", `Connected ${project.display_name || project.name} → ${project.root_path}`, "server");
-          if (paths.length === 1) ctx.toast(`Project ${project.display_name || project.name} connected`, "ok");
+          const label = project.display_name || project.name;
+          ctx.log("info", `Connected ${label} → ${project.root_path}${project.default_manifest ? " (no alfrd.yaml there: using the default; Project settings → Save writes one)" : ""}`, "server");
+          if (paths.length === 1) ctx.toast(`Project ${label} connected${project.default_manifest ? " with the default alfrd.yaml" : ""}`, "ok");
         } catch (error) {
           ctx.toast(paths.length === 1 ? error.message : `${path}: ${error.message}`, "fail");
           ctx.log("error", `Connect failed (${path}): ${error.message}`, "server");
@@ -684,6 +685,7 @@ function openImport(tab = "files") {
           start: typed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(typed) ? typed.replace(/[\\/]\.?alfrd\.ya?ml$/i, "") : "",
           list: (path, o) => server.listFolders(path, o),
           connect: connectPaths,
+          allowDefault: server.session?.default_manifest !== false,
           use: (path) => { form.elements.path.value = path; closeBrowser(); form.elements.path.focus(); },
           close: closeBrowser,
         });

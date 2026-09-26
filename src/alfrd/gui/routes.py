@@ -32,7 +32,7 @@ from alfrd.runtime.matrix import (
 )
 from alfrd.gui.services import resolve_artifact_path, resolve_selected_manifest
 from alfrd.gui.summaries import build_dataset_summary, build_summaries
-from alfrd.manifest import ManifestError, load_manifest
+from alfrd.manifest import ManifestError, ManifestNotFoundError, load_manifest
 
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -247,14 +247,23 @@ def connect_manifest_path(path: str):
     Returns ``(project_dict, errors, status)``; shared by the HTML form and the
     Studio's JSON endpoint so both enforce identical rules.
     """
+    used_default = False
     try:
-        manifest_path = resolve_selected_manifest(path)
-        manifest = load_manifest(manifest_path)
-        if _SAFE_PROJECT_NAME.fullmatch(manifest.name) is None:
-            raise ValueError(
-                "Project name must start with a letter or digit and contain only "
-                "letters, digits, dots, underscores, or hyphens."
-            )
+        try:
+            manifest_path = resolve_selected_manifest(path)
+        except ManifestNotFoundError:
+            # A folder without alfrd.yaml: use the default manifest (name = folder
+            # name), like `alfrd serve` in such a folder. A local alfrd.yaml saved
+            # later from Project settings replaces it.
+            manifest_path, manifest = _default_manifest_for(path)
+            used_default = True
+        else:
+            manifest = load_manifest(manifest_path)
+            if _SAFE_PROJECT_NAME.fullmatch(manifest.name) is None:
+                raise ValueError(
+                    "Project name must start with a letter or digit and contain only "
+                    "letters, digits, dots, underscores, or hyphens."
+                )
     except (ManifestError, OSError, ValueError) as error:
         return None, [str(error)], 400
 
@@ -263,7 +272,7 @@ def connect_manifest_path(path: str):
         abort(403, description="runtime mutations are disabled")
     from alfrd.runtime.identity import project_identifier
 
-    root_path = manifest_path.parent.resolve()
+    root_path = manifest_path.parent.resolve()  # the folder itself for the default manifest
     identifier = project_identifier(root_path, manifest.name)
     try:
         existing = service.get_project_by_identifier(identifier)
@@ -280,7 +289,30 @@ def connect_manifest_path(path: str):
         "identifier": identifier, "name": manifest.name,
         "display_name": manifest.name, "root_path": str(root_path),
     }
+    project = {**project, "default_manifest": used_default}
+    # `alfrd serve` shows a scoped list (STUDIO_PROJECTS): a connected project
+    # joins it on the server too, so it is still there after a page reload.
+    scope = current_app.config.get("STUDIO_PROJECTS")
+    if isinstance(scope, list) and identifier not in scope:
+        scope.append(identifier)
     return project, [], 200
+
+
+def _default_manifest_for(path: str):
+    """``(folder/alfrd.yaml, manifest)`` for a folder without its own alfrd.yaml.
+
+    The returned path does not exist; only its parent (the folder) is used.
+    Raises ManifestNotFoundError when no default manifest is available.
+    """
+    from alfrd.manifest import parse_manifest
+    from alfrd.manifest_default import default_manifest_data, default_manifest_path
+
+    folder = Path(path).expanduser().resolve(strict=True)
+    default = default_manifest_path()
+    if default is None:
+        raise ManifestNotFoundError(f"No alfrd.yaml in {folder} and no default alfrd.yaml (ALFRD_DEFAULT_MANIFEST)")
+    manifest = parse_manifest(default_manifest_data(folder), source=default)
+    return folder / "alfrd.yaml", manifest
 
 
 @dashboard.route("/connect", methods=["GET", "POST"])

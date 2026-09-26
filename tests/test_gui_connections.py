@@ -96,7 +96,17 @@ def test_connect_rejects_ancestor_walk_and_unsafe_names_but_allows_name_duplicat
     client = app.test_client()
     headers = _csrf(client)
 
-    assert client.post("/dashboard/connect", data={"path": str(nested)}, headers=headers).status_code == 400
+    # No ancestor walk: a sub-folder without alfrd.yaml never picks up the parent's manifest;
+    # it is connected on its own with the default manifest (name = folder name).
+    assert client.post("/dashboard/connect", data={"path": str(nested)}, headers=headers).status_code == 302
+    nested_row = next(p for p in service.list_projects() if p.name == "nested")
+    assert Path(nested_row.root_path).resolve() == nested.resolve()
+    assert not any(p.name == "parent" for p in service.list_projects())
+    monkeypatch.setenv("ALFRD_DEFAULT_MANIFEST", str(tmp_path / "missing.yaml"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert client.post("/dashboard/connect", data={"path": str(empty)}, headers=headers).status_code == 400
+    monkeypatch.delenv("ALFRD_DEFAULT_MANIFEST")
     assert client.post("/dashboard/connect", data={"path": str(bad)}, headers=headers).status_code == 400
     assert client.post("/dashboard/connect", data={"path": str(other)}, headers=headers).status_code == 302
     duplicates = [p for p in client.get("/api/projects").get_json()["projects"] if p["name"] == "duplicate"]

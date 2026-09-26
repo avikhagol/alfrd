@@ -10,7 +10,8 @@ import { pathCrumbs, projectEntries } from "../data/paths.js";
 
 /**
  * Mount the browser into `host`.
- * opts: { list(path, {hidden}) → Promise<listing>, connect(paths[]) → Promise, use(path), close(), start? }
+ * opts: { list(path, {hidden}) → Promise<listing>, connect(paths[]) → Promise, use(path), close(), start?,
+ *         allowDefault? (folders without alfrd.yaml can be connected with the default manifest) }
  * Returns { destroy() }.
  */
 export function mountFolderBrowser(host, opts) {
@@ -50,7 +51,8 @@ export function mountFolderBrowser(host, opts) {
       <div class="fsb-foot row gap wrap">
         ${projects.length > 1 || (projects.length && !listing?.is_project) ? `<button type="button" class="btn" data-fsb-all>${icon("link")} Connect all projects here (${projects.length})</button>` : ""}
         <span class="grow"></span>
-        ${listing?.is_project ? `<button type="button" class="btn primary" data-fsb-connect-here>Connect this project</button>` : ""}
+        ${listing?.is_project ? `<button type="button" class="btn primary" data-fsb-connect-here>Connect this project</button>`
+          : listing && opts.allowDefault ? `<button type="button" class="btn" data-fsb-connect-here title="No alfrd.yaml here: the built-in default is used (name = folder name). Save Project settings later to write a local alfrd.yaml.">Connect this folder <span class="muted small">(default alfrd.yaml)</span></button>` : ""}
         <button type="button" class="btn" data-fsb-use ${listing ? "" : "disabled"}>Use this folder</button>
       </div>`;
   };

@@ -62,6 +62,8 @@ def studio_session():
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
         # Import → Connect → Browse… lists server folders (loopback + CSRF, like mutations).
         can_browse=mutations_enabled(),
+        # Folders without alfrd.yaml can be connected with the default manifest.
+        default_manifest=_default_manifest_available(),
         live={
             "enabled": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0) > 0
             and current_app.config.get("RUNTIME_SERVICE") is not None,
@@ -603,6 +605,12 @@ def studio_quit():
         return _json_error(RuntimeError("this server was not started by `alfrd serve`; stop it where it runs"), 501)
     threading.Timer(0.3, shutdown).start()
     return jsonify(stopping=True)
+
+
+def _default_manifest_available() -> bool:
+    from alfrd.manifest_default import default_manifest_path
+
+    return default_manifest_path() is not None
 
 
 def studio_available() -> bool:
