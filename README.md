@@ -4,8 +4,6 @@
 
 Run pipeline steps. Track their progress in a table. See it all in a web UI.
 
-Built for the [SMILE project](https://smilescience.info) (ERC grant).
-
 ---
 
 ## Contents
