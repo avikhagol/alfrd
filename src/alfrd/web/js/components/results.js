@@ -4,63 +4,16 @@
 import { $, on, esc, icon, hms, short, when, elapsed, loadUi, saveUi } from "../utils/dom.js";
 import { STEP_STATUS } from "../data/model.js";
 import { readFiles, buildBundle } from "../data/importers.js";
+import { resultStats, attemptsOf } from "../data/results_stats.js";
 
-const ui = { open: new Set(), table: false, history: loadUi("results", { history: false }).history };
-
-/** Attempts counted for a step: only the most recent one, or the whole history. */
-function attemptsOf(s) {
-  if (!s) return [];
-  if (!ui.history) return [s];
-  return s.attempts?.length ? s.attempts : [s];
-}
+const saved = loadUi("results", { history: false, targetOnly: false });
+const ui = { open: new Set(), table: false, history: saved.history, targetOnly: saved.targetOnly };
 
 function stats(ctx) {
-  const targets = ctx.scopedTargets();
-  const steps = ctx.steps();
-  const last = steps[steps.length - 1];
-  const per = Object.fromEntries(steps.map((k) => [k, { sum: 0, n: 0, completed: 0, failed: 0, warning: 0, running: 0, pending: 0, retries: 0 }]));
-  let total = 0;
-  let attempts = 0;
-  let stepSum = 0;
-  let stepN = 0;
-  let calibrated = 0;
-  let failedItems = 0;
-  const roll = { calibrated: 0, failed: 0, running: 0, remaining: 0 };
-  targets.forEach((t) => {
-    const r = ctx.rollup(t);
-    if (!ui.history) {
-      if (r.status === "completed") roll.calibrated += 1;
-      else if (r.status === "failed") roll.failed += 1;
-      else if (r.status === "running") roll.running += 1;
-      else roll.remaining += 1;
-      if (r.status === "failed") failedItems += 1;
-    }
-    steps.forEach((k) => {
-      const s = t.steps?.[k];
-      const bucket = per[k];
-      const list = attemptsOf(s);
-      if (s?.attempts?.length > 1) bucket.retries += s.attempts.length - 1;
-      if (!list.length) bucket.pending += 1;
-      list.forEach((a) => {
-        const st = a.status || "pending";
-        bucket[st === "queued" || st === "skipped" ? "pending" : st] += 1;
-        attempts += 1;
-        if (Number.isFinite(a.duration)) {
-          total += a.duration;
-          stepSum += a.duration;
-          stepN += 1;
-          if (st === "completed") { bucket.sum += a.duration; bucket.n += 1; }
-        }
-        if (ui.history) {
-          const tone = st === "completed" ? "calibrated" : st === "failed" ? "failed" : st === "running" ? "running" : "remaining";
-          roll[tone] += 1;
-          if (st === "failed" || st === "warning") failedItems += 1;
-        }
-        if (k === last && st === "completed") calibrated += 1;
-      });
-    });
-  });
-  return { targets, steps, per, total, attempts, avg: stepN ? stepSum / stepN : null, roll, calibrated, failedItems };
+  const t = ctx.target();
+  const scoped = ui.targetOnly && t ? [t] : ctx.scopedTargets();
+  const results = ctx.state.trees?.[t?.project || ctx.state.selectedProject]?.defs?.results || {};
+  return resultStats(scoped, ctx.steps(), { history: ui.history, rollup: (x) => ctx.rollup(x), results });
 }
 
 function radar(st) {
@@ -107,7 +60,8 @@ export function mount(el, ctx) {
     render(el, ctx);
   });
   on(el, "click", "#rs-table", () => { ui.table = !ui.table; render(el, ctx); });
-  on(el, "click", "[data-hist]", (e, b) => { ui.history = b.dataset.hist === "all"; saveUi("results", ui, ["history"]); render(el, ctx); });
+  on(el, "click", "[data-hist]", (e, b) => { ui.history = b.dataset.hist === "all"; saveUi("results", ui, ["history", "targetOnly"]); render(el, ctx); });
+  on(el, "click", "[data-scope]", (e, b) => { ui.targetOnly = b.dataset.scope === "target"; saveUi("results", ui, ["history", "targetOnly"]); render(el, ctx); });
   on(el, "change", "#rs-csv", async (e) => {
     const read = await readFiles(e.target.files);
     const t = ctx.target();
@@ -127,9 +81,12 @@ export function render(el, ctx) {
   const st = stats(ctx);
   st.labels = Object.fromEntries(ctx.state.workflow.steps.map((s) => [s.key, s.short || s.key]));
   const t = ctx.target();
-  const failedTargets = st.failedItems;
-  const calibrated = st.calibrated;
   const H = ui.history;
+  const one = ui.targetOnly && t;
+  const scopeLabel = one ? `target ${esc(t.name)}` : `${st.targets.length} targets`;
+  const nCal = st.calibratedTargets.length;
+  const nFail = st.failedTargets.length;
+  const calStep = esc(st.calStep || "—");
   const outcome = st.steps.map((k) => {
     const b = st.per[k];
     const total = b.completed + b.failed + b.warning + b.running + b.pending;
@@ -139,35 +96,35 @@ export function render(el, ctx) {
       { label: "Failed", value: b.failed, tone: "fail" },
       { label: "Running", value: b.running, tone: "run" },
       { label: "Not run", value: b.pending, tone: "muted" },
-    ], total).replace('<ul class="legend">', '<ul class="legend" hidden>')}</td><td class="tabular small">${b.completed}/${total}</td><td class="tabular small">${b.retries || ""}</td></tr>`;
+    ], total).replace('<ul class="legend">', '<ul class="legend" hidden>')}</td><td class="tabular small">${b.completed}/${total}</td>${H ? `<td class="tabular small">${b.retries || ""}</td>` : ""}</tr>`;
   }).join("");
 
   $("#rs", el).innerHTML = `
-    <div class="card"><div class="row gap wrap"><h2>Results &amp; Analytics</h2><span class="chip">${st.targets.length} targets · ${ctx.state.selectedProject === "all" ? "all projects" : esc(ctx.state.selectedProject)}</span><span class="grow"></span>
-      <div class="seg" role="group" aria-label="Attempts counted"><button data-hist="recent" class="${H ? "" : "on"}" title="Most recent attempt of each step">Recent only</button><button data-hist="all" class="${H ? "on" : ""}" title="Every attempt in the result CSVs, including earlier failures">Full history</button></div></div>
+    <div class="card"><div class="row gap wrap"><h2>Results &amp; Analytics</h2><span class="chip">${st.targets.length} target${st.targets.length === 1 ? "" : "s"} · ${one ? esc(t.name) : ctx.state.selectedProject === "all" ? "all projects" : esc(ctx.state.selectedProject)}</span><span class="grow"></span>
+      <div class="seg" role="group" aria-label="Targets counted"><button data-scope="all" class="${ui.targetOnly ? "" : "on"}" title="Every target of the selected project">All targets</button><button data-scope="target" class="${ui.targetOnly ? "on" : ""}" ${t ? "" : "disabled"} title="${t ? `Only ${esc(t.name)} (selected in the header)` : "Select a target in the header"}">Target only</button></div>
+      <div class="seg" role="group" aria-label="Attempts counted"><button data-hist="recent" class="${H ? "" : "on"}" title="Most recent attempt of each step">Most Recent</button><button data-hist="all" class="${H ? "on" : ""}" title="Every attempt in the result CSVs, including earlier failures">Full history</button></div></div>
       <div class="kpis">
-        <div><span>Total elapsed time</span><b class="tabular">${elapsed(st.total)}</b><small>${H ? "all attempts" : "most recent attempt per step"}</small></div>
+        <div><span>Total elapsed time</span><b class="tabular">${elapsed(st.total)}</b><small>${H ? "all attempts" : "most recent attempt per step"} · ${scopeLabel}</small></div>
         <div><span>Average step duration</span><b class="tabular">${st.avg == null ? "—" : elapsed(st.avg)}</b><small>${st.attempts} attempt(s) counted</small></div>
-        <div><span>Total calibrated datasets</span><b class="tabular">${calibrated}</b><small>${H ? "successful runs of" : "targets whose last run of"} ${esc(st.steps[st.steps.length - 1] || "—")} completed</small></div>
-        <div><span>Failed items</span><b class="tabular ${failedTargets ? "fail-t" : ""}">${failedTargets}</b><small>${H ? "failed or partial attempts" : "targets whose latest attempt failed"}</small></div>
+        <div><span>Calibrated targets</span><b class="tabular">${nCal}</b><small title="${esc(st.calibrators.join(", "))}">${H ? "any" : "latest"} ${calStep} run completed · + ${st.calibrators.length} calibrator${st.calibrators.length === 1 ? "" : "s"}</small></div>
+        <div><span>Failed items</span><b class="tabular ${st.failedItems ? "fail-t" : ""}">${st.failedItems}</b><small>${H ? "failed or partial attempts" : "targets whose latest attempt failed"}</small></div>
       </div></div>
     <div class="rs-grid">
-      <div class="card"><div class="row between"><h4>Step duration radar</h4><span class="muted small">mean of ${H ? "all completed attempts" : "latest completed runs"} · √ scale</span></div>${radar(st)}</div>
+      <div class="card"><div class="row between"><h4>Step duration radar${one ? ` — <span class="mono">${esc(t.name)}</span>` : ""}</h4><span class="muted small">mean of ${H ? "all completed attempts" : "latest completed runs"} · √ scale</span></div>${radar(st)}</div>
       <div class="card">
-        <h4>Calibration progress <span class="muted small">${H ? "(attempts)" : "(targets)"}</span></h4>
+        <h4>Calibration progress <span class="muted small">(unique targets · ${H ? "any" : "latest"} ${calStep} run)</span></h4>
         ${stacked([
-          { label: "Calibrated", value: st.roll.calibrated, tone: "ok" },
-          { label: "Remaining", value: st.roll.remaining, tone: "muted" },
-          { label: "Failed", value: st.roll.failed, tone: "fail" },
-          { label: "In Progress", value: st.roll.running, tone: "run" },
-        ], H ? st.roll.calibrated + st.roll.remaining + st.roll.failed + st.roll.running : st.targets.length)}
+          { label: "Calibrated targets", value: nCal, tone: "ok" },
+          { label: "Failed", value: nFail, tone: "fail" },
+        ], Math.max(1, st.targets.length))}
+        <p class="small muted">Calibrated calibrators: <b class="tabular">${st.calibrators.length}</b>${st.calibrators.length ? ` <span class="mono" title="${esc(st.calibrators.join(", "))}">(${esc(st.calibrators.slice(0, 12).join(", "))}${st.calibrators.length > 12 ? ", …" : ""})</span>` : ""}</p>
         <div class="row between"><h4>Outcome per step</h4><button class="link-btn small" id="rs-table">${ui.table ? "Hide" : "Show"} data table</button></div>
-        <table class="tbl outcome"><thead><tr><th>Step</th><th>Completed · Partial · Failed · Running · Not run</th><th>Done</th><th>Retries</th></tr></thead><tbody>${outcome}</tbody></table>
+        <table class="tbl outcome"><thead><tr><th>Step</th><th>Completed · Partial · Failed · Running · Not run</th><th>Done</th>${H ? "<th>Retries</th>" : ""}</tr></thead><tbody>${outcome}</tbody></table>
         ${ui.table ? `<table class="tbl small"><thead><tr><th>Step</th><th>Mean runtime</th><th>Completed</th><th>Partial</th><th>Failed</th><th>Running</th><th>Not run</th></tr></thead><tbody>${st.steps.map((k) => { const b = st.per[k]; return `<tr><td class="mono">${esc(k)}</td><td class="tabular">${b.n ? short(b.sum / b.n) : "—"}</td><td>${b.completed}</td><td>${b.warning}</td><td>${b.failed}</td><td>${b.running}</td><td>${b.pending}</td></tr>`; }).join("")}</tbody></table>` : ""}
       </div>
     </div>
     <div class="card">
-      <div class="row gap wrap"><h4>Progress ladder${t ? ` — <span class="mono">${esc(t.name)}</span>` : ""}</h4><span class="muted small mono">${esc(t?.source?.file || "")}</span><span class="grow"></span>
+      <div class="row gap wrap"><h4>Progress ladder${t ? ` — <span class="mono">${esc(t.name)}</span>` : ""}</h4><span class="muted small">${H ? "every attempt" : "most recent attempt per step"}</span><span class="muted small mono">${esc(t?.source?.file || "")}</span><span class="grow"></span>
         <label class="btn sm">${icon("upload")} Load reductions/&lt;target&gt;_result.csv<input type="file" id="rs-csv" accept=".csv,.tsv" multiple hidden></label></div>
       ${t ? ladder(ctx, t) : '<p class="muted">Select a target in the header.</p>'}
     </div>`;
@@ -176,20 +133,27 @@ export function render(el, ctx) {
 
 function ladder(ctx, t) {
   const steps = ctx.state.workflow.steps;
+  const H = ui.history;
+  let runtime = 0;
+  let hasRuntime = false;
   const rows = steps.map((s, i) => {
     const st = t.steps?.[s.key];
     const status = st?.status || "pending";
     const m = STEP_STATUS[status] || STEP_STATUS.pending;
-    const attempts = st?.attempts || [];
+    // Most Recent: only the latest attempt of the step; Full history: all of them.
+    const attempts = st ? attemptsOf(st, H) : [];
+    attempts.forEach((a) => { if (Number.isFinite(a.duration)) { runtime += a.duration; hasRuntime = true; } });
+    const dur = H ? attempts.reduce((n, a) => n + (Number.isFinite(a.duration) ? a.duration : 0), 0) || null : st?.duration;
     const ok = attempts.reduce((n, a) => n + (a.success_count || 0), 0);
     const bad = attempts.reduce((n, a) => n + (a.failed_count || 0), 0);
     const open = ui.open.has(`${t.id}:${s.key}`);
+    const retries = H && attempts.length > 1 ? ` <small class="muted">(${attempts.length - 1} retr${attempts.length === 2 ? "y" : "ies"})</small>` : "";
     const main = `<tr class="st-${status} ${attempts.length ? "clickable" : ""}" ${attempts.length ? `data-ladder="${esc(t.id)}:${esc(s.key)}" aria-expanded="${open}"` : ""}>
       <td>${attempts.length ? `<span class="caret ${open ? "open" : ""}">${icon("caret")}</span>` : ""}${i + 1}</td>
       <td class="mono"><b>${esc(s.key)}</b>${st?.alias ? ` <small class="muted">(from ${esc(st.alias)})</small>` : ""}</td>
       <td><span class="badge tone-${m.tone}">${icon(m.icon)}${esc(m.label)}</span></td>
-      <td class="tabular">${attempts.length || (st ? 1 : 0)}${attempts.length > 1 ? ` <small class="muted">(${attempts.length - 1} retr${attempts.length === 2 ? "y" : "ies"})</small>` : ""}</td>
-      <td class="tabular">${esc(short(st?.duration) || "—")}</td>
+      <td class="tabular">${H ? attempts.length : st ? `#${st.attempt || 1}` : 0}${retries}</td>
+      <td class="tabular">${esc(short(dur) || "—")}</td>
       <td class="tabular"><span class="ok-t">${ok}</span> / <span class="fail-t">${bad}</span></td>
       <td class="mono small">${esc(when(st?.started))}</td>
       <td class="small">${esc(st?.note || "")}</td></tr>`;
@@ -197,6 +161,6 @@ function ladder(ctx, t) {
     return main + detail;
   }).join("");
   const r = ctx.rollup(t);
-  return `<table class="tbl ladder-tbl"><thead><tr><th>#</th><th>Step</th><th>Status</th><th>Attempts</th><th>Runtime</th><th>Pass / Fail</th><th>Started</th><th>Detail</th></tr></thead><tbody>${rows}</tbody>
-    <tfoot><tr><td></td><td><b>Total</b></td><td>${r.done}/${r.total} completed</td><td></td><td class="tabular"><b>${hms(r.runtime)}</b></td><td colspan="3"></td></tr></tfoot></table>`;
+  return `<table class="tbl ladder-tbl"><thead><tr><th>#</th><th>Step</th><th>Status</th><th>${H ? "Attempts" : "Attempt"}</th><th>Runtime</th><th>Pass / Fail</th><th>Started</th><th>Detail</th></tr></thead><tbody>${rows}</tbody>
+    <tfoot><tr><td></td><td><b>Total</b></td><td>${r.done}/${r.total} completed</td><td></td><td class="tabular"><b>${hms(hasRuntime ? runtime : null)}</b></td><td colspan="3"></td></tr></tfoot></table>`;
 }

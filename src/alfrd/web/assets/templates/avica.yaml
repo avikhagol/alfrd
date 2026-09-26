@@ -28,6 +28,15 @@ overview:
     - "{workdir}/wd_{band}/VLBI_{band}.ms"
     - "{workdir}/VLBI.ms"
 
+results:
+  # Results view. A target counts as calibrated when its (last, or most recent
+  # successful) run of `calibration_step` completed — once per target, however
+  # often the step ran. Sources named in that run's `desc` by the
+  # `calibrated_sources` regex (group 1, comma separated) other than the targets
+  # themselves are counted as calibrated calibrators.
+  calibration_step: rpicard
+  calibrated_sources: '^calibrated\s+(.+)$'
+
 step_defaults:
   # Added to every step's logs.
   logs:

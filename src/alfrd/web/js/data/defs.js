@@ -31,6 +31,33 @@ export async function loadTemplate(name, parse) {
   return TEMPLATES[name] || null;
 }
 
+// Default alfrd.yaml (assets/defaults/alfrd.yaml, same file the server uses):
+// read for a folder without its own alfrd.yaml; a local file replaces it.
+let DEFAULT_MANIFEST = null;
+
+/** Make the default alfrd.yaml text available synchronously. */
+export function registerDefaultManifest(text) {
+  DEFAULT_MANIFEST = typeof text === "string" && text.trim() ? text : null;
+}
+
+/** Fetch assets/defaults/alfrd.yaml (browser); null when offline or file://. */
+export async function loadDefaultManifest() {
+  if (DEFAULT_MANIFEST) return DEFAULT_MANIFEST;
+  try {
+    const response = await fetch("assets/defaults/alfrd.yaml");
+    if (response.ok) registerDefaultManifest(await response.text());
+  } catch { /* offline or file:// */ }
+  return DEFAULT_MANIFEST;
+}
+
+/** Default alfrd.yaml text with `name:` set to the folder name (null when none is loaded). */
+export function defaultManifestText(folderName = null) {
+  if (!DEFAULT_MANIFEST) return null;
+  if (!folderName) return DEFAULT_MANIFEST;
+  const line = `name: ${JSON.stringify(String(folderName))}`;
+  return /^name:.*$/m.test(DEFAULT_MANIFEST) ? DEFAULT_MANIFEST.replace(/^name:.*$/m, line) : `${line}\n${DEFAULT_MANIFEST}`;
+}
+
 /** `template:` from alfrd.yaml; an `avica:` block or AVICA entrypoints imply "avica". */
 export function templateName(manifest) {
   if (!manifest || typeof manifest !== "object") return null;
@@ -56,7 +83,7 @@ export function stepId(step) {
 
 /**
  * alfrd.yaml merged with its template:
- * { template, stages, steps: {id: def}, stepOrder, stepDefaults, overview, settings, artifacts }
+ * { template, stages, steps: {id: def}, stepOrder, stepDefaults, overview, results, settings, artifacts }
  */
 export function studioManifest(manifest) {
   const m = manifest && typeof manifest === "object" && !Array.isArray(manifest) ? manifest : {};
@@ -82,6 +109,7 @@ export function studioManifest(manifest) {
     stepOrder: list.map((x) => resolveAlias(stepId(x)).name).filter(Boolean),
     stepDefaults: { ...(tpl.step_defaults || {}), ...(m.step_defaults || {}) },
     overview: { ...(tpl.overview || {}), ...(m.overview || {}) },
+    results: { ...(tpl.results || {}), ...(m.results || {}) },
     settings: { ...(tpl.project_settings || {}), ...(m.project_settings || {}) },
     artifacts: [...byName.values()],
   };

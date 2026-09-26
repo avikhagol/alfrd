@@ -44,6 +44,8 @@ def test_template_defaults_and_alfrd_yaml_overrides():
     assert m["steps"]["avica_avg"]["logs"] == ["{workdir}/wd_{band}/avica_avg_*log*"]  # alfrd.yaml
     assert m["project_settings"]["field_aliases"]["vasco_avg"] == "avica_avg"
     assert m["overview"]["ms_path"][0] == "{workdir}/wd_{band}_{target}/VLBI_{band}.ms"
+    assert m["results"]["calibration_step"] == "rpicard"  # template
+    assert m["results"]["calibrated_sources"] == r"^calibrated\s+(.+)$"
 
 
 def test_step_logs_and_log_artifacts_are_listed_not_walked(tree):
@@ -213,3 +215,108 @@ def test_forget_and_quit_endpoints(served, tmp_path):
     assert client.post("/api/studio/quit").status_code == 403
     assert client.post("/api/studio/quit", headers={"X-CSRF-Token": token}).get_json() == {"stopping": True}
     assert stopped.wait(2)
+
+
+def test_default_manifest_when_folder_has_none(tree, tmp_path, monkeypatch):
+    """No local alfrd.yaml: the packaged default is used (name = folder name); a local file replaces it."""
+    pytest.importorskip("flask")
+    from alfrd.avica_layout import collect_studio_files, manifest_avica
+    from alfrd.cli import _connect_startup_project
+    from alfrd.manifest_default import default_manifest_path, default_manifest_text, manifest_data
+    from alfrd.runtime import RuntimeService, RuntimeStore
+
+    monkeypatch.delenv("ALFRD_DEFAULT_MANIFEST", raising=False)
+    assert default_manifest_path() is not None
+    (tree / "alfrd.yaml").unlink()
+    data, path, is_default = manifest_data(tree)
+    assert is_default and data["name"] == "proj" and path == default_manifest_path()
+    assert "name: \"proj\"" in default_manifest_text(tree)
+    assert studio_manifest(tree)["steps"]["rpicard"]["label"] == "VLBI calibration (rPicard)"
+    assert manifest_avica(tree)["target_dir"] == "reductions/"
+    scan = collect_studio_files(tree, log_tail=0)
+    first = next(f for f in scan["files"] if f["rel"] == "alfrd.yaml")
+    assert scan["default_manifest"] and first["default"] and "name: \"proj\"" in first["text"]
+    assert any(f["rel"].endswith("_result.csv") for f in scan["files"])
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    service = RuntimeService(store)
+    assert _connect_startup_project(service, str(tree)) == service.get_project_by_name("proj").identifier
+
+    # A local alfrd.yaml supersedes the default completely.
+    (tree / "alfrd.yaml").write_text("version: 1\nname: mine\n")
+    data, path, is_default = manifest_data(tree)
+    assert not is_default and data["name"] == "mine" and manifest_avica(tree) == {}
+    assert collect_studio_files(tree, log_tail=0)["default_manifest"] is False
+
+
+def test_default_manifest_env_override_and_cwd_heuristic(tmp_path, monkeypatch):
+    from alfrd.cli import _connect_startup_project
+    from alfrd.manifest_default import default_manifest_path, looks_like_project
+    from alfrd.runtime import RuntimeService, RuntimeStore
+
+    custom = tmp_path / "mydefault.yaml"
+    custom.write_text("version: 1\nname: x\n")
+    monkeypatch.setenv("ALFRD_DEFAULT_MANIFEST", str(custom))
+    assert default_manifest_path() == custom
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert not looks_like_project(empty)
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    service = RuntimeService(store)
+    monkeypatch.chdir(empty)
+    assert _connect_startup_project(service, None) is None  # a random cwd is not registered
+    assert _connect_startup_project(service, str(empty)) is not None  # --project always uses the default
+    (empty / "avica.inp").write_text("target_dir = reductions/\n")
+    assert looks_like_project(empty)
+
+
+def test_rediscover_restores_forgotten_and_serve_folder(tree, tmp_path):
+    """Studio settings → Rediscover: connect forgotten projects again without restarting alfrd serve."""
+    pytest.importorskip("flask")
+    from alfrd.cli import _connect_startup_project
+    from alfrd.gui import create_app
+    from alfrd.gui.services import RuntimeCatalogReader
+    from alfrd.runtime import RuntimeService, RuntimeStore
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    service = RuntimeService(store)
+    name = _connect_startup_project(service, str(tree))
+    other = tmp_path / "other3"
+    other.mkdir()
+    (other / "avica.inp").write_text("target_dir = reductions/\n")  # no alfrd.yaml: default manifest
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "k",
+        "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'catalog.sqlite'}",
+        "RUNTIME_SERVICE": service, "CATALOG_READER": RuntimeCatalogReader(service),
+        "STUDIO_DEFAULT_PROJECT": name, "STUDIO_PROJECTS": [name], "STUDIO_START_FOLDER": str(tree),
+        "STUDIO_DEMO": False,
+    })
+    client = app.test_client()
+    token = client.get("/api/studio/session").get_json()["csrf_token"]
+    h = {"X-CSRF-Token": token}
+    assert client.get("/api/studio/projects/rediscover").get_json()["candidates"] == []
+    from alfrd.manifest_default import register_project_folder
+
+    other_id = register_project_folder(service, other)[0].identifier
+    assert client.post(f"/api/studio/projects/{name}/forget", headers=h).status_code == 200
+    assert client.post(f"/api/studio/projects/{other_id}/forget", headers=h).status_code == 200
+    assert client.get("/api/studio/session").get_json()["default_project"] is None
+
+    cands = client.get("/api/studio/projects/rediscover").get_json()["candidates"]
+    assert {c["root"] for c in cands} == {str(tree.resolve()), str(other.resolve())}
+    assert next(c for c in cands if c["root"] == str(tree.resolve()))["start"] is True
+    assert next(c for c in cands if c["root"] == str(other.resolve()))["default_manifest"] is True
+
+    assert client.post("/api/studio/projects/rediscover", json={"root": "/etc"}, headers=h).status_code == 404
+    assert client.post("/api/studio/projects/rediscover", json={}).status_code == 403  # CSRF
+    one = client.post("/api/studio/projects/rediscover", json={"root": str(other)}, headers=h).get_json()
+    assert [r["name"] for r in one["restored"]] == ["other3"] and one["restored"][0]["default_manifest"]
+    rest = client.post("/api/studio/projects/rediscover", json={}, headers=h).get_json()
+    assert [r["identifier"] for r in rest["restored"]] == [name] and rest["default_project"] == name
+    session = client.get("/api/studio/session").get_json()
+    assert session["default_project"] == name and name in session["projects"]
+    assert client.get(f"/api/studio/projects/{name}/scan").status_code == 200
+    assert client.get("/api/studio/projects/rediscover").get_json()["candidates"] == []

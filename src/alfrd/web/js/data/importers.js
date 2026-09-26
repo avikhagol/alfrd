@@ -6,7 +6,7 @@ import { parseYaml } from "../utils/yaml_parser.js";
 import { parseCsv, jsonCell, AliasLog, setAliasRules, resolveAlias } from "../utils/csv_parser.js";
 import { manifestToWorkflows } from "./model.js";
 import { avicaInterest, buildAvicaIndex, detectCodes, parseSummaryFile } from "./avica.js";
-import { studioManifest, classifyLogs, msPathPatterns, specInstances, pathRegex } from "./defs.js";
+import { studioManifest, classifyLogs, msPathPatterns, specInstances, pathRegex, defaultManifestText } from "./defs.js";
 
 const RESULT_SUFFIX = /_result\.(csv|tsv)$/i;
 
@@ -172,6 +172,14 @@ export async function readFiles(fileList) {
     if (files.every((f) => f.path.startsWith(`${first}/`))) prefix = first;
   }
   const rootName = prefix.split("/").pop() || null;
+  // A picked folder without alfrd.yaml uses the default one (a local file replaces it).
+  const fallback = !manifests.length && prefix ? defaultManifestText(rootName) : null;
+  if (fallback) {
+    const blob = new Blob([fallback], { type: "text/yaml" });
+    blob.name = "alfrd.yaml";
+    blob.lastModified = 0;
+    manifests.push({ file: blob, path: `${prefix}/alfrd.yaml`, isDefault: true });
+  }
   // meta_dir may be renamed in alfrd.yaml (avica.meta_dir); peek before filtering.
   let metaDir = null;
   if (manifests.length) {
@@ -183,6 +191,7 @@ export async function readFiles(fileList) {
   let ignored = 0;
   const msDirs = new Set();
   const logRes = manifests.length ? await logPathHints(manifests[0].file) : [];
+  if (fallback) out.push({ path: `${prefix}/alfrd.yaml`, rel: "alfrd.yaml", name: "alfrd.yaml", size: fallback.length, mtime: 0, text: fallback, default: true });
   for (const { file, path } of files) {
     if (prefix && !path.startsWith(`${prefix}/`)) { ignored += 1; continue; }
     const rel = prefix ? path.slice(prefix.length + 1) : path;
@@ -233,7 +242,7 @@ async function logPathHints(manifestFile) {
  */
 export function entriesFromScanBundle(data) {
   if (!data || !data.alfrd_avica_scan || !Array.isArray(data.files)) return null;
-  const out = data.files.map((f) => ({ path: f.rel, rel: f.rel, name: f.rel.split("/").pop(), size: f.size || 0, mtime: f.mtime ? f.mtime * 1000 : null, text: typeof f.text === "string" ? f.text : undefined, hint: f.hint, marker: f.marker, log: f.log }));
+  const out = data.files.map((f) => ({ path: f.rel, rel: f.rel, name: f.rel.split("/").pop(), size: f.size || 0, mtime: f.mtime ? f.mtime * 1000 : null, text: typeof f.text === "string" ? f.text : undefined, hint: f.hint, marker: f.marker, log: f.log, default: f.default || undefined }));
   out.rootName = data.root_name || null;
   out.msPaths = Array.isArray(data.ms_paths) ? data.ms_paths : null;
   out.ignored = 0;
@@ -302,6 +311,8 @@ export function buildBundle(files, { source = "import", projectHint = null, root
       const info = manifestToWorkflows(parsed, f.name);
       bundle.manifest = parsed;
       bundle.manifestFile = f.rel;
+      bundle.manifestDefault = Boolean(f.default);
+      if (f.default) messages.push({ level: "info", text: "No alfrd.yaml in this folder: using the default one. Save it from Project settings to make a local copy (the local file then replaces the default)." });
       bundle.manifestText = f.text;
       bundle.workflowInfo = info;
       info.errors.forEach((e) => messages.push({ level: "error", text: `${f.name}: ${e}` }));

@@ -277,33 +277,36 @@ def _interrupt_self() -> None:
 
 def _connect_startup_project(service, project: str | None) -> str | None:
     """Register the folder `alfrd serve` was started for (``--project`` or the cwd)."""
-    from alfrd.manifest import ManifestError, load_manifest
-    from alfrd.runtime import RuntimeNotFound
-    from alfrd.runtime.identity import project_identifier
+    from alfrd.manifest import ManifestError
+    from alfrd.manifest_default import default_manifest_path, looks_like_project, register_project_folder
     from alfrd.studio_defs import manifest_file
 
-    folder = Path(project).expanduser().resolve() if project else Path.cwd().resolve()
-    if folder.is_file():
-        folder = folder.parent
-    path = manifest_file(folder)
-    if path is None:
+    folder = _startup_folder(project)
+    if project and not folder.is_dir():
+        raise typer.BadParameter(f"{folder} is not a folder")
+    local = manifest_file(folder) is not None
+    # No local alfrd.yaml: use the default one for --project, or for a cwd that
+    # looks like an AVICA folder (avica.inp, avica.logs/, reductions/).
+    if not local and (default_manifest_path() is None or not (project or looks_like_project(folder))):
         if project:
-            raise typer.BadParameter(f"No alfrd.yaml in {folder}")
+            raise typer.BadParameter(f"No alfrd.yaml in {folder} and no default alfrd.yaml")
         return None
     try:
-        manifest = load_manifest(path)
+        existing, used_default = register_project_folder(service, folder)
     except (ManifestError, OSError) as error:
-        print(f"alfrd.yaml in {folder} was not loaded: {error}")
+        print(f"alfrd.yaml for {folder} was not loaded: {error}")
         return None
-    identifier = project_identifier(folder, manifest.name)
-    try:
-        existing = service.get_project_by_identifier(identifier)
-    except RuntimeNotFound:
-        existing = None
-    if existing is None:
-        existing, _ = service.register_manifest(manifest, root_path=folder, create_root=False)
-    print(f"Project {manifest.name}: {folder}")
+    if used_default:
+        print(f"No alfrd.yaml in {folder}: using the default ({default_manifest_path()}). "
+              "A local alfrd.yaml replaces it (`alfrd manifest default -o alfrd.yaml` starts one).")
+    print(f"Project {existing.name}: {folder}")
     return existing.identifier
+
+
+def _startup_folder(project: str | None) -> Path:
+    """The folder `alfrd serve` was started for (``--project`` or the cwd)."""
+    folder = Path(project).expanduser().resolve() if project else Path.cwd().resolve()
+    return folder.parent if folder.is_file() else folder
 
 
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
@@ -337,6 +340,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         "STUDIO_LIVE_INTERVAL": max(0.0, float(live_interval)),
         "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
     }
+    # Studio settings → Rediscover registers this folder again after a Forget.
+    config["STUDIO_START_FOLDER"] = str(_startup_folder(project)) if config["STUDIO_DEFAULT_PROJECT"] else None
     # Started for one project: the Studio shows only that one (unless --all-projects).
     config["STUDIO_PROJECTS"] = None if all_projects or not config["STUDIO_DEFAULT_PROJECT"] else [config["STUDIO_DEFAULT_PROJECT"]]
     others = [p.name for p in service.list_projects() if p.name != config["STUDIO_DEFAULT_PROJECT"]]
@@ -616,6 +621,30 @@ def manifest_validate(path: str = typer.Argument(..., help="Path to alfrd.yaml."
         print(f"invalid project-manifest-v1: {error}")
         raise typer.Exit(code=1)
     print(f"valid project-manifest-v1: {manifest.path}")
+
+
+@manifest_cli.command("default")
+def manifest_default(
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Write it to this file (default: print)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+):
+    """Print (or write) the default alfrd.yaml used for folders without one."""
+    from alfrd.manifest_default import ENV_VAR, default_manifest_path, default_manifest_text
+
+    path = default_manifest_path()
+    if path is None:
+        print(f"No default alfrd.yaml (check ${ENV_VAR}).")
+        raise typer.Exit(code=1)
+    if output is None:
+        print(path.read_text(encoding="utf-8"), end="")
+        return
+    target = Path(output).expanduser()
+    if target.is_dir():
+        target = target / "alfrd.yaml"
+    if target.exists() and not force:
+        raise typer.BadParameter(f"{target} exists (use --force to overwrite)")
+    target.write_text(default_manifest_text(target.resolve().parent) or "", encoding="utf-8")
+    print(f"Wrote {target} (from {path}).")
 
 
 @import_cli.command("avica-run")

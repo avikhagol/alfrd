@@ -140,6 +140,21 @@ export const server = {
     return res;
   },
 
+  /** Forgotten projects (and the `alfrd serve` folder) that Rediscover can register again. */
+  async rediscoverable() {
+    return (await getJson("/studio/projects/rediscover")).candidates || [];
+  },
+
+  /** Register forgotten projects again: one folder (`root`) or all of them. */
+  async rediscover(root = null) {
+    const res = await this.mutate("/studio/projects/rediscover", root ? { root } : {});
+    if (this.session) {
+      if (Array.isArray(res.projects)) this.session.projects = res.projects;
+      if (res.default_project) this.session.default_project = res.default_project;
+    }
+    return res;
+  },
+
   quit() {
     return this.mutate("/studio/quit", {});
   },

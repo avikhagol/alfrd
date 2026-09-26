@@ -102,6 +102,8 @@ def manifest_avica(root: str | Path) -> dict[str, Any]:
     """Return the optional ``avica:`` block of ``alfrd.yaml`` (or ``.alfrd.yaml``)."""
     import yaml
 
+    from alfrd.manifest_default import default_manifest_data
+
     for name in ("alfrd.yaml", ".alfrd.yaml"):
         path = Path(root) / name
         if path.is_file():
@@ -111,7 +113,8 @@ def manifest_avica(root: str | Path) -> dict[str, Any]:
                 return {}
             block = data.get("avica") if isinstance(data, dict) else None
             return dict(block) if isinstance(block, dict) else {}
-    return {}
+    block = default_manifest_data(root).get("avica")  # no local alfrd.yaml: the default one
+    return dict(block) if isinstance(block, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -348,10 +351,11 @@ def layout_patterns(root: str | Path) -> dict[str, list[str]]:
     patterns = {key: _as_list(block.get(key, default)) for key, default in DEFAULT_PATTERNS.items()}
     import yaml
 
-    manifest = Path(root) / "alfrd.yaml"
-    if "result_csv" not in block and manifest.is_file():
+    from alfrd.manifest_default import manifest_data
+
+    if "result_csv" not in block:
         try:
-            data = load_yaml_cached(manifest) or {}
+            data, _path, _default = manifest_data(root)
             for artifact in data.get("artifacts") or []:
                 if isinstance(artifact, dict) and artifact.get("name") == "result_csv" and "{target}" in str(artifact.get("path_pattern", "")):
                     patterns["result_csv"] = [str(artifact["path_pattern"])]
@@ -652,9 +656,12 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
 
     started = _time.time()
     base = Path(root).resolve()
+    from alfrd.manifest_default import default_manifest_path, default_manifest_text
+
     manifest = next((base / n for n in ("alfrd.yaml", ".alfrd.yaml") if (base / n).is_file()), None)
-    if manifest is None:
-        raise FileNotFoundError(f"no alfrd.yaml in {base}")
+    default_path = default_manifest_path() if manifest is None else None
+    if manifest is None and default_path is None:
+        raise FileNotFoundError(f"no alfrd.yaml in {base} and no default alfrd.yaml")
     block = manifest_avica(base)
     files: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -683,7 +690,19 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
             item["text"] = path.read_text(encoding="utf-8", errors="replace")
         files.append(item)
 
-    add(manifest)
+    if manifest is not None:
+        add(manifest)
+    else:
+        # No local alfrd.yaml: the Studio gets the default one as "alfrd.yaml".
+        rel = "alfrd.yaml"
+        seen.add(rel)
+        stat = default_path.stat()
+        item = {"rel": rel, "size": stat.st_size, "mtime": stat.st_mtime, "default": True, "source": str(default_path)}
+        if not read or (wanted is not None and rel not in wanted):
+            item["content"] = True
+        else:
+            item["text"] = default_manifest_text(base)
+        files.append(item)
     add(base / str(block.get("config") or CONFIG_FILENAME))
     for name in [block.get("config_summary_cache"), *SUMMARY_FILENAMES]:
         if name:
@@ -760,6 +779,7 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
         "generated_ts": started,
         "target_dir": os.path.relpath(target_dir, base),
         "files": files,
+        "default_manifest": manifest is None,
         "ms_paths": collect_ms_paths(base, studio),
     }
 

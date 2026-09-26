@@ -12,7 +12,7 @@
 import { parseYaml } from "../utils/yaml_parser.js";
 import { parseKeyValue } from "./importers.js";
 import { buildAvicaIndex, layoutPatterns, parseSummaryFile, metaDirNames } from "./avica.js";
-import { applyFieldAliases, studioManifest, logSpecs, specInstances, msPathPatterns, segmentRegex, hasWildcard, fillPattern } from "./defs.js";
+import { applyFieldAliases, studioManifest, logSpecs, specInstances, msPathPatterns, segmentRegex, hasWildcard, fillPattern, defaultManifestText } from "./defs.js";
 import { resolveAlias } from "../utils/csv_parser.js";
 
 const MAX_META = 2 * 1024 * 1024;
@@ -167,13 +167,18 @@ export async function scanProjectFolder(root, { onProgress = () => {}, statOnly 
       if (m) { base = c.handle; prefix = c.name; top = inner; manifest = m; break; }
     }
   }
-  if (!manifest) throw new Error(`No alfrd.yaml in "${root.name}". Pick the folder that contains alfrd.yaml.`);
+  // No alfrd.yaml: the default one (assets/defaults/alfrd.yaml); a local file replaces it.
+  const fallback = manifest ? null : defaultManifestText(root.name);
+  if (!manifest && !fallback) throw new Error(`No alfrd.yaml in "${root.name}". Pick the folder that contains alfrd.yaml.`);
   const read = async (handle, max = MAX_TEXT) => {
     const file = await handle.getFile();
     return { file, text: file.size <= max ? await file.text() : null };
   };
-  const manifestRead = await read(manifest.handle);
-  entries.push({ rel: manifest.name, name: manifest.name, size: manifestRead.file.size, mtime: manifestRead.file.lastModified, text: manifestRead.text });
+  const manifestRead = manifest
+    ? await read(manifest.handle)
+    : { file: { size: fallback.length, lastModified: 0 }, text: fallback };
+  if (!manifest) manifest = { name: "alfrd.yaml", default: true };
+  entries.push({ rel: manifest.name, name: manifest.name, size: manifestRead.file.size, mtime: manifestRead.file.lastModified, text: manifestRead.text, default: manifest.default || undefined });
   let parsed = null;
   try { parsed = parseYaml(manifestRead.text || ""); } catch { /* buildBundle reports the error */ }
   const block = (parsed && typeof parsed.avica === "object" && parsed.avica) || {};

@@ -71,6 +71,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def manifest_file(root: str | Path) -> Path | None:
+    """The folder's own alfrd.yaml (the default manifest is not a file of the folder)."""
     for name in MANIFEST_NAMES:
         path = Path(root) / name
         if path.is_file():
@@ -122,13 +123,14 @@ def resolve_alias(name: str, aliases: Mapping[str, Any]) -> str:
 
 def studio_manifest(root: str | Path) -> dict[str, Any]:
     """alfrd.yaml merged with its template (steps as a ``{id: definition}`` mapping)."""
-    path = manifest_file(root)
-    manifest = _load_yaml(path) if path else {}
+    from alfrd.manifest_default import manifest_data
+
+    manifest, _path, _default = manifest_data(root)  # local alfrd.yaml, else the default one
     name = template_name(manifest)
     template = _load_yaml(template_path(name)) if name and template_path(name) else {}
     merged: dict[str, Any] = copy.deepcopy(template)
     for key, value in manifest.items():
-        if key in {"project_settings", "overview", "step_defaults"} and isinstance(value, dict):
+        if key in {"project_settings", "overview", "results", "step_defaults"} and isinstance(value, dict):
             merged[key] = {**(merged.get(key) or {}), **value}
         elif key == "artifacts" and isinstance(value, list):
             names = {a.get("name") for a in value if isinstance(a, dict)}

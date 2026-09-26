@@ -175,7 +175,7 @@ export function render(el, ctx) {
   const tplSteps = Object.keys(defs.tplSteps || {});
   const found = ctx.state.aliases || [];
   $("#ps", el).innerHTML = `
-    <div class="card"><div class="row gap wrap"><h2>Project settings</h2>${p ? `<span class="chip">${esc(p)}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span><span class="grow"></span>
+    <div class="card"><div class="row gap wrap"><h2>Project settings</h2>${p ? `<span class="chip">${esc(p)}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span>${tree.manifestDefault ? `<span class="chip" title="This folder has no alfrd.yaml, so ALFRD's default one is shown. Save writes it into the folder; the local file then replaces the default.">default — not saved in the folder</span>` : ""}<span class="grow"></span>
       <button class="btn sm" data-act="validate">${icon("validate")} Validate</button>
       <button class="btn sm" data-act="revert">${icon("reset")} Revert</button>
       <button class="btn sm" data-act="download">${icon("download")} Download</button>

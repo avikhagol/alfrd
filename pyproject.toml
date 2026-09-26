@@ -71,6 +71,7 @@ where = ["src"]
   "js/utils/*.js",
   "assets/*.svg",
   "assets/templates/*.yaml",
+  "assets/defaults/*.yaml",
 ]
 
 [tool.pytest.ini_options]

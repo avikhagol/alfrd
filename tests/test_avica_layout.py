@@ -189,7 +189,7 @@ def test_collect_studio_files_bundle(tmp_path):
     assert all("text" not in f for f in listed["files"] if f.get("log") and not f["rel"].startswith("avica.logs/"))
 
 
-def test_cli_avica_scan_bundle(tmp_path):
+def test_cli_avica_scan_bundle(tmp_path, monkeypatch):
     import json
 
     from typer.testing import CliRunner
@@ -201,5 +201,11 @@ def test_cli_avica_scan_bundle(tmp_path):
     assert result.exit_code == 0, result.output
     data = json.loads(out.read_text())
     assert any(f["rel"].startswith("avica.logs/") and "text" not in f for f in data["files"])
-    missing = CliRunner().invoke(alfrd_cli, ["avica", "scan", str(tmp_path), "--bundle", str(tmp_path / "x.json")])
+    # No alfrd.yaml: the default one is used ...
+    default = CliRunner().invoke(alfrd_cli, ["avica", "scan", str(tmp_path), "--bundle", str(tmp_path / "x.json")])
+    assert default.exit_code == 0, default.output
+    assert json.loads((tmp_path / "x.json").read_text())["default_manifest"] is True
+    # ... unless there is none either.
+    monkeypatch.setenv("ALFRD_DEFAULT_MANIFEST", str(tmp_path / "none.yaml"))
+    missing = CliRunner().invoke(alfrd_cli, ["avica", "scan", str(tmp_path), "--bundle", str(tmp_path / "y.json")])
     assert missing.exit_code == 1

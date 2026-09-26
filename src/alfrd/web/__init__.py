@@ -51,6 +51,7 @@ REQUIRED_ASSETS = (
     "js/data/live.js",
     "assets/favicon.svg",
     "assets/templates/avica.yaml",
+    "assets/defaults/alfrd.yaml",
 )
 
 

@@ -267,7 +267,9 @@ def live_hub():
             root = Path(service.get_project_by_selector(name).root_path)
         except RuntimeNotFound:
             return None
-        return root if (root / "alfrd.yaml").is_file() or (root / ".alfrd.yaml").is_file() else None
+        from alfrd.manifest_default import has_manifest
+
+        return root if root.is_dir() and has_manifest(root) else None  # local alfrd.yaml or the default
 
     database = current_app.config.get("RUNTIME_DATABASE")
     paths = [database, f"{database}-wal"] if database and database != ":memory:" else []
@@ -413,15 +415,83 @@ def project_forget(project_name: str):
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
     try:
+        row = service.get_project_by_selector(project_name)
         counts = service.forget_project(project_name)
     except RuntimeNotFound as error:
         return _json_error(error, 404)
+    # Remembered for this server's lifetime so Studio settings → Rediscover can restore it.
+    forgotten = current_app.extensions.setdefault("alfrd_forgotten", [])
+    root = str(Path(row.root_path).expanduser().resolve()) if row.root_path else None
+    if root and not any(f["root"] == root for f in forgotten):
+        forgotten.append({"root": root, "name": row.name, "identifier": row.identifier})
     scope = current_app.config.get("STUDIO_PROJECTS")
     if isinstance(scope, list) and project_name in scope:
         scope.remove(project_name)
     if current_app.config.get("STUDIO_DEFAULT_PROJECT") == project_name:
         current_app.config["STUDIO_DEFAULT_PROJECT"] = None
     return jsonify(forgotten=project_name, **counts)
+
+
+def _rediscover_candidates() -> list[dict]:
+    """Folders Rediscover may register again: the `alfrd serve` folder and projects forgotten since start."""
+    from alfrd.manifest_default import local_manifest
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    known = {str(Path(p.root_path).expanduser().resolve()) for p in service.list_projects() if p.root_path} if service else set()
+    out: list[dict] = []
+    start = current_app.config.get("STUDIO_START_FOLDER")
+    items = ([{"root": str(Path(start).resolve()), "name": Path(start).name, "identifier": None, "start": True}] if start else [])
+    items += [{**f, "start": False} for f in current_app.extensions.get("alfrd_forgotten", [])]
+    for item in items:
+        if item["root"] in known or any(o["root"] == item["root"] for o in out):
+            continue
+        root = Path(item["root"])
+        out.append({**item, "exists": root.is_dir(), "default_manifest": root.is_dir() and local_manifest(root) is None})
+    return out
+
+
+@studio_api.get("/studio/projects/rediscover")
+def project_rediscover_list():
+    """Forgotten projects that Rediscover can restore (read-only)."""
+    return jsonify(candidates=_rediscover_candidates())
+
+
+@studio_api.post("/studio/projects/rediscover")
+def project_rediscover():
+    """Register the `alfrd serve` folder and forgotten projects again (loopback + CSRF).
+
+    ``{"root": "/path"}`` restores one of the candidates; without it all of them.
+    Only folders the server already knew are accepted (use Import → Connect for others).
+    """
+    from alfrd.manifest import ManifestError
+    from alfrd.manifest_default import register_project_folder
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(RuntimeError("no runtime database"), 404)
+    wanted = (request.get_json(silent=True) or {}).get("root")
+    candidates = _rediscover_candidates()
+    if wanted:
+        wanted = str(Path(str(wanted)).expanduser().resolve())
+        candidates = [c for c in candidates if c["root"] == wanted]
+        if not candidates:
+            return _json_error(LookupError(f"{wanted} is not a forgotten project of this server"), 404)
+    restored, failed = [], []
+    scope = current_app.config.get("STUDIO_PROJECTS")
+    for item in candidates:
+        try:
+            project, used_default = register_project_folder(service, item["root"])
+        except (ManifestError, OSError) as error:
+            failed.append({"root": item["root"], "error": str(error)})
+            continue
+        if isinstance(scope, list) and project.identifier not in scope:
+            scope.append(project.identifier)
+        if item["start"] and not current_app.config.get("STUDIO_DEFAULT_PROJECT"):
+            current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
+        current_app.extensions["alfrd_forgotten"] = [f for f in current_app.extensions.get("alfrd_forgotten", []) if f["root"] != item["root"]]
+        restored.append({"root": item["root"], "name": project.name, "identifier": project.identifier, "default_manifest": used_default})
+    return jsonify(restored=restored, failed=failed, projects=scope,
+                   default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"))
 
 
 @studio_api.post("/studio/quit")

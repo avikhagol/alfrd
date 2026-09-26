@@ -318,3 +318,58 @@ test("scan bundle: a picked scan.json is read whole, not dropped by the layout f
   const summary = await readFiles([new File(["{\"rows\":[]}"], "avica.summary.json")]);
   assert.equal(summary.length, 1);
 });
+
+test("results: calibration counted once per target, calibrators unique", async () => {
+  const { resultStats, calibratedSources } = await import(path.join(web, "data/results_stats.js"));
+  const head = "name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp\n";
+  const row = (step, ok, bad, t0, t1, desc = "") => `${step},${ok},${bad},${t0},,"${desc.replace(/"/g, '""')}",[],${t1}\n`;
+  const csvA = head
+    + row("avica_split_ms", 1, 0, "2026-01-01T00:00:00", "2026-01-01T00:01:00")
+    + row("rpicard", 1, 0, "2026-01-01T00:01:00", "2026-01-01T00:11:00", '["calibrated C1,C2,A"]')
+    + row("rpicard", 1, 0, "2026-01-02T00:01:00", "2026-01-02T00:06:00", '["calibrated C2,C3,A"]')
+    + row("rpicard", 0, 1, "2026-01-03T00:01:00", "2026-01-03T00:02:00", '["failed!"]');
+  const csvB = head + row("rpicard", 1, 0, "2026-01-01T00:00:00", "2026-01-01T00:10:00", '["calibrated C3,B,A"]');
+  const m = "template: avica\nworkflows:\n  - name: w\n    steps: [avica_split_ms, rpicard]\n";
+  const b = buildBundle([
+    { path: "alfrd.yaml", name: "alfrd.yaml", text: m },
+    { path: "reductions/A_result.csv", name: "A_result.csv", text: csvA },
+    { path: "reductions/B_result.csv", name: "B_result.csv", text: csvB },
+  ]);
+  const steps = ["avica_split_ms", "rpicard"];
+  assert.equal(b.defs.results.calibration_step, "rpicard");
+  assert.deepEqual(calibratedSources({ note: "calibrated X,Y" }, b.defs.results.calibrated_sources), ["X", "Y"]);
+  const opts = (history) => ({ history, rollup: (t) => rollup(t, steps), results: b.defs.results });
+  // Most Recent: A's latest rpicard failed -> only B calibrated; B's run names C3 (A and B are targets).
+  const recent = resultStats(b.targets, steps, opts(false));
+  assert.deepEqual(recent.calibratedTargets, ["B"]);
+  assert.deepEqual(recent.failedTargets, ["A"]);
+  assert.deepEqual(recent.calibrators, ["C3"]);
+  assert.equal(recent.attempts, 3);
+  // Full history: A counted once (3 rpicard runs, 2 successful); calibrators from its latest successful run.
+  const hist = resultStats(b.targets, steps, opts(true));
+  assert.deepEqual(hist.calibratedTargets.sort(), ["A", "B"]);
+  assert.deepEqual(hist.calibrators, ["C2", "C3"]);
+  assert.equal(hist.attempts, 5);
+  // Target only: stats for one target.
+  const one = resultStats([b.targets.find((t) => t.name === "B")], steps, opts(true));
+  assert.equal(one.total, 600);
+  assert.deepEqual(one.calibratedTargets, ["B"]);
+});
+
+test("default alfrd.yaml: used for a picked folder without one, name = folder", async () => {
+  const text = readFileSync(path.join(root, "src/alfrd/web/assets/defaults/alfrd.yaml"), "utf8");
+  defsMod.registerDefaultManifest(text);
+  assert.match(defsMod.defaultManifestText("myproj"), /^name: "myproj"$/m);
+  const csv = readFileSync(path.join(root, "tests/fixtures/avica_tree/reductions/0742+103_result.csv"), "utf8");
+  const file = (rel, body) => { const f = new Blob([body]); f.webkitRelativePath = rel; f.lastModified = 0; Object.defineProperty(f, "name", { value: rel.split("/").pop() }); return f; };
+  const { readFiles } = await import(path.join(web, "data/importers.js"));
+  const read = await readFiles([file("myproj/avica.inp", "target_dir = reductions/\n"), file("myproj/reductions/0742+103_result.csv", csv)]);
+  const b = buildBundle(read, { source: "import", rootName: read.rootName });
+  assert.equal(b.manifestDefault, true);
+  assert.equal(b.workflowInfo.name, "myproj");
+  assert.ok(b.targets.some((t) => t.name === "0742+103"));
+  // A single CSV (no folder) never pulls in the default manifest.
+  const one = await readFiles([new File([csv], "0742+103_result.csv")]);
+  assert.equal(buildBundle(one).manifest, null);
+  defsMod.registerDefaultManifest(null);
+});

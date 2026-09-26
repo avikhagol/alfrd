@@ -14,7 +14,7 @@ import { createLive } from "./data/live.js";
 import { demoBundle, DEMO_ALFRD_PROJECT } from "./data/demo.js";
 import { server } from "./data/server.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
-import { loadTemplate, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
+import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
 import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull } from "./components/logview.js";
 import * as logs from "./components/logs.js";
 import * as overview from "./components/overview.js";
@@ -272,6 +272,7 @@ function treeFromBundle(bundle, provider) {
     msPaths: bundle.msPaths || [],
     manifestText: bundle.manifestText || null,
     manifestFile: bundle.manifestFile || null,
+    manifestDefault: Boolean(bundle.manifestDefault), // no local alfrd.yaml: the default one is shown
     template: (bundle.defs || {}).template || templateName(bundle.manifest) || null,
     configName: bundle.manifest?.avica?.config || "avica.inp",
   };
@@ -802,7 +803,7 @@ async function saveManifest(project, text) {
     ctx.toast("No writable folder: alfrd.yaml downloaded instead", "warn");
   }
   await ensureTemplatesFor(text);
-  state.trees = { ...state.trees, [project]: { ...tree, manifestText: text, defs: studioManifest(parseYaml(text)) } };
+  state.trees = { ...state.trees, [project]: { ...tree, manifestText: text, manifestDefault: false, defs: studioManifest(parseYaml(text)) } };
   if (info.workflows.length) applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", text);
   persist();
   return info;
@@ -923,8 +924,8 @@ function openSettings() {
         <dt>Data source</dt><dd>${esc(state.source)}</dd>
         <dt>Local storage</dt><dd>${bytes(storage.size())} used by this Studio in this browser</dd>
       </dl>
-      ${state.mode === "server" ? `<h3>${icon("database")} Known projects</h3>
-      <p class="muted small">Every project connected to <code>alfrd serve</code> is kept in the runtime database. <b>Forget</b> removes it (and its runs) from there. Files on disk are not touched.</p>
+      ${state.mode === "server" ? `<div class="row gap"><h3>${icon("database")} Known projects</h3><span class="grow"></span><button class="btn sm" id="set-rediscover" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine'"} title="Register the alfrd serve folder and projects forgotten since the server started again">${icon("sync")} Rediscover</button></div>
+      <p class="muted small">Every project connected to <code>alfrd serve</code> is kept in the runtime database. <b>Forget</b> removes it (and its runs) from there. Files on disk are not touched. <b>Rediscover</b> / <b>Restore</b> connect a forgotten project again without restarting <code>alfrd serve</code>.</p>
       <table class="tbl small" id="set-projects"><tbody><tr><td class="muted">Loading…</td></tr></tbody></table>` : ""}
       <label class="check set-live"><input type="checkbox" id="set-live" ${live.enabled ? "checked" : ""}> <span><b>Live updates</b> — follow the project folder and open logs without Re-scan${state.mode === "server" ? (server.session?.live?.enabled === false ? " (off on this server: <code>alfrd serve --live-interval 0</code>)" : ` (server checks every ${server.session?.live?.interval ?? 2} s while busy, ${server.session?.live?.idle ?? 5} s when idle)`) : " (the remembered folder is checked every 5–30 s)"}. Nothing runs while this tab is hidden.</span></label>
       <label class="field"><span>Rows per page</span><select id="set-page" class="input">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
@@ -969,17 +970,42 @@ async function drawProjects(root) {
     table.innerHTML = `<tbody><tr><td class="muted">${esc(error.message)}</td></tr></tbody>`;
     return;
   }
+  let lost = [];
+  try { lost = await server.rediscoverable(); } catch { /* older server */ }
   const shown = new Set(ctx.projects().map((p) => p.id));
   const canWrite = server.session?.mutations_enabled;
+  const btn = $("#set-rediscover", root);
+  if (btn) btn.hidden = !lost.length;
+  const lostRows = lost.map((c) => `<tr class="muted">
+      <td class="mono"><b>${esc(c.name || c.root.split("/").pop())}</b> <span class="badge tone-muted">${c.start ? "serve folder · forgotten" : "forgotten"}</span>${c.default_manifest ? ' <span class="badge" title="No alfrd.yaml in the folder: the default one is used">default alfrd.yaml</span>' : ""}</td>
+      <td class="mono small">${esc(c.root)}${c.exists ? "" : ' <span class="fail-t">(folder missing)</span>'}</td>
+      <td class="right"><button class="btn sm" data-restore="${esc(c.root)}" ${canWrite && c.exists ? "" : "disabled"}>${icon("sync")} Restore</button></td></tr>`).join("");
   table.innerHTML = `<thead><tr><th>Project</th><th>Folder</th><th></th></tr></thead><tbody>${list.map((p) => { const key = p.identifier || p.name; return `<tr>
       <td class="mono"><b>${esc(p.display_name || p.name)}</b>${key === server.session?.default_project ? ' <span class="badge tone-run">opened</span>' : shown.has(key) ? ' <span class="badge">shown</span>' : ' <span class="badge tone-muted">hidden</span>'}</td>
       <td class="mono small">${esc(p.root_path || "")}</td>
-      <td class="right"><button class="btn sm danger" data-forget="${esc(key)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`; }).join("") || '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>'}</tbody>`;
+      <td class="right"><button class="btn sm danger" data-forget="${esc(key)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`; }).join("") || (lost.length ? "" : '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>')}${lostRows}</tbody>`;
+  const restore = async (rootPath, b) => {
+    if (b) b.disabled = true;
+    try {
+      const res = await server.rediscover(rootPath);
+      res.restored.forEach((r) => ctx.log("info", `Project ${r.name} connected again (${r.root}${r.default_manifest ? ", default alfrd.yaml" : ""}).`, "server"));
+      res.failed.forEach((f) => ctx.log("error", `${f.root}: ${f.error}`, "server"));
+      ctx.toast(res.restored.length ? `Restored ${res.restored.map((r) => r.name).join(", ")}` : "Nothing to restore", res.failed.length ? "warn" : "ok");
+      await loadServer();
+      drawProjects(root);
+    } catch (error) {
+      if (b) b.disabled = false;
+      ctx.toast(error.message, "fail");
+    }
+  };
+  if (btn) btn.onclick = () => restore(null, btn);
   table.onclick = async (e) => {
+    const r = e.target.closest("[data-restore]");
+    if (r) { restore(r.dataset.restore, r); return; }
     const b = e.target.closest("[data-forget]");
     if (!b) return;
     const name = b.dataset.forget;
-    if (!confirm(`Forget "${name}"?\n\nIt is removed from the runtime database with its runs. Files in its folder are not touched. You can connect it again later.`)) return;
+    if (!confirm(`Forget "${name}"?\n\nIt is removed from the runtime database with its runs. Files in its folder are not touched. Rediscover (here) connects it again.`)) return;
     b.disabled = true;
     try {
       const res = await server.forgetProject(name);
@@ -1440,6 +1466,7 @@ async function boot() {
   });
   route();
   await loadTemplate("avica", parseYaml);
+  await loadDefaultManifest();
   await ensureTemplatesFor(storage.get("workflow")?.text);
 
   const session = await server.detect();

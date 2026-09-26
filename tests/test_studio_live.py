@@ -117,7 +117,8 @@ def test_watcher_versions_events_and_adapts(tree):
     assert w.since("other-epoch", 0)[1] is True
 
 
-def test_watcher_survives_errors(tree):
+def test_watcher_survives_errors(tree, monkeypatch):
+    monkeypatch.setenv("ALFRD_DEFAULT_MANIFEST", str(tree / "no-default.yaml"))  # no fallback manifest
     w = TreeWatcher("p", tree, lambda e: None)
     w.check()
     (tree / "alfrd.yaml").rename(tree / "alfrd.yaml.off")
