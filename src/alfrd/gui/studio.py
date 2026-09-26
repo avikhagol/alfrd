@@ -60,6 +60,12 @@ def studio_session():
         default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"),
         projects=current_app.config.get("STUDIO_PROJECTS"),
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
+        live={
+            "enabled": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0) > 0
+            and current_app.config.get("RUNTIME_SERVICE") is not None,
+            "interval": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0),
+            "idle": float(current_app.config.get("STUDIO_LIVE_IDLE", 5.0)),
+        },
     )
 
 
@@ -159,30 +165,184 @@ def project_scan(project_name: str):
     """The files the Studio reads for this project (same JSON as `alfrd avica scan --bundle`).
 
     Logs are listed with sizes only; the Studio fetches one when it is opened.
+    ``?only=rel1&only=rel2`` returns (and reads) just those files: the live
+    refresh after a ``tree`` event.
     """
     from alfrd.avica_layout import collect_studio_files
 
+    only = request.args.getlist("only") or None
+    live_state = None
+    if only is None:
+        hub = live_hub()
+        if hub is not None:
+            live_state = hub.touch(project_name)  # the version this scan is at least as new as
     try:
-        return jsonify(collect_studio_files(_project_root(project_name), log_tail=0))
+        data = collect_studio_files(_project_root(project_name), log_tail=0, only=only)
     except FileNotFoundError as error:
         return _json_error(error, 404)
+    if live_state:
+        data["live"] = {"epoch": live_state["epoch"], "version": live_state["version"]}
+    return jsonify(data)
+
+
+_ALLOWED: dict[tuple[str, str], tuple[float, Path]] = {}
+_ALLOWED_TTL = 30.0
+
+
+def _allowed_cached(root: Path, rel: str) -> Path:
+    """``allowed_file`` for repeated tail polls (it expands alfrd.yaml's log patterns)."""
+    import time
+
+    from alfrd.studio_defs import allowed_file
+
+    key = (str(root), rel)
+    hit = _ALLOWED.get(key)
+    now = time.monotonic()
+    if hit and now - hit[0] < _ALLOWED_TTL and hit[1].is_file():
+        return hit[1]
+    path = allowed_file(root, rel)
+    if len(_ALLOWED) > 2000:
+        _ALLOWED.clear()
+    _ALLOWED[key] = (now, path)
+    return path
 
 
 @studio_api.get("/studio/projects/<project_name>/file")
 def project_file(project_name: str):
-    """Tail of one log declared in alfrd.yaml (step logs or log artifacts)."""
-    from alfrd.studio_defs import allowed_file, read_tail
+    """One log declared in alfrd.yaml (step logs or log artifacts).
+
+    Without ``offset``: the last 400 kB. With ``offset=N`` (and the ``id`` the
+    previous reply gave): only what was appended since, for live tails. The
+    reply headers say where to continue: ``X-Offset``, ``X-File-Id``,
+    ``X-File-Size``, and ``X-Reset: 1`` when the text replaces the old one
+    (rotation, truncation, or too much appended).
+    """
+    from alfrd.studio_defs import read_range
 
     rel = request.args.get("path", "")
+    raw = request.args.get("offset")
     try:
-        path = allowed_file(_project_root(project_name), rel)
+        offset = int(raw) if raw not in (None, "") else None
+    except ValueError:
+        return _json_error(ValueError("offset must be an integer"), 400)
+    try:
+        path = _allowed_cached(_project_root(project_name), rel)
+        chunk = read_range(path, offset, file=request.args.get("id") or None)
     except ValueError as error:
         return _json_error(error, 400)
     except PermissionError as error:
         return _json_error(error, 403)
     except FileNotFoundError as error:
         return _json_error(error, 404)
-    return current_app.response_class(read_tail(path), mimetype="text/plain")
+    response = current_app.response_class(chunk["text"], mimetype="text/plain")
+    response.headers["X-Offset"] = str(chunk["offset"])
+    response.headers["X-File-Id"] = chunk["id"]
+    response.headers["X-File-Size"] = str(chunk["size"])
+    response.headers["X-File-Mtime"] = str(chunk["mtime"])
+    response.headers["X-Reset"] = "1" if chunk["reset"] else "0"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Live updates (see alfrd.studio_live): one event stream per Studio tab, a
+# JSON poll as fallback. Both are read-only.
+
+
+def live_hub():
+    """The server's LiveHub (created on first use); None when live updates are off."""
+    hub = current_app.extensions.get("alfrd_live")
+    if hub is not None:
+        return hub or None
+    interval = float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0)
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if interval <= 0 or service is None:
+        current_app.extensions["alfrd_live"] = False
+        return None
+    from alfrd.runtime import RuntimeNotFound
+    from alfrd.studio_live import LiveHub
+
+    def root_of(name: str) -> Path | None:
+        try:
+            root = Path(service.get_project_by_name(name).root_path)
+        except RuntimeNotFound:
+            return None
+        return root if (root / "alfrd.yaml").is_file() or (root / ".alfrd.yaml").is_file() else None
+
+    database = current_app.config.get("RUNTIME_DATABASE")
+    paths = [database, f"{database}-wal"] if database and database != ":memory:" else []
+    hub = LiveHub(root_of, runtime_paths=paths, interval=interval,
+                  idle=float(current_app.config.get("STUDIO_LIVE_IDLE", 5.0)))
+    current_app.extensions["alfrd_live"] = hub
+    return hub
+
+
+def _live_projects() -> list[str]:
+    names = [n for n in request.args.get("projects", "").split(",") if n]
+    scope = current_app.config.get("STUDIO_PROJECTS")
+    if isinstance(scope, list):
+        names = [n for n in names if n in scope]
+    return names[:20]
+
+
+def _poke(project_name: str) -> None:
+    hub = current_app.extensions.get("alfrd_live")
+    if hub:
+        hub.poke(project_name)
+
+
+@studio_api.get("/studio/events")
+def live_events():
+    """Server-Sent Events: ``hello`` (watcher state), ``tree``, ``runtime``, ``reset``; a ping every 15 s."""
+    import json
+    import queue
+
+    from flask import Response
+
+    hub = live_hub()
+    if hub is None:
+        return _json_error(RuntimeError("live updates are off (alfrd serve --live-interval 0)"), 404)
+    projects = _live_projects()
+    heartbeat = float(current_app.config.get("STUDIO_LIVE_HEARTBEAT", 15.0))
+
+    def stream():
+        sub, hello = hub.subscribe(projects)
+        try:
+            yield "retry: 3000\n"
+            yield f"event: hello\ndata: {json.dumps({'state': hello, 'interval': hub.interval, 'idle': hub.idle})}\n\n"
+            while True:
+                try:
+                    event = sub.queue.get(timeout=heartbeat)
+                except queue.Empty:
+                    yield ": ping\n\n"
+                    continue
+                yield f"event: {event['type']}\ndata: {json.dumps(event, default=str)}\n\n"
+                if sub.dropped:
+                    sub.dropped = False
+                    yield "event: reset\ndata: {}\n\n"
+        finally:
+            hub.unsubscribe(sub)
+
+    return Response(stream(), mimetype="text/event-stream", headers={
+        "Cache-Control": "no-store", "X-Accel-Buffering": "no", "Connection": "keep-alive",
+    })
+
+
+@studio_api.get("/studio/changes")
+def live_changes():
+    """Poll fallback: ``?projects=a,b&since={"a": "epoch:version", "@runtime": …}`` → state + events."""
+    import json
+
+    hub = live_hub()
+    if hub is None:
+        return _json_error(RuntimeError("live updates are off"), 404)
+    try:
+        since = json.loads(request.args.get("since") or "{}")
+        if not isinstance(since, dict):
+            raise ValueError
+    except ValueError:
+        return _json_error(ValueError("since must be a JSON object"), 400)
+    return jsonify({**hub.changes(since, _live_projects()), "interval": hub.interval, "idle": hub.idle})
 
 
 @studio_api.post("/studio/projects/<project_name>/manifest")
@@ -198,6 +358,7 @@ def project_manifest_save(project_name: str):
         path = save_manifest(_project_root(project_name), text)
     except Exception as error:  # yaml errors, missing name, OS errors
         return _json_error(error, 400)
+    _poke(project_name)
     return jsonify(saved=path.name, backup=f"{path.name}.bak")
 
 
@@ -239,6 +400,7 @@ def avica_config_update(project_name: str):
             cache.write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
         except (OSError, ValueError):
             pass
+    _poke(project_name)
     return jsonify(written=written, file=config_name, config=resolve_config(root).to_dict())
 
 

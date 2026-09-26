@@ -66,6 +66,37 @@ _META_TARGET = re.compile(r"^(?P<kind>[a-z][a-z_]*?)_(?P<band>[A-Z][A-Z0-9]*)_(?
 # ---------------------------------------------------------------------------
 # alfrd.yaml `avica:` block
 
+_YAML_CACHE: dict[str, tuple[tuple[int, int], Any]] = {}
+
+
+def load_yaml_cached(path: str | Path) -> Any:
+    """``yaml.safe_load`` of a file, parsed again only when its size or mtime changes.
+
+    The live watcher reads alfrd.yaml and the template several times per pass;
+    parsing dominated its cost. Returns a deep copy (callers may mutate it) and
+    re-raises ``yaml.YAMLError`` / ``OSError`` like a plain load.
+    """
+    import copy
+
+    import yaml
+
+    p = Path(path)
+    st = p.stat()
+    key = str(p.resolve())
+    sig = (st.st_size, st.st_mtime_ns)
+    hit = _YAML_CACHE.get(key)
+    if hit is None or hit[0] != sig:
+        try:
+            value: Any = yaml.safe_load(p.read_text(encoding="utf-8"))
+        except yaml.YAMLError as error:
+            value = error
+        if len(_YAML_CACHE) > 64:
+            _YAML_CACHE.clear()
+        _YAML_CACHE[key] = hit = (sig, value)
+    if isinstance(hit[1], yaml.YAMLError):
+        raise hit[1]
+    return copy.deepcopy(hit[1])
+
 
 def manifest_avica(root: str | Path) -> dict[str, Any]:
     """Return the optional ``avica:`` block of ``alfrd.yaml`` (or ``.alfrd.yaml``)."""
@@ -75,8 +106,8 @@ def manifest_avica(root: str | Path) -> dict[str, Any]:
         path = Path(root) / name
         if path.is_file():
             try:
-                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            except yaml.YAMLError:
+                data = load_yaml_cached(path) or {}
+            except (yaml.YAMLError, OSError):
                 return {}
             block = data.get("avica") if isinstance(data, dict) else None
             return dict(block) if isinstance(block, dict) else {}
@@ -320,7 +351,7 @@ def layout_patterns(root: str | Path) -> dict[str, list[str]]:
     manifest = Path(root) / "alfrd.yaml"
     if "result_csv" not in block and manifest.is_file():
         try:
-            data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+            data = load_yaml_cached(manifest) or {}
             for artifact in data.get("artifacts") or []:
                 if isinstance(artifact, dict) and artifact.get("name") == "result_csv" and "{target}" in str(artifact.get("path_pattern", "")):
                     patterns["result_csv"] = [str(artifact["path_pattern"])]
@@ -599,7 +630,8 @@ def read_log(root: str | Path, name: str, tail: int = 400_000) -> str:
         return stream.read().decode("utf-8", errors="replace")
 
 
-def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024) -> dict[str, Any]:
+def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool = True,
+                         only: Iterable[str] | None = None) -> dict[str, Any]:
     """Collect the files the Studio reads for one ALFRD project root.
 
     Same selection as the browser's targeted folder scan: alfrd.yaml, the AVICA
@@ -608,9 +640,17 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024) -> dict[st
     ``picard_input_template_update`` and ``avica.logs/`` (crash snapshots in
     full, the last ``log_tail`` bytes of each log). Import the JSON in the
     Studio when the reduction tree lives on another machine.
+
+    ``read=False`` lists the same files with sizes and mtimes only (the live
+    watcher's cheap pass); ``only`` limits the output, and the reads, to those
+    relative paths (the Studio's incremental refresh).
     """
     import datetime as _dt
+    import time as _time
 
+    wanted = set(only) if only is not None else None
+
+    started = _time.time()
     base = Path(root).resolve()
     manifest = next((base / n for n in ("alfrd.yaml", ".alfrd.yaml") if (base / n).is_file()), None)
     if manifest is None:
@@ -624,10 +664,16 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024) -> dict[st
         if rel in seen or not path.is_file():
             return
         seen.add(rel)
-        size = path.stat().st_size
-        item: dict[str, Any] = {"rel": rel, "size": size}
+        stat = path.stat()
+        size = stat.st_size
+        item: dict[str, Any] = {"rel": rel, "size": size, "mtime": stat.st_mtime}
         if hint:
             item["hint"] = hint
+        if not read or (wanted is not None and rel not in wanted):
+            if tail or limit is None or size <= limit:
+                item["content"] = True
+            files.append(item)
+            return
         if tail:
             with path.open("rb") as stream:
                 if size > limit:
@@ -691,11 +737,14 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024) -> dict[st
             entry = {"rel": item["rel"], "size": item["size"], "mtime": item["mtime"], "log": info}
             files.append(entry)
             by_rel[item["rel"]] = entry
+    if wanted is not None:
+        files = [f for f in files if f["rel"] in wanted]
     return {
         "alfrd_avica_scan": 1,
         "root": str(base),
         "root_name": base.name,
         "generated": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "generated_ts": started,
         "target_dir": os.path.relpath(target_dir, base),
         "files": files,
         "ms_paths": collect_ms_paths(base, studio),

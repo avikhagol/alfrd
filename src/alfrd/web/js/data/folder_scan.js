@@ -148,7 +148,7 @@ async function pool(items, limit, fn) {
  * @param {FileSystemDirectoryHandle} root folder picked by the user (holds alfrd.yaml)
  * @param {{onProgress?: (text:string)=>void}} opts
  */
-export async function scanProjectFolder(root, { onProgress = () => {} } = {}) {
+export async function scanProjectFolder(root, { onProgress = () => {}, statOnly = false } = {}) {
   const entries = [];
   const jobs = []; // {rel, handle, max, lazy, hint}
   const t0 = performance.now();
@@ -173,7 +173,7 @@ export async function scanProjectFolder(root, { onProgress = () => {} } = {}) {
     return { file, text: file.size <= max ? await file.text() : null };
   };
   const manifestRead = await read(manifest.handle);
-  entries.push({ rel: manifest.name, name: manifest.name, size: manifestRead.file.size, text: manifestRead.text });
+  entries.push({ rel: manifest.name, name: manifest.name, size: manifestRead.file.size, mtime: manifestRead.file.lastModified, text: manifestRead.text });
   let parsed = null;
   try { parsed = parseYaml(manifestRead.text || ""); } catch { /* buildBundle reports the error */ }
   const block = (parsed && typeof parsed.avica === "object" && parsed.avica) || {};
@@ -193,7 +193,7 @@ export async function scanProjectFolder(root, { onProgress = () => {} } = {}) {
     const isTable = /\.(csv|tsv)$/i.test(c.name);
     if (!isConfig && !isSummary && !isTable) continue;
     const r = await read(c.handle);
-    const e = { rel: c.name, name: c.name, size: r.file.size, text: r.text, hint: isSummary ? "summary" : undefined };
+    const e = { rel: c.name, name: c.name, size: r.file.size, mtime: r.file.lastModified, text: r.text, hint: isSummary ? "summary" : undefined };
     entries.push(e);
     early.push(e);
   }
@@ -280,6 +280,8 @@ export async function scanProjectFolder(root, { onProgress = () => {} } = {}) {
   await pool(jobs, 16, async (j) => {
     const file = await j.handle.getFile();
     const name = j.rel.split("/").pop();
+    handleCache(base).set(j.rel, j.handle); // `rel` is relative to the project folder (base)
+    if (statOnly) { entries.push({ rel: j.rel, name, size: file.size, mtime: file.lastModified, lazy: Boolean(j.lazy) }); return; }
     if (j.lazy) { entries.push({ rel: j.rel, name, size: file.size, mtime: file.lastModified, file }); return; }
     if (file.size > (j.max || MAX_TEXT)) { entries.push({ rel: j.rel, name, size: file.size, file }); return; }
     entries.push({ rel: j.rel, name, size: file.size, text: await file.text() });
@@ -291,6 +293,85 @@ export async function scanProjectFolder(root, { onProgress = () => {} } = {}) {
   entries.folder = base;
   entries.msDirs = [...msDirs];
   return entries;
+}
+
+/**
+ * Live updates in folder mode: `{rel: "kind:size:mtime"}` from a stat-only scan
+ * (alfrd.yaml and the root config files are still read: they decide the layout).
+ */
+export async function folderFingerprint(root) {
+  const t0 = performance.now();
+  const entries = await scanProjectFolder(root, { statOnly: true });
+  const out = {};
+  entries.forEach((e) => {
+    out[e.rel] = e.marker ? "marker" : `${e.lazy ? "log" : "content"}:${e.size}:${e.mtime || 0}`;
+  });
+  return { prints: out, ms: performance.now() - t0 };
+}
+
+/** What changed between two fingerprints: content changes and added/removed files vs. log growth. */
+export function diffFingerprints(old, next) {
+  const changed = [];
+  const removed = [];
+  const logs = {};
+  Object.entries(next).forEach(([rel, v]) => {
+    const was = old[rel];
+    if (was === undefined) changed.push(rel);
+    else if (was !== v) {
+      if (v.startsWith("log:") && was.startsWith("log:")) {
+        const [, size, mtime] = v.split(":");
+        logs[rel] = [Number(size), Number(mtime) / 1000];
+      } else changed.push(rel);
+    }
+  });
+  Object.keys(old).forEach((rel) => { if (!(rel in next)) removed.push(rel); });
+  return { changed, removed, logs };
+}
+
+const handles = new WeakMap(); // root handle -> Map(rel -> FileSystemFileHandle)
+function handleCache(root) {
+  if (!handles.has(root)) handles.set(root, new Map());
+  return handles.get(root);
+}
+
+async function fileHandleAt(root, rel) {
+  const cache = handleCache(root);
+  if (cache.has(rel)) return cache.get(rel);
+  const parts = String(rel).split("/").filter(Boolean);
+  const name = parts.pop();
+  const dir = await dirAt(root, parts.join("/"));
+  const f = dir && (await fileAt(dir, name));
+  if (!f) throw new Error(`${rel} not found`);
+  cache.set(rel, f);
+  return f;
+}
+
+/**
+ * Read a growing file below a folder handle from byte `offset` (null: last `tail` bytes).
+ * Same contract as the server's `…/file?offset=`: {text, offset, size, mtime, reset}.
+ * `decoder` (a TextDecoder kept by the caller) carries a UTF-8 character split
+ * between two reads.
+ */
+export async function readFileRange(root, rel, offset = null, { tail = 400000, decoder = null } = {}) {
+  let file;
+  try {
+    file = await (await fileHandleAt(root, rel)).getFile();
+  } catch (error) {
+    handleCache(root).delete(rel);
+    throw error;
+  }
+  const size = file.size;
+  // No inode here: a rotated log is only noticed when it is shorter than what was read.
+  const reset = offset == null || offset > size || size - offset > tail;
+  const start = reset ? Math.max(0, size - tail) : offset;
+  const dec = decoder || new TextDecoder();
+  if (reset) dec.decode(); // drop a partial character left from the old contents
+  let text = start < size ? dec.decode(new Uint8Array(await file.slice(start, size).arrayBuffer()), { stream: true }) : "";
+  if (reset && start > 0) {
+    const cut = text.indexOf("\n");
+    if (cut >= 0 && cut < 4096) text = text.slice(cut + 1);
+  }
+  return { text, offset: size, size, mtime: file.lastModified, id: null, reset };
 }
 
 /** Read a file (last 400 kB) below a stored folder handle, e.g. after a reload. */

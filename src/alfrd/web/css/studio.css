@@ -622,3 +622,27 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .ps-status { font-size: 12.5px; }
 .insp-logs details.log-item > summary { flex-wrap: wrap; row-gap: 2px; }
 .wf.list-mode .zoom-group { display: none; }
+
+/* Live updates: top-bar badge, following logs */
+.live-badge { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font: 600 12px/1 var(--sans); cursor: pointer; white-space: nowrap; }
+.live-badge i { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); }
+.live-badge:hover { border-color: var(--border-strong); }
+.live-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.live-badge.live-live, .live-badge.live-polling { color: var(--ok); border-color: #A7F3D0; background: var(--ok-bg); }
+.live-badge.live-live i, .live-badge.live-polling i { background: var(--ok); animation: live-pulse 2s ease-in-out infinite; }
+.live-badge.live-reconnecting, .live-badge.live-permission { color: var(--warn); border-color: #FDE68A; background: var(--warn-bg); }
+.live-badge.live-reconnecting i, .live-badge.live-permission i { background: var(--warn); }
+.live-badge.live-paused i { background: var(--text-3); }
+@keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(5, 150, 105, .35); } 50% { box-shadow: 0 0 0 4px rgba(5, 150, 105, 0); } }
+@media (prefers-reduced-motion: reduce) { .live-badge i { animation: none !important; } }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.live-dot[hidden] { display: none; }
+.log-wrap { position: relative; }
+.log-wrap.full { flex: 1; width: 100%; min-height: 0; height: 100%; display: flex; flex-direction: column; }
+.log-wrap.full > pre { width: 100%; }
+.set-live { margin: 12px 0; align-items: flex-start; }
+.set-live input { margin-top: 3px; }
+.log-jump { position: absolute; right: 14px; bottom: 10px; display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 999px; border: 0; background: var(--accent); color: #fff; font: 600 12px/1.2 var(--sans); cursor: pointer; box-shadow: var(--shadow-lg); }
+.log-jump[hidden] { display: none; }
+.follow-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); margin-right: 8px; cursor: pointer; }
+@media (max-width: 720px) { .live-badge span { display: none; } .live-badge { padding: 0 9px; } }

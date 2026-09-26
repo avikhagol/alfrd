@@ -68,7 +68,7 @@ export function render(el, ctx) {
       <span class="grow"></span>
       <label class="search">${icon("search")}<input id="lg-q" type="search" placeholder="Filter file names…" value="${esc(ui.q)}"></label>
       <button class="btn sm" data-act="expand">Expand groups</button><button class="btn sm" data-act="collapse">Collapse</button></div>
-    <p class="muted small">Files matching each step's <code>logs:</code> and the artifacts with <code>kind: log</code> in alfrd.yaml. A file is read when you open it (last 400 kB); ${icon("expand")} opens it full screen.</p>`;
+    <p class="muted small">Files matching each step's <code>logs:</code> and the artifacts with <code>kind: log</code> in alfrd.yaml. A file is read when you open it (last 400 kB) and then follows the file as it grows while it is open and on screen; ${icon("expand")} opens it full screen.</p>`;
   renderBody(el, ctx);
   ctx.setFooterRight(`${all.length} log file(s) declared by alfrd.yaml`);
 }

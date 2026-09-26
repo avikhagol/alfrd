@@ -308,7 +308,8 @@ def _connect_startup_project(service, project: str | None) -> str | None:
 
 
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
-               demo: bool = False, project: str | None = None, all_projects: bool = False) -> None:
+               demo: bool = False, project: str | None = None, all_projects: bool = False,
+               live_interval: float = 2.0) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -333,6 +334,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         "CATALOG_CREATE_SCHEMA": False,
         "RUNTIME_MUTATIONS_ENABLED": loopback,
         "STUDIO_DEMO": demo,
+        # Live updates: seconds between checks of a busy project tree (0 turns them off).
+        "STUDIO_LIVE_INTERVAL": max(0.0, float(live_interval)),
         "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
     }
     # Started for one project: the Studio shows only that one (unless --all-projects).
@@ -394,10 +397,14 @@ def serve(
     all_projects: bool = typer.Option(
         False, "--all-projects", help="Also show every other project remembered in the runtime database."
     ),
+    live_interval: float = typer.Option(
+        2.0, "--live-interval", min=0.0,
+        help="Seconds between checks of the project folder while it changes (5 s when quiet; 0 = no live updates).",
+    ),
 ):
     """Serve ALFRD Studio (default) and the dashboard, backed by the runtime database."""
 
-    _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects)
+    _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval)
 
 
 @alfrd_cli.command()

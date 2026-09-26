@@ -36,12 +36,34 @@ Server writes need a browser on the same machine (loopback) plus a CSRF token.
 
 ---
 
+## Live updates
+
+No need to click **Re-scan**. The **● Live** badge (top bar) shows the state. Click it to turn live updates on or off (also in ⚙ Settings).
+
+- **Server mode:** `alfrd serve` checks the files `alfrd.yaml` declares every 2 s while things change, every 5 s when quiet. It only reads file sizes and dates, and never walks into `*.ms`. The Studio then re-reads just the changed files.
+- **Browser mode (Chrome/Edge):** the opened folder is checked every 5 s (30 s when quiet).
+- **Logs:** an open log that is on screen, and the full-screen log, follow the file as it grows. Only the new bytes are fetched. At most 3 logs at a time. Scroll up to pause on a spot; **↓ New output** jumps back. **Follow** in full screen does the same.
+- **Hidden tab:** nothing runs. Back on the tab, the Studio catches up.
+- Your place is kept: selection, open groups and logs, scroll, the field you are typing in. Unsaved workflow edits are never replaced.
+
+| Badge | Meaning |
+|---|---|
+| ● Live | Following changes |
+| Paused | Tab hidden |
+| Reconnecting | Server not reachable; retries by itself |
+| Live paused | Browser mode: click to allow reading the folder again |
+| Live off | Turned off, or `alfrd serve --live-interval 0` |
+
+Slow or huge tree? A check never takes more than 1/20 of the time: a check that takes 0.5 s runs every 10 s. Tune it with `alfrd serve --live-interval SECONDS` (0 = off). It works on NFS/sshfs mounts too (no inotify).
+
+---
+
 ## Open a project (browser mode)
 
 1. Click **Import → Open project folder**.
 2. Pick the folder with `alfrd.yaml`.
 
-- **Chrome / Edge:** reads only what `alfrd.yaml` points to. Fast. Remembers the folder for **Re-scan**.
+- **Chrome / Edge:** reads only what `alfrd.yaml` points to. Fast. Remembers the folder for **Re-scan** and live updates.
 - **Firefox / Safari:** lists the whole folder first. Slower.
 - **Remote tree:** run `alfrd avica scan <folder> --bundle scan.json` there. Import `scan.json`.
 

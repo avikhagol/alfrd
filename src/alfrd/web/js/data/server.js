@@ -79,9 +79,35 @@ export const server = {
     return response.text();
   },
 
-  /** Files the Studio reads for a connected project (alfrd.yaml-driven; logs listed only). */
-  projectScan(project) {
-    return getJson(`/studio/projects/${encodeURIComponent(project)}/scan`);
+  /** Files the Studio reads for a connected project (alfrd.yaml-driven; logs listed only). `only`: just these rels. */
+  projectScan(project, only = null) {
+    const q = only ? `?${new URLSearchParams(only.map((rel) => ["only", rel]))}` : "";
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/scan${q}`);
+  },
+
+  /** A log from byte `offset` on (null: its last 400 kB). → {text, offset, id, size, mtime, reset} */
+  async projectFileFrom(project, rel, offset = null, id = null) {
+    const q = new URLSearchParams({ path: rel, ...(offset != null ? { offset: String(offset) } : {}), ...(id ? { id } : {}) });
+    const response = await fetch(`${API}/studio/projects/${encodeURIComponent(project)}/file?${q}`, { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try { message = (await response.json()).error?.message || message; } catch { /* text body */ }
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
+    }
+    const h = (k) => response.headers.get(k);
+    return { text: await response.text(), offset: Number(h("X-Offset")), id: h("X-File-Id"), size: Number(h("X-File-Size")), mtime: Number(h("X-File-Mtime")) * 1000, reset: h("X-Reset") !== "0" };
+  },
+
+  /** Live updates: Server-Sent Events URL for these projects (runtime events come too). */
+  eventsUrl(projects) {
+    return `${API}/studio/events?${new URLSearchParams({ projects: projects.join(",") })}`;
+  },
+
+  /** Poll fallback for the event stream. `since`: {key: "epoch:version"}. */
+  changes(projects, since) {
+    return getJson(`/studio/changes?${new URLSearchParams({ projects: projects.join(","), since: JSON.stringify(since || {}) })}`, { cache: "no-store" });
   },
 
   async projectFile(project, rel) {

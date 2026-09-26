@@ -25,6 +25,21 @@
 
 ### Added
 
+- **Live updates in the Studio**: no more Re-scan clicks. `alfrd serve` polls
+  the files alfrd.yaml declares, reading only their sizes and mtimes
+  (`alfrd.studio_live`). It checks every 2 s while things change, every 5 s
+  when quiet, and never less than 20× a check's own duration. A watcher runs
+  only while a tab listens. Changes go to the Studio over one Server-Sent
+  Events stream per tab (`GET /api/studio/events`), with polling as a fallback
+  (`GET /api/studio/changes`). The Studio then re-reads only the changed files
+  (`GET …/scan?only=`). The runtime database is watched too. Open logs that are
+  on screen, and the full-screen log, follow the file as it grows:
+  `GET …/file?offset=&id=` returns only the new bytes and detects truncation
+  and rotation. At most 3 logs are followed at once, with a Follow toggle and
+  a "New output" jump. Browser mode polls the remembered folder. Nothing runs
+  in a hidden tab. Selection, open logs, scroll, focus and unsaved edits are
+  kept. New option: `alfrd serve --live-interval` (0 = off). Parsed YAML is
+  cached by mtime: a watcher pass on the test tree dropped from 88 ms to 8 ms.
 - **Studio driven by alfrd.yaml** (`alfrd.studio_defs`, `web/js/data/defs.js`):
   `template: avica` (defaults in `web/assets/templates/avica.yaml`), per-step
   `label`/`category`/`stage`/`description`/`icon`, `metadata:` (Metadata

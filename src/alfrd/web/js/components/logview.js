@@ -1,11 +1,42 @@
 // Shared log rendering: collapsible log files that load on open, scroll inside
 // a fixed-height box, and a small expand button that opens any log (or any
 // inline log snippet) full-screen in a modal.
+//
+// Live tails: an open log that is on screen, and the full-screen log, follow
+// the file as it grows (only the new bytes are fetched). At most MAX_TAILS
+// files are followed at once (full screen first), each checked every second
+// while it grows and less often while it is quiet; nothing runs while the tab
+// is hidden. Scrolled up = paused on that position ("↓ New output" jumps back).
 
 import { esc, icon, bytes, when } from "../utils/dom.js";
 import { groupLabel } from "../data/defs.js";
 
 const MAX_INLINE = 400000;
+const MAX_TAILS = 3;
+const MAX_CACHED = 24;
+const TICK_MS = 1000;
+const QUIET_MAX_MS = 5000;
+
+const openState = new Map(); // key -> open (remembered across re-renders)
+const cache = new Map(); // key -> {project, rel, text, offset, id, live, follow, scrollTop, decoder, idle, nextAt, size, mtime}
+let tailsOn = true;
+
+const keyOf = (project, rel) => `${project}::${rel}`;
+
+/** Collapse carriage-return progress lines (keep what the terminal would show). */
+function clean(text) {
+  if (!text.includes("\r")) return text;
+  return text.replace(/\r\n/g, "\n").split("\n").map((line) => (line.includes("\r") ? line.split("\r").filter(Boolean).pop() || "" : line)).join("\n");
+}
+
+function trim(text) {
+  if (text.length <= MAX_INLINE * 1.25) return text;
+  const cut = text.slice(-MAX_INLINE);
+  const nl = cut.indexOf("\n");
+  return nl >= 0 && nl < 4096 ? cut.slice(nl + 1) : cut;
+}
+
+const atBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 
 /** Files for a project (step logs + log artifacts from alfrd.yaml). */
 export function projectLogs(ctx, project) {
@@ -22,17 +53,24 @@ export function logForTarget(ctx, f, t, codes = []) {
   return true;
 }
 
+function metaText(f) {
+  return `${f.size ? bytes(f.size) : ""}${f.mtime ? ` · ${when(new Date(f.mtime).toISOString())}` : ""}`;
+}
+
 /** One collapsible log file. The body is filled on first open (see bindLogs). */
 export function logItem(f, { project, open = false, showGroups = false, defs = null } = {}) {
+  const key = keyOf(project, f.rel);
+  const isOpen = openState.has(key) ? openState.get(key) : open;
   const dir = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : "";
   const tags = [f.band && `<span class="code-chip">${esc(f.band)}</span>`, f.target && `<span class="code-chip auto">${esc(f.target)}</span>`].filter(Boolean).join("");
   const groups = showGroups && f.groups?.length ? `<span class="muted small">${esc(f.groups.map((g) => groupLabel(g, defs)).join(" · "))}</span>` : "";
-  return `<details class="log-item" data-log-rel="${esc(f.rel)}" data-log-project="${esc(project)}" ${open ? "open" : ""}>
+  return `<details class="log-item" data-log-rel="${esc(f.rel)}" data-log-project="${esc(project)}" ${isOpen ? "open" : ""}>
     <summary><span class="caret">${icon("caret")}</span><span class="mono log-name" title="${esc(f.rel)}">${esc(f.name || f.rel.split("/").pop())}</span>${tags}
       <span class="muted small mono trunc log-dir">${esc(dir)}</span>${groups}<span class="grow"></span>
-      <span class="muted small tabular">${f.size ? bytes(f.size) : ""}${f.mtime ? ` · ${esc(when(new Date(f.mtime).toISOString()))}` : ""}</span>
+      <span class="live-dot" data-log-live hidden title="Following this file as it grows"></span>
+      <span class="muted small tabular" data-log-meta="${esc(key)}">${esc(metaText(f))}</span>
       <button class="icon-btn xs" data-log-zoom="${esc(f.rel)}" data-log-project="${esc(project)}" title="Open full screen" aria-label="Open ${esc(f.name || f.rel)} full screen">${icon("expand")}</button></summary>
-    <pre class="log log-box" data-log-body>${open ? "Loading…" : ""}</pre></details>`;
+    <div class="log-wrap"><pre class="log log-box" data-log-body data-log-key="${esc(key)}">${isOpen ? "Loading…" : ""}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></details>`;
 }
 
 /** An inline snippet (not a file) with the same expand button. */
@@ -41,43 +79,241 @@ export function zoomablePre(text, { title = "Log", cls = "log small log-box", em
   return `<div class="zoomable"><button class="icon-btn xs zoom-btn" data-zoom-pre data-title="${esc(title)}" title="Open full screen" aria-label="Open ${esc(title)} full screen">${icon("expand")}</button><pre class="${cls}">${body}</pre></div>`;
 }
 
+/** Read a log into the cache (first time), or return what is cached. */
+async function load(ctx, project, rel) {
+  const key = keyOf(project, rel);
+  let c = cache.get(key);
+  if (c && typeof c.text === "string") return c;
+  const decoder = typeof TextDecoder === "function" ? new TextDecoder() : null;
+  const res = await ctx.readLogRange(project, rel, null, { decoder });
+  c = { project, rel, text: trim(clean(res.text || "")), offset: res.offset, id: res.id, live: res.live !== false && res.offset != null, follow: true, scrollTop: 0, decoder, idle: 0, nextAt: Date.now() + TICK_MS, size: res.size, mtime: res.mtime };
+  cache.set(key, c);
+  evict();
+  return c;
+}
+
+function evict() {
+  if (cache.size <= MAX_CACHED) return;
+  for (const [key] of cache) {
+    if (cache.size <= MAX_CACHED) break;
+    if (!openState.get(key)) cache.delete(key);
+  }
+}
+
+/** Show a cached log in a <pre>, keeping the reader's place. */
+function show(pre, c, { follow = c.follow, scrollTop = c.scrollTop } = {}) {
+  pre.textContent = c.text || "(empty file)";
+  pre.dataset.loaded = "1";
+  pre.dataset.follow = follow ? "1" : "0";
+  pre.scrollTop = follow ? pre.scrollHeight : scrollTop;
+  bindScroll(pre, c);
+  liveMark(pre, c);
+}
+
+function liveMark(pre, c) {
+  const d = pre.closest("details.log-item");
+  const dot = d?.querySelector("[data-log-live]");
+  if (dot) dot.hidden = !(c.live && tailsOn);
+}
+
+function bindScroll(pre, c) {
+  if (pre.dataset.bound) return;
+  pre.dataset.bound = "1";
+  pre.addEventListener("scroll", () => {
+    const follow = atBottom(pre);
+    pre.dataset.follow = follow ? "1" : "0";
+    if (!pre.closest("#modal-host")) { c.follow = follow; c.scrollTop = pre.scrollTop; }
+    const jump = pre.parentElement?.querySelector("[data-log-jump]");
+    if (jump && follow) jump.hidden = true;
+  }, { passive: true });
+}
+
 async function fill(ctx, d) {
   const pre = d.querySelector("[data-log-body]");
   if (!pre || pre.dataset.loaded) return;
-  pre.dataset.loaded = "1";
-  pre.textContent = "Loading…";
+  pre.dataset.loaded = "loading";
+  const project = d.dataset.logProject;
+  const rel = d.dataset.logRel;
+  const key = keyOf(project, rel);
+  if (!cache.has(key)) pre.textContent = "Loading…";
   try {
-    const text = await ctx.readFile(d.dataset.logProject, d.dataset.logRel);
-    pre.textContent = text.length > MAX_INLINE ? text.slice(-MAX_INLINE) : text || "(empty file)";
-    pre.scrollTop = pre.scrollHeight;
+    show(pre, await load(ctx, project, rel));
   } catch (error) {
     pre.textContent = `(${error.message})`;
     pre.dataset.loaded = "error";
   }
 }
 
-export function openFull(ctx, title, text, sub = "") {
-  ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(title)}</h2>${sub ? `<span class="muted small mono trunc">${esc(sub)}</span>` : ""}<span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b"><pre class="log log-full">${esc(text)}</pre></div>`, (root) => {
+export function openFull(ctx, title, text, sub = "", live = null) {
+  const key = live ? keyOf(live.project, live.rel) : "";
+  ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(title)}</h2>${sub ? `<span class="muted small mono trunc">${esc(sub)}</span>` : ""}<span class="grow"></span>
+      ${live ? `<label class="follow-toggle" title="Keep the newest lines in view"><input type="checkbox" data-follow checked> Follow</label><span class="live-dot" data-log-live ${live.c?.live && tailsOn ? "" : "hidden"}></span>` : ""}
+      <button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <div class="modal-b"><div class="log-wrap full"><pre class="log log-full" ${live ? `data-live-log data-log-key="${esc(key)}"` : ""}>${esc(text)}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></div>`, (root) => {
     const pre = root.querySelector("pre");
+    pre.dataset.follow = "1";
     pre.scrollTop = pre.scrollHeight;
+    if (!live) return;
+    bindScroll(pre, live.c);
+    const box = root.querySelector("[data-follow]");
+    box.addEventListener("change", () => {
+      pre.dataset.follow = box.checked ? "1" : "0";
+      if (box.checked) pre.scrollTop = pre.scrollHeight;
+    });
+    pre.addEventListener("scroll", () => { box.checked = pre.dataset.follow === "1"; }, { passive: true });
   }, "full");
 }
 
-/** Install once: lazy loading on open, and the expand buttons (files and snippets). */
+/** Full-screen view of a file, following it as it grows. */
+export async function openFileFull(ctx, project, rel) {
+  const c = await load(ctx, project, rel);
+  c.nextAt = 0;
+  openFull(ctx, rel.split("/").pop(), c.text, rel, { project, rel, c });
+}
+
+// ---------------------------------------------------------------------------
+// Tails
+
+function visible(el) {
+  if (!el.isConnected || !el.offsetParent) return false;
+  const r = el.getBoundingClientRect();
+  return r.bottom > 0 && r.top < (window.innerHeight || 0) && r.height > 0;
+}
+
+/** The <pre> elements to follow right now: full screen first, then open logs on screen. */
+function followed(root) {
+  const host = document.getElementById("modal-host");
+  const full = host && !host.hidden ? [...host.querySelectorAll("pre[data-live-log]")] : [];
+  if (host && !host.hidden) return full; // the rest is behind the modal
+  return [...root.querySelectorAll("details.log-item[open] pre[data-log-body][data-loaded='1']")].filter(visible);
+}
+
+const shown = (c) => c.text || "(empty file)";
+
+/** Bring a <pre> up to date: append the new part when it matches, else replace. */
+function paint(pre, c, appended, before) {
+  const follow = pre.dataset.follow !== "0";
+  if (appended != null && pre.textContent.length === before.length && before) pre.appendChild(document.createTextNode(appended));
+  else pre.textContent = shown(c);
+  if (follow) pre.scrollTop = pre.scrollHeight;
+  else {
+    const jump = pre.parentElement?.querySelector("[data-log-jump]");
+    if (jump) jump.hidden = false;
+  }
+}
+
+function paintMeta(key, size, mtime) {
+  document.querySelectorAll("[data-log-meta]").forEach((el) => {
+    if (el.dataset.logMeta === key) el.textContent = metaText({ size, mtime });
+  });
+}
+
+async function tick(ctx, root) {
+  if (!tailsOn || document.hidden) return;
+  const now = Date.now();
+  const pres = followed(root);
+  const byKey = new Map();
+  pres.forEach((pre) => {
+    const key = pre.dataset.logKey;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(pre);
+  });
+  // A <pre> that missed updates (e.g. while the full-screen view had them) catches up.
+  byKey.forEach((list, key) => {
+    const c = cache.get(key);
+    if (c) list.forEach((pre) => { if (pre.textContent.length !== shown(c).length) paint(pre, c, null, ""); });
+  });
+  const keys = [...byKey.keys()].slice(0, MAX_TAILS);
+  await Promise.all(keys.map(async (key) => {
+    const c = cache.get(key);
+    if (!c || !c.live || now < c.nextAt || c.busy) return;
+    c.busy = true;
+    try {
+      const res = await ctx.readLogRange(c.project, c.rel, c.offset, { id: c.id, decoder: c.decoder });
+      const grew = Boolean(res.text) || res.reset;
+      const before = shown(c);
+      const raw = res.text || "";
+      let next;
+      let added = null; // text that can simply be appended to the <pre>
+      if (res.reset) next = clean(raw);
+      else if (raw.includes("\r")) {
+        // A progress line continues across reads: redo the unfinished last line.
+        const nl = c.text.lastIndexOf("\n");
+        next = c.text.slice(0, nl + 1) + clean(c.text.slice(nl + 1) + raw);
+      } else {
+        added = raw;
+        next = c.text + raw;
+      }
+      c.text = trim(next);
+      const appended = added != null && c.text === next && c.text.length > 0 && before !== "(empty file)" ? added : null;
+      c.offset = res.offset;
+      c.id = res.id;
+      c.idle = grew ? 0 : c.idle + 1;
+      c.nextAt = Date.now() + (grew ? TICK_MS : Math.min(QUIET_MAX_MS, TICK_MS * (1 + c.idle / 2)));
+      if (grew) {
+        (byKey.get(key) || []).forEach((pre) => paint(pre, c, appended, before));
+        c.size = res.size;
+        c.mtime = res.mtime || c.mtime;
+        paintMeta(key, c.size, c.mtime);
+        ctx.onLogGrew?.(c.project, c.rel, c.size, c.mtime);
+      }
+    } catch (error) {
+      c.nextAt = Date.now() + 10000;
+      if (error.status === 404 || error.status === 403) { c.live = false; byKey.get(key)?.forEach((pre) => liveMark(pre, c)); }
+    } finally {
+      c.busy = false;
+    }
+  }));
+}
+
+/** Live updates said these logs grew: refresh their size labels and check them now. */
+export function nudgeLogs(project, logs) {
+  Object.entries(logs || {}).forEach(([rel, [size, mtime]]) => {
+    const key = keyOf(project, rel);
+    paintMeta(key, size, mtime * 1000);
+    const c = cache.get(key);
+    if (c) c.nextAt = 0;
+  });
+}
+
+/** A re-scan replaced the file list: forget cached text of files that are gone. */
+export function forgetLogs(project, rels) {
+  (rels || []).forEach((rel) => cache.delete(keyOf(project, rel)));
+}
+
+/** Turn following on/off (Settings → Live updates). */
+export function setTails(on) {
+  tailsOn = Boolean(on);
+  document.querySelectorAll("[data-log-live]").forEach((dot) => {
+    const pre = dot.closest("details.log-item")?.querySelector("pre[data-log-key]") || dot.closest(".modal")?.querySelector("pre[data-log-key]");
+    const c = pre && cache.get(pre.dataset.logKey);
+    dot.hidden = !(c?.live && tailsOn);
+  });
+}
+
+/** Install once: lazy loading on open, the expand buttons (files and snippets), tails. */
 export function bindLogs(ctx, root = document) {
   root.addEventListener("toggle", (e) => {
     const d = e.target;
-    if (d instanceof HTMLDetailsElement && d.classList.contains("log-item") && d.open) fill(ctx, d);
+    if (!(d instanceof HTMLDetailsElement) || !d.classList.contains("log-item")) return;
+    openState.set(keyOf(d.dataset.logProject, d.dataset.logRel), d.open);
+    if (d.open) fill(ctx, d);
   }, true);
   root.addEventListener("click", async (e) => {
+    const jump = e.target.closest("[data-log-jump]");
+    if (jump) {
+      const pre = jump.parentElement.querySelector("pre");
+      pre.dataset.follow = "1";
+      pre.scrollTop = pre.scrollHeight;
+      jump.hidden = true;
+      return;
+    }
     const z = e.target.closest("[data-log-zoom]");
     if (z) {
       e.preventDefault();
       e.stopPropagation();
       try {
-        const text = await ctx.readFile(z.dataset.logProject, z.dataset.logZoom);
-        openFull(ctx, z.dataset.logZoom.split("/").pop(), text, z.dataset.logZoom);
+        await openFileFull(ctx, z.dataset.logProject, z.dataset.logZoom);
       } catch (error) {
         ctx.toast(error.message, "warn");
       }
@@ -90,8 +326,28 @@ export function bindLogs(ctx, root = document) {
       openFull(ctx, p.dataset.title || "Log", pre ? pre.textContent : "");
     }
   });
-  // Details rendered already open (e.g. first step log) need their body too.
+  // Details rendered already open (remembered, or the first step log) need their body too.
   new MutationObserver(() => {
     root.querySelectorAll("details.log-item[open] [data-log-body]:not([data-loaded])").forEach((pre) => fill(ctx, pre.closest("details")));
   }).observe(root, { childList: true, subtree: true });
+  // Clicks from the modal (jump button) happen outside `root` when root is a view.
+  const host = document.getElementById("modal-host");
+  if (host && root !== document.body && !root.contains(host)) {
+    host.addEventListener("click", (e) => {
+      const jump = e.target.closest("[data-log-jump]");
+      if (!jump) return;
+      const pre = jump.parentElement.querySelector("pre");
+      pre.dataset.follow = "1";
+      pre.scrollTop = pre.scrollHeight;
+      jump.hidden = true;
+    });
+  }
+  const loop = async () => {
+    try { await tick(ctx, root); } catch { /* keep the loop alive */ }
+    setTimeout(loop, TICK_MS);
+  };
+  setTimeout(loop, TICK_MS);
 }
+
+// Exposed for tests.
+export const _internals = { clean, trim, cache, openState, keyOf };

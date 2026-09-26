@@ -9,12 +9,13 @@ import { ensureServerIndex, clearWorkdirCache, resetAttachments } from "./compon
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
-import { canPickDirectory, pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle, forgetFolderHandles, ensureReadPermission, readFileFromHandle, writeFileToHandle } from "./data/folder_scan.js";
+import { canPickDirectory, pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle, forgetFolderHandles, ensureReadPermission, readFileFromHandle, readFileRange, writeFileToHandle } from "./data/folder_scan.js";
+import { createLive } from "./data/live.js";
 import { demoBundle, DEMO_ALFRD_PROJECT } from "./data/demo.js";
 import { server } from "./data/server.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
 import { loadTemplate, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
-import { bindLogs } from "./components/logview.js";
+import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull } from "./components/logview.js";
 import * as logs from "./components/logs.js";
 import * as overview from "./components/overview.js";
 import * as canvas from "./components/canvas.js";
@@ -63,16 +64,20 @@ const state = {
   consoleLines: [],
   consoleOpen: false,
   notes: storage.get("notes", {}),
-  prefs: { pageSize: 25, ...storage.get("prefs", {}) },
+  prefs: { pageSize: 25, live: true, ...storage.get("prefs", {}) },
+  scans: {}, // server mode: ALFRD project -> last /scan JSON (patched by live updates)
+  targetOrigin: {}, // ALFRD project -> "tree" | "runtime" (where its target rows came from)
+  liveStatus: { state: "off", detail: "", last: null, interval: null },
 };
 
 const listeners = new Set();
 let renderQueued = false;
+let renderFrame = 0;
 
 function scheduleRender() {
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(() => {
+  renderFrame = requestAnimationFrame(() => {
     renderQueued = false;
     renderAll();
   });
@@ -157,6 +162,34 @@ export const ctx = {
     }
     throw new Error("Use Re-scan (or re-open the project folder) to read this file.");
   },
+  /**
+   * Read a log from byte `offset` on (null: its last 400 kB) — for live tails.
+   * → {text, offset, id, size, mtime, reset, live}; `live: false` when the file
+   * cannot be re-read (dropped files without a folder handle).
+   */
+  async readLogRange(project, rel, offset = null, { id = null, decoder = null } = {}) {
+    const tree = state.trees?.[project];
+    if (tree?.provider === "server" || state.avica?.[project]?.provider === "server") {
+      return { ...(await server.projectFileFrom(project, rel, offset, id)), live: true };
+    }
+    const folder = state.folders[project] || (await loadFolderHandle(project));
+    if (folder && canPickDirectory() && (await ensureReadPermission(folder, { request: offset == null }))) {
+      state.folders[project] = folder;
+      try {
+        return { ...(await readFileRange(folder, rel, offset, { decoder })), live: true };
+      } catch (error) {
+        if (offset != null) throw error;
+        // Not below this folder handle: show what was imported (no live tail).
+      }
+    }
+    if (offset != null) return { text: "", offset, reset: false, live: false };
+    return { text: await ctx.readFile(project, rel), offset: null, reset: true, live: false };
+  },
+  /** A live tail read more of a log: keep the listed size current (no re-render). */
+  onLogGrew(project, rel, size, mtime) {
+    const item = state.trees?.[project]?.logFiles?.find((f) => f.rel === rel);
+    if (item) { item.size = size; if (mtime) item.mtime = mtime; }
+  },
   /** Read an avica.logs/ file by name (crash snapshots fall back to the parsed summary). */
   async readLog(project, name) {
     const index = state.avica?.[project];
@@ -171,6 +204,11 @@ export const ctx = {
     }
   },
   async openLog(project, name) {
+    const rel = `${state.avica?.[project]?.logsDir || "avica.logs"}/${name}`;
+    if (!/\.json$/i.test(name) && state.trees?.[project]?.logFiles?.some((f) => f.rel === rel)) {
+      try { await openFileFull(ctx, project, rel); } catch (error) { ctx.toast(error.message, "warn"); }
+      return;
+    }
     try {
       const text = await ctx.readLog(project, name);
       modal(`<header class="modal-h"><h2 class="mono">${esc(name)}</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
@@ -248,7 +286,7 @@ function stripHandles(avica) {
 }
 
 /** Apply `avica pipe config --summary` (or avica.inp `<step>.<param>`) values to the workflow steps. */
-function applyAvicaParams(index) {
+function applyAvicaParams(index, { quiet = false } = {}) {
   if (!index) return;
   const params = stepParamsFromConfig(index, ctx.steps());
   let n = 0;
@@ -263,7 +301,7 @@ function applyAvicaParams(index) {
     });
   });
   state.paramSource = index.summary ? (index.summary.file || "avica pipe config --summary") : Object.keys(params).length ? "avica.inp" : "AVICA defaults";
-  if (n) ctx.log("info", `${n} step parameter(s) applied from ${state.paramSource}.`, "config");
+  if (n && !quiet) ctx.log("info", `${n} step parameter(s) applied from ${state.paramSource}.`, "config");
 }
 
 function serializeWorkflow() {
@@ -289,7 +327,7 @@ function serializeWorkflow() {
 // ---------------------------------------------------------------------------
 // Data loading
 
-function applyBundle(bundle, { replace = true, source = "imported", provider = "files" } = {}) {
+function applyBundle(bundle, { replace = true, source = "imported", provider = "files", quiet = false, render = true } = {}) {
   const incoming = bundle.targets || [];
   if (replace === "project") {
     // Re-scan: swap one ALFRD project's data, keep the others.
@@ -331,16 +369,18 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
     state.workflowFile = { ...state.workflowFile, validated: false, errors: bundle.workflowInfo.errors, warnings: bundle.workflowInfo.warnings };
   }
   clearWorkdirCache();
-  applyAvicaParams(bundle.avica);
+  applyAvicaParams(bundle.avica, { quiet });
   if (!state.targets.some((t) => t.id === state.selectedTarget)) {
     const firstBad = state.targets.find((t) => rollup(t, ctx.steps()).status === "failed");
     state.selectedTarget = (firstBad || state.targets[0] || {}).id || null;
   }
   if (state.selectedProject !== "all" && !state.targets.some((t) => t.project === state.selectedProject)) state.selectedProject = "all";
-  (bundle.messages || []).forEach((m) => ctx.log(m.level === "error" ? "error" : m.level === "warn" ? "warn" : "info", m.text, "import"));
-  (bundle.aliases || []).forEach((a) => ctx.log("info", `Field alias ${a.from} → ${a.to} (${a.sources.length} file${a.sources.length === 1 ? "" : "s"})`, "schema"));
+  if (!quiet) {
+    (bundle.messages || []).forEach((m) => ctx.log(m.level === "error" ? "error" : m.level === "warn" ? "warn" : "info", m.text, "import"));
+    (bundle.aliases || []).forEach((a) => ctx.log("info", `Field alias ${a.from} → ${a.to} (${a.sources.length} file${a.sources.length === 1 ? "" : "s"})`, "schema"));
+  }
   persist();
-  scheduleRender();
+  if (render) scheduleRender();
 }
 
 function applyWorkflowInfo(info, fileName, text) {
@@ -398,14 +438,7 @@ async function loadServer() {
     }));
     for (const { p, scan } of scans) {
       if (!scan) continue;
-      await ensureTemplatesFor(scan.files?.find((f) => /(^|\/)\.?alfrd\.ya?ml$/.test(f.rel))?.text);
-      const entries = entriesFromScanBundle(scan);
-      const bundle = buildBundle(entries, { source: "server", projectHint: p.name, rootName: scan.root_name });
-      if (bundle.avica) bundle.avica.provider = "server";
-      const runtimeRows = state.targets.filter((t) => t.project === p.name);
-      if (!bundle.targets.length && runtimeRows.length) bundle.targets = runtimeRows;
-      bundle.alfrdProject = p.name;
-      applyBundle(bundle, { replace: "project", source: "server", provider: "server" });
+      const bundle = await applyServerScan(p.name, scan, { runtimeRows: state.targets.filter((t) => t.project === p.name) });
       ctx.log("info", `${p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
     }
     const def = server.session?.default_project;
@@ -422,12 +455,48 @@ async function loadServer() {
     applyAvicaParams(state.avica?.[ctx.target()?.project]);
     ctx.log("info", `Server: ${data.projects.length} project(s), ${state.targets.length} target(s).`, "server");
     scheduleRender();
+    live?.sync();
     return { ...data, targets: state.targets };
   } catch (error) {
     ctx.log("error", `Server load failed: ${error.message}`, "server");
     ctx.toast(`Server load failed: ${error.message}`, "fail");
     return null;
   }
+}
+
+/**
+ * One project's /scan JSON → targets, tree, AVICA index. `live`: a background
+ * refresh — no console messages, and the workflow is only replaced when
+ * alfrd.yaml itself changed and there are no unsaved workflow edits.
+ */
+async function applyServerScan(project, scan, { runtimeRows = null, live: isLive = false } = {}) {
+  state.scans[project] = scan;
+  const manifest = scan.files?.find((f) => /(^|\/)\.?alfrd\.ya?ml$/.test(f.rel))?.text;
+  await ensureTemplatesFor(manifest);
+  const entries = entriesFromScanBundle(scan);
+  const bundle = buildBundle(entries, { source: "server", projectHint: project, rootName: scan.root_name });
+  if (bundle.avica) bundle.avica.provider = "server";
+  const rows = runtimeRows ?? state.targets.filter((t) => t.project === project && state.targetOrigin[project] === "runtime");
+  state.targetOrigin[project] = bundle.targets.length || !rows.length ? "tree" : "runtime";
+  if (!bundle.targets.length && rows.length) bundle.targets = rows;
+  bundle.alfrdProject = project;
+  if (isLive) keepWorkflow(project, bundle);
+  applyBundle(bundle, { replace: "project", source: "server", provider: "server", quiet: isLive, render: !isLive });
+  return bundle;
+}
+
+/** Live refresh: don't reset the workflow canvas unless alfrd.yaml changed; never drop unsaved edits. */
+function keepWorkflow(project, bundle) {
+  const before = state.trees?.[project]?.manifestText;
+  if (!bundle.workflowInfo) return;
+  if (before != null && before === bundle.manifestText) { delete bundle.workflowInfo; return; }
+  if (state.workflowFile.modified) {
+    delete bundle.workflowInfo;
+    ctx.toast(`${bundle.manifestFile || "alfrd.yaml"} changed on disk — your unsaved workflow edits are kept (Re-scan to load the file).`, "warn");
+    return;
+  }
+  if (state.selectedProject !== "all" && state.selectedProject !== project) delete bundle.workflowInfo;
+  else ctx.log("info", `${project}: alfrd.yaml changed on disk — workflow reloaded.`, "live");
 }
 
 /** Fetch the templates an alfrd.yaml refers to before it is parsed. */
@@ -598,6 +667,7 @@ async function importEntries(entries, { replace = true, folder = null } = {}) {
   }
   applyBundle(bundle, { replace, source: "imported" });
   ctx.toast(`Imported ${bundle.targets.length} target(s)`, bundle.messages.some((m) => m.level === "error") ? "warn" : "ok");
+  if (folder && state.mode !== "server") live.resetFolder(bundle.alfrdProject);
   return { bundle };
 }
 
@@ -856,6 +926,7 @@ function openSettings() {
       ${state.mode === "server" ? `<h3>${icon("database")} Known projects</h3>
       <p class="muted small">Every project connected to <code>alfrd serve</code> is kept in the runtime database. <b>Forget</b> removes it (and its runs) from there. Files on disk are not touched.</p>
       <table class="tbl small" id="set-projects"><tbody><tr><td class="muted">Loading…</td></tr></tbody></table>` : ""}
+      <label class="check set-live"><input type="checkbox" id="set-live" ${live.enabled ? "checked" : ""}> <span><b>Live updates</b> — follow the project folder and open logs without Re-scan${state.mode === "server" ? (server.session?.live?.enabled === false ? " (off on this server: <code>alfrd serve --live-interval 0</code>)" : ` (server checks every ${server.session?.live?.interval ?? 2} s while busy, ${server.session?.live?.idle ?? 5} s when idle)`) : " (the remembered folder is checked every 5–30 s)"}. Nothing runs while this tab is hidden.</span></label>
       <label class="field"><span>Rows per page</span><select id="set-page" class="input">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
       <p class="muted small">Field aliases, workflow stages, step metadata and logs are edited in <a href="#/config" data-close>Settings → Project settings</a> (alfrd.yaml).</p>
       <div class="row gap right"><button class="btn" id="set-reset-ui">${icon("reset")} Reset view state</button><button class="btn danger" id="set-clear">${icon("trash")} Clear saved Studio data</button></div>
@@ -866,6 +937,7 @@ function openSettings() {
     </div>`, (root, close) => {
     if (state.mode === "server") drawProjects(root);
     $("#set-quit", root)?.addEventListener("click", () => { close(); quitServer(); });
+    $("#set-live", root).addEventListener("change", (e) => setLive(e.target.checked));
     $("#set-page", root).addEventListener("change", (e) => { ctx.setPrefs({ pageSize: Number(e.target.value) }); scheduleRender(); });
     $("#set-reset-ui", root).addEventListener("click", () => {
       resetUi();
@@ -963,6 +1035,250 @@ function goTo(view) {
 ctx.openAliasRules = openAliasRules;
 
 // ---------------------------------------------------------------------------
+// Live updates (see data/live.js): refresh what changed, keep the reader's place
+
+const MAX_ONLY = 150; // more changed files than this: re-read the whole project
+const pending = new Map(); // project -> {changed:Set, removed:Set, full:boolean}
+let refreshTimer = null;
+let runtimeTimer = null;
+let refreshing = false;
+
+function projectsFollowed() {
+  if (state.mode !== "server") return [];
+  const shown = new Set([...Object.keys(state.trees || {}), ...ctx.projects().map((p) => p.id)]);
+  if (Array.isArray(server.session?.projects)) server.session.projects.forEach((p) => shown.add(p));
+  return [...shown].filter((p) => p && p !== DEMO_ALFRD_PROJECT).sort();
+}
+
+function queueRefresh(project, { changed = [], removed = [], full = false } = {}) {
+  const job = pending.get(project) || { changed: new Set(), removed: new Set(), full: false };
+  changed.forEach((r) => job.changed.add(r));
+  removed.forEach((r) => job.removed.add(r));
+  // alfrd.yaml or a root config decides what is read at all: re-read everything.
+  const layout = changed.some((rel) => /^\.?alfrd\.ya?ml$/.test(rel) || /^[^/]+\.(inp|json|txt)$/.test(rel));
+  job.full = job.full || full || layout || job.changed.size > MAX_ONLY;
+  pending.set(project, job);
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(runRefresh, 500); // debounce bursts (AVICA writes several files at once)
+}
+
+async function runRefresh() {
+  if (refreshing) { refreshTimer = setTimeout(runRefresh, 500); return; }
+  refreshing = true;
+  const jobs = [...pending.entries()];
+  pending.clear();
+  let touched = false;
+  try {
+    for (const [project, job] of jobs) {
+      try {
+        touched = (await refreshProject(project, job)) || touched;
+      } catch (error) {
+        ctx.log("warn", `Live update of ${project} failed: ${error.message}`, "live");
+      }
+    }
+  } finally {
+    refreshing = false;
+  }
+  if (touched) liveRender();
+}
+
+/** Re-read one project after a change. Returns true when something was applied. */
+async function refreshProject(project, job) {
+  if (state.mode === "server") {
+    const old = state.scans[project];
+    let scan;
+    if (!old || job.full) scan = await server.projectScan(project);
+    else {
+      const rels = [...job.changed];
+      const part = rels.length ? await server.projectScan(project, rels) : { files: [] };
+      const byRel = new Map(old.files.map((f) => [f.rel, f]));
+      job.removed.forEach((rel) => byRel.delete(rel));
+      (part.files || []).forEach((f) => byRel.set(f.rel, f));
+      rels.filter((rel) => !(part.files || []).some((f) => f.rel === rel)).forEach((rel) => byRel.delete(rel)); // gone again
+      scan = { ...old, ...part, live: old.live, files: [...byRel.values()], ms_paths: part.ms_paths || old.ms_paths };
+    }
+    forgetLogs(project, [...job.removed]);
+    await applyServerScan(project, scan, { live: true });
+    ctx.log("info", `${project}: ${job.full ? "re-read" : `${job.changed.size} file(s) re-read, ${job.removed.size} gone`} (live).`, "live");
+    return true;
+  }
+  const folder = state.folders[project] || (await loadFolderHandle(project));
+  if (!folder || !(await ensureReadPermission(folder, { request: false }))) return false;
+  const entries = await scanProjectFolder(folder);
+  await ensureTemplatesFor(entries.find((e) => /^\.?alfrd\.ya?ml$/i.test(e.name) && typeof e.text === "string")?.text);
+  const bundle = buildBundle(entries, { source: "import", rootName: entries.rootName });
+  keepWorkflow(project, bundle);
+  forgetLogs(project, [...job.removed]);
+  applyBundle(bundle, { replace: "project", source: "imported", quiet: true, render: false });
+  ctx.log("info", `${project}: folder re-read (${job.changed.size} changed, ${job.removed.size} gone; live).`, "live");
+  return true;
+}
+
+function liveLogs(project, logs) {
+  const files = state.trees?.[project]?.logFiles || [];
+  Object.entries(logs).forEach(([rel, [size, mtime]]) => {
+    const item = files.find((f) => f.rel === rel);
+    if (item) { item.size = size; item.mtime = mtime * 1000; }
+  });
+  nudgeLogs(project, logs);
+}
+
+/** The runtime database changed: refresh the target rows that come from it (debounced). */
+function liveRuntime() {
+  clearTimeout(runtimeTimer);
+  runtimeTimer = setTimeout(async () => {
+    try {
+      const data = await server.loadAll();
+      state.serverWorkflows = data.workflows;
+      const served = new Set(data.projects.map((p) => p.name));
+      // Only rows of server projects whose targets are not read from their folder.
+      const fromRuntime = (p) => served.has(p) && state.targetOrigin[p] !== "tree";
+      const keep = state.targets.filter((t) => !fromRuntime(t.project));
+      const rows = data.targets.filter((t) => fromRuntime(t.project));
+      rows.forEach((t) => { state.targetOrigin[t.project] = "runtime"; });
+      state.targets = [...keep, ...rows];
+      liveRender();
+    } catch (error) {
+      ctx.log("warn", `Runtime refresh failed: ${error.message}`, "live");
+    }
+  }, 800);
+}
+
+const live = createLive({
+  mode: () => state.mode,
+  available: () => server.session?.live?.enabled !== false,
+  projects: projectsFollowed,
+  folders: () => (state.mode === "server" ? [] : Object.entries(state.folders).filter(([p, h]) => h && state.trees?.[p]).map(([project, handle]) => ({ project, handle }))),
+  scanState: (project) => {
+    const scan = state.scans[project];
+    return scan ? { ts: scan.generated_ts ?? null, epoch: scan.live?.epoch, version: scan.live?.version ?? 0 } : null;
+  },
+  onTree: (project, diff) => queueRefresh(project, diff),
+  onLogs: liveLogs,
+  onRuntime: liveRuntime,
+  onResync: (project) => queueRefresh(project, { full: true }),
+  onStatus: (status) => { state.liveStatus = status; renderLiveBadge(); },
+});
+live.enabled = state.prefs.live !== false;
+setTails(live.enabled);
+
+let pointerDown = 0; // time of an unreleased press (dragging on the canvas, selecting text)
+let typingUntil = 0; // keys pressed in a field: hold live renders for a moment
+let renderWaiting = false;
+["keydown", "input", "compositionstart", "compositionupdate"].forEach((t) => document.addEventListener(t, (e) => {
+  if (e.target?.closest?.("#main") && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) typingUntil = Date.now() + 2500;
+}, true));
+document.addEventListener("focusout", () => { if (renderWaiting) setTimeout(liveRender, 50); }, true);
+const released = () => { pointerDown = 0; if (renderWaiting) setTimeout(liveRender, 0); };
+document.addEventListener("pointerdown", () => { pointerDown = Date.now(); }, true);
+["pointerup", "pointercancel"].forEach((t) => document.addEventListener(t, released, true));
+window.addEventListener("blur", released);
+
+/** Stable key for an element inside the active view: id, or its child-index path. */
+function elementKey(el, root) {
+  if (el.id) return `#${el.id}`;
+  const path = [];
+  for (let n = el; n && n !== root; n = n.parentElement) {
+    if (n.id) { path.unshift(`#${n.id}`); break; }
+    path.unshift(`${n.tagName}:${Array.prototype.indexOf.call(n.parentElement?.children || [], n)}`);
+  }
+  return path.join(">");
+}
+function findByKey(key, root) {
+  if (key.startsWith("#") && !key.includes(">")) return document.getElementById(key.slice(1));
+  let n = root;
+  for (const part of key.split(">")) {
+    if (!n) return null;
+    if (part.startsWith("#")) { n = document.getElementById(part.slice(1)); continue; }
+    const [tag, i] = part.split(":");
+    const c = n.children[Number(i)];
+    n = c && c.tagName === tag ? c : null;
+  }
+  return n;
+}
+
+/**
+ * Re-render after a live update without losing the reader's place: scroll
+ * positions, the focused field and its cursor. Waits while a pointer is down
+ * (dragging on the canvas) — the render happens on release.
+ */
+function liveRender() {
+  if (pointerDown && Date.now() - pointerDown < 15000) { renderWaiting = true; return; }
+  // Someone is typing, or editing a multi-line text (alfrd.yaml): re-render later, not under their cursor.
+  const act = document.activeElement;
+  const editing = act?.tagName === "TEXTAREA" && act.closest("#main");
+  if (editing || Date.now() < typingUntil) {
+    renderWaiting = true;
+    if (!editing) setTimeout(liveRender, Math.max(200, typingUntil - Date.now() + 50));
+    return;
+  }
+  renderWaiting = false;
+  const view = $(`#view-${state.view}`);
+  const main = $("#main");
+  const scrolls = [];
+  [main, ...(view ? view.querySelectorAll("*") : [])].forEach((el) => {
+    if (el && (el.scrollTop || el.scrollLeft) && !el.matches?.("pre[data-log-body]")) scrolls.push([elementKey(el, view), el.scrollTop, el.scrollLeft]);
+  });
+  const active = document.activeElement;
+  const focus = active && view?.contains(active) && active !== document.body
+    ? { key: elementKey(active, view), start: active.selectionStart, end: active.selectionEnd, value: active.value }
+    : null;
+  if (renderQueued) cancelAnimationFrame(renderFrame);
+  renderQueued = false;
+  renderAll();
+  scrolls.forEach(([key, top, left]) => {
+    const el = key === "#main" ? main : findByKey(key, view);
+    if (el) { el.scrollTop = top; el.scrollLeft = left; }
+  });
+  if (focus) {
+    const el = findByKey(focus.key, view);
+    if (el && el.focus) {
+      el.focus({ preventScroll: true });
+      if (focus.value != null && "value" in el && el.value !== focus.value && el.tagName !== "SELECT") el.value = focus.value;
+      try { if (focus.start != null) el.setSelectionRange(focus.start, focus.end); } catch { /* not a text field */ }
+    }
+  }
+}
+
+function setLive(on) {
+  ctx.setPrefs({ live: Boolean(on) });
+  live.setEnabled(on);
+  setTails(on);
+  ctx.log("info", `Live updates ${on ? "on" : "off"}.`, "live");
+}
+
+const LIVE_LABEL = { live: "Live", polling: "Live", paused: "Paused", reconnecting: "Reconnecting", permission: "Live paused", unavailable: "Live off", off: "Live off" };
+
+function renderLiveBadge() {
+  const b = $("#btn-live");
+  if (!b) return;
+  const st = state.liveStatus || {};
+  const kind = st.state || "off";
+  b.className = `live-badge live-${kind}`;
+  b.querySelector("span").textContent = LIVE_LABEL[kind] || kind;
+  const ago = st.last ? Math.max(0, Math.round((Date.now() - st.last.getTime()) / 1000)) : null;
+  b.title = [
+    kind === "permission" ? "Click to allow reading the folder again" : live.enabled ? "Click to turn live updates off" : "Click to turn live updates on",
+    st.detail,
+    ago != null ? `last check ${ago < 2 ? "just now" : `${ago} s ago`}` : "",
+    st.interval ? `every ${st.interval < 10 ? st.interval.toFixed(1) : Math.round(st.interval)} s while busy` : "",
+  ].filter(Boolean).join(" · ");
+  b.setAttribute("aria-pressed", live.enabled ? "true" : "false");
+}
+setInterval(() => { if (!document.hidden) renderLiveBadge(); }, 5000);
+
+async function onLiveBadge() {
+  if (state.liveStatus?.state === "permission") {
+    for (const [, handle] of Object.entries(state.folders)) {
+      try { await ensureReadPermission(handle); } catch { /* declined */ }
+    }
+    live.kick();
+    return;
+  }
+  setLive(!live.enabled);
+}
+
+// ---------------------------------------------------------------------------
 // Shell rendering
 
 function renderShell() {
@@ -974,7 +1290,8 @@ function renderShell() {
       <label class="picker" title="Project">${icon("folder")}<span class="picker-l">Project:</span><select id="pick-project" aria-label="Project"></select></label>
       <label class="picker" title="Target">${icon("target")}<span class="picker-l">Target:</span><select id="pick-target" aria-label="Target"></select></label>
       <span class="grow"></span>
-      <button class="btn" id="btn-rescan" title="Re-read the project folder (or the server layout)">${icon("sync")} Re-scan</button>
+      <button class="live-badge live-off" id="btn-live" aria-pressed="false"><i></i><span>Live off</span></button>
+      <button class="btn" id="btn-rescan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")} Re-scan</button>
       <button class="btn" id="btn-import">${icon("upload")} Import</button>
       <button class="btn" id="btn-export">${icon("download")} Export</button>
       <button class="icon-btn" id="btn-settings" aria-label="Settings" title="Settings">${icon("gear")}</button>
@@ -997,6 +1314,7 @@ function renderShell() {
 
   $("#btn-import").addEventListener("click", () => openImport());
   $("#btn-rescan").addEventListener("click", () => rescan());
+  $("#btn-live").addEventListener("click", onLiveBadge);
   $("#btn-export").addEventListener("click", (e) => menu(e.currentTarget, [
     { label: "Overview CSV (visible rows)", icon: "download", run: () => exportOverviewCsv(false) },
     { label: "Stage details CSV", icon: "download", run: () => exportOverviewCsv(true) },
@@ -1140,10 +1458,18 @@ async function boot() {
     await loadDemo({ quiet: true });
   } else if (restoreSaved()) {
     ctx.log("info", `Restored ${state.targets.length} imported target(s) from this browser.`);
+    // Folder handles remembered for these projects (live updates, tails after a reload).
+    if (canPickDirectory()) {
+      for (const p of Object.keys(state.trees || {})) {
+        const h = await loadFolderHandle(p);
+        if (h) state.folders[p] = h;
+      }
+    }
   } else {
     state.source = "empty";
   }
   scheduleRender();
+  live.start();
 }
 
 // Exposed for tests/devtools only.

@@ -48,6 +48,7 @@ REQUIRED_ASSETS = (
     "js/data/demo.js",
     "js/data/server.js",
     "js/data/defs.js",
+    "js/data/live.js",
     "assets/favicon.svg",
     "assets/templates/avica.yaml",
 )

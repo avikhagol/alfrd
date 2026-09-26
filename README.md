@@ -96,7 +96,12 @@ alfrd serve --runtime-db ~/alfrd/runtime.sqlite
 
 # Also show every project connected before
 alfrd serve --all-projects
+
+# Check the project folder less often (default 2 s while busy; 0 = no live updates)
+alfrd serve --live-interval 5
 ```
+
+The Studio updates by itself (**● Live** in the top bar): changed files are re-read, and open logs follow the file as it grows. Nothing runs while the tab is hidden. See [docs/studio-guide.md](docs/studio-guide.md#live-updates).
 
 Projects are remembered in `~/.alfrd/runtime.sqlite`:
 

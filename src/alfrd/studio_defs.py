@@ -61,8 +61,10 @@ def template_path(name: str) -> Path | None:
 def _load_yaml(path: Path) -> dict[str, Any]:
     import yaml
 
+    from alfrd.avica_layout import load_yaml_cached
+
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = load_yaml_cached(path) or {}
     except (OSError, yaml.YAMLError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -380,11 +382,56 @@ def allowed_file(root: str | Path, rel: str) -> Path:
 
 
 def read_tail(path: Path, tail: int = 400_000) -> str:
+    return read_range(path, None, tail)["text"]
+
+
+def _complete_utf8(data: bytes) -> int:
+    """Length of ``data`` without a trailing, incomplete UTF-8 sequence."""
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte & 0xC0 == 0x80:  # continuation byte: keep looking for the lead byte
+            continue
+        need = 2 if byte & 0xE0 == 0xC0 else 3 if byte & 0xF0 == 0xE0 else 4 if byte & 0xF8 == 0xF0 else 1
+        return len(data) - back if need > back else len(data)
+    return len(data)
+
+
+def file_id(stat: os.stat_result) -> str:
+    """Identity of a file across polls: a new inode means the log was rotated or replaced."""
+    return f"{stat.st_dev}:{stat.st_ino}"
+
+
+def read_range(path: Path, offset: int | None = None, tail: int = 400_000, file: str | None = None) -> dict[str, Any]:
+    """Read a growing log from byte ``offset`` (``None``: the last ``tail`` bytes).
+
+    Returns ``text``, the byte ``offset`` to ask for next time, ``size``, the
+    file ``id`` and ``reset``. ``reset`` is true when the text replaces what the
+    caller has: first read, the file was truncated or replaced (``file`` is the
+    id the caller saw), or more than ``tail`` bytes were appended since. A
+    UTF-8 character split at the end is left for the next read.
+    """
     with path.open("rb") as stream:
-        size = path.stat().st_size
-        if size > tail:
-            stream.seek(size - tail)
-        return stream.read().decode("utf-8", errors="replace")
+        stat = os.fstat(stream.fileno())
+        size = stat.st_size
+        ident = file_id(stat)
+        reset = offset is None or offset < 0 or offset > size or (file is not None and file != ident) or size - offset > tail
+        start = max(0, size - tail) if reset else offset
+        stream.seek(start)
+        data = stream.read(size - start)
+    if reset and start > 0:
+        # Started mid-file: drop a partial line (and any partial character).
+        cut = data.find(b"\n")
+        data = data[cut + 1:] if 0 <= cut < 4096 else data
+        start = size - len(data)
+    end = _complete_utf8(data)
+    return {
+        "text": data[:end].decode("utf-8", errors="replace"),
+        "offset": start + end,
+        "size": size,
+        "id": ident,
+        "mtime": stat.st_mtime,
+        "reset": reset,
+    }
 
 
 # ---------------------------------------------------------------------------
