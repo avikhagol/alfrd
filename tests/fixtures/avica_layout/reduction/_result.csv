@@ -1,0 +1,2 @@
+name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp
+preprocess_fitsidi,0,1,2026-06-05T17:19:40.980096,,"[""Unhandled exception: [stage: executing validator step: init_variables ] string index out of range | context: step_validator=<avica.pipe.core.InitVariables object at 0x7efce8eb8650>""]",[false],2026-06-05T17:19:40.981691

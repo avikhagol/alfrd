@@ -124,7 +124,7 @@ def version():
 
 @system.get("/")
 def root():
-    """The client-side Workflow Studio is the default UI; /dashboard/ remains."""
+    """The client-side ALFRD Studio is the default UI; /dashboard/ remains."""
     from alfrd.gui.studio import studio_available
 
     if studio_available():

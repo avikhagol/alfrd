@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+Claude*/
 # C extensions
 *.so
 
@@ -142,3 +142,6 @@ reductions/
 !tests/fixtures/**/avica.logs/
 !tests/fixtures/**/avica.logs/*.log
 !tests/fixtures/**/reductions/**/*.log
+stitch_avica_alfrd_workflow_studio/
+Claude outputs/workflows/
+alfrd-gui-update-claude-prompt.md

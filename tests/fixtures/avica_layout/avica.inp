@@ -1,0 +1,5 @@
+target_dir                =   "reduction"
+target                    =   J0319+4130
+rpicard.mpi_cores         =   10
+avica_avg.mpi_cores       =   5
+sheet_url                 =   None

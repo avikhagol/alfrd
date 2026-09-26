@@ -1,0 +1,14 @@
+                       AVICA parameter summary
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Step       ┃ Parameter    ┃ Source       ┃ Value        ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━┩
+│ fits_to_ms │ mpi_cores    │ default/step │ 5            │
+├────────────┼──────────────┼──────────────┼──────────────┤
+│ rpicard    │ mpi_cores    │ inpfile/step │ 3            │
+│            │ picard_input │ inpfile/core │ input_temp_u │
+│            │ _template_up │              │ pdate        │
+│            │ date         │              │              │
+├────────────┼──────────────┼──────────────┼──────────────┤
+│ other      │ target_dir   │ inpfile/core │ reductions/  │
+│            │ size_limit   │ default/core │ 2000.0       │
+└────────────┴──────────────┴──────────────┴──────────────┘

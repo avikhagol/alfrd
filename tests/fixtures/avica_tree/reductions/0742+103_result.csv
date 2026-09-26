@@ -1,0 +1,9 @@
+name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp
+preprocess_fitsidi,2,0,2026-05-12T14:43:34.096091,,,"[true, true]",2026-05-12T14:43:44.246840
+fits_to_ms,1,0,2026-05-12T14:43:44.633875,,"[""FITS to MS conversion successfull! for VLBI.ms""]",[true],2026-05-12T14:44:58.921128
+avica_avg,2,0,2026-05-12T14:44:59.222448,"{""X"": ""VLBI_X.ms"", ""S"": ""VLBI_S.ms""}","[""X"", ""S""]","[true, true]",2026-05-12T14:47:14.938683
+avicameta_ms,2,0,2026-05-12T14:47:15.250032,"[""X"", ""S""]",,"[true, true]",2026-05-12T14:47:32.834673
+avica_snr,2,0,2026-05-12T14:47:33.185606,,"{""X"": [""NL"", ""OV"", ""FD"", ""LA"", ""HN""], ""S"": [""NL"", ""OV"", ""FD"", ""HN"", ""KP""]}","[true, true]",2026-05-12T14:49:17.051507
+avica_fill_input,2,0,2026-05-12T14:49:17.362592,"{""X"": ""done"", ""S"": ""done""}",,"[true, true]",2026-05-12T14:49:18.587454
+avica_split_ms,4,0,2026-05-12T14:49:18.920976,"{""X"": ""/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_X/VLBI_X_old.ms"", ""S"": ""/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_S/VLBI_S_old.ms""}","[""..splitted 1642+690,1128+385,0742+103,1606+106,0727-115,OK290,1308+326 for band : X (0742+103)"", ""..splitted 0742+103,1128+385,1357+769,OK290,0552+398,1308+326 for band : S (0742+103)""]","[true, true]",2026-05-12T14:50:08.569436
+rpicard,2,0,2026-05-12T14:50:08.861195,"{""X"": ""/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_X_0742+103/0727-115_calibrated.uvf"", ""S"": ""/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_S_0742+103/0552+398_calibrated.uvf""}","[""calibrated 0727-115,0742+103,1128+385,1308+326,1606+106,1642+690,OK290"", ""calibrated 0552+398,0742+103,1128+385,1308+326,1357+769,OK290""]","[true, true]",2026-05-12T14:58:38.046698

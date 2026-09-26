@@ -266,6 +266,15 @@ def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
         print("Browser launch timed out; open the dashboard URL above manually.")
 
 
+def _interrupt_self() -> None:
+    """Stop this process as if Ctrl+C was pressed (used by the Studio's Quit button)."""
+    import signal
+
+    if os.name == "nt":  # no reliable self-SIGINT on Windows
+        os._exit(0)
+    os.kill(os.getpid(), signal.SIGINT)
+
+
 def _connect_startup_project(service, project: str | None) -> str | None:
     """Register the folder `alfrd serve` was started for (``--project`` or the cwd)."""
     from alfrd.manifest import ManifestError, load_manifest
@@ -336,7 +345,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     authority = f"[{browser_host}]" if ":" in browser_host else browser_host
     url = f"http://{authority}:{port}/studio/"
-    print(f"ALFRD Workflow Studio: {url}")
+    print(f"ALFRD Studio: {url}")
     print(f"ALFRD dashboard: http://{authority}:{port}/dashboard/")
     app = create_app(config)
     stopped = threading.Event()
@@ -348,7 +357,21 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         )
         browser_thread.start()
     try:
-        app.run(host=host, port=port, debug=debug)
+        config_map = getattr(app, "config", None)
+        if not debug and isinstance(config_map, dict):
+            # Settings → Quit in the Studio: same as Ctrl+C in this terminal.
+            config_map["STUDIO_SHUTDOWN"] = _interrupt_self
+            if threading.current_thread() is threading.main_thread():
+                import signal
+
+                # Background jobs (`alfrd serve &`, nohup) start with SIGINT ignored.
+                signal.signal(signal.SIGINT, signal.default_int_handler)
+            print("Press Ctrl+C (or Quit in the Studio) to stop.")
+        try:
+            app.run(host=host, port=port, debug=debug)
+        except KeyboardInterrupt:
+            pass
+        print("alfrd serve stopped.")
     finally:
         stopped.set()
         if browser_thread is not None:
@@ -372,7 +395,7 @@ def serve(
         False, "--all-projects", help="Also show every other project remembered in the runtime database."
     ),
 ):
-    """Serve the Workflow Studio (default) and dashboard backed by the runtime database."""
+    """Serve ALFRD Studio (default) and the dashboard, backed by the runtime database."""
 
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects)
 
@@ -424,7 +447,7 @@ def studio(
     ),
     demo: bool = typer.Option(False, "--demo", help="Open the Studio with the built-in demo data."),
 ):
-    """Launch the AVICA & ALFRD Workflow Studio web UI locally (browser-only, no backend)."""
+    """Launch ALFRD Studio locally (browser-only, no backend)."""
     from http.server import ThreadingHTTPServer
 
     from alfrd.web import export_site, missing_assets, web_root
@@ -444,7 +467,7 @@ def studio(
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     authority = f"[{browser_host}]" if ":" in browser_host else browser_host
     url = f"http://{authority}:{bound_port}/{'?demo=1' if demo else ''}"
-    print(f"ALFRD Workflow Studio (browser mode): {url}")
+    print(f"ALFRD Studio (browser mode): {url}")
     print("Static files only - use `alfrd serve` for live runtime projects. Press Ctrl+C to stop.")
     stopped = threading.Event()
     if open_browser:

@@ -50,7 +50,7 @@ Go to the folder that holds your `alfrd.yaml`. Run:
 alfrd serve
 ```
 
-Your browser opens the **Workflow Studio**.
+Your browser opens **ALFRD Studio**.
 
 - It reads the project in that folder.
 - It never runs your pipeline. It only reads files.
@@ -106,6 +106,10 @@ Projects are remembered in `~/.alfrd/runtime.sqlite`:
 alfrd projects list              # what is remembered
 alfrd projects forget OLD_NAME   # remove one (files stay on disk)
 ```
+
+Or in the Studio: **⚙ Settings → Known projects → Forget**.
+
+Stop the server: **Ctrl+C**, or the **⏻ Quit** button (top right, same machine only). Quit also closes the tab when the browser allows it (the tab `alfrd serve` opened).
 
 Working on a remote machine? Forward the port:
 

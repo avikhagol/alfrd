@@ -1,17 +1,11 @@
 # Changelog
 
-All notable changes to ALFRD are documented in this file.
+## [0.2.1.0]
 
-The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
-and version numbers follow the four-component scheme adopted for the `0.2.x`
-series (see `docs/plans/ALFRD_0.2_ROADMAP.md`).
+### Changed
 
-## [0.2.1.0] - Unreleased (release candidate)
-
-`0.2.1.0` consolidates the work previously distributed across the proposed
-`0.2.2.0`-`0.2.10.0` milestones into a single release. It is the first
-release candidate suitable for real ALFRD workflows and subsequent AVICA
-integration.
+- The web UI is now called **ALFRD Studio** (was "AVICA & ALFRD Workflow
+  Studio"); the header logo uses `web/assets/favicon.svg`.
 
 ### Fixed
 
@@ -22,7 +16,12 @@ integration.
 - `alfrd serve` started in a project folder shows only that project; every
   project ever connected stays in `~/.alfrd/runtime.sqlite` and used to appear
   too. `--all-projects` shows them all; `alfrd projects list` /
-  `alfrd projects forget NAME` manage them (database rows only).
+  `alfrd projects forget NAME` manage them (database rows only). The Studio
+  settings list them with a *Forget* button, and a *Quit* button stops
+  `alfrd serve` (loopback + CSRF; `POST /api/studio/projects/<p>/forget`,
+  `POST /api/studio/quit`). Quit closes the Studio tab when the browser
+  allows it; view switches no longer add browser-history entries, so the tab
+  `alfrd serve` opened stays closable.
 
 ### Added
 
@@ -134,24 +133,3 @@ integration.
   reliably a package, not a module (see `tests/test_public_api.py`).
 - Flask templates, static assets, and the SQL schema file are packaged with
   the wheel (`tests/test_package_data.py`, `tests/test_wheel.py`).
-
-### Security
-
-- `alfrd.core.project.project_directory` rejects project names containing
-  path separators, `..`, or absolute paths, confining all project state to
-  `ALFRD_HOME/projects`.
-- `alfrd.runtime.service.RuntimeService.create_run` rejects a caller-supplied
-  `run_id` that would escape `<project_root>/runs/` when no explicit
-  `working_directory` is given.
-- Flask routes never import project Python to answer a 404; catalog lookups
-  are metadata-only (`alfrd.gui.routes`).
-
-### Known limitations / deferred
-
-- No PyPI package has been published for `0.2.1.0`; this is a release
-  candidate pending sibling-lane merges (matrix, execctl, artifacts,
-  avica-compat) and human sign-off. See `RELEASE_CHECKLIST.md`.
-- The browser control plane (start/resume/retry/cancel from the GUI) is
-  scoped to sibling workstreams not yet merged into this branch.
-- No `uv.lock` is committed; the project intentionally supports installation
-  via plain `pip`/`build` rather than a locked workspace.
