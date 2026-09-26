@@ -67,7 +67,9 @@ def test_no_pipeline_names_are_hardcoded_in_the_studio_code():
 def test_cli_studio_help_and_export(tmp_path):
     result = runner.invoke(alfrd_cli, ["studio", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--port" in result.output and "--no-browser" in result.output
+    # CI forces colour; rich may split option names with ANSI codes.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--port" in plain and "--no-browser" in plain
 
     out = tmp_path / "site"
     result = runner.invoke(alfrd_cli, ["studio", "--export", str(out)])

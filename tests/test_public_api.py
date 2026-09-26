@@ -59,7 +59,11 @@ def test_documented_public_imports():
 
 
 def test_version_uses_four_components():
-    assert alfrd.__version__ == "0.2.1.0"
+    import re
+
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    expected = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M).group(1)
+    assert alfrd.__version__ == expected  # installed metadata matches pyproject.toml
     assert len(alfrd.__version__.split(".")) == 4
 
 

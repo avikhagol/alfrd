@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 from alfrd.plugins import REGISTERED_STEPS, VALIDATE_AFTER, VALIDATE_BEFORE, VALIDATORS
+
+# Plain CLI output in every environment. On GitHub Actions rich forces colour,
+# which splits option names such as "--port" with ANSI codes in --help output.
+for _name in ("GITHUB_ACTIONS", "FORCE_COLOR", "PY_COLORS"):
+    os.environ.pop(_name, None)
+os.environ["NO_COLOR"] = "1"
+os.environ["TERM"] = "dumb"
 
 
 @pytest.fixture(autouse=True)

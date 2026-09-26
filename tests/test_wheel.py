@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import venv
@@ -12,6 +13,15 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _project_version() -> str:
+    """Version from pyproject.toml (the only place it is written)."""
+    text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    return re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+
+
+VERSION = _project_version()
 EXPECTED_WHEEL_PATHS = {
     "alfrd/schemas/project-manifest-v1.schema.json",
     "alfrd/core/logframe.py",
@@ -43,7 +53,7 @@ def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
         capture_output=True,
         text=True,
     )
-    wheels = list(output_dir.glob("alfrd-0.2.1.0-*.whl"))
+    wheels = list(output_dir.glob(f"alfrd-{VERSION}-*.whl"))
     assert len(wheels) == 1
     return wheels[0]
 
@@ -56,10 +66,10 @@ def test_built_wheel_contains_resources_metadata_and_no_core_shadow(built_wheel:
 
     assert EXPECTED_WHEEL_PATHS <= names
     assert "alfrd/core.py" not in names
-    assert "Version: 0.2.1.0" in metadata
+    assert f"Version: {VERSION}" in metadata
     assert "Requires-Python: >=3.10" in metadata
 
-    source_distribution = next(built_wheel.parent.glob("alfrd-0.2.1.0.tar.gz"))
+    source_distribution = next(built_wheel.parent.glob(f"alfrd-{VERSION}.tar.gz"))
     with tarfile.open(source_distribution) as archive:
         source_names = set(archive.getnames())
     for expected in EXPECTED_WHEEL_PATHS:
@@ -106,7 +116,7 @@ from alfrd.lib import LogFrame as LegacyLogFrame
 from alfrd.runtime import RuntimeEventSink, RuntimePipelineRunner, RuntimeService, RuntimeStore
 from alfrd.gui.services import RuntimeCatalogReader
 import logging
-assert __version__ == '0.2.1.0'
+assert __version__ == '@VERSION@'
 assert Pipeline and Project and ProjectManifest and RepositoryService and Workflow and LogFrame
 assert all((ArtifactRef, BatchResult, PipelineContext, PipelineCore, PipelineStepBase,
             PipelineStepValidatorBase, PipelineStepValidatorResult, StepResult))
@@ -139,7 +149,7 @@ assert client.get('/api/projects').get_json() == {'projects': []}
     environment_vars.pop("PYTHONPATH", None)
     environment_vars["ALFRD_HOME"] = str(tmp_path / "installed-home")
     subprocess.run(
-        [str(python), "-c", smoke],
+        [str(python), "-c", smoke.replace("@VERSION@", VERSION)],
         cwd=tmp_path,
         env=environment_vars,
         check=True,

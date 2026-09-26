@@ -9,7 +9,7 @@ from platformdirs import user_cache_dir, user_config_dir
 try:
     __version__ = version("alfrd")
 except PackageNotFoundError:  # pragma: no cover - source trees are normally editable installs
-    __version__ = "0.2.1.0"
+    __version__ = "0.0.0+unknown"  # pyproject.toml holds the real version
 
 ALFRD_CACHE_DIR = user_cache_dir("alfrd")
 ALFRD_CONFIG_DIR = user_config_dir("alfrd")
