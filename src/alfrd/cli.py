@@ -303,6 +303,32 @@ def _connect_startup_project(service, project: str | None) -> str | None:
     return existing.identifier
 
 
+def _discover_startup_projects(service, folder: Path, depth: int = 2, max_dirs: int = 2000) -> list[tuple[str, Path]]:
+    """Register every sub-folder of ``folder`` that has its own alfrd.yaml (depth <= ``depth``).
+
+    Used when `alfrd serve` starts in a folder that is not itself a project
+    (e.g. ``data_reductions/`` holding ``alma/alfrd.yaml`` and
+    ``pipe_comparison/alfrd.yaml``). Returns ``[(identifier, folder)]``.
+    """
+    from alfrd.manifest import ManifestError
+    from alfrd.manifest_default import discover_projects, register_project_folder
+
+    folders, capped = discover_projects(folder, depth=depth, max_dirs=max_dirs)
+    found: list[tuple[str, Path]] = []
+    for sub in folders:
+        try:
+            existing, _ = register_project_folder(service, sub, allow_default=False)
+        except (ManifestError, OSError) as error:
+            print(f"alfrd.yaml for {sub} was not loaded: {error}")
+            continue
+        print(f"Project {existing.name}: {sub}")
+        found.append((existing.identifier, sub))
+    if capped:
+        print(f"Stopped looking for projects after {max_dirs} folders under {folder}; "
+              "use --discover-depth or --project to narrow it.")
+    return found
+
+
 def _startup_folder(project: str | None) -> Path:
     """The folder `alfrd serve` was started for (``--project`` or the cwd)."""
     folder = Path(project).expanduser().resolve() if project else Path.cwd().resolve()
@@ -311,7 +337,7 @@ def _startup_folder(project: str | None) -> Path:
 
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
-               live_interval: float = 2.0) -> None:
+               live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -340,15 +366,28 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         "STUDIO_LIVE_INTERVAL": max(0.0, float(live_interval)),
         "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
     }
-    # Studio settings → Rediscover registers this folder again after a Forget.
-    config["STUDIO_START_FOLDER"] = str(_startup_folder(project)) if config["STUDIO_DEFAULT_PROJECT"] else None
-    # Started for one project: the Studio shows only that one (unless --all-projects).
-    config["STUDIO_PROJECTS"] = None if all_projects or not config["STUDIO_DEFAULT_PROJECT"] else [config["STUDIO_DEFAULT_PROJECT"]]
-    # STUDIO_DEFAULT_PROJECT is the location identifier; print the alfrd.yaml names.
-    others = [p.name for p in service.list_projects() if p.identifier != config["STUDIO_DEFAULT_PROJECT"]]
+    from alfrd.manifest_default import local_manifest
+
+    start = _startup_folder(project)
+    discovered: list[tuple[str, Path]] = []
+    # Not a project itself: register the sub-folders that have their own alfrd.yaml.
+    if (discover and not project and not config["STUDIO_DEFAULT_PROJECT"]
+            and local_manifest(start) is None and discover_depth > 0):
+        discovered = _discover_startup_projects(service, start, depth=discover_depth)
+        if discovered:
+            config["STUDIO_DEFAULT_PROJECT"] = discovered[0][0]
+    # Studio settings → Rediscover registers these folders again after a Forget.
+    config["STUDIO_START_FOLDER"] = str(start) if config["STUDIO_DEFAULT_PROJECT"] and not discovered else None
+    config["STUDIO_DISCOVERED_FOLDERS"] = [str(f) for _, f in discovered]
+    # Started for one project (or a parent folder of several): the Studio shows
+    # only those (unless --all-projects).
+    scope = [i for i, _ in discovered] or ([config["STUDIO_DEFAULT_PROJECT"]] if config["STUDIO_DEFAULT_PROJECT"] else [])
+    config["STUDIO_PROJECTS"] = None if all_projects or not scope else scope
+    # Identifiers are location keys; print the alfrd.yaml names.
+    others = [p.name for p in service.list_projects() if p.identifier not in scope]
     if config["STUDIO_PROJECTS"] and others:
         print(f"Also remembered in {database}: {', '.join(others)} (show them with --all-projects; remove with `alfrd projects forget NAME`).")
-    elif not config["STUDIO_DEFAULT_PROJECT"] and others:
+    elif not scope and others:
         print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     authority = f"[{browser_host}]" if ":" in browser_host else browser_host
@@ -406,10 +445,18 @@ def serve(
         2.0, "--live-interval", min=0.0,
         help="Seconds between checks of the project folder while it changes (5 s when quiet; 0 = no live updates).",
     ),
+    discover: bool = typer.Option(
+        True, "--discover/--no-discover",
+        help="When the folder is not a project, open every sub-folder that has its own alfrd.yaml.",
+    ),
+    discover_depth: int = typer.Option(
+        2, "--discover-depth", min=0, help="How many folder levels --discover searches below the start folder.",
+    ),
 ):
     """Serve ALFRD Studio (default) and the dashboard, backed by the runtime database."""
 
-    _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval)
+    _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
+               discover=discover, discover_depth=discover_depth)
 
 
 @alfrd_cli.command()

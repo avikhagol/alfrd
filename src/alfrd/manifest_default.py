@@ -149,6 +149,66 @@ def register_project_folder(service, folder: str | Path, *, allow_default: bool 
     return project, used_default
 
 
+#: Folder names never searched for sub-projects (big data trees and scratch space).
+SKIP_DIRS = ("raw", "calibration_tables")
+SKIP_PREFIXES = ("tmp_", ".")
+SKIP_SUFFIXES = (".ms",)
+
+
+def skip_dir(name: str) -> bool:
+    """True for folders that are never searched (``*.ms``, ``raw``, ``tmp_*``, dot-folders, ...)."""
+    low = name.lower()
+    return name in SKIP_DIRS or name.startswith(SKIP_PREFIXES) or low.endswith(SKIP_SUFFIXES)
+
+
+def _has_local_manifest(path: str) -> bool:
+    return any(os.path.isfile(os.path.join(path, name)) for name in LOCAL_NAMES)
+
+
+def discover_projects(root: str | Path, depth: int = 2, max_dirs: int = 2000) -> tuple[list[Path], bool]:
+    """Sub-folders of ``root`` with their own ``alfrd.yaml`` / ``.alfrd.yaml``.
+
+    Returns ``(folders, capped)`` sorted by relative path. Only local manifests
+    count (never the packaged default). ``root`` itself is not checked. A
+    project's own sub-folders belong to it and are not searched; ``*.ms``,
+    ``raw``, ``tmp_*``, ``calibration_tables`` and dot-folders are skipped, as
+    are symlinked and unreadable folders. At most ``max_dirs`` folders are
+    listed; ``capped`` is True when that limit stopped the walk.
+    """
+    base = Path(root).expanduser().resolve()
+    found: list[Path] = []
+    queue: list[tuple[str, int]] = [(str(base), 0)]
+    listed = 0
+    capped = False
+    while queue:
+        path, level = queue.pop(0)
+        if level >= max(0, int(depth)):
+            continue
+        if listed >= max_dirs:
+            capped = True
+            break
+        listed += 1
+        try:
+            with os.scandir(path) as entries:
+                children = sorted(
+                    (e.name, e.path) for e in entries
+                    if not skip_dir(e.name) and e.is_dir(follow_symlinks=False)
+                )
+        except OSError:  # unreadable or vanished: skip quietly
+            continue
+        for _name, child in children:
+            try:
+                is_project = _has_local_manifest(child)
+            except OSError:
+                continue
+            if is_project:
+                found.append(Path(child))
+            else:
+                queue.append((child, level + 1))
+    found.sort(key=lambda p: p.relative_to(base).as_posix().lower())
+    return found, capped
+
+
 def looks_like_project(root: str | Path) -> bool:
     """A folder worth opening with the default manifest (AVICA config, logs or reductions)."""
     base = Path(root)
@@ -161,9 +221,11 @@ __all__ = [
     "default_manifest_data",
     "default_manifest_path",
     "default_manifest_text",
+    "discover_projects",
     "has_manifest",
     "local_manifest",
     "looks_like_project",
     "manifest_data",
     "register_project_folder",
+    "skip_dir",
 ]

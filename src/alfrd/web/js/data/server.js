@@ -159,6 +159,21 @@ export const server = {
     return this.mutate("/studio/quit", {});
   },
 
+  /** True when Import → Connect may browse the server's folders (loopback + CSRF). */
+  canBrowse() {
+    return !!(this.session?.can_browse ?? this.session?.mutations_enabled);
+  },
+
+  /** Sub-folders of `path` on the server (default: the `alfrd serve` folder, else home). */
+  listFolders(path = "", { hidden = false } = {}) {
+    const q = new URLSearchParams();
+    if (path) q.set("path", path);
+    if (hidden) q.set("hidden", "1");
+    return getJson(`/studio/fs/list?${q}`, {
+      headers: { Accept: "application/json", "X-CSRF-Token": this.session?.csrf_token || "" },
+    });
+  },
+
   runLogs(runId) {
     return getJson(`/runtime/runs/${encodeURIComponent(runId)}/logs`);
   },

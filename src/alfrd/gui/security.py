@@ -76,6 +76,15 @@ def protect_mutation() -> None:
     # resolve to an unsafe-method handler.
     if request.url_rule is None:
         return
+    require_local_csrf()
+
+
+def require_local_csrf() -> None:
+    """Abort unless the request is local (loopback), same-origin and carries the CSRF token.
+
+    Used by every mutation and by sensitive reads such as the server folder
+    browser (``GET /api/studio/fs/list``).
+    """
     if not mutations_enabled():
         abort(403, description="runtime mutations are disabled")
 
@@ -100,4 +109,4 @@ def protect_mutation() -> None:
         abort(403, description="invalid or missing CSRF token")
 
 
-__all__ = ["csrf_token", "mutations_enabled", "protect_mutation", "runtime_enabled"]
+__all__ = ["csrf_token", "mutations_enabled", "protect_mutation", "require_local_csrf", "runtime_enabled"]

@@ -7,12 +7,18 @@
 // files are followed at once (full screen first), each checked every second
 // while it grows and less often while it is quiet; nothing runs while the tab
 // is hidden. Scrolled up = paused on that position ("↓ New output" jumps back).
+//
+// Docked logs: the ⤓ button on a log (or "Minimize" in full screen) docks it as
+// a tab of the Log Stream panel, where it keeps following while you switch to
+// Overview, Workflow, … (like a terminal tab in VS Code). The docked tab is
+// followed first; docked files are remembered across reloads.
 
-import { esc, icon, bytes, when } from "../utils/dom.js";
+import { esc, icon, bytes, when, loadUi, saveUi } from "../utils/dom.js";
 import { groupLabel } from "../data/defs.js";
 
 const MAX_INLINE = 400000;
 const MAX_TAILS = 3;
+const MAX_DOCKED = 6;
 const MAX_CACHED = 24;
 const TICK_MS = 1000;
 const QUIET_MAX_MS = 5000;
@@ -22,6 +28,8 @@ const cache = new Map(); // key -> {project, rel, text, offset, id, live, follow
 let tailsOn = true;
 
 const keyOf = (project, rel) => `${project}::${rel}`;
+const dockUi = loadUi("logdock", { keys: [] });
+const docked = Array.isArray(dockUi.keys) ? dockUi.keys.filter((k) => typeof k === "string" && k.includes("::")).slice(-MAX_DOCKED) : [];
 
 /** Collapse carriage-return progress lines (keep what the terminal would show). */
 function clean(text) {
@@ -69,6 +77,7 @@ export function logItem(f, { project, open = false, showGroups = false, defs = n
       <span class="muted small mono trunc log-dir">${esc(dir)}</span>${groups}<span class="grow"></span>
       <span class="live-dot" data-log-live hidden title="Following this file as it grows"></span>
       <span class="muted small tabular" data-log-meta="${esc(key)}">${esc(metaText(f))}</span>
+      <button class="icon-btn xs" data-log-dock="${esc(f.rel)}" data-log-project="${esc(project)}" title="Follow in the Log Stream panel (keeps running on other views)" aria-label="Follow ${esc(f.name || f.rel)} in the Log Stream panel">${icon("terminal")}</button>
       <button class="icon-btn xs" data-log-zoom="${esc(f.rel)}" data-log-project="${esc(project)}" title="Open full screen" aria-label="Open ${esc(f.name || f.rel)} full screen">${icon("expand")}</button></summary>
     <div class="log-wrap"><pre class="log log-box" data-log-body data-log-key="${esc(key)}">${isOpen ? "Loading…" : ""}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></details>`;
 }
@@ -122,7 +131,7 @@ function bindScroll(pre, c) {
   pre.addEventListener("scroll", () => {
     const follow = atBottom(pre);
     pre.dataset.follow = follow ? "1" : "0";
-    if (!pre.closest("#modal-host")) { c.follow = follow; c.scrollTop = pre.scrollTop; }
+    if (!pre.closest("#modal-host, #console")) { c.follow = follow; c.scrollTop = pre.scrollTop; }
     const jump = pre.parentElement?.querySelector("[data-log-jump]");
     if (jump && follow) jump.hidden = true;
   }, { passive: true });
@@ -147,7 +156,8 @@ async function fill(ctx, d) {
 export function openFull(ctx, title, text, sub = "", live = null) {
   const key = live ? keyOf(live.project, live.rel) : "";
   ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(title)}</h2>${sub ? `<span class="muted small mono trunc">${esc(sub)}</span>` : ""}<span class="grow"></span>
-      ${live ? `<label class="follow-toggle" title="Keep the newest lines in view"><input type="checkbox" data-follow checked> Follow</label><span class="live-dot" data-log-live ${live.c?.live && tailsOn ? "" : "hidden"}></span>` : ""}
+      ${live ? `<label class="follow-toggle" title="Keep the newest lines in view"><input type="checkbox" data-follow checked> Follow</label><span class="live-dot" data-log-live ${live.c?.live && tailsOn ? "" : "hidden"}></span>
+      <button class="btn sm" data-log-dock="${esc(live.rel)}" data-log-project="${esc(live.project)}" title="Minimize to a Log Stream tab: keep following it while you use the other views">${icon("minus")} Minimize to Log Stream</button>` : ""}
       <button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b"><div class="log-wrap full"><pre class="log log-full" ${live ? `data-live-log data-log-key="${esc(key)}"` : ""}>${esc(text)}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></div>`, (root) => {
     const pre = root.querySelector("pre");
@@ -185,7 +195,9 @@ function followed(root) {
   const host = document.getElementById("modal-host");
   const full = host && !host.hidden ? [...host.querySelectorAll("pre[data-live-log]")] : [];
   if (host && !host.hidden) return full; // the rest is behind the modal
-  return [...root.querySelectorAll("details.log-item[open] pre[data-log-body][data-loaded='1']")].filter(visible);
+  // The docked Log Stream tab first (always followed while the panel is shown).
+  const dock = [...document.querySelectorAll("#console:not([hidden]) pre[data-dock-log][data-loaded='1']")];
+  return [...dock, ...[...root.querySelectorAll("details.log-item[open] pre[data-log-body][data-loaded='1']")].filter(visible)];
 }
 
 const shown = (c) => c.text || "(empty file)";
@@ -308,6 +320,14 @@ export function bindLogs(ctx, root = document) {
       jump.hidden = true;
       return;
     }
+    const dk = e.target.closest("[data-log-dock]");
+    if (dk) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (dk.closest("#modal-host")) document.querySelector("#modal-host [data-close]")?.click();
+      dockLog(ctx, dk.dataset.logProject, dk.dataset.logDock);
+      return;
+    }
     const z = e.target.closest("[data-log-zoom]");
     if (z) {
       e.preventDefault();
@@ -349,5 +369,68 @@ export function bindLogs(ctx, root = document) {
   setTimeout(loop, TICK_MS);
 }
 
+// ---------------------------------------------------------------------------
+// Docked logs (Log Stream tabs)
+
+function saveDocked() {
+  saveUi("logdock", { keys: docked }, ["keys"]);
+}
+
+/** Split a dock key back into project and path. */
+export function splitKey(key) {
+  const i = String(key).indexOf("::");
+  return i < 0 ? { project: "", rel: String(key) } : { project: key.slice(0, i), rel: key.slice(i + 2) };
+}
+
+/** Docked logs, in tab order: [{key, project, rel, name, live}]. */
+export function dockedLogs() {
+  return docked.map((key) => {
+    const { project, rel } = splitKey(key);
+    const c = cache.get(key);
+    return { key, project, rel, name: rel.split("/").pop() || rel, live: Boolean(c?.live && tailsOn) };
+  });
+}
+
+/** Dock a log as a Log Stream tab (keeps at most MAX_DOCKED; the oldest goes). Returns its key. */
+export function dockLog(ctx, project, rel) {
+  const key = keyOf(project, rel);
+  if (!docked.includes(key)) {
+    docked.push(key);
+    while (docked.length > MAX_DOCKED) docked.shift();
+    saveDocked();
+  }
+  const c = cache.get(key);
+  if (c) c.nextAt = 0;
+  ctx.showDock?.(key);
+  return key;
+}
+
+/** Close a Log Stream tab. */
+export function undockLog(key) {
+  const i = docked.indexOf(key);
+  if (i >= 0) {
+    docked.splice(i, 1);
+    saveDocked();
+  }
+}
+
+/** Show a docked log in `body` (the Log Stream panel), following it. */
+export async function mountDock(ctx, body, key) {
+  const { project, rel } = splitKey(key);
+  body.innerHTML = `<div class="log-wrap dock"><pre class="log log-dock" data-dock-log data-live-log data-log-key="${esc(key)}" tabindex="0" aria-label="${esc(rel)}">Loading…</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div>`;
+  const pre = body.querySelector("pre");
+  try {
+    const c = await load(ctx, project, rel);
+    if (!pre.isConnected) return;
+    c.nextAt = 0;
+    show(pre, c, { follow: true });
+  } catch (error) {
+    if (pre.isConnected) {
+      pre.textContent = `(${error.message})`;
+      pre.dataset.loaded = "error";
+    }
+  }
+}
+
 // Exposed for tests.
-export const _internals = { clean, trim, cache, openState, keyOf };
+export const _internals = { clean, trim, cache, openState, keyOf, docked, MAX_DOCKED };

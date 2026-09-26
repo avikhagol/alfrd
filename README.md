@@ -62,7 +62,7 @@ What you get:
 | **Workflow** | Steps as a list or graph. Step parameters and logs. |
 | **Metadata** | Metadata health per step. Config. Input files. |
 | **Results** | Timings and progress. Latest run or full history. |
-| **Logs** | Every log file, grouped. Click to open. Expand to full screen. |
+| **Logs** | Every log file, grouped. Click to open. Expand to full screen, or dock it as a Log Stream tab that keeps following on every view. |
 | **Settings** | Edit and save `alfrd.yaml`. |
 
 No server? Use browser mode:
@@ -97,6 +97,11 @@ alfrd serve --runtime-db ~/alfrd/runtime.sqlite
 # Also show every project connected before
 alfrd serve --all-projects
 
+# A parent folder of several projects: opens every sub-folder with its own
+# alfrd.yaml (2 levels deep; --discover-depth N, or --no-discover)
+cd /data/data_reductions      # pipe_comparison/alfrd.yaml, alma/alfrd.yaml, …
+alfrd serve
+
 # Check the project folder less often (default 2 s while busy; 0 = no live updates)
 alfrd serve --live-interval 5
 ```
@@ -110,7 +115,11 @@ alfrd projects list              # what is remembered
 alfrd projects forget OLD_NAME   # remove one (files stay on disk)
 ```
 
-Or in the Studio: **⚙ Settings → Known projects → Forget**.
+Or in the Studio: **⚙ Settings → Known projects → Forget**. Forgot one by mistake? **↻ Rediscover** there brings back the serve folder (or the projects found under it) and anything forgotten since the server started.
+
+No `alfrd.yaml` in an AVICA folder (`avica.inp`, `avica.logs/`, `reductions/`)? `alfrd serve` uses the built-in default (an AVICA manifest, `name` = folder name). `alfrd manifest default -o alfrd.yaml` writes it so you can edit it.
+
+Connect more projects: **Import → ALFRD server → Browse…** walks the server's folders (not your laptop's), marks folders with an `alfrd.yaml`, and connects one or all of them.
 
 Stop the server: **Ctrl+C**, or the **⏻ Quit** button (top right, same machine only). Quit also closes the tab when the browser allows it (the tab `alfrd serve` opened).
 

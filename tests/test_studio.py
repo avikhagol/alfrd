@@ -172,7 +172,8 @@ def test_js_parsers_with_node():
         pytest.skip("Node.js not available")
     result = subprocess.run(
         [node, "--test", str(PROJECT_ROOT / "tests" / "studio_js" / "parsers.test.mjs"),
-         str(PROJECT_ROOT / "tests" / "studio_js" / "live.test.mjs")],
+         str(PROJECT_ROOT / "tests" / "studio_js" / "live.test.mjs"),
+         str(PROJECT_ROOT / "tests" / "studio_js" / "folders.test.mjs")],
         capture_output=True,
         text=True,
         timeout=120,

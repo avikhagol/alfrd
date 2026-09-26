@@ -13,9 +13,10 @@ import { canPickDirectory, pickProjectFolder, scanProjectFolder, saveFolderHandl
 import { createLive } from "./data/live.js";
 import { demoBundle, DEMO_ALFRD_PROJECT } from "./data/demo.js";
 import { server } from "./data/server.js";
+import { mountFolderBrowser } from "./components/folder_browser.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
 import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
-import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull } from "./components/logview.js";
+import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull, dockedLogs, undockLog, mountDock } from "./components/logview.js";
 import * as logs from "./components/logs.js";
 import * as overview from "./components/overview.js";
 import * as canvas from "./components/canvas.js";
@@ -66,6 +67,7 @@ const state = {
   selectedTarget: null,
   consoleLines: [],
   consoleOpen: false,
+  consoleTab: "studio", // "studio" or the key of a docked log (see logview.js dockLog)
   notes: storage.get("notes", {}),
   prefs: { pageSize: 25, live: true, ...storage.get("prefs", {}) },
   scans: {}, // server mode: ALFRD project -> last /scan JSON (patched by live updates)
@@ -558,7 +560,8 @@ function openImport(tab = "files") {
   const serverBlock = state.mode === "server"
     ? `<section class="imp-sec"><h3>${icon("server")} ALFRD server</h3>
         <p class="muted">Register a project directory or <code>alfrd.yaml</code> path on the machine running <code>alfrd serve</code>. The server reads the manifest; it never modifies the project.</p>
-        <form id="imp-connect" class="row gap"><input class="input mono grow" name="path" placeholder="/path/to/project or /path/to/alfrd.yaml" autocomplete="off" required ${server.session?.mutations_enabled ? "" : "disabled"}><button class="btn primary" ${server.session?.mutations_enabled ? "" : "disabled"}>Connect</button></form>
+        <form id="imp-connect" class="row gap"><input class="input mono grow" name="path" placeholder="/path/to/project or /path/to/alfrd.yaml" autocomplete="off" required ${server.session?.mutations_enabled ? "" : "disabled"}>${server.canBrowse() ? `<button type="button" class="btn" data-act="browse-server" aria-expanded="false" aria-controls="imp-browse">${icon("folder")} Browse…</button>` : ""}<button class="btn primary" ${server.session?.mutations_enabled ? "" : "disabled"}>Connect</button></form>
+        <div id="imp-browse" hidden></div>
         ${server.session?.mutations_enabled ? "" : `<p class="hint warn">Connecting is only allowed from a loopback browser on the server host.</p>`}
         <button class="btn" data-act="reload-server">${icon("sync")} Reload all server projects</button></section>`
     : "";
@@ -640,20 +643,50 @@ function openImport(tab = "files") {
     on(root, "click", "[data-act=demo]", () => { loadDemo(); close(); });
     on(root, "click", "[data-act=reload-server]", async () => { await loadServer(); close(); });
     const form = $("#imp-connect", root);
+    /** Connect server paths (one or many), then reload the server projects. */
+    const connectPaths = async (paths) => {
+      let ok = 0;
+      for (const path of paths) {
+        try {
+          const project = await server.connect(String(path));
+          ok += 1;
+          ctx.log("info", `Connected ${project.display_name || project.name} → ${project.root_path}`, "server");
+          if (paths.length === 1) ctx.toast(`Project ${project.display_name || project.name} connected`, "ok");
+        } catch (error) {
+          ctx.toast(paths.length === 1 ? error.message : `${path}: ${error.message}`, "fail");
+          ctx.log("error", `Connect failed (${path}): ${error.message}`, "server");
+        }
+      }
+      if (paths.length > 1) ctx.toast(`Connected ${ok} of ${paths.length} project(s)`, ok === paths.length ? "ok" : "warn");
+      if (ok) {
+        await loadServer();
+        close();
+      }
+    };
     if (form) {
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        const path = new FormData(form).get("path");
-        try {
-          const project = await server.connect(String(path));
-          ctx.toast(`Project ${project.name} connected`, "ok");
-          ctx.log("info", `Connected ${project.name} → ${project.root_path}`, "server");
-          await loadServer();
-          close();
-        } catch (error) {
-          ctx.toast(error.message, "fail");
-          ctx.log("error", `Connect failed: ${error.message}`, "server");
-        }
+        await connectPaths([String(new FormData(form).get("path"))]);
+      });
+      let browser = null;
+      const browseBtn = $("[data-act=browse-server]", root);
+      const closeBrowser = () => {
+        browser?.destroy();
+        browser = null;
+        browseBtn?.setAttribute("aria-expanded", "false");
+        browseBtn?.focus();
+      };
+      browseBtn?.addEventListener("click", () => {
+        if (browser) { closeBrowser(); return; }
+        browseBtn.setAttribute("aria-expanded", "true");
+        const typed = String(form.elements.path.value || "").trim();
+        browser = mountFolderBrowser($("#imp-browse", root), {
+          start: typed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(typed) ? typed.replace(/[\\/]\.?alfrd\.ya?ml$/i, "") : "",
+          list: (path, o) => server.listFolders(path, o),
+          connect: connectPaths,
+          use: (path) => { form.elements.path.value = path; closeBrowser(); form.elements.path.focus(); },
+          close: closeBrowser,
+        });
       });
     }
   });
@@ -1412,36 +1445,120 @@ function renderFooter() {
   const errors = state.consoleLines.filter((l) => l.level === "error").length;
   const warns = state.consoleLines.filter((l) => l.level === "warn").length;
   const info = state.consoleLines.length - errors - warns;
-  $("#foot-logcount").textContent = `Logs [${errors} errors, ${warns} warnings, ${info} info]`;
+  const followed = dockedLogs().length;
+  $("#foot-logcount").textContent = `Logs [${errors} errors, ${warns} warnings, ${info} info]${followed ? ` · ${followed} followed` : ""}`;
   $("#footer-right").innerHTML = ctx.footerRight;
 }
 
+const consoleUi = loadUi("console", { height: 280 });
+function consoleHeight(h) {
+  const max = Math.max(160, Math.round((window.innerHeight || 800) * 0.8));
+  const v = Math.min(max, Math.max(120, Math.round(Number(h) || 280)));
+  document.documentElement.style.setProperty("--console-h", `${v}px`);
+  consoleUi.height = v;
+  saveUi("console", consoleUi, ["height"]);
+  return v;
+}
+
+/** Log stream panel: the Studio's own messages plus one tab per docked (followed) log file. */
 function renderConsole() {
   const el = $("#console");
   el.hidden = !state.consoleOpen;
   document.body.classList.toggle("console-open", state.consoleOpen);
+  renderFooter();
   if (!state.consoleOpen) return;
+  const docks = dockedLogs();
+  if (state.consoleTab !== "studio" && !docks.some((d) => d.key === state.consoleTab)) state.consoleTab = "studio";
+  const tab = state.consoleTab;
   const filter = el.dataset.filter || "all";
-  const lines = state.consoleLines.filter((l) => filter === "all" || l.level === filter);
-  el.innerHTML = `<header><b>${icon("terminal")} Log stream</b>
-      <div class="seg sm">${["all", "info", "warn", "error"].map((f) => `<button data-f="${f}" class="${f === filter ? "on" : ""}">${f}</button>`).join("")}</div>
-      <span class="grow"></span>
+  if (!el.querySelector(".console-h")) {
+    el.innerHTML = `<div class="console-resize" role="separator" aria-orientation="horizontal" aria-label="Resize log stream (arrow keys)" tabindex="0"></div><header class="console-h"></header><div class="console-b"></div>`;
+    bindConsole(el);
+  }
+  const tabBtn = (id, label, extra = "", title = "") => `<span class="ctab${id === tab ? " on" : ""}" role="presentation"><button role="tab" aria-selected="${id === tab}" data-tab="${esc(id)}" title="${esc(title || label)}">${extra}<span class="trunc">${esc(label)}</span></button>${id === "studio" ? "" : `<button class="ctab-x" data-undock="${esc(id)}" aria-label="Stop following ${esc(label)}" title="Stop following">${icon("close")}</button>`}</span>`;
+  const active = docks.find((d) => d.key === tab);
+  const tools = tab === "studio"
+    ? `<div class="seg sm">${["all", "info", "warn", "error"].map((f) => `<button data-f="${f}" class="${f === filter ? "on" : ""}">${f}</button>`).join("")}</div>
       <button class="btn sm" data-act="dl">${icon("download")} Save</button>
-      <button class="btn sm" data-act="clear">Clear</button>
-      <button class="icon-btn sm" data-act="close" aria-label="Close log stream">${icon("close")}</button></header>
-    <pre class="log">${lines.map((l) => `<span class="lvl-${l.level}">${l.t.toISOString().slice(11, 19)} [${esc(l.scope)}] ${esc(l.level.toUpperCase().padEnd(5))} ${esc(l.text)}</span>`).join("\n") || '<span class="muted">No log lines yet.</span>'}</pre>`;
-  const pre = $("pre", el);
-  pre.scrollTop = pre.scrollHeight;
-  el.onclick = (e) => {
+      <button class="btn sm" data-act="clear">Clear</button>`
+    : `<span class="muted small mono trunc ctab-path" title="${esc(active.rel)}">${esc(ctx.projectName(active.project))} · ${esc(active.rel)}</span>
+      <button class="btn sm" data-act="full" title="Open full screen">${icon("expand")} Full screen</button>`;
+  $(".console-h", el).innerHTML = `<b class="console-title">${icon("terminal")} Log stream</b>
+      <div class="ctabs" role="tablist" aria-label="Log stream tabs">${tabBtn("studio", "Studio")}${docks.map((d) => tabBtn(d.key, d.name, `<span class="live-dot" ${d.live ? "" : "hidden"}></span>`, `${d.rel} (following)`)).join("")}</div>
+      <span class="grow"></span>${tools}
+      <button class="icon-btn sm" data-act="close" aria-label="Hide log stream" title="Hide the panel (docked logs stay as tabs)">${icon("minus")}</button>`;
+  const body = $(".console-b", el);
+  if (tab === "studio") {
+    const lines = state.consoleLines.filter((l) => filter === "all" || l.level === filter);
+    body.dataset.tab = "studio";
+    body.innerHTML = `<pre class="log">${lines.map((l) => `<span class="lvl-${l.level}">${l.t.toISOString().slice(11, 19)} [${esc(l.scope)}] ${esc(l.level.toUpperCase().padEnd(5))} ${esc(l.text)}</span>`).join("\n") || '<span class="muted">No log lines yet.</span>'}</pre>`;
+    const pre = $("pre", body);
+    pre.scrollTop = pre.scrollHeight;
+  } else if (body.dataset.tab !== tab || !body.querySelector("pre[data-dock-log]")) {
+    body.dataset.tab = tab;
+    // Once loaded, redraw the tab strip (live dot) — the body is kept.
+    mountDock(ctx, body, tab).then(() => { if (state.consoleOpen && state.consoleTab === tab) renderConsole(); });
+  }
+}
+
+function bindConsole(el) {
+  el.addEventListener("click", (e) => {
     const f = e.target.closest("[data-f]");
-    if (f) { el.dataset.filter = f.dataset.f; renderConsole(); }
+    if (f) { el.dataset.filter = f.dataset.f; renderConsole(); return; }
+    const x = e.target.closest("[data-undock]");
+    if (x) {
+      undockLog(x.dataset.undock);
+      if (state.consoleTab === x.dataset.undock) state.consoleTab = "studio";
+      renderConsole();
+      return;
+    }
+    const t = e.target.closest("[data-tab]");
+    if (t) { state.consoleTab = t.dataset.tab; renderConsole(); return; }
     const a = e.target.closest("[data-act]")?.dataset.act;
     if (a === "close") { state.consoleOpen = false; renderConsole(); }
-    if (a === "clear") { state.consoleLines = []; renderConsole(); renderFooter(); }
+    if (a === "clear") { state.consoleLines = []; renderConsole(); }
     if (a === "dl") download("alfrd-studio.log", state.consoleLines.map((l) => `${l.t.toISOString()} [${l.scope}] ${l.level} ${l.text}`).join("\n"));
-  };
+    if (a === "full") {
+      const d = dockedLogs().find((x2) => x2.key === state.consoleTab);
+      if (d) openFileFull(ctx, d.project, d.rel).catch((error) => ctx.toast(error.message, "warn"));
+    }
+  });
+  // Tabs: ←/→ move between them.
+  el.addEventListener("keydown", (e) => {
+    if (!e.target.matches?.("[role=tab]") || !["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    const tabs = $$("[role=tab]", el);
+    const i = tabs.indexOf(e.target) + (e.key === "ArrowRight" ? 1 : -1);
+    const next = tabs[(i + tabs.length) % tabs.length];
+    state.consoleTab = next.dataset.tab;
+    renderConsole();
+    $(`[role=tab][data-tab="${CSS.escape(state.consoleTab)}"]`, el)?.focus();
+  });
+  const grip = $(".console-resize", el);
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    grip.setPointerCapture?.(e.pointerId);
+    const startY = e.clientY;
+    const startH = el.getBoundingClientRect().height;
+    const move = (ev) => consoleHeight(startH + (startY - ev.clientY));
+    const up = () => { grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up); };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+  });
+  grip.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      consoleHeight(consoleUi.height + (e.key === "ArrowUp" ? 40 : -40));
+    }
+  });
 }
 ctx.renderConsole = () => { state.consoleOpen = true; renderConsole(); };
+/** A log was docked (logview.js): open the Log Stream on its tab. */
+ctx.showDock = (key) => {
+  state.consoleOpen = true;
+  state.consoleTab = key;
+  renderConsole();
+  ctx.toast("Following in the Log Stream — switch views freely", "ok");
+};
 
 function renderAll() {
   saveUi("app", state, ["selectedProject", "selectedTarget"]);
@@ -1470,6 +1587,7 @@ function route() {
 async function boot() {
   renderShell();
   bindLogs(ctx, document.body);
+  consoleHeight(consoleUi.height);
   window.addEventListener("hashchange", route);
   // In-app links (#/view) replace the history entry instead of adding one.
   document.addEventListener("click", (e) => {

@@ -12,6 +12,7 @@ The Studio is ALFRD's web UI. It is plain HTML/CSS/JS in `src/alfrd/web/`.
 ```bash
 alfrd serve                          # server mode, project in this folder
 alfrd serve --project /data/proj     # server mode, another folder
+alfrd serve                          # in a parent folder: every sub-folder with alfrd.yaml (2 levels)
 alfrd serve --demo                   # with demo data
 alfrd studio                         # browser mode, no Flask needed
 alfrd studio --demo                  # browser mode with demo data
@@ -36,6 +37,17 @@ Server writes need a browser on the same machine (loopback) plus a CSRF token.
 
 ---
 
+## Projects in server mode
+
+- **One project:** start `alfrd serve` in its folder (or `--project DIR`).
+- **Several projects under one folder:** start it in the parent. Every sub-folder with its own `alfrd.yaml` / `.alfrd.yaml` is opened (2 levels deep; `--discover-depth N`, `--no-discover`). Skipped: `*.ms`, `raw/`, `tmp_*`, `calibration_tables`, dot-folders, and the inside of a project. The walk stops after 2000 folders (a note is printed).
+- **No `alfrd.yaml`?** An AVICA folder (`avica.inp`, `avica.logs/`, `reductions/`) opens with the built-in default manifest (`name` = folder name; `ALFRD_DEFAULT_MANIFEST=/file.yaml` picks another). Project settings shows *default — not saved*; **Save** writes a local `alfrd.yaml`. Discovery only counts local files.
+- **Connect more:** Import → ALFRD server → **Browse…** lists the server's folders (not your laptop's — right for an SSH tunnel). Projects get a badge with their name. **Connect**, **Connect all projects here**, or **Use this folder** to fill the path. Keys: ↑/↓ move, Enter opens, Backspace goes up, Esc closes. Loopback browser only (CSRF-checked); hidden otherwise.
+- **Forget / Rediscover:** ⚙ Settings → Known projects. *Forget* removes a project from the list (files stay). **↻ Rediscover** brings back the serve folder, the projects found under it, and anything forgotten since the server started.
+- `--all-projects` shows every project ever connected.
+
+---
+
 ## Live updates
 
 No need to click **Re-scan**. The **● Live** badge (top bar) shows the state. Click it to turn live updates on or off (also in ⚙ Settings).
@@ -43,6 +55,7 @@ No need to click **Re-scan**. The **● Live** badge (top bar) shows the state. 
 - **Server mode:** `alfrd serve` checks the files `alfrd.yaml` declares every 2 s while things change, every 5 s when quiet. It only reads file sizes and dates, and never walks into `*.ms`. The Studio then re-reads just the changed files.
 - **Browser mode (Chrome/Edge):** the opened folder is checked every 5 s (30 s when quiet).
 - **Logs:** an open log that is on screen, and the full-screen log, follow the file as it grows. Only the new bytes are fetched. At most 3 logs at a time. Scroll up to pause on a spot; **↓ New output** jumps back. **Follow** in full screen does the same.
+- **Log Stream tabs:** the `>_` button on a log (or **Minimize to Log Stream** in full screen) docks it in the Log Stream panel at the bottom, like a terminal tab in VS Code. Switch to Overview or Workflow and it keeps following. Up to 6 tabs, remembered after a reload; **×** stops following, **—** hides the panel (the footer shows “N followed”). Drag the panel's top edge (or focus it and use ↑/↓) to resize.
 - **Hidden tab:** nothing runs. Back on the tab, the Studio catches up.
 - Your place is kept: selection, open groups and logs, scroll, the field you are typing in. Unsaved workflow edits are never replaced.
 
@@ -133,7 +146,7 @@ Edit them in **Settings → Project settings**.
 - **Workflow** – list view first. Graph view, validation, simulation (visual only). Inspector: parameters, bindings, logs.
 - **Metadata** – metadata health per step. `avica.meta` grouped by step. AVICA config. rPicard inputs.
 - **Results** – time and progress. **Recent only** (default) or **Full history**.
-- **Logs** – every declared log. Grouped by step or artifact. Click to open. `⤢` for full screen.
+- **Logs** – every declared log. Grouped by step or artifact. Click to open. `⤢` for full screen, `>_` to follow it in a Log Stream tab.
 - **Settings** – edit, validate and save `alfrd.yaml`. Field alias form.
 
 Status rule: successes only = completed. Failures only = failed. Both = partial.

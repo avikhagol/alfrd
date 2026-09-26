@@ -60,6 +60,8 @@ def studio_session():
         default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"),
         projects=current_app.config.get("STUDIO_PROJECTS"),
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
+        # Import → Connect → Browse… lists server folders (loopback + CSRF, like mutations).
+        can_browse=mutations_enabled(),
         live={
             "enabled": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0) > 0
             and current_app.config.get("RUNTIME_SERVICE") is not None,
@@ -433,7 +435,8 @@ def project_forget(project_name: str):
 
 
 def _rediscover_candidates() -> list[dict]:
-    """Folders Rediscover may register again: the `alfrd serve` folder and projects forgotten since start."""
+    """Folders Rediscover may register again: the `alfrd serve` folder (or the
+    sub-projects it discovered) and projects forgotten since start."""
     from alfrd.manifest_default import local_manifest
 
     service = current_app.config.get("RUNTIME_SERVICE")
@@ -441,6 +444,8 @@ def _rediscover_candidates() -> list[dict]:
     out: list[dict] = []
     start = current_app.config.get("STUDIO_START_FOLDER")
     items = ([{"root": str(Path(start).resolve()), "name": Path(start).name, "identifier": None, "start": True}] if start else [])
+    items += [{"root": str(Path(f).resolve()), "name": Path(f).name, "identifier": None, "start": False, "discovered": True}
+              for f in current_app.config.get("STUDIO_DISCOVERED_FOLDERS") or []]
     items += [{**f, "start": False} for f in current_app.extensions.get("alfrd_forgotten", [])]
     for item in items:
         if item["root"] in known or any(o["root"] == item["root"] for o in out):
@@ -486,12 +491,106 @@ def project_rediscover():
             continue
         if isinstance(scope, list) and project.identifier not in scope:
             scope.append(project.identifier)
-        if item["start"] and not current_app.config.get("STUDIO_DEFAULT_PROJECT"):
+        if (item["start"] or item.get("discovered")) and not current_app.config.get("STUDIO_DEFAULT_PROJECT"):
             current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
         current_app.extensions["alfrd_forgotten"] = [f for f in current_app.extensions.get("alfrd_forgotten", []) if f["root"] != item["root"]]
         restored.append({"root": item["root"], "name": project.name, "identifier": project.identifier, "default_manifest": used_default})
     return jsonify(restored=restored, failed=failed, projects=scope,
                    default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"))
+
+
+# ---------------------------------------------------------------------------
+# Server folder browser (Import → Connect → Browse…). Listing folders is
+# sensitive, so it needs the same loopback + CSRF checks as a mutation.
+
+FS_LIST_LIMIT = 500
+
+
+def _fs_default_path() -> Path:
+    start = current_app.config.get("STUDIO_START_FOLDER") or current_app.config.get("STUDIO_BROWSE_ROOT")
+    if not start:
+        discovered = current_app.config.get("STUDIO_DISCOVERED_FOLDERS") or []
+        start = str(Path(discovered[0]).parent) if discovered else None
+    return Path(start) if start and Path(start).is_dir() else Path.home()
+
+
+def _manifest_name(folder: Path, manifest: Path) -> str | None:
+    import yaml
+
+    from alfrd.avica_layout import load_yaml_cached
+
+    try:
+        data = load_yaml_cached(manifest)
+    except (OSError, yaml.YAMLError, ValueError):
+        return None
+    name = data.get("name") if isinstance(data, dict) else None
+    return str(name) if name not in (None, "") else None
+
+
+@studio_api.get("/studio/fs/list")
+def fs_list():
+    """Sub-folders of ``path`` on the server (``?path=&hidden=1``), marking ALFRD projects.
+
+    ``{path, parent, home, start, entries: [{name, path, is_project, manifest_name?, is_ms}], truncated}``.
+    Files are never listed; ``*.ms`` folders are listed but not meant to be opened.
+    """
+    import os
+
+    from alfrd.gui.security import require_local_csrf
+    from alfrd.manifest_default import local_manifest
+
+    require_local_csrf()
+    raw = str(request.args.get("path") or "").strip()
+    hidden = request.args.get("hidden") in {"1", "true", "yes"}
+    try:
+        folder = (Path(raw).expanduser() if raw else _fs_default_path()).resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        return _json_error(ValueError(f"Bad path {raw!r}: {error}"), 400)
+    if not folder.exists():
+        return _json_error(FileNotFoundError(f"{folder} does not exist"), 404)
+    if not folder.is_dir():
+        return _json_error(NotADirectoryError(f"{folder} is not a folder"), 400)
+    entries: list[dict] = []
+    truncated = False
+    try:
+        with os.scandir(folder) as it:
+            names = []
+            for entry in it:
+                if not hidden and entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                names.append(entry.name)
+    except PermissionError:
+        return _json_error(PermissionError(f"Permission denied: {folder}"), 403)
+    except OSError as error:
+        return _json_error(OSError(f"Cannot list {folder}: {error.strerror or error}"), 400)
+    names.sort(key=lambda n: (n.lower(), n))
+    if len(names) > FS_LIST_LIMIT:
+        names, truncated = names[:FS_LIST_LIMIT], True
+    for name in names:
+        child = folder / name
+        is_ms = name.lower().endswith(".ms")
+        item = {"name": name, "path": str(child), "is_project": False, "is_ms": is_ms}
+        if not is_ms:
+            try:
+                manifest = local_manifest(child)
+            except OSError:
+                manifest = None
+            if manifest is not None:
+                item["is_project"] = True
+                item["manifest_name"] = _manifest_name(child, manifest)
+        entries.append(item)
+    parent = str(folder.parent) if folder.parent != folder else None
+    here = local_manifest(folder) if folder.is_dir() else None
+    return jsonify(
+        path=str(folder), parent=parent, home=str(Path.home()), start=str(_fs_default_path().resolve()),
+        is_project=here is not None, manifest_name=_manifest_name(folder, here) if here else None,
+        entries=entries, truncated=truncated,
+    )
 
 
 @studio_api.post("/studio/quit")
