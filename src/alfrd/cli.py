@@ -279,6 +279,7 @@ def _connect_startup_project(service, project: str | None) -> str | None:
     """Register the folder `alfrd serve` was started for (``--project`` or the cwd)."""
     from alfrd.manifest import ManifestError, load_manifest
     from alfrd.runtime import RuntimeNotFound
+    from alfrd.runtime.identity import project_identifier
     from alfrd.studio_defs import manifest_file
 
     folder = Path(project).expanduser().resolve() if project else Path.cwd().resolve()
@@ -294,17 +295,15 @@ def _connect_startup_project(service, project: str | None) -> str | None:
     except (ManifestError, OSError) as error:
         print(f"alfrd.yaml in {folder} was not loaded: {error}")
         return None
+    identifier = project_identifier(folder, manifest.name)
     try:
-        existing = service.get_project_by_name(manifest.name)
+        existing = service.get_project_by_identifier(identifier)
     except RuntimeNotFound:
         existing = None
-    if existing is not None and Path(existing.root_path).resolve() != folder:
-        print(f"Project {manifest.name!r} is already connected to {existing.root_path}; showing that one.")
-        return manifest.name
     if existing is None:
-        service.register_manifest(manifest, root_path=folder, create_root=False)
+        existing, _ = service.register_manifest(manifest, root_path=folder, create_root=False)
     print(f"Project {manifest.name}: {folder}")
-    return manifest.name
+    return existing.identifier
 
 
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
@@ -499,9 +498,11 @@ def projects_list(db: Optional[str] = typer.Option(None, "--db", help="Path to t
     projects = service.list_projects()
     if not projects:
         print("No projects remembered.")
+    counts = {p.name: sum(other.name == p.name for other in projects) for p in projects}
     for p in projects:
         exists = "" if Path(p.root_path).is_dir() else "  (folder missing)"
-        print(f"{p.name}\t{p.root_path}{exists}")
+        label = f"{p.name} ({Path(p.root_path).name})" if counts[p.name] > 1 else p.name
+        print(f"{label}\t{p.root_path}\t{p.identifier}{exists}")
 
 
 @projects_cli.command("forget")
@@ -515,7 +516,7 @@ def projects_forget(
 
     service = _runtime_service(db)
     try:
-        project = service.get_project_by_name(name)
+        project = service.get_project_by_selector(name)
     except RuntimeNotFound:
         raise typer.BadParameter(f"No project named {name!r}. See `alfrd projects list`.")
     if not yes and not typer.confirm(f"Forget {name} ({project.root_path})? Its runs in the database are removed too."):

@@ -299,3 +299,22 @@ test("project settings: field_aliases block rewritten in place", async () => {
   assert.equal(v.avica.target_dir, "reductions/");
   assert.match(out, /# Workflow stages/); // comments elsewhere survive
 });
+
+test("scan bundle: a picked scan.json is read whole, not dropped by the layout filter", async () => {
+  const { readFiles, entriesFromScanBundle } = await import(path.join(web, "data/importers.js"));
+  const bundleJson = JSON.stringify({
+    alfrd_avica_scan: 1, root: "/data/vasco_0.3", root_name: "vasco_0.3", target_dir: "reductions",
+    files: [{ rel: "alfrd.yaml", size: 20, mtime: 1, text: readFileSync(path.join(root, "tests/fixtures/avica_tree/alfrd.yaml"), "utf8") }],
+    ms_paths: [],
+  });
+  const read = await readFiles([new File([bundleJson], "scan.json")]);
+  assert.equal(read.length, 1);
+  assert.equal(read.ignored, 0);
+  assert.match(read[0].text, /"alfrd_avica_scan"/);
+  const entries = entriesFromScanBundle(JSON.parse(read[0].text));
+  assert.equal(entries.rootName, "vasco_0.3");
+  assert.equal(buildBundle(entries, { rootName: entries.rootName }).manifestFile, "alfrd.yaml");
+  // avica.summary.json keeps going through the AVICA filter as before.
+  const summary = await readFiles([new File(["{\"rows\":[]}"], "avica.summary.json")]);
+  assert.equal(summary.length, 1);
+});

@@ -2,10 +2,10 @@
 {% block content %}
 <nav class="breadcrumbs" aria-label="Breadcrumb">
   <a href="{{ url_for('dashboard.index_dashboard') }}">Projects</a><span aria-hidden="true">/</span>
-  <a href="{{ url_for('dashboard.project_details', project_name=project.name) }}">{{ project.name }}</a><span aria-hidden="true">/</span>
+  <a href="{{ url_for('dashboard.project_details', project_name=project.identifier or project.name) }}">{{ project.display_name or project.name }}</a><span aria-hidden="true">/</span>
   <span aria-current="page">{{ workflow_name }} matrix</span>
 </nav>
-<div class="page-heading matrix-heading"><div><p class="eyebrow">Workflow monitor</p><h1>{{ workflow_name }}</h1><p>{{ project.name }} · Live dataset progress refreshes every 5 seconds.</p></div></div>
+<div class="page-heading matrix-heading"><div><p class="eyebrow">Workflow monitor</p><h1>{{ workflow_name }}</h1><p>{{ project.display_name or project.name }} · Live dataset progress refreshes every 5 seconds.</p></div></div>
 
 <div class="summary-strip" aria-label="Workflow summary">
   <div class="summary-item"><strong>{{ matrix.summary.total_datasets }}</strong><span>datasets</span></div>
@@ -36,8 +36,8 @@
     <button type="submit" class="btn btn-sm btn-outline-primary">Filter</button>
   </div>
   <div class="filter-actions">
-    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_csv_api', project_name=project.name, workflow_name=workflow_name) }}">Export matrix CSV</a>
-    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_details_csv_api', project_name=project.name, workflow_name=workflow_name) }}">Export details CSV</a>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_csv_api', project_name=project.identifier or project.name, workflow_name=workflow_name) }}">Export matrix CSV</a>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('api.matrix_details_csv_api', project_name=project.identifier or project.name, workflow_name=workflow_name) }}">Export details CSV</a>
   </div>
 </form>
 
@@ -45,7 +45,7 @@
 <div class="card border-0 shadow-sm">
   <div class="table-scroll">
     <table class="table table-hover mb-0" id="matrix-table"
-           data-matrix-url="{{ url_for('api.matrix_api', project_name=project.name, workflow_name=workflow_name) }}">
+           data-matrix-url="{{ url_for('api.matrix_api', project_name=project.identifier or project.name, workflow_name=workflow_name) }}">
       <thead>
         <tr>
           <th>Dataset</th>
@@ -305,7 +305,7 @@
     if (datasetButton) {
       datasetOpener = datasetButton;
       var datasetRequest = ++detailRequest;
-      var datasetUrl = {{ url_for('api.dataset_result_api', project_name=project.name, workflow_name=workflow_name, dataset_id='DATASET_ID')|tojson }}.replace(/DATASET_ID$/, encodeURIComponent(datasetButton.dataset.datasetKey));
+      var datasetUrl = {{ url_for('api.dataset_result_api', project_name=project.identifier or project.name, workflow_name=workflow_name, dataset_id='DATASET_ID')|tojson }}.replace(/DATASET_ID$/, encodeURIComponent(datasetButton.dataset.datasetKey));
       datasetError.hidden = true; datasetContent.hidden = true; datasetLoading.hidden = false; datasetModal.hidden = false; datasetClose.focus();
       fetch(datasetUrl).then(function (response) { if (!response.ok) { throw new Error('Could not load dataset result (' + response.status + ').'); } return response.json(); }).then(function (result) {
         if (datasetRequest === detailRequest) { renderDatasetResult(result); }
@@ -319,7 +319,7 @@
     if (!cell || !cell.dataset.executionId) { return; }
     opener = cell;
     var requestNumber = ++detailRequest;
-    var executionsUrl = {{ url_for('api.execution_detail_api', project_name=project.name, execution_id='EXECUTION_ID')|tojson }}.replace(/EXECUTION_ID$/, encodeURIComponent(cell.dataset.executionId));
+    var executionsUrl = {{ url_for('api.execution_detail_api', project_name=project.identifier or project.name, execution_id='EXECUTION_ID')|tojson }}.replace(/EXECUTION_ID$/, encodeURIComponent(cell.dataset.executionId));
     detailError.hidden = true; detailContent.hidden = true; detailLoading.hidden = false;
     document.getElementById('cell-detail-context').textContent = cell.getAttribute('aria-label').replace(/ details$/, '');
     modal.hidden = false; close.focus();

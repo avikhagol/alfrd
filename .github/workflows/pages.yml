@@ -8,6 +8,7 @@ on:
     branches: [main, master]
     paths:
       - "src/alfrd/web/**"
+      - "src/alfrd/schemas/project-manifest-v1.schema.json"
       - "tests/studio_js/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -36,8 +37,10 @@ jobs:
 
       - name: Assemble static site
         run: |
-          mkdir -p _site
+          mkdir -p _site/schemas
           rsync -a --exclude '*.py' --exclude '__pycache__' src/alfrd/web/ _site/
+          cp src/alfrd/schemas/project-manifest-v1.schema.json _site/schemas/
+          cmp src/alfrd/schemas/project-manifest-v1.schema.json _site/schemas/project-manifest-v1.schema.json
           touch _site/.nojekyll
 
       - uses: actions/configure-pages@v5

@@ -48,7 +48,9 @@ def test_connect_exact_directory_alias_precedence_and_persistence(connected_app,
     )
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/dashboard/project/preferred")
+    assert response.headers["Location"].endswith(
+        f"/dashboard/project/{service.get_project_by_name('preferred').identifier}"
+    )
     assert service.get_project_by_name("preferred").root_path == str(root.resolve())
     assert legacy.read_bytes() == before
 
@@ -75,7 +77,7 @@ def test_connect_accepts_alias_when_legacy_name_is_absent(connected_app, tmp_pat
     assert [item.name for item in root.iterdir()] == [".alfrd.yaml"]
 
 
-def test_connect_rejects_ancestor_walk_unsafe_names_and_name_conflicts(
+def test_connect_rejects_ancestor_walk_and_unsafe_names_but_allows_name_duplicates(
     connected_app, tmp_path, monkeypatch
 ):
     app, service = connected_app
@@ -96,7 +98,10 @@ def test_connect_rejects_ancestor_walk_unsafe_names_and_name_conflicts(
 
     assert client.post("/dashboard/connect", data={"path": str(nested)}, headers=headers).status_code == 400
     assert client.post("/dashboard/connect", data={"path": str(bad)}, headers=headers).status_code == 400
-    assert client.post("/dashboard/connect", data={"path": str(other)}, headers=headers).status_code == 409
+    assert client.post("/dashboard/connect", data={"path": str(other)}, headers=headers).status_code == 302
+    duplicates = [p for p in client.get("/api/projects").get_json()["projects"] if p["name"] == "duplicate"]
+    assert {p["display_name"] for p in duplicates} == {"duplicate (existing)", "duplicate (other)"}
+    assert len({p["identifier"] for p in duplicates}) == 2
 
 
 def test_mutations_require_csrf_and_are_local_only(connected_app, tmp_path):

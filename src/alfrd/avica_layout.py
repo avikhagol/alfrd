@@ -723,7 +723,9 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
             elif path.suffix == ".log" and log_tail > 0:
                 add(path, limit=log_tail, tail=True)
 
-    # Step logs and log artifacts declared in alfrd.yaml (names/sizes; read on demand).
+    # Step logs and log artifacts declared in alfrd.yaml. The server lists them
+    # (log_tail=0) and serves them on open; a --bundle has no server behind it,
+    # so it carries the last ``log_tail`` bytes of each, like avica.logs/*.log.
     from alfrd.studio_defs import collect_log_files, collect_ms_paths, studio_context
 
     studio = studio_context(base)
@@ -731,12 +733,23 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
     for item in collect_log_files(base, studio):
         info = {k: item[k] for k in ("groups", "steps", "band", "target", "workdir") if item.get(k)}
         if item["rel"] in by_rel:
-            by_rel[item["rel"]]["log"] = info
-            by_rel[item["rel"]]["mtime"] = item["mtime"]
+            entry = by_rel[item["rel"]]
+            entry["log"] = info
+            entry["mtime"] = item["mtime"]
         else:
             entry = {"rel": item["rel"], "size": item["size"], "mtime": item["mtime"], "log": info}
             files.append(entry)
             by_rel[item["rel"]] = entry
+        if read and log_tail > 0 and "text" not in entry and (wanted is None or entry["rel"] in wanted):
+            path = base / entry["rel"]
+            try:
+                with path.open("rb") as stream:
+                    size = path.stat().st_size
+                    if size > log_tail:
+                        stream.seek(size - log_tail)
+                    entry["text"] = stream.read().decode("utf-8", errors="replace")
+            except OSError:
+                pass
     if wanted is not None:
         files = [f for f in files if f["rel"] in wanted]
     return {

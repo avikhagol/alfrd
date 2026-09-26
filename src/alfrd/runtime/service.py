@@ -27,6 +27,7 @@ from .models import (
     utcnow,
 )
 from .store import SCHEMA_VERSION, RuntimeStore
+from .identity import project_identifier
 
 
 class Status(str, Enum):
@@ -137,7 +138,7 @@ class RuntimeService:
         root = Path(root_path).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         with self.store.session() as session:
-            project = Project(name=name, root_path=str(root), description=description)
+            project = Project(identifier=project_identifier(root, name), name=name, root_path=str(root), description=description)
             session.add(project)
             session.flush()
             self._audit_entity(session, "project", project.id, "created")
@@ -154,7 +155,12 @@ class RuntimeService:
         Only database rows are deleted; files in the project folder are never touched.
         """
         with self.store.session() as session:
-            project = session.scalar(select(Project).where(Project.name == name))
+            project = session.scalar(select(Project).where(Project.identifier == name))
+            if project is None:
+                matches = list(session.scalars(select(Project).where(Project.name == name)))
+                if len(matches) > 1:
+                    raise RuntimeNotFound(f"project name {name!r} is ambiguous; use its identifier")
+                project = matches[0] if matches else None
             if project is None:
                 raise RuntimeNotFound(f"project {name!r} not found")
             workflow_ids = [w.id for w in project.workflows]
@@ -170,10 +176,32 @@ class RuntimeService:
 
     def get_project_by_name(self, name: str) -> Project:
         with self.store.session() as session:
-            project = session.scalar(select(Project).where(Project.name == name))
-            if project is None:
+            projects = list(session.scalars(select(Project).where(Project.name == name)))
+            if not projects:
                 raise RuntimeNotFound(f"project {name!r} not found")
+            if len(projects) > 1:
+                raise RuntimeNotFound(f"project name {name!r} is ambiguous; use its identifier")
+            return projects[0]
+
+    def get_project_by_identifier(self, identifier: str) -> Project:
+        with self.store.session() as session:
+            project = session.scalar(select(Project).where(Project.identifier == identifier))
+            if project is None:
+                raise RuntimeNotFound(f"project identifier {identifier!r} not found")
             return project
+
+    def get_project_by_selector(self, selector: str) -> Project:
+        """Resolve an identifier, with unique manifest names kept as a compatibility alias."""
+        with self.store.session() as session:
+            project = session.scalar(select(Project).where(Project.identifier == selector))
+            if project is not None:
+                return project
+            projects = list(session.scalars(select(Project).where(Project.name == selector)))
+            if not projects:
+                raise RuntimeNotFound(f"project {selector!r} not found")
+            if len(projects) > 1:
+                raise RuntimeNotFound(f"project name {selector!r} is ambiguous; use its identifier")
+            return projects[0]
 
     def register_manifest(
         self,
@@ -207,7 +235,7 @@ class RuntimeService:
         # connected project that would be mistaken for an idempotent retry.
         with self.store.session() as session:
             project = Project(
-                name=document.name, root_path=str(root),
+                identifier=project_identifier(root, document.name), name=document.name, root_path=str(root),
                 description=description if isinstance(description, str) else None,
             )
             session.add(project)

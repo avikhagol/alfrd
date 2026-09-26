@@ -181,6 +181,12 @@ def test_collect_studio_files_bundle(tmp_path):
     log = next(f for f in data["files"] if f["rel"].endswith(".log"))
     assert len(log["text"]) <= 10
     assert next(f for f in data["files"] if f["rel"] == "avica.summary.txt")["hint"] == "summary"
+    # Step logs declared in alfrd.yaml carry their tail too (a bundle has no server to read them from)...
+    step_logs = [f for f in data["files"] if f.get("log") and not f["rel"].startswith("avica.logs/")]
+    assert step_logs and all(len(f["text"]) <= 10 for f in step_logs)
+    # ...while the server scan (log_tail=0) only lists them.
+    listed = collect_studio_files(base, log_tail=0)
+    assert all("text" not in f for f in listed["files"] if f.get("log") and not f["rel"].startswith("avica.logs/"))
 
 
 def test_cli_avica_scan_bundle(tmp_path):

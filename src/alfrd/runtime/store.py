@@ -8,8 +8,9 @@ from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base
+from .identity import project_identifier
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 class SchemaVersionError(RuntimeError):
@@ -61,7 +62,76 @@ class RuntimeStore:
             with self.engine.begin() as connection:
                 connection.execute(text(
                     "INSERT INTO alfrd_schema_versions(version, applied_at) "
-                    "VALUES (1, CURRENT_TIMESTAMP)"
+                    "VALUES (:version, CURRENT_TIMESTAMP)"
+                ), {"version": SCHEMA_VERSION})
+            version = SCHEMA_VERSION
+        if version < 2:
+            # SQLite cannot drop the v1 UNIQUE(name) constraint in place. Rebuild
+            # only the parent table while foreign-key checks are temporarily off;
+            # child tables continue to reference the final runtime_projects name.
+            raw = self.engine.raw_connection()
+            try:
+                cursor = raw.cursor()
+                cursor.execute("PRAGMA foreign_keys=OFF")
+                rows = cursor.execute(
+                    "SELECT id, name, root_path, description, created_at, updated_at "
+                    "FROM runtime_projects"
+                ).fetchall()
+                migrated_rows = []
+                used_identifiers: set[str] = set()
+                for row in rows:
+                    identifier = project_identifier(row[2], row[1])
+                    if identifier in used_identifiers:
+                        # v1 allowed the same directory to be reconnected under a
+                        # renamed manifest. Preserve both records without making
+                        # startup ambiguous; the first retains the canonical key.
+                        identifier = f"{identifier}.legacy.{row[0]}"
+                    used_identifiers.add(identifier)
+                    migrated_rows.append(
+                        (row[0], identifier, row[1], row[2], row[3], row[4], row[5])
+                    )
+                cursor.execute(
+                    "CREATE TABLE runtime_projects_v2 ("
+                    "id VARCHAR(36) NOT NULL PRIMARY KEY, "
+                    "identifier TEXT NOT NULL UNIQUE, "
+                    "name VARCHAR(255) NOT NULL, "
+                    "root_path TEXT NOT NULL, description TEXT, "
+                    "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+                )
+                cursor.executemany(
+                    "INSERT INTO runtime_projects_v2 "
+                    "(id, identifier, name, root_path, description, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    migrated_rows,
+                )
+                cursor.execute("DROP TABLE runtime_projects")
+                cursor.execute("ALTER TABLE runtime_projects_v2 RENAME TO runtime_projects")
+                cursor.execute("CREATE INDEX ix_runtime_projects_name ON runtime_projects (name)")
+                cursor.execute(
+                    "INSERT INTO alfrd_schema_versions(version, applied_at) "
+                    "VALUES (2, CURRENT_TIMESTAMP)"
+                )
+                raw.commit()
+                version = 2
+            except BaseException:
+                raw.rollback()
+                raise
+            finally:
+                raw.cursor().execute("PRAGMA foreign_keys=ON")
+                raw.close()
+        if version < 3:
+            with self.engine.begin() as connection:
+                rows = connection.execute(text(
+                    "SELECT id, name, root_path FROM runtime_projects"
+                )).all()
+                for project_id, name, root_path in rows:
+                    connection.execute(
+                        text("UPDATE runtime_projects SET identifier = :identifier WHERE id = :id"),
+                        {"identifier": project_identifier(root_path, name), "id": project_id},
+                    )
+                connection.execute(text(
+                    "INSERT INTO alfrd_schema_versions(version, applied_at) "
+                    "VALUES (3, CURRENT_TIMESTAMP)"
                 ))
 
     @property

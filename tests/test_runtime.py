@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from alfrd.runtime import (
     LocalSubprocessWorker,
     RuntimeService,
     RuntimeStore,
+    RuntimeNotFound,
     Status,
     run_workflow,
 )
@@ -39,13 +41,98 @@ def test_schema_and_complete_object_graph(runtime, tmp_path):
     dataset = service.create_dataset(project.id, "observation-1", uri="file:///input")
     run = service.create_run(workflow.id, dataset.id)
 
-    assert store.schema_version == 1
+    assert store.schema_version == 3
     assert run.status == Status.PENDING.value
     assert [step.step_definition.key for step in run.step_executions] == ["prepare", "finish"]
     manifest = json.loads((Path(run.working_directory) / ".alfrd" / "run.json").read_text())
     assert manifest["run_id"] == run.id
     assert manifest["dataset_id"] == dataset.id
     assert manifest["steps"][0]["status"] == "pending"
+
+
+def test_projects_with_same_manifest_name_use_location_identifiers(runtime, tmp_path):
+    _, service = runtime
+    first = service.create_project("shared", tmp_path / "one")
+    second = service.create_project("shared", tmp_path / "two")
+
+    assert first.identifier != second.identifier
+    assert service.get_project_by_identifier(first.identifier).root_path == first.root_path
+    assert service.get_project_by_selector(second.identifier).root_path == second.root_path
+    with pytest.raises(RuntimeNotFound, match="ambiguous"):
+        service.get_project_by_name("shared")
+
+
+def test_v1_database_migrates_project_identity(tmp_path):
+    database = tmp_path / "legacy.sqlite"
+    root = tmp_path / "legacy-project"
+    root.mkdir()
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE alfrd_schema_versions (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+            INSERT INTO alfrd_schema_versions VALUES (1, CURRENT_TIMESTAMP);
+            CREATE TABLE runtime_projects (
+              id VARCHAR(36) PRIMARY KEY, name VARCHAR(255) NOT NULL UNIQUE,
+              root_path TEXT NOT NULL, description TEXT,
+              created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+            );
+            CREATE TABLE workflow_definitions (
+              id VARCHAR(36) PRIMARY KEY,
+              project_id VARCHAR(36) NOT NULL REFERENCES runtime_projects(id),
+              name VARCHAR(255) NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO runtime_projects VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("legacy-id", "legacy", str(root), None),
+        )
+        connection.execute(
+            "INSERT INTO runtime_projects VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("renamed-id", "renamed", str(root), None),
+        )
+        connection.execute(
+            "INSERT INTO workflow_definitions VALUES (?, ?, ?)",
+            ("workflow-id", "legacy-id", "run"),
+        )
+
+    store = RuntimeStore(database)
+    store.initialize()
+    project = RuntimeService(store).get_project_by_name("legacy")
+    assert store.schema_version == 3
+    assert project.identifier.endswith(".legacy-project.legacy")
+    renamed = RuntimeService(store).get_project_by_name("renamed")
+    assert renamed.identifier.endswith(".legacy-project.renamed")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_v2_path_identifier_gains_manifest_name(tmp_path):
+    database = tmp_path / "v2.sqlite"
+    root = tmp_path / "project"
+    root.mkdir()
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE alfrd_schema_versions (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+            INSERT INTO alfrd_schema_versions VALUES (2, CURRENT_TIMESTAMP);
+            CREATE TABLE runtime_projects (
+              id VARCHAR(36) PRIMARY KEY, identifier TEXT NOT NULL UNIQUE,
+              name VARCHAR(255) NOT NULL, root_path TEXT NOT NULL,
+              description TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO runtime_projects VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("project-id", "host.old.path", "science", str(root), None),
+        )
+
+    store = RuntimeStore(database)
+    store.initialize()
+    project = RuntimeService(store).get_project_by_name("science")
+    assert store.schema_version == 3
+    assert project.identifier.endswith(".project.science")
 
 
 def test_transitions_audit_artifact_and_manifest(runtime, tmp_path):

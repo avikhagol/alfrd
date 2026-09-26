@@ -115,7 +115,7 @@ def test_cli_serve_configures_runtime_database(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert configs[0]["RUNTIME_DATABASE"] == str(database.resolve())
-    assert configs[0]["RUNTIME_SERVICE"].store.schema_version == 1
+    assert configs[0]["RUNTIME_SERVICE"].store.schema_version == 3
     assert configs[0]["CATALOG_READER"].service is configs[0]["RUNTIME_SERVICE"]
 
 

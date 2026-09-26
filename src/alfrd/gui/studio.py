@@ -95,7 +95,7 @@ def _project_root(project_name: str) -> Path:
     if service is None:
         abort(404, description="AVICA views need a runtime-backed `alfrd serve`")
     try:
-        project = service.get_project_by_name(project_name)
+        project = service.get_project_by_selector(project_name)
     except RuntimeNotFound:
         abort(404, description=f"Project {project_name!r} not found")
     root = Path(project.root_path)
@@ -264,7 +264,7 @@ def live_hub():
 
     def root_of(name: str) -> Path | None:
         try:
-            root = Path(service.get_project_by_name(name).root_path)
+            root = Path(service.get_project_by_selector(name).root_path)
         except RuntimeNotFound:
             return None
         return root if (root / "alfrd.yaml").is_file() or (root / ".alfrd.yaml").is_file() else None

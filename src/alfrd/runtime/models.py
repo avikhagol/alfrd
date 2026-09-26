@@ -24,7 +24,8 @@ class Project(Base):
     __tablename__ = "runtime_projects"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    identifier: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     root_path: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -52,7 +52,8 @@ export const server = {
   /** Register a project directory or alfrd.yaml path with the server. */
   async connect(path) {
     const project = await this.mutate("/projects/connect", { path });
-    if (Array.isArray(this.session?.projects) && project?.name && !this.session.projects.includes(project.name)) this.session.projects.push(project.name);
+    const key = project?.identifier || project?.name;
+    if (Array.isArray(this.session?.projects) && key && !this.session.projects.includes(key)) this.session.projects.push(key);
     return project;
   },
 
@@ -156,7 +157,15 @@ export const server = {
     const { projects: all = [] } = await getJson("/projects");
     // `alfrd serve` started for one project shows only that one (see --all-projects).
     const scope = Array.isArray(this.session?.projects) ? this.session.projects : null;
-    const projects = scope ? all.filter((p) => scope.includes(p.name)) : all;
+    const selected = scope ? all.filter((p) => scope.includes(p.identifier || p.name)) : all;
+    // The rest of the Studio treats `name` as its project key. In server mode
+    // that key must be the location identifier, while labels remain human-readable.
+    const projects = selected.map((p) => ({
+      ...p,
+      manifest_name: p.name,
+      title: p.display_name || p.name,
+      name: p.identifier || p.name,
+    }));
     const targets = [];
     const workflows = [];
     const messages = [];
@@ -205,7 +214,7 @@ export const server = {
             id: `${project.name}/${name}`,
             name,
             project: project.name,
-            projectTitle: project.description || null,
+            projectTitle: project.title || project.description || null,
             workflow: wf.name,
             datasetId: row.dataset_id,
             runId: row.run_id,

@@ -114,7 +114,7 @@ def served(tree, tmp_path):
     store.initialize()
     service = RuntimeService(store)
     name = _connect_startup_project(service, str(tree))
-    assert name == "avica-t-0.3"
+    assert name == service.get_project_by_name("avica-t-0.3").identifier
     app = create_app({
         "TESTING": True,
         "SECRET_KEY": "k",
@@ -132,7 +132,7 @@ def served(tree, tmp_path):
 def test_session_reports_default_project_and_no_demo(served):
     client, _, _ = served
     session = client.get("/api/studio/session").get_json()
-    assert session["default_project"] == "avica-t-0.3" and session["demo"] is False
+    assert session["default_project"].endswith(".proj.avica-t-0.3") and session["demo"] is False
 
 
 def test_scan_and_file_endpoints(served):
@@ -175,8 +175,8 @@ def test_serve_scopes_studio_to_startup_project_and_projects_forget(tree, tmp_pa
     other = tmp_path / "other"
     other.mkdir()
     (other / "alfrd.yaml").write_text("name: other-proj\n")
-    assert _connect_startup_project(service, str(other)) == "other-proj"
-    assert _connect_startup_project(service, str(tree)) == "avica-t-0.3"
+    assert _connect_startup_project(service, str(other)) == service.get_project_by_name("other-proj").identifier
+    assert _connect_startup_project(service, str(tree)) == service.get_project_by_name("avica-t-0.3").identifier
 
     runner = CliRunner()
     listed = runner.invoke(alfrd_cli, ["projects", "list", "--db", db])

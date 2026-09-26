@@ -160,7 +160,7 @@ export const ctx = {
       state.folders[project] = folder;
       return readFileFromHandle(folder, rel);
     }
-    throw new Error("Use Re-scan (or re-open the project folder) to read this file.");
+    throw new Error("This file is not in the imported data: re-open the project folder (Re-scan) or import a fresh scan.json.");
   },
   /**
    * Read a log from byte `offset` on (null: its last 400 kB) — for live tails.
@@ -420,7 +420,7 @@ async function loadServer() {
     ctx.log("info", "Loading projects from alfrd serve…", "server");
     const data = await server.loadAll();
     state.serverWorkflows = data.workflows;
-    state.projectTitles = Object.fromEntries(data.projects.map((p) => [p.name, p.description || ""]));
+    state.projectTitles = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.description || p.name]));
     applyBundle({ targets: data.targets, messages: data.messages, aliases: [], configs: [], logs: [], files: [] }, { replace: true, source: "server", provider: "server" });
     if (data.workflows.length) {
       const wf = data.workflows[0];
@@ -553,7 +553,7 @@ function openImport(tab = "files") {
   modal(`
     <header class="modal-h"><h2>Import results &amp; configuration</h2><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b">
-      <p class="callout info">${icon("info")}<span>Files are read <b>in this browser only</b> — nothing is uploaded or executed. Pick the folder that contains <code>alfrd.yaml</code>: the Studio reads <code>alfrd.yaml</code> first and then opens only what it points to — <code>avica.inp</code> / <code>avica.summary.json</code> (→ <code>target_dir</code>), <code>{target}_result.csv</code>, each <code>avica.workdir</code> with its <code>avica.meta/</code> and input templates, <code>picard_input_template_update</code>, <code>avica.logs/</code> and the step logs alfrd.yaml lists (names only until opened). ${canPickDirectory() ? "Measurement sets are never listed. The folder is remembered, so <b>Re-scan</b> refreshes it later." : "This browser cannot open folders selectively, so it lists the whole folder first (slow for large trees); Chrome or Edge read only what alfrd.yaml needs."}</span></p>
+      <p class="callout info">${icon("info")}<span>Files are read <b>in this browser only</b> - nothing is uploaded or executed. Pick the folder that contains <code>alfrd.yaml</code>: the Studio reads <code>alfrd.yaml</code> first and then opens only what it points to. ${canPickDirectory() ? "Measurement sets are never listed. The folder is remembered, so <b>Re-scan</b> refreshes it later." : "This browser cannot open folders selectively, so it lists the whole folder first (slow for large trees); Chrome or Edge read only what alfrd.yaml needs."}</span></p>
       <label class="drop" id="imp-drop" tabindex="0">
         ${icon("upload", "big")}
         <b>Drop the project folder, files or an <code>alfrd avica scan --bundle</code> JSON here</b>
@@ -567,7 +567,7 @@ function openImport(tab = "files") {
         <label class="check grow right"><input type="checkbox" id="imp-replace" ${state.source === "demo" || state.source === "empty" ? "checked" : ""}> Replace current data</label>
       </div>
       ${canPickDirectory() ? `<p class="muted small">Other browsers / older setups: <button class="link-btn" data-act="full-folder">read the whole folder</button> instead.</p>` : ""}
-      <p class="muted small">Reduction tree on another machine? Run <code>alfrd avica scan &lt;folder&gt; --bundle scan.json</code> there and import <code>scan.json</code>.</p>
+      <p class="muted small">Want to load snapshot from another machine? <br> Run <code>alfrd avica scan &lt;folder&gt; --bundle scan.json</code> there and import <code>scan.json</code>.</p>
       <div id="imp-report"></div>
       ${serverBlock}
     </div>`, (root, close) => {
@@ -971,10 +971,10 @@ async function drawProjects(root) {
   }
   const shown = new Set(ctx.projects().map((p) => p.id));
   const canWrite = server.session?.mutations_enabled;
-  table.innerHTML = `<thead><tr><th>Project</th><th>Folder</th><th></th></tr></thead><tbody>${list.map((p) => `<tr>
-      <td class="mono"><b>${esc(p.name)}</b>${p.name === server.session?.default_project ? ' <span class="badge tone-run">opened</span>' : shown.has(p.name) ? ' <span class="badge">shown</span>' : ' <span class="badge tone-muted">hidden</span>'}</td>
+  table.innerHTML = `<thead><tr><th>Project</th><th>Folder</th><th></th></tr></thead><tbody>${list.map((p) => { const key = p.identifier || p.name; return `<tr>
+      <td class="mono"><b>${esc(p.display_name || p.name)}</b>${key === server.session?.default_project ? ' <span class="badge tone-run">opened</span>' : shown.has(key) ? ' <span class="badge">shown</span>' : ' <span class="badge tone-muted">hidden</span>'}</td>
       <td class="mono small">${esc(p.root_path || "")}</td>
-      <td class="right"><button class="btn sm danger" data-forget="${esc(p.name)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`).join("") || '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>'}</tbody>`;
+      <td class="right"><button class="btn sm danger" data-forget="${esc(key)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`; }).join("") || '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>'}</tbody>`;
   table.onclick = async (e) => {
     const b = e.target.closest("[data-forget]");
     if (!b) return;
@@ -1352,10 +1352,10 @@ function renderHeader() {
   badge.title = live ? "alfrd: projects come from the runtime database; re-queue runs through the runtime API." : "Everything runs in this browser; no pipeline code is executed.";
 
   const projects = ctx.projects();
-  $("#pick-project").innerHTML = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === state.selectedProject ? "selected" : ""}>${esc(p.id)}</option>`).join("")}`;
+  $("#pick-project").innerHTML = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === state.selectedProject ? "selected" : ""}>${esc(p.title || p.id)}</option>`).join("")}`;
   const targets = ctx.scopedTargets();
   $("#pick-target").innerHTML = targets.length
-    ? targets.map((t) => `<option value="${esc(t.id)}" ${t.id === state.selectedTarget ? "selected" : ""}>${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(t.project)}` : ""}</option>`).join("")
+    ? targets.map((t) => `<option value="${esc(t.id)}" ${t.id === state.selectedTarget ? "selected" : ""}>${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || t.project)}` : ""}</option>`).join("")
     : `<option value="">No targets</option>`;
 
   $$(".rail a").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));

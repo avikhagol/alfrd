@@ -227,7 +227,7 @@ function renderHead(el, ctx) {
     </div>
     <div class="row gap wrap ov-filters">
       <label class="search grow">${icon("search")}<input id="ov-search" type="search" placeholder="Search projects, targets, filenames, comments…" value="${esc(ui.search)}" aria-label="Search"></label>
-      <label class="select-wrap">${icon("folder")}<select id="ov-project" aria-label="Project filter"><option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${ui.project === p.id ? "selected" : ""}>${esc(p.id)}</option>`).join("")}</select></label>
+      <label class="select-wrap">${icon("folder")}<select id="ov-project" aria-label="Project filter"><option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${ui.project === p.id ? "selected" : ""}>${esc(p.title || p.id)}</option>`).join("")}</select></label>
       <label class="select-wrap">${icon("filter")}<select id="ov-status" aria-label="Status filter">${["all", "completed", "failed", "warning", "running", "unknown"].map((s) => `<option value="${s}" ${ui.status === s ? "selected" : ""}>Status: ${s === "all" ? "All" : OVERALL_STATUS[s].label}</option>`).join("")}</select></label>
       <button class="pill warn ${ui.preset === "attention" ? "on" : ""}" data-preset="attention">Needs attention (${nAttention})</button>
       <button class="pill ${ui.preset === "nometa" ? "on" : ""}" data-preset="nometa">No work folder (${nNoMeta})</button>
@@ -277,8 +277,8 @@ function renderGrid(el, ctx) {
     const collapsed = ui.collapsed.has(project);
     const head = `<tr class="grp"><td colspan="${totalCols}"><div class="grp-in">
         <button class="icon-btn sm ${collapsed ? "" : "open"}" data-group="${esc(project)}" aria-expanded="${!collapsed}" aria-label="Toggle ${esc(project)}">${icon("caret")}</button>
-        ${ui.groupBy === "code" ? `<span class="proj-chip" style="--h:${hue(project)}">${esc(project)}</span>` : `<span class="alfrd-chip">${esc(project)}</span>`}
-        <b>${esc(projectTitle(project))}${projectTitle(project) ? " — " : ""}${everyone.length} Target${everyone.length === 1 ? "" : "s"}</b>
+        ${ui.groupBy === "code" ? `<span class="proj-chip" style="--h:${hue(project)}">${esc(project)}</span>` : `<span class="alfrd-chip">${esc(projectTitle(project) || project)}</span>`}
+        <b>${everyone.length} Target${everyone.length === 1 ? "" : "s"}</b>
         <span class="muted">(${esc(parts)})</span>
         <span class="mini-bar" title="${pct}% of steps complete"><i style="width:${pct}%"></i></span><span class="muted small tabular">${pct}%</span>
       </div></td></tr>`;

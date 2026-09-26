@@ -154,6 +154,16 @@ const MAX_TEXT = 25 * 1024 * 1024;
  */
 export async function readFiles(fileList) {
   const files = Array.from(fileList || []).map((file) => ({ file, path: (file.webkitRelativePath || file.relativePath || file.name).replace(/\\/g, "/") }));
+  // A single picked/dropped JSON is a scan bundle (`alfrd avica scan --bundle`) or
+  // a Studio snapshot: read it whole — the AVICA layout filter below would skip it.
+  if (files.length === 1 && /\.json$/i.test(files[0].file.name) && !/^avica[._]/i.test(files[0].file.name)) {
+    const { file, path } = files[0];
+    const out = [{ path, rel: file.name, name: file.name, size: file.size, mtime: file.lastModified, text: await file.text() }];
+    out.rootName = null;
+    out.ignored = 0;
+    out.msDirs = [];
+    return out;
+  }
   const manifests = files.filter((f) => /(^|\/)\.?alfrd\.ya?ml$/i.test(f.path)).sort((a, b) => a.path.split("/").length - b.path.split("/").length);
   let prefix = "";
   if (manifests.length) prefix = manifests[0].path.split("/").slice(0, -1).join("/");

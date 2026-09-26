@@ -261,26 +261,25 @@ def connect_manifest_path(path: str):
     service = _runtime_service()
     if service is None:  # also enforced by the global mutation gate
         abort(403, description="runtime mutations are disabled")
+    from alfrd.runtime.identity import project_identifier
+
+    root_path = manifest_path.parent.resolve()
+    identifier = project_identifier(root_path, manifest.name)
     try:
-        existing = service.get_project_by_name(manifest.name)
+        existing = service.get_project_by_identifier(identifier)
     except RuntimeNotFound:
         existing = None
-    root_path = manifest_path.parent.resolve()
-    if existing is not None:
-        if Path(existing.root_path).resolve() != root_path:
-            return (
-                None,
-                [f"Project name {manifest.name!r} is already connected to another directory."],
-                409,
-            )
-    else:
+    if existing is None:
         try:
             service.register_manifest(manifest, root_path=root_path, create_root=False)
         except Exception as error:
             # Database uniqueness errors can still occur if another request
             # connects the same name concurrently; present them as conflicts.
             return None, [f"Could not connect project: {error}"], 409
-    project = _reader().get_project(manifest.name) or {"name": manifest.name, "root_path": str(root_path)}
+    project = _reader().get_project(identifier) or {
+        "identifier": identifier, "name": manifest.name,
+        "display_name": manifest.name, "root_path": str(root_path),
+    }
     return project, [], 200
 
 
@@ -293,7 +292,7 @@ def connect_project():
     if errors:
         return _connect_form(path, errors, status)
     flash(f"Project {project['name']!r} connected.", "success")
-    return redirect(url_for("dashboard.project_details", project_name=project["name"]))
+    return redirect(url_for("dashboard.project_details", project_name=project.get("identifier", project["name"])))
 
 
 @dashboard.get("/project/<project_name>")

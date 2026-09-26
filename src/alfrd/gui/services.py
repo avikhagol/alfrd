@@ -195,10 +195,12 @@ class RuntimeCatalogReader:
         self.service = service
 
     @staticmethod
-    def _project_dict(project) -> dict[str, Any]:
+    def _project_dict(project, duplicate: bool = False) -> dict[str, Any]:
         return {
             "id": project.id,
+            "identifier": project.identifier,
             "name": project.name,
+            "display_name": f"{project.name} ({Path(project.root_path).name})" if duplicate else project.name,
             "description": project.description,
             "root_path": project.root_path,
         }
@@ -215,13 +217,17 @@ class RuntimeCatalogReader:
         }
 
     def list_projects(self) -> list[dict[str, Any]]:
-        return [self._project_dict(item) for item in self.service.list_projects()]
+        projects = self.service.list_projects()
+        counts = {item.name: sum(other.name == item.name for other in projects) for item in projects}
+        return [self._project_dict(item, counts[item.name] > 1) for item in projects]
 
     def get_project(self, name: str) -> dict[str, Any] | None:
         from alfrd.runtime import RuntimeNotFound
 
         try:
-            return self._project_dict(self.service.get_project_by_name(name))
+            project = self.service.get_project_by_selector(name)
+            duplicate = sum(item.name == project.name for item in self.service.list_projects()) > 1
+            return self._project_dict(project, duplicate)
         except RuntimeNotFound:
             return None
 

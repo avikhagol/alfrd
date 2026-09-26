@@ -1,7 +1,7 @@
 {% extends "dashboard/layout.htm" %}
 {% block content %}
 <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="{{ url_for('dashboard.index_dashboard') }}">Projects</a><span aria-hidden="true">/</span><span aria-current="page">{{ project.name }}</span></nav>
-<div class="page-heading"><div><p class="eyebrow">Project workspace</p><h1>{{ project.name }}</h1><p>{{ project.description or "No description provided." }}</p></div>{% if runtime_enabled %}<a class="button" href="{{ url_for('dashboard.project_artifacts', project_name=project.name) }}">Register artifact</a>{% endif %}</div>
+<div class="page-heading"><div><p class="eyebrow">Project workspace</p><h1>{{ project.display_name or project.name }}</h1><p>{{ project.description or "No description provided." }}</p></div>{% if runtime_enabled %}<a class="button" href="{{ url_for('dashboard.project_artifacts', project_name=project.identifier or project.name) }}">Register artifact</a>{% endif %}</div>
 
 <div class="card mb-4">
   <div class="card-header">Manifest validation and synchronization</div>
@@ -47,7 +47,7 @@
       <tbody>
       {% for workflow in workflows %}<tr>
         <td><strong>{{ workflow.name }}</strong></td><td>{{ workflow.description or "" }}</td><td><ol class="sequence-list">{% for step in workflow.sequence %}<li>{{ step }}</li>{% endfor %}</ol></td>
-        <td><a class="button button-secondary button-small" href="{{ url_for('dashboard.matrix_dashboard', project_name=project.name, workflow_name=workflow.name) }}">Dataset × step matrix</a></td>
+        <td><a class="button button-secondary button-small" href="{{ url_for('dashboard.matrix_dashboard', project_name=project.identifier or project.name, workflow_name=workflow.name) }}">Dataset × step matrix</a></td>
       </tr>{% else %}<tr><td colspan="4" class="text-muted">None recorded.</td></tr>{% endfor %}
       </tbody>
     </table>
