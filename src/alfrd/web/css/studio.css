@@ -689,6 +689,7 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
    Scheduled runs (plans.js): Workflow → Schedule, Run dialog, plan badges */
 .wf-sched { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
 .wf.sched-mode .wf-main { grid-template-columns: minmax(0, 1fr) 320px; }
+.wf.sched-mode .wf-main.insp-folded { grid-template-columns: minmax(0, 1fr) 40px; }
 .sched-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
 .sched-h select { max-width: 280px; }
 .sched-b { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
