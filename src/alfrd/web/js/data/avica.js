@@ -100,7 +100,7 @@ export function parseResultFiles(rels, pats, targetDir, knownCodes = []) {
   const res = pats.result_csv.map((p) => patternRegex(p, { target_dir: targetDir }, groups));
   const codes = [...new Set(knownCodes)].sort((a, b) => b.length - a.length);
   return rels.map((rel) => {
-    const m = matchAny(res, rel);
+    const m = mostSpecificMatch(res, rel);
     if (!m) return null;
     let g = Object.fromEntries(Object.entries(m.groups || {}).filter(([, v]) => v));
     if (codes.length && g.project_code && !codes.includes(g.project_code)) {
@@ -119,6 +119,19 @@ export function parseResultFiles(rels, pats, targetDir, knownCodes = []) {
 }
 
 const matchAny = (res, text) => { for (const r of res) { const m = r.exec(text); if (m) return m; } return null; };
+// Match from the pattern with the most placeholders, back-references included
+// (ties keep pattern order): a loose "{project_code}/{workdirname}/result_{target}.csv"
+// must not win over the name that repeats the code + work dir (mirrors avica_layout).
+const mostSpecificMatch = (res, text) => {
+  let best = null, score = -1;
+  for (const r of res) {
+    const m = r.exec(text);
+    if (!m) continue;
+    const n = (r.source.match(/\(\?<\w+>|\\k</g) || []).length;
+    if (n > score) { best = m; score = n; }
+  }
+  return best;
+};
 const META_TARGET = /^([a-z][a-z_]*?)_([A-Z][A-Z0-9]*)_(.+)\.(?:avica|out)$/;
 // Folders that never hold anything the Studio reads (measurement sets, scratch, notebooks...).
 const SKIP_SEGMENT = /^(\..+|__marimo__|__pycache__|\.ipynb_checkpoints|py3\d+|raw|tmp_.*|calibration_tables|diagnostics_.*|.*\.ms|.*\.ms\..+|.*\.flagversions)$/;

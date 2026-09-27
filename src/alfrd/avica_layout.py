@@ -442,6 +442,25 @@ def _match_any(regexes: list[re.Pattern[str]], text: str) -> re.Match[str] | Non
     return None
 
 
+def _most_specific_match(regexes: list[re.Pattern[str]], text: str) -> re.Match[str] | None:
+    """Match from the pattern with the most placeholders; ties keep pattern order.
+
+    A loose pattern such as ``{project_code}/{workdirname}/result_{target}.csv``
+    also matches ``result_T_CODE_wd.csv`` (with ``target = "T_CODE_wd"``); the
+    pattern that repeats the code and work dir in the name must win. Repeated
+    placeholders (back-references) count, so that pattern scores higher.
+    """
+    best: re.Match[str] | None = None
+    best_score = -1
+    for regex in regexes:
+        match = regex.match(text)
+        if match:
+            score = regex.pattern.count("(?P")
+            if score > best_score:
+                best, best_score = match, score
+    return best
+
+
 @dataclass
 class ProjectCode:
     """One AVICA work dir: ``<target_dir>/<CODE>/<workdir>`` (e.g. wd, wd_1)."""
@@ -554,7 +573,7 @@ def result_csvs(
         if len(path.relative_to(target_dir).parts) > 3:
             continue
         rel = os.path.relpath(path, base).replace(os.sep, "/")
-        match = _match_any(regexes, rel)
+        match = _most_specific_match(regexes, rel)
         if not match:
             continue
         found = {k: v for k, v in match.groupdict().items() if v}
