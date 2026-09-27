@@ -51,7 +51,7 @@ test("template: avica defaults, alfrd.yaml overrides step fields", () => {
   const info = manifestToWorkflows({ name: "p", template: "avica", stages: [{ id: "all", title: "Everything" }], workflows: [{ name: "w", steps: [{ id: "preprocess_fitsidi", stage: "all", label: "Ingest" }, { id: "fits_to_ms", stage: "all" }] }] });
   const [a, b] = info.workflows[0].steps;
   assert.equal(a.label, "Ingest");
-  assert.equal(a.category, "Preprocessing"); // from the template
+  assert.equal(a.category, "FITSIDI"); // from the template
   assert.equal(b.label, "Convert FITS to CASA Measurement Set");
   assert.equal(info.workflows[0].stages.length, 1);
   const plain = manifestToWorkflows({ name: "q", workflows: [{ name: "w", steps: ["preprocess_fitsidi"] }] });

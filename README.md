@@ -80,11 +80,11 @@ Full guide: [docs/studio-guide.md](https://github.com/avialxee/alfrd/blob/HEAD/d
 
 ```bash
 # Open the project in the current folder
-cd /data/vasco_0.3
+cd /data/avica_0.3
 alfrd serve
 
 # Open a project somewhere else
-alfrd serve --project /data/vasco_0.3
+alfrd serve --project /data/avica_0.3
 
 # Another port, no browser pop-up (e.g. over SSH)
 alfrd serve --port 8050 --no-browser

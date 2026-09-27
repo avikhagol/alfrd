@@ -76,6 +76,10 @@ export const server = {
   planCells(project, id, cells) {
     return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/cells`, { cells });
   },
+  /** Append one row {target, files, code, workdir?, steps?} to a plan's CSV (works while it runs). */
+  planAddRow(project, id, row) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/rows`, row);
+  },
   planReconcile(project) {
     return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/reconcile`, {});
   },

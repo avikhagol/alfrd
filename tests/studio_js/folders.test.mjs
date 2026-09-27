@@ -52,3 +52,15 @@ test("docked logs: tab order, de-duplication, cap and undock", () => {
   assert.equal(logview.dockedLogs()[0].rel, "wd/l3.log");
   assert.deepEqual(logview.splitKey("a.b::c::d.log"), { project: "a.b", rel: "c::d.log" });
 });
+
+test("logview: an ANSI escape split across tail reads is stripped once complete", () => {
+  const { stripAnsi, takeChunk } = logview._internals;
+  const c = { pending: "" };
+  const first = stripAnsi(takeChunk(c, "a\x1b[1"));
+  const second = stripAnsi(takeChunk(c, "mb\x1b[0m"));
+  assert.equal(first + second, "ab");
+  assert.equal(c.pending, "");
+  assert.equal(stripAnsi(takeChunk(c, "x\x1b")), "x");
+  assert.equal(stripAnsi(takeChunk(c, "[32mgreen\x1b]0;title")), "green");
+  assert.equal(stripAnsi(takeChunk(c, "\x07!")), "!");
+});

@@ -11,6 +11,7 @@ when a step fails (AVICA prints the result and returns).
   FAKE_AVICA_CODE / FAKE_AVICA_WD   code and work dir for "new" names (BV019 / wd)
   FAKE_AVICA_EXIT    exit code to return after the last step (default 0)
   FAKE_AVICA_TICK    print a line every 0.5 s while a step works
+  FAKE_AVICA_HOLD    path: before each step, wait while this file exists
 """
 import csv
 import os
@@ -29,6 +30,13 @@ def target_dir():
         if line.split("=")[0].strip() == "target_dir":
             return Path(line.split("=", 1)[1].strip().strip('"'))
     return Path("reduction")
+
+
+def hold():
+    """Wait while $FAKE_AVICA_HOLD exists, so a test can keep a step running."""
+    path = os.environ.get("FAKE_AVICA_HOLD")
+    while path and Path(path).exists():
+        time.sleep(0.05)
 
 
 def main(argv):
@@ -62,6 +70,7 @@ def main(argv):
         for step in steps:
             start = datetime.now()
             print(f">  Processing: {step} ({target})", flush=True)
+            hold()
             if os.environ.get("FAKE_AVICA_TICK"):  # print while working, so logs grow
                 waited = 0.0
                 while waited < pause:

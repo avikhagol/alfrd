@@ -146,6 +146,60 @@ def plan_action(project_name: str, plan_id: str, action: str):
     return jsonify(plan=plan)
 
 
+def _row_steps(payload: dict, plan_steps: list[str]) -> list[str] | None:
+    """``steps`` from an add-row request: ``None`` (every step column), or a non-empty subset of the plan's steps."""
+    steps = payload.get("steps")
+    if steps is None:
+        return None
+    if not isinstance(steps, list):
+        raise ExecutionError("steps must be a list of step ids")
+    if not steps:
+        raise ExecutionError("select at least one step")
+    unknown = [str(s) for s in steps if s not in plan_steps]
+    if unknown:
+        raise ExecutionError(f"unknown step(s): {', '.join(unknown)}")
+    return [str(s) for s in steps]
+
+
+@studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/rows")
+def plan_add_row(project_name: str, plan_id: str):
+    """Append one row (target, files, project code) to this plan's CSV; never creates the CSV.
+
+    A live runner picks the row up on its next pass over the CSV; a paused,
+    finished or stopped plan runs it after Resume / Run remaining. ``steps``
+    (a non-empty subset of the plan's step ids) marks which cells start
+    ``todo``; default is every step column the CSV already has. ``files`` may
+    be a string or a list (comma, newline or space separated).
+    """
+    payload = request.get_json(silent=True) or {}
+    if not re.match(r"^[A-Za-z0-9_-]+$", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
+    root = _project_root(project_name)
+    folder = scheduler.PlanDir(root, plan_id)
+    try:
+        plan = folder.load()
+    except ExecutionError as error:
+        return _json_error(error, 404)
+    try:
+        cfg = load_execution(root)
+        plan_steps = list(plan.get("steps") or cfg.step_ids)
+        table = scheduler.add_row(
+            cfg, folder.csv_path(plan), target=str(payload.get("target") or ""),
+            files=pc.join_files(payload.get("files")), code=str(payload.get("code") or ""),
+            workdir=str(payload.get("workdir") or ""), selected=_row_steps(payload, plan_steps), steps=plan_steps,
+        )
+    except pc.DuplicateRowError as error:
+        return _json_error(error, 409)
+    except FileNotFoundError as error:
+        return _json_error(error, 400)
+    except (ExecutionError, ValueError) as error:
+        return _json_error(error, 400)
+    except OSError as error:
+        return _json_error(error, 500)
+    _poke(project_name)
+    return jsonify(table=table.to_dict()), 201
+
+
 @studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/cells")
 def plan_cells(project_name: str, plan_id: str):
     """Set cells: ``{cells: [{row, step, value}]}`` with value todo | skip (retry = todo)."""
