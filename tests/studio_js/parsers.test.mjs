@@ -449,3 +449,27 @@ test("result CSVs: newer AVICA names result_<target>_<code>_<workdir>.csv (one t
   assert.equal(t.steps.fits_to_ms.attempts.length, 2);
   assert.equal(t.history.length, 2);
 });
+
+test("result CSVs: a loose result_{target}.csv pattern does not swallow code + work dir", async () => {
+  const { parseResultFiles, DEFAULT_PATTERNS, resultCsvArtifactPatterns } = await import(path.join(web, "data/avica.js"));
+  // Same order as the shipped defaults/alfrd.yaml result_csv artifact.
+  const result_csv = resultCsvArtifactPatterns({
+    name: "result_csv",
+    path_pattern: "{target_dir}/result__{target}__{project_code}__{workdirname}.csv",
+    fallback_patterns: [
+      "{target_dir}/{project_code}/{workdirname}/result__{target}__{project_code}__{workdirname}.csv",
+      "{target_dir}/{target}_result.csv",
+      "{target_dir}/{project_code}/{workdirname}/result_{target}.csv",
+    ],
+  });
+  const got = parseResultFiles([
+    "reductions/BV019/wd/result_1309+555_BV019_wd.csv",
+    "reductions/BV019/wd/result_1309+555.csv",
+    "reductions/result__J07_42__BV019__wd_1.csv",
+  ], { ...DEFAULT_PATTERNS, result_csv }, "reductions", ["BV019"]);
+  assert.deepEqual(got, [
+    { file: "reductions/BV019/wd/result_1309+555_BV019_wd.csv", target: "1309+555", project_code: "BV019", workdir: "wd" },
+    { file: "reductions/BV019/wd/result_1309+555.csv", target: "1309+555", project_code: "BV019", workdir: "wd" },
+    { file: "reductions/result__J07_42__BV019__wd_1.csv", target: "J07_42", project_code: "BV019", workdir: "wd_1" },
+  ]);
+});
