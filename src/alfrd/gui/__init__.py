@@ -75,6 +75,7 @@ def create_app(config=None):
 
     from alfrd.gui.routes import api, control, dashboard, system
     from alfrd.gui.studio import studio, studio_api
+    import alfrd.gui.studio_plans  # noqa: F401  (adds the plan routes to studio_api)
 
     app.register_blueprint(studio)
     app.register_blueprint(studio_api)

@@ -5,7 +5,7 @@
 import { parseYaml } from "../utils/yaml_parser.js";
 import { parseCsv, jsonCell, AliasLog, setAliasRules, resolveAlias } from "../utils/csv_parser.js";
 import { manifestToWorkflows } from "./model.js";
-import { avicaInterest, buildAvicaIndex, detectCodes, parseSummaryFile } from "./avica.js";
+import { avicaInterest, buildAvicaIndex, detectCodes, parseSummaryFile, parseResultFiles, DEFAULT_PATTERNS } from "./avica.js";
 import { studioManifest, classifyLogs, msPathPatterns, specInstances, pathRegex, defaultManifestText } from "./defs.js";
 
 const RESULT_SUFFIX = /_result\.(csv|tsv)$/i;
@@ -439,19 +439,49 @@ export function buildBundle(files, { source = "import", projectHint = null, root
   // 5. Result CSVs -> targets.
   const seen = new Map();
   kinds.filter((f) => f.kind === "result").forEach((f) => {
-    // avica pipe run writes <target_dir>/<target>_result.csv; an empty target gives "_result.csv".
-    const fromPattern = bundle.avica?.resultCsvs?.find((r) => r.file === f.rel)?.target;
-    const name = fromPattern || f.name.replace(RESULT_SUFFIX, "") || cfgTarget || "(untargeted)";
+    // AVICA <= 0.3 writes <target_dir>/<target>_result.csv (an empty target gives "_result.csv");
+    // newer AVICA writes result_<target>_<code>_<workdir>.csv, one file per (target, code, workdir).
+    const info = bundle.avica?.resultCsvs?.find((r) => r.file === f.rel)
+      || parseResultFiles([f.name], { ...DEFAULT_PATTERNS, result_csv: ["result_{target}_{project_code}_{workdirname}.csv"] }, ".")[0] || {};
+    const name = info.target || f.name.replace(RESULT_SUFFIX, "") || cfgTarget || "(untargeted)";
     const parsed = parseResultCsv(f.text, { aliases, file: f.name });
     if (parsed.error) {
       messages.push({ level: "error", text: parsed.error });
       return;
     }
+    const code = info.project_code || null;
+    const workdir = info.workdir || null;
+    const tag = (a) => ({ ...a, code: a.code || code, workdir: a.workdir || workdir, file: f.rel });
+    const part = { file: f.rel, code, workdir, steps: parsed.steps, history: parsed.history.map(tag) };
     const ms = parsed.artifacts.find((a) => /\.ms\/?$/i.test(a.path));
+    const id = `${alfrdProject}/${name}`;
+    const prev = seen.get(id);
+    if (prev && prev.source?.kind === "result_csv") {
+      // Same target in another code / work dir: keep one target, history merged in time
+      // order, latest attempt per step wins; the per-file results stay in `results`.
+      prev.results.push(part);
+      prev.history = [...prev.history, ...part.history].sort((a, b) => String(a.started || "").localeCompare(String(b.started || "")));
+      Object.entries(parsed.steps).forEach(([k, st]) => {
+        const old = prev.steps[k];
+        const newer = !old || String(st.finished || st.started || "") >= String(old.finished || old.started || "");
+        const attempts = [...(old?.attempts || []), ...(st.attempts || [])];
+        prev.steps[k] = newer ? { ...tag(st), attempts } : { ...old, attempts };
+      });
+      prev.artifacts.push(...parsed.artifacts);
+      [...(parsed.codes || []), code].filter(Boolean).forEach((c) => {
+        const hit = prev.codes.find((x) => x.code === c);
+        if (hit) hit.auto = false; else prev.codes.push({ code: c, auto: false });
+      });
+      prev.source.files = [...(prev.source.files || [prev.source.file]), f.rel];
+      if (!prev.msPath && ms) prev.msPath = ms.path;
+      return;
+    }
+    const steps = Object.fromEntries(Object.entries(parsed.steps).map(([k, st]) => [k, tag(st)]));
     const t = makeTarget(name, datasetRows.get(name), {
-      steps: parsed.steps, history: parsed.history, artifacts: parsed.artifacts, codes: parsed.codes,
+      steps, history: part.history, artifacts: parsed.artifacts, codes: [...new Set([...(parsed.codes || []), code].filter(Boolean))],
       msPath: ms ? ms.path : null, source: { kind: "result_csv", file: f.rel, origin: source },
     });
+    t.results = [part];
     seen.set(t.id, t);
   });
   // 6. Dataset rows without result history still appear (status unknown).

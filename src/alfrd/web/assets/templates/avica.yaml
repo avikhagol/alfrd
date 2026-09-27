@@ -37,6 +37,34 @@ results:
   calibration_step: rpicard
   calibrated_sources: '^calibrated\s+(.+)$'
 
+# Commands ALFRD runs (Studio → Workflow → Run…, `alfrd plan run`). alfrd.yaml
+# entrypoints with the same name replace these; `execution:` keys override one by one.
+# Placeholders: {target} {step} {from_step} {targets} {plan_csv} {root} and any
+# plan CSV column ({FILENAMES}, {PROJECT_CODE}, ...). No shell: one argv item each.
+entrypoint:
+  - name: avica-step                    # mode: step — one call per target × step
+    cmd: [avica, pipe, run, --t, "{target}", --f, "{FILENAMES}", "{step}"]
+  - name: avica-target                  # mode: target — one call per target
+    cmd: [avica, pipe, run, --t, "{target}", --f, "{FILENAMES}", --resume-from, "{from_step}"]
+  - name: avica-batch                   # mode: batch — one call per plan (future AVICA)
+    cmd: [avica, pipe, run, --targets, "{targets}", --csvfile, "{plan_csv}"]
+
+execution:
+  cwd: "."                              # next to alfrd.yaml / avica.inp
+  plan_csv: alfrd.plan.csv              # rows = targets, columns = steps
+  mode: step                            # step | target | batch
+  step_entrypoint: avica-step           # workflows[].entrypoint / steps[].entrypoint override it
+  target_entrypoint: avica-target
+  batch_entrypoint: avica-batch
+  concurrency: 1                        # targets at once (CASA MPI cores are per step)
+  on_failure: stop_target               # stop_target | continue | stop_plan
+  # `avica pipe run` exits 0 after a failed step: the result CSV row decides too.
+  status_from: both                     # exit_code | result_csv | both
+  launcher: detach                      # detach | systemd-run (survives logout with lingering)
+  auto_resume: adopt                    # adopt | always | never (after a restart / runner crash)
+  env:
+    PYTHONUNBUFFERED: "1"
+
 step_defaults:
   # Added to every step's logs.
   logs:

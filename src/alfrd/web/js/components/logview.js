@@ -47,8 +47,19 @@ function trim(text) {
 const atBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 
 /** Files for a project (step logs + log artifacts from alfrd.yaml). */
+const sources = []; // extra log lists (e.g. plans.js: command logs of scheduled runs)
+
+/** Add a source of log files: fn(ctx, project) → [{rel, name, groups, target, steps, size, mtime}]. */
+export function addLogSource(fn) {
+  if (!sources.includes(fn)) sources.push(fn);
+}
+
 export function projectLogs(ctx, project) {
-  return ctx.state.trees?.[project]?.logFiles || [];
+  const base = ctx.state.trees?.[project]?.logFiles || [];
+  if (!sources.length) return base;
+  const seen = new Set(base.map((f) => f.rel));
+  const extra = sources.flatMap((fn) => { try { return fn(ctx, project) || []; } catch { return []; } }).filter((f) => f?.rel && !seen.has(f.rel) && seen.add(f.rel));
+  return extra.length ? [...base, ...extra] : base;
 }
 
 /** Does a listed log belong to this target? (own target, its work dirs, or project-wide). */

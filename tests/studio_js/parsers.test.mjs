@@ -410,3 +410,42 @@ test("target_dir can be the project root (old AVICA layout: <CODE>/wd* next to a
   assert.equal(defsMod.fillPattern("{target_dir}/{target}_result.csv", { target_dir: "." }), "{target}_result.csv");
   assert.equal(defsMod.fillPattern("{target_dir}/BV019/wd", { target_dir: "./" }), "BV019/wd");
 });
+
+test("result CSVs: newer AVICA names result_<target>_<code>_<workdir>.csv (one target, several codes)", async () => {
+  const { parseResultFiles, DEFAULT_PATTERNS, resultCsvArtifactPatterns } = await import(path.join(web, "data/avica.js"));
+  const pats = { ...DEFAULT_PATTERNS };
+  const got = parseResultFiles([
+    "reductions/0742+103_result.csv",
+    "reductions/result_0742+103_RDV41_wd.csv",
+    "reductions/result_J07_42_BV019_wd_1.csv",
+    "reductions/BV019/wd/result_1309+555_BV019_wd.csv",
+    "reductions/notes.csv",
+  ], pats, "reductions", ["BV019", "RDV41"]);
+  assert.deepEqual(got, [
+    { file: "reductions/0742+103_result.csv", target: "0742+103" },
+    { file: "reductions/result_0742+103_RDV41_wd.csv", target: "0742+103", project_code: "RDV41", workdir: "wd" },
+    { file: "reductions/result_J07_42_BV019_wd_1.csv", target: "J07_42", project_code: "BV019", workdir: "wd_1" },
+    { file: "reductions/BV019/wd/result_1309+555_BV019_wd.csv", target: "1309+555", project_code: "BV019", workdir: "wd" },
+  ]);
+  // An alfrd.yaml written for AVICA <= 0.3 still finds the newer names.
+  const old = resultCsvArtifactPatterns({ name: "result_csv", path_pattern: "{target_dir}/{target}_result.csv" });
+  assert.equal(old[0], "{target_dir}/{target}_result.csv");
+  assert.ok(old.includes("{target_dir}/result_{target}_{project_code}_{workdirname}.csv"));
+
+  const head = "name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp\n";
+  const a = head + "fits_to_ms,1,0,2026-09-01 10:00:00,{},ok,[true],2026-09-01 11:00:00\n";
+  const b = head + "fits_to_ms,0,1,2026-09-02 10:00:00,{},bad,[false],2026-09-02 11:00:00\n";
+  const bundle = buildBundle([
+    { path: "avica.inp", name: "avica.inp", size: 20, text: "target_dir = reductions\n" },
+    { path: "reductions/result_0742+103_RDV41_wd.csv", name: "result_0742+103_RDV41_wd.csv", size: a.length, text: a },
+    { path: "reductions/result_0742+103_BV019_wd_1.csv", name: "result_0742+103_BV019_wd_1.csv", size: b.length, text: b },
+  ], { rootName: "P" });
+  const targets = bundle.targets.filter((t) => t.name === "0742+103");
+  assert.equal(targets.length, 1);
+  const t = targets[0];
+  assert.deepEqual(t.results.map((r) => [r.code, r.workdir]).sort(), [["BV019", "wd_1"], ["RDV41", "wd"]]);
+  assert.deepEqual(t.codes.map((c) => c.code).sort(), ["BV019", "RDV41"]);
+  assert.equal(t.steps.fits_to_ms.code, "BV019"); // the later attempt wins
+  assert.equal(t.steps.fits_to_ms.attempts.length, 2);
+  assert.equal(t.history.length, 2);
+});

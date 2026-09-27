@@ -395,6 +395,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     print(f"ALFRD Studio: {url}")
     print(f"ALFRD dashboard: http://{authority}:{port}/dashboard/")
     app = create_app(config)
+    _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
     browser_thread = None
     if (not no_browser and (loopback or host in {"0.0.0.0", "::"})
@@ -423,6 +424,27 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         stopped.set()
         if browser_thread is not None:
             browser_thread.join(timeout=1)
+
+
+def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
+    """Re-attach to `alfrd plan` runs whose runner stopped (server restart, crash, reboot)."""
+
+    def work() -> None:
+        try:
+            from alfrd.runtime import scheduler
+
+            for item in service.list_projects():
+                if scope and item.identifier not in scope:
+                    continue
+                root = Path(item.root_path)
+                if not (root / ".alfrd" / "plans").is_dir():
+                    continue
+                for action in scheduler.reconcile(root, spawn=spawn):
+                    print(f"Plan {action['plan']} ({item.name}): {action['action']}")
+        except Exception as error:  # noqa: BLE001 - never block the server on this
+            print(f"Plan reconcile skipped: {error}")
+
+    threading.Thread(target=work, name="alfrd-plan-reconcile", daemon=True).start()
 
 
 @alfrd_cli.command()
@@ -876,6 +898,240 @@ def _spawn_worker(run_id: str, db: Optional[str]) -> None:
         stderr=subprocess.DEVNULL,
         **kwargs,
     )
+
+
+# ---------------------------------------------------------------------------
+# alfrd plan: run a plan CSV (targets x steps) with the commands in alfrd.yaml
+
+plan_cli = typer.Typer(help="Plan and run workflow steps per target from a plan CSV (keeps running after the server stops).")
+alfrd_cli.add_typer(plan_cli, name="plan")
+
+_ROOT_OPT = typer.Option(".", "--root", "-C", help="Project folder (contains alfrd.yaml).")
+
+
+def _plan_fail(error: Exception) -> None:
+    print(f"error: {error}")
+    raise typer.Exit(code=1)
+
+
+def _plan_steps(cfg, steps: Optional[str], first: Optional[str], last: Optional[str]) -> list[str]:
+    order = cfg.step_ids
+    if steps:
+        chosen = [s.strip() for s in steps.split(",") if s.strip()]
+        unknown = [s for s in chosen if s not in order]
+        if unknown:
+            raise ValueError(f"unknown step(s) {', '.join(unknown)}; steps are {', '.join(order)}")
+        return chosen
+    lo = order.index(first) if first else 0
+    hi = order.index(last) if last else len(order) - 1
+    return order[lo:hi + 1]
+
+
+@plan_cli.command("new")
+def plan_new(
+    root: str = _ROOT_OPT,
+    targets: Optional[str] = typer.Option(None, "--targets", "-t", help="Comma-separated target names."),
+    from_csv: Optional[str] = typer.Option(None, "--from-csv", help="Dataset table with the key column (TARGET_NAME), FILENAMES, PROJECT_CODE."),
+    from_results: bool = typer.Option(False, "--from-results", help="Every target (and project code) found in result CSVs."),
+    files: Optional[str] = typer.Option(None, "--files", "-f", help="FITS file names for --targets (comma-separated)."),
+    steps: Optional[str] = typer.Option(None, "--steps", help="Steps to mark todo (comma-separated)."),
+    first: Optional[str] = typer.Option(None, "--from", help="First step to mark todo."),
+    last: Optional[str] = typer.Option(None, "--to", help="Last step to mark todo."),
+    output: Optional[str] = typer.Option(None, "-o", "--output", help="Plan CSV (default: execution.plan_csv)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing plan CSV."),
+):
+    """Write a plan CSV: one row per target, one column per step (todo / empty)."""
+    import csv as _csv
+
+    from alfrd.execution import ExecutionError, load_execution
+    from alfrd.runtime import plan_csv as pc
+
+    try:
+        cfg = load_execution(root)
+        chosen = _plan_steps(cfg, steps, first, last)
+        rows: list[dict] = []
+        if targets:
+            rows += [{"target": t.strip(), "files": files or ""} for t in targets.split(",") if t.strip()]
+        if from_csv:
+            with open(from_csv, newline="", encoding="utf-8-sig") as stream:
+                for row in _csv.DictReader(stream):
+                    lower = {k.lower(): v for k, v in row.items() if k}
+                    name = lower.get(cfg.key_column.lower()) or lower.get("target_name") or lower.get("target")
+                    if name:
+                        rows.append({"target": name.strip(), "files": lower.get(cfg.files_column.lower(), "") or "",
+                                     "code": lower.get(cfg.code_column.lower(), "") or ""})
+        if from_results:
+            from alfrd.avica_layout import scan_layout
+
+            seen = {(r["target"], r.get("code", "")) for r in rows}
+            for item in scan_layout(cfg.root)["result_csvs"]:
+                key = (item["target"], item.get("project_code", ""))
+                if item["target"] and key not in seen:
+                    seen.add(key)
+                    rows.append({"target": item["target"], "code": item.get("project_code", ""), "workdir": item.get("workdir", "")})
+        if not rows:
+            raise ValueError("no targets: use --targets, --from-csv or --from-results")
+        out = Path(output) if output else cfg.plan_csv
+        if out.exists() and not force:
+            raise ValueError(f"{out} exists (use --force to overwrite)")
+        pc.create(out, rows, cfg.step_ids, chosen, key_column=cfg.key_column, files_column=cfg.files_column,
+                  code_column=cfg.code_column, workdir_column=cfg.workdir_column)
+    except (ExecutionError, ValueError, OSError) as error:
+        _plan_fail(error)
+    missing = [r["target"] for r in rows if not r.get("files")]
+    print(f"{out}: {len(rows)} target(s), steps {', '.join(chosen)} marked todo.")
+    if missing and any("{" + cfg.files_column + "}" in " ".join(s.argv or ()) for s in cfg.steps):
+        print(f"Fill the {cfg.files_column} column for: {', '.join(missing[:10])}{' ...' if len(missing) > 10 else ''}")
+
+
+def _print_preview(result: dict) -> None:
+    print(f"plan {result['csv']} · mode {result['mode']} · cwd {result['cwd']}")
+    if result["missing_step_columns"]:
+        print(f"  (no column, not run: {', '.join(result['missing_step_columns'])})")
+    for unit in result["units"]:
+        label = f"{unit['target'] or '*'}{'@' + unit['code'] if unit.get('code') else ''} · {', '.join(unit['steps'])}"
+        if unit.get("error"):
+            print(f"  ✗ {label}: {unit['error']}")
+        else:
+            import shlex
+
+            print(f"  • {label}\n      $ {shlex.join(unit['argv'])}")
+    if not result["units"]:
+        print("  nothing to do (no todo cells)")
+
+
+@plan_cli.command("run")
+def plan_run(
+    csv_file: Optional[str] = typer.Argument(None, help="Plan CSV (default: execution.plan_csv)."),
+    root: str = _ROOT_OPT,
+    detach: bool = typer.Option(True, "--detach/--foreground", help="Run in the background (default) or in this terminal."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only print the commands, in order."),
+    mode: Optional[str] = typer.Option(None, "--mode", help="step | target | batch (default: execution.mode)."),
+    concurrency: Optional[int] = typer.Option(None, "--concurrency", "-j", help="Targets at once."),
+    on_failure: Optional[str] = typer.Option(None, "--on-failure", help="stop_target | continue | stop_plan."),
+    retry_failed: bool = typer.Option(False, "--retry-failed", help="Set failed/blocked/interrupted cells back to todo first."),
+):
+    """Start a plan: run every todo cell with its step command."""
+    from alfrd.execution import ExecutionError
+    from alfrd.runtime import scheduler
+
+    try:
+        if dry_run:
+            _print_preview(scheduler.preview(root, csv_file, mode=mode, on_failure=on_failure))
+            return
+        folder = scheduler.create_plan(root, csv_file, mode=mode, concurrency=concurrency,
+                                       on_failure=on_failure, retry_failed=retry_failed)
+    except (ExecutionError, OSError) as error:
+        _plan_fail(error)
+    if detach:
+        pid = scheduler.spawn_runner(folder)
+        print(f"plan {folder.id} started (runner pid {pid}). It keeps running when you close this terminal or the Studio.")
+        print(f"  alfrd plan status -C {folder.root}      alfrd plan pause|cancel {folder.id} -C {folder.root}")
+        return
+    raise typer.Exit(code=scheduler.Runner(folder.root, folder.id).run())
+
+
+@plan_cli.command("status")
+def plan_status_command(
+    plan_id: Optional[str] = typer.Argument(None, help="Plan id (default: the latest)."),
+    root: str = _ROOT_OPT,
+    as_json: bool = typer.Option(False, "--json"),
+    no_reconcile: bool = typer.Option(False, "--no-reconcile", help="Do not re-attach to a plan whose runner stopped."),
+):
+    """Show a plan: runner, the targets × steps grid, running commands and the queue."""
+    import json as _json
+
+    from alfrd.runtime import scheduler
+
+    if not no_reconcile:
+        for item in scheduler.reconcile(root):
+            print(f"plan {item['plan']}: {item['action']}")
+    data = scheduler.plan_status(root, plan_id)
+    if as_json:
+        print(_json.dumps(data, indent=1, default=str))
+        return
+    plan = data.get("plan")
+    if not plan:
+        print("no plans in this project (alfrd plan new, then alfrd plan run)")
+        return
+    runner = data["runner"]
+    who = f"runner pid {runner.get('pid')} on {runner.get('host')}" if runner.get("alive") else "no runner"
+    print(f"plan {plan['id']} · {plan['status']} · {who} · {plan['csv']} · mode {plan['mode']} × {plan['concurrency']}")
+    table = data["table"]
+    steps = table.get("steps") or []
+    marks = {"done": "✓", "failed": "✗", "running": "▶", "todo": "·", "blocked": "⊘", "interrupted": "!", "cancelled": "–", "skip": " "}
+    width = max([len(r["key"]) for r in table.get("rows") or []] + [6])
+    print(" " * (width + 2) + " ".join(s[:3] for s in steps))
+    for row in table.get("rows") or []:
+        print(f"  {row['key']:<{width}} " + " ".join(f"{marks.get(row['cells'].get(s), '?'):^3}" for s in steps))
+    for unit in data["running"]:
+        print(f"running: {unit['id']} pid {unit.get('pid')} since {unit.get('started')}  log {unit.get('log')}")
+    if data["queue"]:
+        print(f"queued: {len(data['queue'])} cell(s); next {data['queue'][0]['target']} · {data['queue'][0]['step']}")
+
+
+def _plan_control(action: str, plan_id: Optional[str], root: str, retry_failed: bool = False) -> None:
+    from alfrd.execution import ExecutionError
+    from alfrd.runtime import scheduler
+
+    try:
+        if plan_id is None:
+            plans = scheduler.list_plans(root)
+            if not plans:
+                raise ExecutionError("no plans in this project")
+            plan_id = plans[0]["id"]
+        plan = scheduler.control(root, plan_id, action, retry_failed=retry_failed)
+    except ExecutionError as error:
+        _plan_fail(error)
+    print(f"plan {plan_id}: {action} requested (status {plan.get('status')})")
+
+
+@plan_cli.command("pause")
+def plan_pause(plan_id: Optional[str] = typer.Argument(None), root: str = _ROOT_OPT):
+    """Finish running commands, start no new ones."""
+    _plan_control("pause", plan_id, root)
+
+
+@plan_cli.command("resume")
+def plan_resume(
+    plan_id: Optional[str] = typer.Argument(None),
+    root: str = _ROOT_OPT,
+    retry_failed: bool = typer.Option(False, "--retry-failed", help="Set failed/blocked/interrupted cells back to todo."),
+):
+    """Continue a paused or interrupted plan (starts a runner if none is alive)."""
+    _plan_control("resume", plan_id, root, retry_failed)
+
+
+@plan_cli.command("cancel")
+def plan_cancel(
+    plan_id: Optional[str] = typer.Argument(None),
+    root: str = _ROOT_OPT,
+    yes: bool = typer.Option(False, "--yes", help="Confirm without a prompt."),
+):
+    """Stop running commands (SIGTERM, then SIGKILL) and end the plan."""
+    if not yes and not typer.confirm("Stop the running commands and cancel the plan?", default=False):
+        raise typer.Exit(code=1)
+    _plan_control("cancel", plan_id, root)
+
+
+@plan_cli.command("reconcile")
+def plan_reconcile(root: str = _ROOT_OPT):
+    """Re-attach to plans whose runner stopped (after a crash, logout or reboot)."""
+    from alfrd.runtime import scheduler
+
+    items = scheduler.reconcile(root)
+    for item in items:
+        print(f"plan {item['plan']}: {item['action']}")
+    if not items:
+        print("nothing to reconcile")
+
+
+@plan_cli.command("runner", hidden=True)
+def plan_runner(plan_id: str, root: str = _ROOT_OPT):
+    """The background runner (started by `alfrd plan run` / the Studio)."""
+    from alfrd.runtime import scheduler
+
+    raise typer.Exit(code=scheduler.Runner(root, plan_id).run())
 
 
 if __name__ == "__main__":

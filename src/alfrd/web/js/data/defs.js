@@ -123,7 +123,7 @@ export function applyFieldAliases(manifest) {
 // ---------------------------------------------------------------------------
 // Patterns: {placeholder} = one folder level, * and ? = shell wildcards.
 
-const GROUPS = { project_code: "[^/]+", n: "\\d+", band: "[A-Z][A-Z0-9]*?", target: "[^/]+?" };
+const GROUPS = { project_code: "[^/]+", n: "\\d+", band: "[A-Z][A-Z0-9]*?", target: "[^/]+?", workdirname: "wd(?:_\\d+)?" };
 const reEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const TOKEN = /(\{\w+\}|\*|\?)/;
 
@@ -217,6 +217,7 @@ export function classifyLogs(entries, defs, ctx) {
 export function groupLabel(group, defs) {
   const [kind, id] = String(group).split(/:(.+)/);
   if (kind === "step") return defs?.steps?.[id]?.label ? `${id} — ${defs.steps[id].label}` : id;
+  if (kind === "plan") return `Scheduled run ${id}`;
   const a = (defs?.artifacts || []).find((x) => x.name === id);
   return a?.description || id;
 }

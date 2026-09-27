@@ -56,7 +56,9 @@ def test_scan_layout_finds_project_codes_targets_and_logs():
     assert codes["RDV41"]["targets"] == ["0742+103"]
     assert codes["RDV41"]["bands"] == ["S", "X"]
     assert codes["BV019"]["targets"] == ["1309+555"]
-    assert layout["patterns"]["result_csv"] == ["{target_dir}/{target}_result.csv"]
+    # alfrd.yaml's result_csv artifact comes first; the newer AVICA names follow.
+    assert layout["patterns"]["result_csv"][0] == "{target_dir}/{target}_result.csv"
+    assert "{target_dir}/result_{target}_{project_code}_{workdirname}.csv" in layout["patterns"]["result_csv"]
     assert layout["picard_input_template_update"] == "input_temp_update"
     crash = [log for log in layout["logs"] if log["kind"] == "crash"]
     assert crash and crash[0]["step"] == "rpicard"
@@ -252,3 +254,39 @@ def test_target_dir_can_be_the_project_root(tmp_path, target_value):
     assert ctx["target_dir"] == "."
     assert {wd["rel"] for wd in ctx["workdirs"]} == {"BV019/wd", "BV019/wd_1", "RDV41/wd"}
     assert fill("{target_dir}/{target}_result.csv", ctx) == "{target}_result.csv"
+
+
+def _new_result_names_tree(tmp_path):
+    root = tmp_path / "proj"
+    (root / "reductions" / "BV019" / "wd").mkdir(parents=True)
+    (root / "reductions" / "BV019" / "wd_1").mkdir(parents=True)
+    (root / "reductions" / "RDV41" / "wd").mkdir(parents=True)
+    (root / "avica.inp").write_text("target_dir = reductions\n")
+    header = "name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp\n"
+    for rel in [
+        "reductions/0742+103_result.csv",                       # AVICA <= 0.3
+        "reductions/result_0742+103_RDV41_wd.csv",               # new name in target_dir
+        "reductions/result_J07_42_BV019_wd_1.csv",               # target containing "_"
+        "reductions/BV019/wd/result_1309+555_BV019_wd.csv",      # new name inside the work dir
+    ]:
+        (root / rel).write_text(header)
+    return root
+
+
+def test_result_csvs_parse_new_avica_names(tmp_path):
+    from alfrd.avica_layout import result_csv_path
+
+    root = _new_result_names_tree(tmp_path)
+    items = {i["file"]: i for i in scan_layout(root)["result_csvs"]}
+    assert items["reductions/0742+103_result.csv"] == {"file": "reductions/0742+103_result.csv", "target": "0742+103"}
+    assert items["reductions/result_0742+103_RDV41_wd.csv"] == {
+        "file": "reductions/result_0742+103_RDV41_wd.csv", "target": "0742+103", "project_code": "RDV41", "workdir": "wd"}
+    assert items["reductions/result_J07_42_BV019_wd_1.csv"]["target"] == "J07_42"
+    assert items["reductions/result_J07_42_BV019_wd_1.csv"]["project_code"] == "BV019"
+    assert items["reductions/result_J07_42_BV019_wd_1.csv"]["workdir"] == "wd_1"
+    inside = items["reductions/BV019/wd/result_1309+555_BV019_wd.csv"]
+    assert (inside["target"], inside["project_code"], inside["workdir"]) == ("1309+555", "BV019", "wd")
+    # Lookup by (target, code, workdir); the old name has no code, so it matches any.
+    names = {p.name for p in result_csv_path(root, "0742+103", "RDV41", "wd")}
+    assert names == {"result_0742+103_RDV41_wd.csv", "0742+103_result.csv"}
+    assert {p.name for p in result_csv_path(root, "0742+103", "BV019")} == {"0742+103_result.csv"}

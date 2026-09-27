@@ -57,6 +57,29 @@ export const server = {
     return project;
   },
 
+  // Plans: run a plan CSV (targets × steps) with alfrd.yaml's commands (alfrd.runtime.scheduler).
+  executionInfo(project) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/execution`);
+  },
+  planPreview(project, payload) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/preview`, payload);
+  },
+  planStatus(project, id = null) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/plans${id ? `?id=${encodeURIComponent(id)}` : ""}`);
+  },
+  planStart(project, payload) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans`, payload);
+  },
+  planAction(project, id, action, payload = {}) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/${action}`, payload);
+  },
+  planCells(project, id, cells) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/cells`, { cells });
+  },
+  planReconcile(project) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/reconcile`, {});
+  },
+
   retryStep(runId, stepKey) {
     return this.mutate(`/runtime/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepKey)}/retry`, {});
   },

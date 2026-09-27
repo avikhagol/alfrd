@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Fake `avica pipe run` for ALFRD's execution tests (never runs CASA).
+
+Appends one AVICA result-CSV row per step, like AVICA does, and exits 0 even
+when a step fails (AVICA prints the result and returns).
+
+  FAKE_AVICA_SLEEP   seconds per step (default 0.2)
+  FAKE_AVICA_FAIL    comma list of "step" or "target:step" that fail
+  FAKE_AVICA_NAMES   "old" (<target>_result.csv, default) or "new"
+                     (result_<target>_<code>_<wd>.csv)
+  FAKE_AVICA_CODE / FAKE_AVICA_WD   code and work dir for "new" names (BV019 / wd)
+  FAKE_AVICA_EXIT    exit code to return after the last step (default 0)
+  FAKE_AVICA_TICK    print a line every 0.5 s while a step works
+"""
+import csv
+import os
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+STEPS = ["preprocess_fitsidi", "fits_to_ms", "phaseshift", "avica_avg", "avicameta_ms",
+         "avica_snr", "avica_fill_input", "avica_split_ms", "rpicard"]
+FIELDS = ["name", "success_count", "failed_count", "start_stamp", "detail", "desc", "success", "end_stamp"]
+
+
+def target_dir():
+    for line in Path("avica.inp").read_text().splitlines() if Path("avica.inp").exists() else []:
+        if line.split("=")[0].strip() == "target_dir":
+            return Path(line.split("=", 1)[1].strip().strip('"'))
+    return Path("reduction")
+
+
+def main(argv):
+    if argv[:2] != ["pipe", "run"]:
+        print("fake avica: only `pipe run` is supported", file=sys.stderr)
+        return 2
+    args = argv[2:]
+    opts, steps = {}, []
+    i = 0
+    while i < len(args):
+        if args[i] in ("--t", "--target", "--f", "--fitsfilenames", "--resume-from", "--targets", "--csvfile"):
+            opts[args[i].lstrip("-")] = args[i + 1]
+            i += 2
+        else:
+            steps.append(args[i])
+            i += 1
+    targets = opts.get("targets", "").split(",") if opts.get("targets") else [opts.get("t") or opts.get("target", "")]
+    if opts.get("resume-from"):
+        steps = STEPS[STEPS.index(opts["resume-from"]):]
+    steps = steps or STEPS
+    fail = {x.strip() for x in os.environ.get("FAKE_AVICA_FAIL", "").split(",") if x.strip()}
+    pause = float(os.environ.get("FAKE_AVICA_SLEEP", "0.2"))
+    names = os.environ.get("FAKE_AVICA_NAMES", "old")
+    code, wd = os.environ.get("FAKE_AVICA_CODE", "BV019"), os.environ.get("FAKE_AVICA_WD", "wd")
+    out_dir = target_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for target in targets:
+        if not (opts.get("f") or opts.get("fitsfilenames")) and not opts.get("targets"):
+            print("No FITS filenames supplied", file=sys.stderr)
+        csv_path = out_dir / (f"result_{target}_{code}_{wd}.csv" if names == "new" else f"{target}_result.csv")
+        for step in steps:
+            start = datetime.now()
+            print(f">  Processing: {step} ({target})", flush=True)
+            if os.environ.get("FAKE_AVICA_TICK"):  # print while working, so logs grow
+                waited = 0.0
+                while waited < pause:
+                    time.sleep(0.5)
+                    waited += 0.5
+                    print(f"   {step}: working {waited:.1f} s", flush=True)
+            else:
+                time.sleep(pause)
+            bad = step in fail or f"{target}:{step}" in fail
+            new = not csv_path.exists()
+            with open(csv_path, "a", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=FIELDS)
+                if new:
+                    writer.writeheader()
+                writer.writerow({"name": step, "success_count": 0 if bad else 1, "failed_count": 1 if bad else 0,
+                                 "start_stamp": start, "detail": "{}", "desc": "boom" if bad else "ok",
+                                 "success": "[false]" if bad else "[true]", "end_stamp": datetime.now()})
+            if bad:
+                print(f"step {step} failed", flush=True)
+                break
+    print("AvicaResult(...)")
+    return int(os.environ.get("FAKE_AVICA_EXIT", "0"))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

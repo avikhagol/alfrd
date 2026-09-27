@@ -148,6 +148,28 @@ def _artifact_media_type(path: Path) -> str | None:
     return None
 
 
+def _discover_result_csvs(root: Path, reductions: Path) -> list[tuple[Path, dict[str, str]]]:
+    """Result CSVs under ``reductions`` via the alfrd.yaml ``result_csv`` patterns."""
+    from alfrd.avica_layout import layout_patterns, result_csvs, scan_project_codes
+
+    try:
+        patterns = layout_patterns(root)
+    except Exception:  # noqa: BLE001 - no/invalid alfrd.yaml: built-in patterns
+        patterns = None
+    try:
+        known = [code.code for code in scan_project_codes(root, reductions, patterns)]
+    except Exception:  # noqa: BLE001
+        known = []
+    items = result_csvs(root, reductions, patterns, known)
+    out = []
+    for item in items:
+        path = (root / item["file"]).resolve()
+        if not item.get("target") and path.name.endswith(_RESULT_SUFFIX):
+            continue
+        out.append((path, item))
+    return sorted(out, key=lambda pair: str(pair[0]))
+
+
 def import_avica_run(
     service: RuntimeService,
     reductions_dir: str | Path,
@@ -166,9 +188,11 @@ def import_avica_run(
     reductions = Path(reductions_dir).expanduser().resolve()
     if not reductions.is_dir():
         raise FileNotFoundError(reductions)
-    result_files = sorted(reductions.glob(f"*{_RESULT_SUFFIX}"))
-    if not result_files:
-        raise ValueError(f"No *{_RESULT_SUFFIX} files found in {reductions}")
+    source_root = Path(project_root).expanduser().resolve() if project_root else reductions.parent
+    found = _discover_result_csvs(source_root, reductions)
+    if not found:
+        raise ValueError(f"No *{_RESULT_SUFFIX} (or result_<target>_<code>_<workdir>.csv) files found in {reductions}")
+    result_files = [path for path, _ in found]
     if len(set(steps)) != len(steps) or not steps:
         raise ValueError("steps must be a non-empty sequence of unique keys")
     if any(project.name == project_name for project in service.list_projects()):
@@ -177,7 +201,6 @@ def import_avica_run(
             "use a new --project name or a fresh runtime DB"
         )
 
-    source_root = Path(project_root).expanduser().resolve() if project_root else reductions.parent
     parameters = parse_avica_config(reductions.parent / "avica.inp")
     project = service.create_project(
         project_name,
@@ -194,8 +217,15 @@ def import_avica_run(
 
     artifact_count = 0
     skipped_artifact_count = 0
-    for result_csv in result_files:
-        target = result_csv.name[: -len(_RESULT_SUFFIX)]
+    per_target: dict[str, int] = {}
+    for _, info in found:
+        per_target[info["target"]] = per_target.get(info["target"], 0) + 1
+    for result_csv, info in found:
+        target = info["target"]
+        code, workdir = info.get("project_code") or "", info.get("workdir") or ""
+        # One result file per (target, project code, work dir) with newer AVICA;
+        # the dataset id stays the bare target unless the target has several files.
+        external_id = target if per_target[target] == 1 or not code else f"{target}@{code}/{workdir}"
         with result_csv.open(newline="", encoding="utf-8-sig") as stream:
             rows = list(csv.DictReader(stream))
         latest = _latest_rows(rows)
@@ -204,12 +234,17 @@ def import_avica_run(
             raise ValueError(
                 f"{result_csv} contains steps not declared for this import: {', '.join(unknown)}"
             )
+        metadata = {"result_csv": str(result_csv), "target": target}
+        if code:
+            metadata["project_code"] = code
+        if workdir:
+            metadata["workdir"] = workdir
         dataset = service.create_dataset(
             project.id,
-            target,
+            external_id,
             name=target,
             uri=str(result_csv),
-            metadata={"result_csv": str(result_csv)},
+            metadata=metadata,
         )
         execution_rows: list[dict[str, Any]] = []
         starts: list[datetime] = []

@@ -12,6 +12,7 @@ Run pipeline steps. Track their progress in a table. See it all in a web UI.
 - [Quick start: the web UI](#quick-start-the-web-ui)
 - [`alfrd serve` examples](#alfrd-serve-examples)
 - [Tell the Studio about your pipeline (`alfrd.yaml`)](#tell-the-studio-about-your-pipeline-alfrdyaml)
+- [Run workflow steps per target (plans)](#run-workflow-steps-per-target-plans)
 - [Run steps from Python](#run-steps-from-python)
 - [Track progress in a table](#track-progress-in-a-table)
 - [Runtime database](#runtime-database)
@@ -202,6 +203,44 @@ AVICA helpers:
 alfrd avica summary                     # cache `avica pipe config --summary`
 alfrd avica scan . --bundle scan.json   # pack a remote tree for the Studio
 ```
+
+---
+
+## Run workflow steps per target (plans)
+
+A **plan CSV** has one row per target and one column per step. `todo` runs the cell, an empty cell or `skip` doesn't. ALFRD writes `running`, `done`, `failed`, `blocked` (after a failed step), `interrupted` or `cancelled` back into the file:
+
+```text
+TARGET_NAME,FILENAMES,PROJECT_CODE,WORKDIR,preprocess_fitsidi,fits_to_ms,avica_avg
+J0742+103,"bv019a.idifits,bv019b.idifits",BV019,,done,running,todo
+```
+
+The commands come from `alfrd.yaml`. The `avica` template already has them:
+
+```yaml
+entrypoint:
+  - {name: avica-step, cmd: [avica, pipe, run, --t, "{target}", --f, "{FILENAMES}", "{step}"]}
+execution:
+  step_entrypoint: avica-step   # or workflows[].entrypoint, or a step's own entrypoint / cmd
+  mode: step                    # step: one call per target x step | target: one per target | batch: one per plan
+  concurrency: 1
+  on_failure: stop_target       # stop_target | continue | stop_plan
+  status_from: both             # avica pipe run exits 0 after a failed step: the result CSV row decides too
+```
+
+Each argv item is filled separately (no shell). `{target}`, `{step}`, `{from_step}`, `{targets}` and `{plan_csv}` are available, and so is every plan CSV column. A value that is missing stops the command before it starts.
+
+```bash
+alfrd plan new --from-csv targets.csv --from fits_to_ms   # or --targets a,b --files x.idifits
+alfrd plan run --dry-run                                  # the commands, in order
+alfrd plan run                                            # starts a background runner
+alfrd plan status                                         # grid, running commands, queue
+alfrd plan pause | resume [--retry-failed] | cancel
+```
+
+In the Studio (`alfrd serve`), open **Workflow → Run…**. The **Schedule** tab shows the targets × steps grid and the execution order (running, queued with ETAs, failed, done). The graph and list show the plan's progress.
+
+Runs keep going when the Studio, `alfrd serve` or the terminal is closed. The runner is a detached process, and every command writes straight to its log under `.alfrd/plans/<id>/`. A new runner re-adopts commands that are still alive. After a reboot, `alfrd serve` or `alfrd plan status` marks the plan *interrupted*, and **Resume** continues from the first unfinished cell. Result CSVs are found by name: `result_<target>_<code>_<workdir>.csv` (newer AVICA) and `<target>_result.csv`.
 
 ---
 

@@ -47,9 +47,11 @@ def test_index_references_local_assets_only():
             assert "@import url(" not in text, path
 
 
-def test_payload_budget_under_150kb_compressed():
+def test_payload_budget_under_165kb_compressed():
+    # 150 KB until 0.2.1 (the Studio was at ~149 KB); scheduled runs (plans.js,
+    # Run dialog, Schedule view) added ~12 KB.
     total = sum(len(gzip.compress(p.read_bytes(), 9)) for p in _web_files())
-    assert total < 150 * 1024, f"{total} bytes gzip"
+    assert total < 165 * 1024, f"{total} bytes gzip"
 
 
 def test_no_pipeline_names_are_hardcoded_in_the_studio_code():

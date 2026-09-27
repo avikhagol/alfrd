@@ -68,7 +68,7 @@ dataset_columns:
   - name: TARGET_NAME
     type: string
     required: true
-    description: Source/target name, from <target_dir>/<TARGET>_result.csv.
+    description: Source/target name, from the result CSV name (result_<TARGET>_<CODE>_<wd>.csv or <TARGET>_result.csv).
   - name: PROJECT_CODE
     type: string
     required: false
@@ -127,7 +127,12 @@ workflows:
 
 artifacts:
   - name: result_csv
-    path_pattern: "{target_dir}/{target}_result.csv"
+    # Newer AVICA: one file per (target, project code, work dir); {workdirname} = wd, wd_1, ...
+    path_pattern: "{target_dir}/result__{target}__{project_code}__{workdirname}.csv"
+    fallback_patterns:
+      - "{target_dir}/{project_code}/{workdirname}/result__{target}__{project_code}__{workdirname}.csv"
+      - "{target_dir}/{target}_result.csv"        # AVICA <= 0.3
+      - "{target_dir}/{project_code}/{workdirname}/result_{target}.csv"
     description: Per-target AVICA step execution history.
     media_type: text/csv
     kind: table

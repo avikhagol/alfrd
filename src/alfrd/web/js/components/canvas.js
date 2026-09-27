@@ -1,14 +1,17 @@
 // VIEW 2 — Workflow Canvas: stage-banded node graph, bezier dependency links,
-// pan/zoom, mini-map, list view, step inspector and a DAG *simulation*.
+// pan/zoom, mini-map, list view, step inspector, and scheduled runs.
 //
-// The simulation only animates the dependency graph in this browser. It never
-// executes CASA/rPicard or any Python; the UI labels it as simulated.
+// With `alfrd serve`, Run… starts a plan (commands from alfrd.yaml, run by a
+// detached runner on the server; see plans.js) and the graph / list / Schedule
+// views show its progress. Without a server the old DAG *simulation* remains:
+// it only animates the graph in this browser and never executes anything.
 
 import { $, $$, on, esc, icon, short, hms, elapsed, storage, loadUi, saveUi } from "../utils/dom.js";
 import { STEP_STATUS } from "../data/model.js";
 import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
 import { logItem, logForTarget, projectLogs, zoomablePre } from "./logview.js";
+import { CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule } from "./plans.js";
 
 const W = 1040;
 const GAP = 32;
@@ -24,6 +27,8 @@ const ui = {
   layoutKey: null,
 };
 const remember = () => saveUi("workflow.v2", ui, UI_FIELDS);
+
+const planRequested = new Set(); // projects whose plan state was fetched once by the Workflow view
 
 // Simulation state (browser-only).
 const sim = {
@@ -60,8 +65,24 @@ function baseStatus(ctx, key) {
   return t?.steps?.[key]?.status || "pending";
 }
 
+/** ALFRD project shown in the Workflow view. */
+function wfProject(ctx) {
+  const t = ctx.target();
+  return t?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : Object.keys(ctx.state.trees || {})[0]);
+}
+
+/** A running / paused / interrupted plan of this project (cells overlay the imported status). */
+function overlay(ctx) {
+  const project = wfProject(ctx);
+  return activePlan(project) ? planOverlay(project, ctx.target()) : null;
+}
+
 function statusOf(ctx, key) {
   if (sim.active && sim.statuses[key]) return sim.statuses[key];
+  const o = overlay(ctx);
+  const cell = o?.row?.cells?.[key];
+  const mapped = cell && CELL[cell]?.step;
+  if (mapped && !(cell === "done" && baseStatus(ctx, key) === "completed")) return mapped;
   return baseStatus(ctx, key);
 }
 
@@ -151,6 +172,7 @@ export function mount(el, ctx) {
           <div class="minimap" id="minimap-panel"></div>
         </div>
         <div class="wf-list" id="wf-list" hidden></div>
+        <div class="wf-sched" id="wf-sched" hidden></div>
       </div>
       <aside class="inspector" id="wf-inspector" aria-label="Step inspector"></aside>
     </div></div>`;
@@ -224,6 +246,14 @@ export function mount(el, ctx) {
   });
 
   on(el, "click", "[data-act]", (e, b) => act(el, ctx, b.dataset.act, b));
+  const toSchedule = () => { ui.mode = "schedule"; remember(); ctx.update(); };
+  on(el, "click", "[data-plan]", (e, b) => {
+    if (b.dataset.plan === "schedule") { toSchedule(); return; }
+    const only = b.dataset.only ? [b.dataset.only] : null;
+    planAct(ctx, wfProject(ctx), b.dataset.plan, b, { only, onStarted: toSchedule });
+  });
+  on(el, "click", "td[data-cell]", (e, td) => cellMenu(ctx, wfProject(ctx), td));
+  on(el, "change", "[data-plan-pick]", (e, sel) => loadPlan(ctx, wfProject(ctx), { id: sel.value }));
   on(el, "click", "[data-tab]", (e, b) => { ui.tab = b.dataset.tab; remember(); renderInspector(el, ctx); });
   on(el, "click", "[data-fold=inspector]", () => { ui.inspector = !ui.inspector; remember(); ctx.update(); requestAnimationFrame(() => drawViewport(el)); });
   on(el, "click", "#minimap-panel .mm-svg", (e, svg) => {
@@ -330,6 +360,7 @@ function act(el, ctx, name, button) {
   switch (name) {
     case "graph":
     case "list":
+    case "schedule":
       ui.mode = name;
       remember();
       ctx.update();
@@ -362,6 +393,7 @@ function act(el, ctx, name, button) {
       ctx.menu(button, [
         { label: "Export workflow YAML", icon: "download", run: () => document.querySelector("#btn-export").click() },
         { label: "Clear simulation", icon: "reset", run: () => { resetSimulation(); ctx.update(); } },
+        ...(plansAvailable(ctx, wfProject(ctx)) ? [{ label: "Simulate in the browser (nothing runs)", icon: "play", run: () => toggleSim(ctx) }] : []),
         { label: "Open log stream", icon: "terminal", run: () => ctx.renderConsole() },
       ]);
       break;
@@ -602,20 +634,47 @@ export function render(el, ctx) {
     resetSimulation();
   }
   if (!stepByKey(ctx, ui.selected)) ui.selected = steps(ctx).find((s) => ["failed", "running", "warning"].includes(statusOf(ctx, s.key)))?.key || steps(ctx)[0]?.key;
+  const project = wfProject(ctx);
+  const plans = plansAvailable(ctx, project);
+  if (plans && planOf(project) === null && !planRequested.has(project)) { planRequested.add(project); loadPlan(ctx, project, { quiet: true }); }
+  if (ui.mode === "schedule" && !plans) ui.mode = "graph";
   renderToolbar(el, ctx);
   renderInfo(el, ctx);
   const list = $("#wf-list", el);
   const canvasEl = $("#wf-canvas", el);
+  const sched = $("#wf-sched", el);
   list.hidden = ui.mode !== "list";
-  el.querySelector(".wf")?.classList.toggle("list-mode", ui.mode === "list");
-  canvasEl.hidden = ui.mode === "list";
+  sched.hidden = ui.mode !== "schedule";
+  el.querySelector(".wf")?.classList.toggle("list-mode", ui.mode !== "graph");
+  el.querySelector(".wf")?.classList.toggle("sched-mode", ui.mode === "schedule");
+  canvasEl.hidden = ui.mode !== "graph";
   if (ui.mode === "list") renderList(el, ctx);
+  else if (ui.mode === "schedule") renderSchedule(sched, ctx, project);
   else renderGraph(el, ctx);
   renderInspector(el, ctx);
-  ctx.setFooterRight(`<span class="chip" id="foot-zoom">Zoom ${Math.round(ui.zoom * 100)}%</span> <span class="chip ${sim.active && !isFinished() ? "tone-run" : ""}"><i class="dot"></i>${sim.active ? (isFinished() ? "Simulation finished" : sim.paused ? "Simulation paused" : "Simulating") : "Simulation Ready"}</span>`);
+  const ap = plans ? activePlan(project) : null;
+  const right = sim.active
+    ? `<span class="chip ${!isFinished() ? "tone-run" : ""}"><i class="dot"></i>${isFinished() ? "Simulation finished" : sim.paused ? "Simulation paused" : "Simulating"}</span>`
+    : ap ? `<span class="chip tone-run"><i class="dot"></i>Plan ${esc(ap.plan.status)}</span>` : plans ? '<span class="chip"><i class="dot"></i>Ready to run</span>' : '<span class="chip"><i class="dot"></i>Simulation Ready</span>';
+  ctx.setFooterRight(`<span class="chip" id="foot-zoom">Zoom ${Math.round(ui.zoom * 100)}%</span> ${right}`);
+}
+
+function runGroup(ctx, project) {
+  const ap = activePlan(project);
+  const counts = {};
+  (ap?.table?.rows || []).forEach((r) => Object.values(r.cells).forEach((v) => { if (v && v !== "skip") counts[v] = (counts[v] || 0) + 1; }));
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const canRun = Boolean(server.session?.mutations_enabled);
+  return `<div class="sim-group ${ap ? "on" : ""}">
+    <button class="btn primary" data-plan="new" ${canRun ? "" : "disabled title='Only from a browser on the same machine as alfrd serve'"} title="Run steps for targets with the commands in alfrd.yaml">${icon("play")} Run…</button>
+    <button class="icon-btn" data-plan="dry" title="Dry run: list the commands a run would start, in order (nothing runs)" aria-label="Dry run">${icon("list")}</button>
+    ${ap ? `<button class="btn sm" data-plan="schedule" title="Plan ${esc(ap.plan.id)}">${icon(ap.plan.status === "running" ? "sync" : "pause", ap.plan.status === "running" && ap.runner?.alive ? "spin" : "")} ${esc(ap.plan.status)} ${counts.done || 0}/${total}</button>` : ""}
+  </div>`;
 }
 
 function renderToolbar(el, ctx) {
+  const project = wfProject(ctx);
+  const plans = plansAvailable(ctx, project);
   const f = ctx.state.workflowFile;
   const wf = ctx.state.workflow;
   const running = sim.active && !isFinished();
@@ -625,13 +684,13 @@ function renderToolbar(el, ctx) {
       <span class="badge tone-${f.validated ? "ok" : "fail"}">${f.validated ? "Validated" : `${f.errors?.length || 0} error(s)`}</span>${f.modified ? '<span class="badge tone-warn">edited</span>' : ""}
       <button class="link-btn" data-act="replace">Replace</button><input type="file" id="wf-replace-input" accept=".yaml,.yml" hidden></div>
     <span class="stat"><i class="dot ok"></i>${wf.steps.length} Nodes / ${wf.stages.length} Stages</span>
-    <div class="seg"><button data-act="graph" class="${ui.mode === "graph" ? "on" : ""}">${icon("graph")} Graph</button><button data-act="list" class="${ui.mode === "list" ? "on" : ""}">${icon("list")} List</button></div>
+    <div class="seg"><button data-act="graph" class="${ui.mode === "graph" ? "on" : ""}">${icon("graph")} Graph</button><button data-act="list" class="${ui.mode === "list" ? "on" : ""}">${icon("list")} List</button>${plans ? `<button data-act="schedule" class="${ui.mode === "schedule" ? "on" : ""}" title="Scheduled runs: targets × steps and execution order">${icon("clock")} Schedule</button>` : ""}</div>
     <button class="btn" data-act="validate">${icon("validate")} Validate configuration</button>
-    <div class="sim-group ${running ? "on" : ""}">
+    ${plans && !sim.active ? runGroup(ctx, project) : `<div class="sim-group ${running ? "on" : ""}">`}${plans && !sim.active ? "" : `
       <button class="btn ${running ? "primary" : ""}" data-act="sim" title="Browser simulation only">${icon(running && !sim.paused ? "sync" : "play", running && !sim.paused ? "spin" : "")}<span id="wf-sim-label">${running ? (sim.paused ? `Paused (${pct}%)` : `Simulating (${pct}%)`) : sim.active ? "Re-run simulation" : "Simulate"}</span></button>
       <button class="icon-btn" data-act="sim" ${running ? "" : "disabled"} aria-label="${sim.paused ? "Resume" : "Pause"}" title="${sim.paused ? "Resume" : "Pause"}">${icon(sim.paused ? "play" : "pause")}</button>
       <button class="icon-btn" data-act="sim-stop" ${sim.active ? "" : "disabled"} aria-label="Stop simulation" title="Stop">${icon("stop")}</button>
-    </div>
+    </div>`}
     <span class="grow"></span>
     <div class="zoom-group">
       <button class="icon-btn" data-act="zoom-out" aria-label="Zoom out">${icon("minus")}</button>
@@ -653,12 +712,13 @@ function renderInfo(el, ctx) {
     <span class="info-ic">${icon("target")}</span>
     <div class="grow"><b>${esc(t ? `${ctx.projectName(t.project)} / Target: ${t.name}` : "No target selected")}</b>${c.CORRELATOR ? ` <span class="chip">${esc(c.CORRELATOR)}</span>` : ""}
       <div class="muted small">${facts.length ? esc(facts.join(" | ")) : t ? `Status overlay from ${esc(t.source?.kind === "server" ? "ALFRD runtime" : t.source?.file || "import")}` : "Pick a target in the header to overlay its results."}</div></div>
-    <div class="info-stat"><span class="muted small">Elapsed Sim Time</span><b id="wf-elapsed" class="tabular">${sim.active ? elapsed(sim.elapsed) : "—"}</b></div>
+    ${sim.active || !plansAvailable(ctx, wfProject(ctx)) ? `<div class="info-stat"><span class="muted small">Elapsed Sim Time</span><b id="wf-elapsed" class="tabular">${sim.active ? elapsed(sim.elapsed) : "—"}</b></div>` : ""}
     <div class="info-stat"><span class="muted small">Step parameters from</span><b class="small mono">${esc(paramSource)}</b></div>
     ${sim.active ? `<span class="badge tone-run" title="Nothing is executed in the browser">${icon("info")}Simulated</span>` : ""}`;
 }
 
 function nodeHtml(ctx, s, p) {
+  const plan = overlay(ctx);
   const st = displayStatus(ctx, s);
   const meta = STEP_STATUS[st] || STEP_STATUS.pending;
   const t = ctx.target();
@@ -681,6 +741,7 @@ function nodeHtml(ctx, s, p) {
       <span class="tabular dur">${Number.isFinite(dur) ? esc(short(dur)) : "--:--"}</span>
     </div>
     ${s.alias ? `<span class="alias-tag" title="Resolved from legacy ${esc(s.alias)}">${esc(s.alias)}→</span>` : ""}
+    ${plan && !plan.row && plan.counts[s.key] && Object.keys(plan.counts[s.key]).length ? `<div class="node-plan" title="Plan ${esc(plan.plan.id)}: cells over all targets">${countsLine(plan.counts[s.key])}</div>` : ""}
   </div>`;
 }
 
@@ -752,11 +813,13 @@ function drawViewport(el) {
 
 function renderList(el, ctx) {
   const t = ctx.target();
+  const plan = overlay(ctx);
   $("#wf-list", el).innerHTML = `<table class="tbl list-tbl"><thead><tr><th>#</th><th>Step</th><th>Stage</th><th>Category</th><th>Depends on</th><th>Parameters</th><th>Status</th><th>Runtime</th></tr></thead><tbody>
     ${ctx.state.workflow.steps.map((s, i) => {
       const st = displayStatus(ctx, s);
       const stage = ctx.state.workflow.stages.find((x) => x.id === s.stage);
-      return `<tr data-step="${esc(s.key)}" class="st-${st} ${ui.selected === s.key ? "sel" : ""}"><td>${i + 1}</td><td class="mono"><b>${esc(s.key)}</b>${s.alias ? ` <small class="muted">(${esc(s.alias)})</small>` : ""}<div class="muted small">${esc(s.label)}</div></td><td>${esc(stage?.title || s.stage)}</td><td>${esc(s.category)}</td><td class="mono small">${esc(s.depends.join(", ") || "—")}</td><td class="mono small">${esc(Object.entries(s.params).map(([k, v]) => `${k}=${v}`).join(" "))}</td><td><span class="badge tone-${STEP_STATUS[st]?.tone}">${icon(STEP_STATUS[st]?.icon)}${esc(STEP_STATUS[st]?.label)}</span></td><td class="tabular">${esc(short(sim.active && sim.statuses[s.key] === "completed" ? sim.modeled[s.key] : t?.steps?.[s.key]?.duration) || "—")}</td></tr>`;
+      const pc = plan && !plan.row ? plan.counts[s.key] : null;
+      return `<tr data-step="${esc(s.key)}" class="st-${st} ${ui.selected === s.key ? "sel" : ""}"><td>${i + 1}</td><td class="mono"><b>${esc(s.key)}</b>${s.alias ? ` <small class="muted">(${esc(s.alias)})</small>` : ""}<div class="muted small">${esc(s.label)}</div></td><td>${esc(stage?.title || s.stage)}</td><td>${esc(s.category)}</td><td class="mono small">${esc(s.depends.join(", ") || "—")}</td><td class="mono small">${esc(Object.entries(s.params).map(([k, v]) => `${k}=${v}`).join(" "))}</td><td><span class="badge tone-${STEP_STATUS[st]?.tone}">${icon(STEP_STATUS[st]?.icon)}${esc(STEP_STATUS[st]?.label)}</span>${pc ? `<div class="node-plan">${countsLine(pc)}</div>` : ""}</td><td class="tabular">${esc(short(sim.active && sim.statuses[s.key] === "completed" ? sim.modeled[s.key] : t?.steps?.[s.key]?.duration) || "—")}</td></tr>`;
     }).join("")}</tbody></table>`;
 }
 
@@ -811,9 +874,15 @@ function renderInspector(el, ctx) {
   const nLogs = stepLogs.length + files.length;
   const avica = ctx.state.workflow.template === "avica";
   const paramFrom = ctx.state.paramSource || "alfrd.yaml";
+  const po = overlay(ctx);
+  const cell = po?.row?.cells?.[s.key];
+  const unit = cell ? (planOf(project)?.units || []).slice().reverse().find((u) => (u.rows || [u.row]).includes(po.row.key) && (u.steps || []).includes(s.key)) : null;
+  const planLine = cell && cell !== "skip"
+    ? `<div class="insp-plan small"><span class="badge tone-${CELL[cell]?.tone || "muted"}">${icon(CELL[cell]?.icon || "info", cell === "running" ? "spin" : "")}plan: ${esc(CELL[cell]?.label || cell)}</span>${unit?.log ? ` ${logButtons(project, unit.log, { label: "command log" })}` : ""}${unit?.argv ? `<code class="trunc" title="${esc(unit.argv.join(" "))}">${esc(unit.argv.join(" "))}</code>` : ""}${unit?.error ? `<span class="muted">${esc(unit.error)}</span>` : ""}</div>`
+    : "";
   box.innerHTML = `
     <header class="insp-h"><span class="node-ic">${icon(s.icon)}</span><div class="grow"><div class="row gap"><b class="mono">${esc(s.key)}</b><span class="chip caps">${esc(s.category)}</span></div><div>${esc(s.label)}</div></div><button class="icon-btn sm" data-fold="inspector" title="Fold inspector" aria-label="Fold inspector" aria-expanded="true">${icon("fold")}</button></header>
-    ${progressLine}
+    ${progressLine}${planLine}
     <nav class="tabs" role="tablist">
       <button role="tab" data-tab="params" class="${ui.tab === "params" ? "on" : ""}">Parameters</button>
       <button role="tab" data-tab="bindings" class="${ui.tab === "bindings" ? "on" : ""}">Bindings (${s.inputs.length + s.outputs.length})</button>
@@ -845,6 +914,8 @@ function renderInspector(el, ctx) {
     </div>
     <footer class="insp-f">
       <div class="row gap"><button class="btn primary grow" data-act="apply" id="wf-apply" ${ui.draft && ui.draft.key === s.key ? "" : "disabled"}>Apply changes</button><button class="btn" data-act="reset">Reset</button></div>
-      <button class="btn block" data-act="sim-step" title="Browser simulation only; nothing is executed">${icon("play")} Simulate step</button>
+      ${plansAvailable(ctx, project)
+        ? `<button class="btn block" data-plan="new" data-only="${esc(s.key)}" ${server.session?.mutations_enabled ? "" : "disabled"} title="Run ${esc(s.key)} for ${t ? esc(t.name) : "targets"} with the command from alfrd.yaml">${icon("play")} Run step…</button>`
+        : `<button class="btn block" data-act="sim-step" title="Browser simulation only; nothing is executed">${icon("play")} Simulate step</button>`}
     </footer>`;
 }

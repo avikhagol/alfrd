@@ -327,7 +327,12 @@ DEFAULT_PATTERNS: dict[str, Any] = {
     "band_dir": ["wd_{band}", "wd_{band}_{target}"],
     "meta_dir": "avica.meta",
     "input_templates": ["input_template", "input_template_{n}", "wd_{band}_{target}/input_template_{band}_{target}"],
-    "result_csv": "{target_dir}/{target}_result.csv",
+    # Newest AVICA name first; "{target}_result.csv" is AVICA <= 0.3.
+    "result_csv": [
+        "{target_dir}/result_{target}_{project_code}_{workdirname}.csv",
+        "{target_dir}/{project_code}/{workdirname}/result_{target}_{project_code}_{workdirname}.csv",
+        "{target_dir}/{target}_result.csv",
+    ],
 }
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -336,7 +341,26 @@ _GROUPS = {
     "n": r"\d+",
     "band": r"[A-Z][A-Z0-9]*?",
     "target": r"[^/]+?",
+    # Base name of a work dir (wd, wd_1). layout_patterns() derives the real
+    # alternatives from the ``workdir`` patterns; this is only the fallback.
+    "workdirname": r"wd(?:_\d+)?",
 }
+
+
+def workdirname_regex(workdir_patterns: Iterable[str]) -> str:
+    """Regex for ``{workdirname}``: the last segment of each ``workdir`` pattern."""
+    alternatives = []
+    for pattern in workdir_patterns:
+        last = str(pattern).rstrip("/").split("/")[-1]
+        parts, pos = [], 0
+        for match in _PLACEHOLDER.finditer(last):
+            parts.append(re.escape(last[pos:match.start()]))
+            parts.append(r"\d+" if match.group(1) == "n" else r"[^/_]+")
+            pos = match.end()
+        parts.append(re.escape(last[pos:]))
+        alternatives.append("".join(parts))
+    alternatives = list(dict.fromkeys(a for a in alternatives if a))
+    return "(?:" + "|".join(alternatives) + ")" if alternatives else _GROUPS["workdirname"]
 
 
 def _as_list(value: Any) -> list[str]:
@@ -357,16 +381,36 @@ def layout_patterns(root: str | Path) -> dict[str, list[str]]:
         try:
             data, _path, _default = manifest_data(root)
             for artifact in data.get("artifacts") or []:
-                if isinstance(artifact, dict) and artifact.get("name") == "result_csv" and "{target}" in str(artifact.get("path_pattern", "")):
-                    patterns["result_csv"] = [str(artifact["path_pattern"])]
+                if isinstance(artifact, dict) and artifact.get("name") == "result_csv":
+                    declared = result_csv_artifact_patterns(artifact)
+                    if declared:
+                        patterns["result_csv"] = declared
         except yaml.YAMLError:
             pass
     return patterns
 
 
-def pattern_regex(pattern: str, fixed: Mapping[str, str] | None = None) -> re.Pattern[str]:
-    """Compile a layout pattern; repeated placeholders must match the same text."""
+def result_csv_artifact_patterns(artifact: Mapping[str, Any]) -> list[str]:
+    """``result_csv`` artifact: ``path_pattern`` + ``fallback_patterns``, then the
+    built-in names it doesn't list (so an alfrd.yaml written for AVICA <= 0.3 still
+    finds ``result_{target}_{project_code}_{workdirname}.csv``). Discovery only."""
+    declared = [str(p) for p in [artifact.get("path_pattern"), *_as_list(artifact.get("fallback_patterns"))] if p and "{target}" in str(p)]
+    if not declared:
+        return []
+    return list(dict.fromkeys([*declared, *_as_list(DEFAULT_PATTERNS["result_csv"])]))
+
+
+def pattern_regex(
+    pattern: str,
+    fixed: Mapping[str, str] | None = None,
+    groups: Mapping[str, str] | None = None,
+) -> re.Pattern[str]:
+    """Compile a layout pattern; repeated placeholders must match the same text.
+
+    ``groups`` overrides the regex used for a placeholder (e.g. ``workdirname``).
+    """
     fixed = dict(fixed or {})
+    group_res = {**_GROUPS, **dict(groups or {})}
     # A target_dir of "." (or "./", "") means the project root itself: drop the
     # "{target_dir}/" prefix so root-relative paths like "BV019/wd" still match.
     if "target_dir" in fixed and str(fixed["target_dir"]).strip("/") in ("", "."):
@@ -384,7 +428,7 @@ def pattern_regex(pattern: str, fixed: Mapping[str, str] | None = None) -> re.Pa
             out.append(f"(?P={name})")
         else:
             seen.add(name)
-            out.append(f"(?P<{name}>{_GROUPS.get(name, r'[^/]+?')})")
+            out.append(f"(?P<{name}>{group_res.get(name, r'[^/]+?')})")
         pos = match.end()
     out.append(re.escape(pattern[pos:]))
     return re.compile("^" + "".join(out) + "$")
@@ -484,21 +528,78 @@ def scan_project_codes(root: str | Path, target_dir: Path, patterns: Mapping[str
     return codes
 
 
-def result_csvs(root: str | Path, target_dir: Path, patterns: Mapping[str, list[str]] | None = None) -> list[dict[str, str]]:
-    """Result CSVs matching ``result_csv`` (default ``{target_dir}/{target}_result.csv``)."""
+def result_csvs(
+    root: str | Path,
+    target_dir: Path,
+    patterns: Mapping[str, list[str]] | None = None,
+    known_codes: Iterable[str] = (),
+) -> list[dict[str, str]]:
+    """Result CSVs matching the ``result_csv`` patterns.
+
+    Each item: ``file``, ``target`` and, when the name carries them (AVICA's
+    ``result_{target}_{project_code}_{workdirname}.csv``), ``project_code`` and
+    ``workdir``. Names are parsed with the patterns, never split on ``_``; a
+    target containing ``_`` is resolved with the known project codes.
+    """
     base = Path(root).resolve()
     pats = patterns or {k: _as_list(v) for k, v in DEFAULT_PATTERNS.items()}
-    regexes = [pattern_regex(p, {"target_dir": os.path.relpath(target_dir, base)}) for p in pats["result_csv"]]
+    rel_target = os.path.relpath(target_dir, base)
+    groups = {"workdirname": workdirname_regex(pats.get("workdir") or [])}
+    regexes = [pattern_regex(p, {"target_dir": rel_target}, groups) for p in pats["result_csv"]]
+    codes = sorted(set(known_codes), key=len, reverse=True)
     if not target_dir.is_dir():
         return []
     out = []
     for path in sorted(target_dir.rglob("*.csv")):
         if len(path.relative_to(target_dir).parts) > 3:
             continue
-        match = _match_any(regexes, os.path.relpath(path, base))
-        if match:
-            out.append({"file": os.path.relpath(path, base), "target": match.groupdict().get("target") or ""})
+        rel = os.path.relpath(path, base).replace(os.sep, "/")
+        match = _match_any(regexes, rel)
+        if not match:
+            continue
+        found = {k: v for k, v in match.groupdict().items() if v}
+        if codes and found.get("project_code") and found["project_code"] not in codes:
+            for code in codes:
+                if f"_{code}_" not in path.name:
+                    continue
+                fixed = {"target_dir": rel_target, "project_code": code}
+                better = _match_any([pattern_regex(p, fixed, groups) for p in pats["result_csv"]], rel)
+                if better:
+                    found = {**{k: v for k, v in better.groupdict().items() if v}, "project_code": code}
+                    break
+        item = {"file": rel, "target": found.get("target") or ""}
+        if found.get("project_code"):
+            item["project_code"] = found["project_code"]
+        if found.get("workdirname"):
+            item["workdir"] = found["workdirname"]
+        out.append(item)
     return out
+
+
+def result_csv_matches(root: str | Path, target: str, project_code: str = "", workdir: str = "") -> list[dict[str, Any]]:
+    """Result CSVs for one target (optionally one code / work dir), newest first.
+
+    Items as :func:`result_csvs` plus ``path``. A file whose name carries no code /
+    work dir (AVICA <= 0.3) matches any code / work dir.
+    """
+    base = Path(root).resolve()
+    cfg = resolve_config(base)
+    target_dir = resolve_dir(base, cfg.get("target_dir")) or base / "reductions"
+    patterns = layout_patterns(base)
+    known = [c.code for c in scan_project_codes(base, target_dir, patterns)]
+    items = [
+        {**item, "path": base / item["file"]}
+        for item in result_csvs(base, target_dir, patterns, known)
+        if item["target"] == target
+        and (not project_code or item.get("project_code") in (None, project_code))
+        and (not workdir or item.get("workdir") in (None, workdir))
+    ]
+    return sorted(items, key=lambda i: i["path"].stat().st_mtime, reverse=True)
+
+
+def result_csv_path(root: str | Path, target: str, project_code: str = "", workdir: str = "") -> list[Path]:
+    """Existing result CSVs for one target (optionally one code / work dir), newest first."""
+    return [item["path"] for item in result_csv_matches(root, target, project_code, workdir)]
 
 
 def logs_listing(root: Path, dirname: str = LOGS_DIRNAME) -> list[dict[str, Any]]:
@@ -531,7 +632,7 @@ def scan_layout(root: str | Path, config: AvicaConfig | None = None) -> dict[str
         "config": cfg.to_dict(),
         "target_dir": os.path.relpath(target_dir, base) if target_dir.exists() else str(cfg.get("target_dir")),
         "target_dir_exists": target_dir.is_dir(),
-        "result_csvs": result_csvs(base, target_dir, patterns),
+        "result_csvs": result_csvs(base, target_dir, patterns, [c.code for c in codes]),
         "patterns": patterns,
         "project_codes": [code.to_dict(base) for code in codes],
         "logs_dir": str(manifest_avica(base).get("logs") or LOGS_DIRNAME),
@@ -718,7 +819,7 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
     cfg = resolve_config(base)
     target_dir = resolve_dir(base, cfg.get("target_dir")) or base / "reductions"
     patterns = layout_patterns(base)
-    for item in result_csvs(base, target_dir, patterns):
+    for item in result_csvs(base, target_dir, patterns, [c.code for c in scan_project_codes(base, target_dir, patterns)]):
         add(base / item["file"])
     meta_dir = patterns["meta_dir"][0]
     band_res = [pattern_regex(p) for p in patterns["band_dir"]]

@@ -6,6 +6,9 @@ import { $, on, esc, icon, loadUi, saveUi } from "../utils/dom.js";
 import { groupLabel } from "../data/defs.js";
 import { targetCodes } from "./attach.js";
 import { logItem, logForTarget, projectLogs } from "./logview.js";
+import { loadPlan, planOf, plansAvailable } from "./plans.js";
+
+const planAsked = new Set(); // projects whose scheduled-run logs were fetched once here
 
 const UI_FIELDS = ["scope", "by", "q", "open"];
 const ui = { ...loadUi("logs", { scope: "target", by: "group", q: "", open: [] }), limit: {} };
@@ -60,6 +63,8 @@ function groups(ctx) {
 export function render(el, ctx) {
   const t = ctx.target();
   const p = project(ctx);
+  // Command logs of scheduled runs are listed too (Scheduled run <id> groups).
+  if (plansAvailable(ctx, p) && !planOf(p) && !planAsked.has(p)) { planAsked.add(p); loadPlan(ctx, p, { quiet: true }); }
   const all = projectLogs(ctx, p);
   $("#lg-head", el).innerHTML = `
     <div class="row gap wrap"><h2>Logs</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}

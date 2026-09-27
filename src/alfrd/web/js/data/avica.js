@@ -3,7 +3,8 @@
 //   <root>/alfrd.yaml                      ALFRD project (targets belong to it)
 //   <root>/avica.inp, avica.summary.json   AVICA config / `avica pipe config --summary`
 //   <root>/avica.logs/                     avica__log-*.log, avica_crash_<step>.json
-//   <root>/<target_dir>/<TARGET>_result.csv
+//   <root>/<target_dir>/<TARGET>_result.csv   (AVICA <= 0.3)
+//   <root>/<target_dir>/[<CODE>/<wd>/]result_<TARGET>_<CODE>_<wd>.csv   (newer AVICA)
 //   <root>/<target_dir>/<CODE>/wd/         AVICA project code work dir (BV019, RDV41, ...)
 //        avica.meta/  input_template/  wd_<band>/  wd_<band>_<TARGET>/input_template_<band>_<TARGET>/
 
@@ -23,13 +24,33 @@ export const DEFAULT_PATTERNS = {
   band_dir: ["wd_{band}", "wd_{band}_{target}"],
   meta_dir: ["avica.meta"],
   input_templates: ["input_template", "input_template_{n}", "wd_{band}_{target}/input_template_{band}_{target}"],
-  result_csv: ["{target_dir}/{target}_result.csv"],
+  // Newest AVICA name first; "{target}_result.csv" is AVICA <= 0.3.
+  result_csv: [
+    "{target_dir}/result_{target}_{project_code}_{workdirname}.csv",
+    "{target_dir}/{project_code}/{workdirname}/result_{target}_{project_code}_{workdirname}.csv",
+    "{target_dir}/{target}_result.csv",
+  ],
 };
-const GROUPS = { project_code: "[^/]+", n: "\\d+", band: "[A-Z][A-Z0-9]*?", target: "[^/]+?" };
+const GROUPS = { project_code: "[^/]+", n: "\\d+", band: "[A-Z][A-Z0-9]*?", target: "[^/]+?", workdirname: "wd(?:_\\d+)?" };
 const reEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** `{workdirname}` regex from the last segment of each `workdir` pattern (mirrors avica_layout.workdirname_regex). */
+export function workdirnameRegex(workdirPatterns = DEFAULT_PATTERNS.workdir) {
+  const alts = [...new Set((workdirPatterns || []).map((p) => {
+    const last = String(p).replace(/\/+$/, "").split("/").pop();
+    let out = "";
+    let pos = 0;
+    for (const m of last.matchAll(/\{(\w+)\}/g)) {
+      out += reEsc(last.slice(pos, m.index)) + (m[1] === "n" ? "\\d+" : "[^/_]+");
+      pos = m.index + m[0].length;
+    }
+    return out + reEsc(last.slice(pos));
+  }).filter(Boolean))];
+  return alts.length ? `(?:${alts.join("|")})` : GROUPS.workdirname;
+}
+
 /** Compile a layout pattern (repeated placeholders must match the same text). */
-export function patternRegex(pattern, fixed = {}) {
+export function patternRegex(pattern, fixed = {}, groups = {}) {
   // A target_dir of "." / "./" / "" is the project root: drop "{target_dir}/" so
   // root-relative paths like "BV019/wd" match (mirrors avica_layout.pattern_regex).
   if (fixed && "target_dir" in fixed && fixed.target_dir != null && /^\/*\.?\/*$/.test(String(fixed.target_dir))) {
@@ -45,7 +66,7 @@ export function patternRegex(pattern, fixed = {}) {
     const name = m[1];
     if (name in fixed && fixed[name] != null) out += reEsc(String(fixed[name]).replace(/\/+$/, ""));
     else if (seen.has(name)) out += `\\k<${name}>`;
-    else { seen.add(name); out += `(?<${name}>${GROUPS[name] || "[^/]+?"})`; }
+    else { seen.add(name); out += `(?<${name}>${groups[name] || GROUPS[name] || "[^/]+?"})`; }
     pos = m.index + m[0].length;
   }
   return new RegExp(`^${out}${reEsc(pattern.slice(pos))}$`);
@@ -57,9 +78,44 @@ export function layoutPatterns(manifest) {
   const block = (manifest && typeof manifest.avica === "object" && manifest.avica) || {};
   const out = {};
   Object.entries(DEFAULT_PATTERNS).forEach(([k, v]) => { out[k] = k in block ? asList(block[k]) : v; });
-  const art = (manifest?.artifacts || []).find((a) => a?.name === "result_csv" && String(a.path_pattern || "").includes("{target}"));
-  if (!("result_csv" in block) && art) out.result_csv = [String(art.path_pattern)];
+  const art = (manifest?.artifacts || []).find((a) => a?.name === "result_csv");
+  const declared = resultCsvArtifactPatterns(art);
+  if (!("result_csv" in block) && declared.length) out.result_csv = declared;
   return out;
+}
+
+/** result_csv artifact: path_pattern + fallback_patterns, then the built-in names it doesn't list (mirrors Python). */
+export function resultCsvArtifactPatterns(art) {
+  if (!art) return [];
+  const declared = [art.path_pattern, ...asList(art.fallback_patterns)].filter((p) => p && String(p).includes("{target}")).map(String);
+  return declared.length ? [...new Set([...declared, ...DEFAULT_PATTERNS.result_csv])] : [];
+}
+
+/**
+ * Parse result CSV paths → [{file, target, project_code?, workdir?}]. Names are
+ * parsed with the patterns (never split on "_"); known codes settle a target with "_".
+ */
+export function parseResultFiles(rels, pats, targetDir, knownCodes = []) {
+  const groups = { workdirname: workdirnameRegex(pats.workdir) };
+  const res = pats.result_csv.map((p) => patternRegex(p, { target_dir: targetDir }, groups));
+  const codes = [...new Set(knownCodes)].sort((a, b) => b.length - a.length);
+  return rels.map((rel) => {
+    const m = matchAny(res, rel);
+    if (!m) return null;
+    let g = Object.fromEntries(Object.entries(m.groups || {}).filter(([, v]) => v));
+    if (codes.length && g.project_code && !codes.includes(g.project_code)) {
+      const name = rel.split("/").pop();
+      for (const code of codes) {
+        if (!name.includes(`_${code}_`)) continue;
+        const better = matchAny(pats.result_csv.map((p) => patternRegex(p, { target_dir: targetDir, project_code: code }, groups)), rel);
+        if (better) { g = { ...Object.fromEntries(Object.entries(better.groups || {}).filter(([, v]) => v)), project_code: code }; break; }
+      }
+    }
+    const item = { file: rel, target: g.target || "" };
+    if (g.project_code) item.project_code = g.project_code;
+    if (g.workdirname) item.workdir = g.workdirname;
+    return item;
+  }).filter(Boolean);
 }
 
 const matchAny = (res, text) => { for (const r of res) { const m = r.exec(text); if (m) return m; } return null; };
@@ -238,7 +294,6 @@ export function buildAvicaIndex(entries, { manifestAvica = {}, manifest = null, 
     c.meta.sort((a, b) => a.name.localeCompare(b.name));
     codes[c.id] = c;
   });
-  const resultRes = pats.result_csv.map((p) => patternRegex(p, { target_dir: targetDir }));
 
   const updateRel = resolveRel(values.picard_input_template_update);
   const updateFiles = {};
@@ -273,7 +328,7 @@ export function buildAvicaIndex(entries, { manifestAvica = {}, manifest = null, 
     logsDir,
     logs,
     patterns: pats,
-    resultCsvs: entries.map((e) => { const m = matchAny(resultRes, e.rel); return m ? { file: e.rel, target: m.groups?.target || "" } : null; }).filter(Boolean),
+    resultCsvs: parseResultFiles(entries.filter((e) => /\.csv$/i.test(e.name || e.rel)).map((e) => e.rel), pats, targetDir, Object.values(codes).map((c) => c.code)),
   };
 }
 

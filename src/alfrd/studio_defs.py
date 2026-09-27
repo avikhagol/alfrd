@@ -36,10 +36,13 @@ _GROUPS = {
     "n": r"\d+",
     "band": r"[A-Z][A-Z0-9]*?",
     "target": r"[^/]+?",
+    "workdirname": r"wd(?:_\d+)?",
 }
 #: Folders a wildcard never descends into (thousands of files, nothing to show).
 _NO_DESCEND = re.compile(r"(\.ms|\.ms\..+|\.flagversions)$|^(raw|tmp_files|tmp_fringe_testing|calibration_tables|__pycache__|\..+)$")
 _MAX_HITS = 5000
+#: Logs written by `alfrd plan` runs (see alfrd.runtime.scheduler).
+_PLAN_LOG = re.compile(r"^\.alfrd/plans/[^/]+/(?:logs/[^/]+\.log|runner\.log)$")
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +375,10 @@ def allowed_file(root: str | Path, rel: str) -> Path:
     path.relative_to(base)  # ValueError when outside
     if not path.is_file():
         raise FileNotFoundError(rel)
-    ctx = studio_context(base)
     rel_norm = os.path.relpath(path, base).replace(os.sep, "/")
+    if _PLAN_LOG.match(rel_norm):  # `alfrd plan` command and runner logs
+        return path
+    ctx = studio_context(base)
     for spec in log_patterns(ctx["manifest"]):
         fixed = {"step": spec["step"]} if spec["step"] else {}
         values = {"logs": ctx["logs"], "target_dir": ctx.get("target_dir"), **fixed}
