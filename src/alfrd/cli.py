@@ -984,6 +984,40 @@ def plan_new(
         print(f"Fill the {cfg.files_column} column for: {', '.join(missing[:10])}{' ...' if len(missing) > 10 else ''}")
 
 
+@plan_cli.command("add-row")
+def plan_add_row(
+    csv_file: Optional[str] = typer.Argument(None, help="Plan CSV (default: execution.plan_csv)."),
+    root: str = _ROOT_OPT,
+    target: str = typer.Option(..., "--target", "-t", help="Target name."),
+    files: str = typer.Option("", "--filenames", "-f", help="FITS file names (comma, space or newline separated)."),
+    code: str = typer.Option("", "--project-code", help="Project code."),
+    workdir: str = typer.Option("", "--workdir", help="Work dir (leave empty: AVICA picks one)."),
+    steps: Optional[str] = typer.Option(None, "--steps", help="Steps to mark todo (default: all step columns in the file)."),
+):
+    """Append one row to an existing plan CSV, without touching or rebuilding the rest of the plan.
+
+    Safe while the plan runs: a live runner re-reads the CSV before each unit,
+    the same as a hand edit. A paused or finished plan runs the row after
+    `alfrd plan resume`. The CSV must exist (create one with `alfrd plan new`).
+    """
+    from alfrd.execution import ExecutionError, load_execution
+    from alfrd.runtime import plan_csv as pc
+    from alfrd.runtime import scheduler
+
+    try:
+        cfg = load_execution(root)
+        path = scheduler.resolve_csv(cfg, csv_file)
+        if not path.exists():
+            raise ExecutionError(f"plan CSV {path} does not exist (create one with `alfrd plan new`)")
+        plan = scheduler.active_plan(cfg.root, path)
+        chosen = _plan_steps(cfg, steps, None, None) if steps else None
+        table = scheduler.add_row(cfg, path, target=target, files=pc.join_files(files), code=code, workdir=workdir,
+                                  selected=chosen, steps=(plan or {}).get("steps") or cfg.step_ids)
+    except (ExecutionError, ValueError, OSError) as error:
+        _plan_fail(error)
+    print(f"{path}: added {pc.row_key(target.strip(), code.strip())} ({len(table.rows)} row(s) total).")
+
+
 def _print_preview(result: dict) -> None:
     print(f"plan {result['csv']} · mode {result['mode']} · cwd {result['cwd']}")
     if result["missing_step_columns"]:

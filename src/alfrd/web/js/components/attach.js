@@ -84,24 +84,44 @@ async function fetchServerIndex(ctx, project) {
   }
 }
 
+// Bumped by clearWorkdirCache (per project, or all at once) so a request
+// that started before a clear never stores its now-stale result.
+const workdirGen = new Map();
+let workdirGenAll = 0;
+
+function workdirGeneration(project) {
+  return `${workdirGenAll}:${workdirGen.get(project) || 0}`;
+}
+
 /** avica.meta + rPicard templates for (target, code). Resolves synchronously for folder imports. */
 export async function loadWorkdir(ctx, t, code) {
   const index = avicaIndex(ctx, t.project);
   if (!index) return null;
   const key = `${t.project}|${code}|${t.name}`;
   if (workdirCache.has(key)) return workdirCache.get(key);
+  const gen = workdirGeneration(t.project);
   let wd = null;
   if (index.provider === "server") {
     wd = await server.avicaWorkdir(t.project, code, t.name);
   } else {
     wd = workdirFromIndex(index, code, t.name);
   }
-  workdirCache.set(key, wd);
+  if (workdirGeneration(t.project) === gen) workdirCache.set(key, wd);
   return wd;
 }
 
-export function clearWorkdirCache() {
-  workdirCache.clear();
+/** Forget cached work dirs: one project's, or (no argument) every project's. */
+export function clearWorkdirCache(project) {
+  if (!project) {
+    workdirCache.clear();
+    workdirGenAll += 1;
+    return;
+  }
+  workdirGen.set(project, (workdirGen.get(project) || 0) + 1);
+  const prefix = `${project}|`;
+  for (const key of workdirCache.keys()) {
+    if (key.startsWith(prefix)) workdirCache.delete(key);
+  }
 }
 
 /** Searchable picker: attach a <target_dir>/<CODE> folder to the target. */

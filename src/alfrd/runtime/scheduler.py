@@ -459,13 +459,24 @@ def step_durations(root: str | Path) -> dict[str, float]:
 # Creating, starting and controlling plans
 
 
+def resolve_csv(cfg: ExecutionConfig, csv_file: str | Path | None = None) -> Path:
+    """The plan CSV path: ``csv_file`` (default ``execution.plan_csv``), a relative one against the project root.
+
+    Falls back to the current directory only when the file exists there and not in the root.
+    """
+    path = Path(csv_file) if csv_file else cfg.plan_csv
+    if path.is_absolute():
+        return path
+    if not (cfg.root / path).exists() and (Path.cwd() / path).exists():
+        return Path.cwd() / path
+    return cfg.root / path
+
+
 def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: str | None = None,
                 concurrency: int | None = None, on_failure: str | None = None,
                 status_from: str | None = None, retry_failed: bool = False) -> PlanDir:
     cfg = load_execution(root)
-    path = Path(csv_file) if csv_file else cfg.plan_csv
-    if not path.is_absolute():
-        path = (Path.cwd() / path) if not (cfg.root / path).exists() and (Path.cwd() / path).exists() else cfg.root / path
+    path = resolve_csv(cfg, csv_file)
     if not path.exists():
         raise ExecutionError(f"plan CSV {path} does not exist (create one with `alfrd plan new`)")
     busy = active_plan(cfg.root, path)
@@ -512,6 +523,23 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
     })
     folder.set_control("run")
     return folder
+
+
+def add_row(cfg: ExecutionConfig, path: Path, *, target: str, files: str = "", code: str = "",
+            workdir: str = "", selected: Sequence[str] | None = None, steps: Sequence[str] | None = None,
+            create: bool = False) -> pc.PlanTable:
+    """Append one row to a plan CSV; safe to call while its plan is running, paused or finished.
+
+    Same lock (keyed by CSV file name, like ``reset_failed``) and atomic
+    replace the runner itself uses, so a live runner picks the row up on its
+    next re-read. ``steps`` are the plan's step ids (default ``cfg.step_ids``);
+    pass the plan's own list so the new row matches what the runner reads.
+    Raises ``pc.DuplicateRowError`` for a duplicate (target, code) and
+    ``FileNotFoundError`` for a missing CSV unless ``create``.
+    """
+    lock = cfg.root / ".alfrd" / "locks" / f"{Path(path).name}.lock"
+    return pc.add_row(path, lock, list(steps or cfg.step_ids), target=target, files=files, code=code,
+                      workdir=workdir, selected=selected, create=create, **_columns(cfg))
 
 
 def reset_failed(cfg: ExecutionConfig, path: Path) -> int:
@@ -1211,6 +1239,6 @@ def queue(table: Mapping[str, Any], durations: Mapping[str, float], concurrency:
 
 
 __all__ = [
-    "PlanDir", "Runner", "active_plan", "control", "create_plan", "list_plans", "plan_status", "preview",
-    "reconcile", "reset_failed", "spawn_runner", "step_durations", "verify_steps",
+    "PlanDir", "Runner", "active_plan", "add_row", "control", "create_plan", "list_plans", "plan_status",
+    "preview", "reconcile", "reset_failed", "resolve_csv", "spawn_runner", "step_durations", "verify_steps",
 ]

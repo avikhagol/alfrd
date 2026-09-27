@@ -13,19 +13,21 @@
 # that must be present and non-empty (dot paths allowed).
 
 template: avica
-description: AVICA VLBI pipeline (avica.pipe.steps) read from the files it leaves on disk.
+description: Automated VLBI calibration in CASA.
 
 stages:
-  - {id: ingest, title: Ingestion & Format Conversion}
-  - {id: reduce, title: Astrometry & Reduction}
-  - {id: meta, title: Meta Synthesis & Quality Control}
+  - {id: preprocess, title: Loading to MeasurementSet}
+  - {id: average, title: Average MeasurementSet}
+  - {id: automation, title: Automated Metadata and Input generation}
   - {id: calib, title: Calibration Setup & Execution}
 
 overview:
   # "MS Storage Path" column: first match per target (all matches in the tooltip).
   ms_path:
-    - "{workdir}/wd_{band}_{target}/VLBI_{band}.ms"
+    - "{workdir}/wd_{band}*_{target}/VLBI_*{band}*.ms.avg"
+    - "{workdir}/wd_{band}*_{target}/VLBI_*{band}*.ms"
     - "{workdir}/wd_{band}/VLBI_{band}.ms"
+    - "{workdir}/wd_{band}/VLBI_{band}_*.ms"
     - "{workdir}/VLBI.ms"
 
 results:
@@ -72,12 +74,12 @@ step_defaults:
 
 steps:
   preprocess_fitsidi:
-    label: FITS-IDI data ingestion
-    short: fitsidi
-    category: Preprocessing
-    stage: ingest
+    label: FITS-IDI data processing
+    short: proc_fitsidi
+    category: FITSIDI
+    stage: preprocess
     icon: file
-    description: Fixes FITS-IDI data and headers, selects sources, splits by frequency ID and attaches ANTAB calibration.
+    description: Fixes FITS-IDI data and headers, selects sources, splits by frequency ID and attaches ANTAB.
     inputs: ["folder_for_fits → FITS-IDI"]
     outputs: ["{workdir}/raw/*", "{meta_dir}/fitsfiles_used.avica"]
     metadata:
@@ -87,8 +89,8 @@ steps:
   fits_to_ms:
     label: Convert FITS to CASA Measurement Set
     short: fits2ms
-    category: Preprocessing
-    stage: ingest
+    category: FITSIDI
+    stage: preprocess
     icon: convert
     description: importfitsidi into a CASA Measurement Set (and flag it).
     inputs: ["preprocess_fitsidi → {workdir}/raw/*"]
@@ -100,8 +102,8 @@ steps:
   phaseshift:
     label: Phase shifting
     short: phaseshift
-    category: Astrometry
-    stage: reduce
+    category: MeasurementSet
+    stage: preprocess
     icon: shift
     description: Phase-shift sources that are more than 1 arcsecond off the catalogue position.
     inputs: ["fits_to_ms → {workdir}/VLBI.ms"]
@@ -111,8 +113,8 @@ steps:
   avica_avg:
     label: Data averaging
     short: avg
-    category: Reduction
-    stage: reduce
+    category: MeasurementSet
+    stage: average
     icon: average
     description: Average to 2 s / 500 kHz per band and split out flagged antennas (CASA mstransform).
     inputs: ["phaseshift → {workdir}/VLBI.ms"]
@@ -123,9 +125,9 @@ steps:
       - "{workdir}/wd_{band}/avica_avg_*log*"
   avicameta_ms:
     label: Metafile generation
-    short: meta
-    category: Metadata
-    stage: meta
+    short: meta_ms
+    category: MeasurementSet
+    stage: automation
     icon: braces
     description: Identify sources in each band's MS and save msmeta and calibrator roles.
     inputs: ["avica_avg → {workdir}/wd_{band}/VLBI_{band}.ms"]
@@ -136,12 +138,12 @@ steps:
     logs:
       - "{workdir}/wd_{band}/avicameta_ms_*log*"
   avica_snr:
-    label: SNR & visibility validation
+    label: Signal-to-Noise Rating
     short: snr
-    category: Quality Control
-    stage: meta
+    category: MeasurementSet
+    stage: automation
     icon: snr
-    description: Short fringe-fit per band to rate calibrator signal-to-noise and pick reference antennas.
+    description: Short fringe-fit per band to rate calibrator signal-to-noise and pick reference antennas and calibrators.
     inputs: ["avicameta_ms → {meta_dir}/msmeta_sources_{band}_{target}.avica", "avica_avg → {workdir}/wd_{band}/VLBI_{band}.ms"]
     outputs: ["{meta_dir}/sources_{band}_{target}.avica", "{meta_dir}/refants_{band}_{target}.avica", "{meta_dir}/snrating_{band}_{target}.out"]
     metadata:
@@ -153,8 +155,8 @@ steps:
   avica_fill_input:
     label: Fill calibration parameters
     short: fill
-    category: Calibration
-    stage: calib
+    category: MeasurementSet
+    stage: automation
     icon: fill
     description: Fill the rPicard input files from the SNR rating metadata.
     inputs: ["avica_snr → {meta_dir}/sources_{band}_{target}.avica", "avica_snr → {meta_dir}/refants_{band}_{target}.avica"]

@@ -12,6 +12,7 @@ import { manifestToWorkflows } from "../data/model.js";
 import { studioManifest } from "../data/defs.js";
 
 const ui = { project: null, text: null, dirty: false, report: null, aliases: null };
+let shown = null; // signature of what #ps currently shows (see render)
 
 function project(ctx) {
   return ctx.target()?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null) || Object.keys(ctx.state.trees || {})[0] || null;
@@ -94,6 +95,7 @@ export function mount(el, ctx) {
   on(el, "input", "[data-alias]", (e, inp) => {
     const [i, k] = inp.dataset.alias.split(":");
     ui.aliases[Number(i)][k] = inp.value;
+    shown = signature(ctx, project(ctx)); // the inputs already show this; no rebuild (and lost focus) needed
   });
   on(el, "click", "[data-act]", async (e, b) => {
     const a = b.dataset.act;
@@ -157,6 +159,26 @@ function renderStatus(el, ctx) {
   if (saveBtn) saveBtn.classList.toggle("primary", ui.dirty);
 }
 
+/** Everything besides the editor text that the panel shows; a change means rebuild. */
+function signature(ctx, p) {
+  const tree = ctx.state.trees?.[p] || {};
+  return JSON.stringify([p, tree.manifestFile, !!tree.manifestDefault, ctx.state.workflowFile.name, ctx.state.mode,
+    !!ctx.canWrite(p), ui.aliases, (ctx.state.aliases || []).length]);
+}
+
+/** Scroll, selection and focus of the editor, to carry over a rebuild. */
+function editorState(area) {
+  if (!area) return null;
+  return { top: area.scrollTop, start: area.selectionStart, end: area.selectionEnd, focus: document.activeElement === area };
+}
+
+function restoreEditor(area, saved) {
+  if (!area || !saved) return;
+  if (saved.focus) area.focus({ preventScroll: true });
+  area.setSelectionRange(saved.start, saved.end);
+  area.scrollTop = saved.top;
+}
+
 export function render(el, ctx) {
   const p = project(ctx);
   if (ui.project !== p || (!ui.dirty && ui.text !== loadedText(ctx, p))) {
@@ -167,6 +189,20 @@ export function render(el, ctx) {
     ui.aliases = null;
   }
   if (!ui.aliases) ui.aliases = aliasRows(ui.text);
+  // A background refresh (live poll, every couple of seconds while "hot") calls
+  // this same render() even when nothing here changed. Rebuilding #ps's whole
+  // innerHTML would replace the <textarea> and reset its scroll position and
+  // cursor mid-edit — so when the editor already shows the current text and
+  // nothing else on the panel changed, only refresh the status line/footer.
+  const existing = $("#ps-yaml", el);
+  const sig = signature(ctx, p);
+  if (existing && existing.value === ui.text && sig === shown) {
+    renderStatus(el, ctx);
+    ctx.setFooterRight(ui.dirty ? "alfrd.yaml: unsaved changes" : "alfrd.yaml");
+    return;
+  }
+  const keep = existing && shown && JSON.parse(shown)[0] === p ? editorState(existing) : null;
+  shown = sig;
   const tree = ctx.state.trees?.[p] || {};
   const where = ctx.state.mode === "server"
     ? (ctx.canWrite(p) ? "Saves through alfrd serve into the project folder (old file kept as alfrd.yaml.bak)." : "alfrd serve only accepts saves from a browser on the same machine; Save downloads the file.")
@@ -208,6 +244,7 @@ export function render(el, ctx) {
         </section>
       </div>
     </div>`}`;
+  restoreEditor($("#ps-yaml", el), keep);
   renderStatus(el, ctx);
   ctx.setFooterRight(ui.dirty ? "alfrd.yaml: unsaved changes" : "alfrd.yaml");
 }

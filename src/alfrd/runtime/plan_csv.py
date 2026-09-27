@@ -16,6 +16,7 @@ import contextlib
 import csv
 import io
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -222,6 +223,93 @@ def update(path: str | Path, lock_path: str | Path, steps: Sequence[str],
         return table
 
 
+class DuplicateRowError(ValueError):
+    """Raised by ``add_row`` when (target, code) is already a row in the plan CSV."""
+
+
+def check_target(target: str) -> str:
+    """A usable target name (stripped), or ``ValueError``.
+
+    ``#…`` would be read back as a comment row and ``@`` would clash with
+    ``row_key`` (``target@code``).
+    """
+    name = str(target or "").strip()
+    if not name:
+        raise ValueError("target is required")
+    if name.startswith("#"):
+        raise ValueError(f"target {name!r} starts with '#', which marks a comment row")
+    if "@" in name:
+        raise ValueError(f"target {name!r} contains '@', which separates target and project code")
+    return name
+
+
+def join_files(value: str | Sequence[str] | None) -> str:
+    """FITS file names as one ``a,b,c`` cell: accepts a string or a list, split on commas, newlines, spaces."""
+    items = list(value) if isinstance(value, (list, tuple)) else [value]
+    names = [n for item in items for n in re.split(r"[,\s]+", str(item or "")) if n]
+    return ",".join(names)
+
+
+def _with_columns(header: Sequence[str], columns: Sequence[str], steps: Sequence[str]) -> list[str]:
+    """``header`` plus any of ``columns`` it lacks, inserted before the first step column."""
+    out = list(header)
+    missing = [c for c in columns if _find(out, c) is None]
+    at = next((i for i, h in enumerate(out) if h in steps), len(out))
+    out[at:at] = missing
+    return out
+
+
+def add_row(path: str | Path, lock_path: str | Path, steps: Sequence[str], *, target: str, files: str = "",
+            code: str = "", workdir: str = "", selected: Iterable[str] | None = None, create: bool = False,
+            **columns: str) -> PlanTable:
+    """Append one row (target, files, code, workdir) to a plan CSV.
+
+    Takes the same lock and atomic-replace path as ``update``, so this is safe
+    to call while a plan is running, paused or finished; a live runner re-reads
+    the CSV before each unit and picks the row up (same as a hand edit).
+    ``selected`` marks which step columns start as ``todo`` (default: every
+    step column already in the file); the rest are left empty. A value given
+    for a column the header lacks (project code, files, work dir) adds that
+    column before the first step column; existing rows get ``""``.
+
+    Raises ``ValueError`` for a bad target name, ``DuplicateRowError`` when
+    the row's key (as it will be parsed) is already taken, and
+    ``FileNotFoundError`` when the file is missing, unless ``create`` is true:
+    then it is created with ``steps`` as its step columns.
+    """
+    target = check_target(target)
+    code = str(code or "").strip()
+    source = Path(path)
+    with locked(lock_path):
+        if source.exists():
+            text = source.read_text(encoding="utf-8-sig")
+        elif create:
+            text = ""
+        else:
+            raise FileNotFoundError(f"plan CSV {source} does not exist")
+        table = parse(text, source, steps, **columns)
+        values = {table.files_column: str(files or ""), table.code_column: code,
+                  table.workdir_column: str(workdir or "").strip()}
+        if table.header:
+            header = _with_columns(table.header, [c for c, v in values.items() if v], steps)
+        else:
+            header = [table.key_column, table.files_column, table.code_column, table.workdir_column, *steps]
+        usable = [s for s in steps if s in header]
+        chosen = set(usable) if selected is None else set(selected) & set(usable)
+        new_row = {h: "" for h in header}
+        new_row.update({(_find(header, c) or c): v for c, v in values.items()})
+        new_row[_find(header, table.key_column) or header[0]] = target
+        new_row.update({s: TODO if s in chosen else "" for s in usable})
+        raw_rows = list(csv.DictReader(io.StringIO(text))) if text else []
+        new_text = dump(header, [*raw_rows, new_row])
+        written = parse(new_text, source, steps, **columns)
+        key = row_key(target, code)
+        if not written.rows or written.rows[-1].key != key or sum(r.key == key for r in written.rows) > 1:
+            raise DuplicateRowError(f"{key} is already a row in {source.name}")
+        atomic_write(source, new_text)
+        return written
+
+
 def create(path: str | Path, rows: Sequence[Mapping[str, str]], steps: Sequence[str], selected: Iterable[str],
            *, key_column: str, files_column: str, code_column: str, workdir_column: str,
            extra_columns: Sequence[str] = ()) -> Path:
@@ -241,6 +329,6 @@ def create(path: str | Path, rows: Sequence[Mapping[str, str]], steps: Sequence[
 
 __all__ = [
     "BLOCKED", "CANCELLED", "DONE", "FAILED", "INTERRUPTED", "RUNNING", "STATES", "STOP_VALUES", "TODO",
-    "PlanRow", "PlanTable", "atomic_write", "create", "dump", "locked", "normalize", "parse", "read",
-    "row_key", "update",
+    "DuplicateRowError", "PlanRow", "PlanTable", "add_row", "atomic_write", "check_target", "create", "dump",
+    "join_files", "locked", "normalize", "parse", "read", "row_key", "update",
 ]

@@ -185,6 +185,7 @@ export function renderSchedule(box, ctx, project) {
         ${!active && tot.todo ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Run remaining</button>` : ""}
         ${failedCells ? `<button class="btn sm" data-plan="retry" title="Failed, blocked, interrupted and cancelled cells back to todo, then resume">${icon("reset")} Retry ${failedCells}</button>` : ""}
         ${active ? `<button class="btn sm danger" data-plan="cancel">${icon("stop")} Cancel</button>` : ""}
+        <button class="btn sm" data-plan="add-row" title="Append a target to this plan's CSV without rebuilding it">${icon("plus")} Add target</button>
         <button class="btn sm" data-plan="new">${icon("plus")} New run…</button>` : ""}
       <button class="icon-btn sm" data-plan="refresh" title="Refresh" aria-label="Refresh">${icon("sync")}</button>
     </div>
@@ -242,6 +243,7 @@ export async function planAct(ctx, project, action, el, opts = {}) {
     if (action === "refresh") return loadPlan(ctx, project);
     if (action === "schedule") return null;
     if (!id) return null;
+    if (action === "add-row") return openAddRowDialog(ctx, project);
     if (action === "cancel") {
       if (!window.confirm(`Cancel plan ${id}? Running commands get SIGTERM (then SIGKILL).`)) return null;
       await server.planAction(project, id, "cancel", { confirm: true });
@@ -288,6 +290,73 @@ export async function openLog(ctx, project, rel) {
   } catch (error) {
     ctx.toast(`${rel}: ${error.message}`, "warn");
   }
+}
+
+/** When the new row runs: only a live runner re-reads the CSV; a paused
+ * runner exits once nothing is running, so everything else needs Resume. */
+function addRowWhen(status) {
+  return status === "running"
+    ? "Picked up on the runner's next pass if it's still active; otherwise use Run remaining."
+    : "Use Resume / Run remaining to run it.";
+}
+
+/** "Add target": one new row (target, files, code, workdir) appended to the
+ * loaded plan's CSV, without rebuilding it. A running plan picks it up on its
+ * next pass; a paused, finished, interrupted or cancelled one after Resume. */
+export function openAddRowDialog(ctx, project) {
+  const s = planOf(project);
+  const p = s?.plan;
+  if (!p) return;
+  const steps = s.table?.steps || [];
+  const rows = s.table?.rows || [];
+  ctx.modal(`
+    <header class="modal-h"><h2>${icon("plus")} Add target · <span class="mono">${esc(p.csv)}</span></h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <div class="modal-b run-dlg">
+      <p class="muted small">Appends one row to the plan CSV; the rest of the plan is untouched. Plan is <b>${esc(p.status)}</b>. ${esc(addRowWhen(p.status))}</p>
+      <div class="row gap wrap">
+        <label class="field grow"><span>Target</span><input class="input mono" id="ar-target" placeholder="J0742+103"></label>
+        <label class="field"><span>Project code</span><input class="input mono" id="ar-code" size="8" placeholder="BV019"></label>
+        <label class="field"><span>Work dir</span><input class="input mono" id="ar-workdir" size="8" placeholder="(auto)"></label>
+      </div>
+      <label class="field"><span>FITS file names <span class="muted small">(comma or one per line)</span></span><textarea class="input mono" id="ar-files" rows="2" placeholder="a.idifits&#10;b.idifits"></textarea></label>
+      <fieldset><legend>Steps <span class="muted small">(marked todo)</span></legend>
+        <div class="run-steps">${steps.map((st) => `<label class="check"><input type="checkbox" data-step="${esc(st)}" checked> <span class="mono">${esc(st)}</span></label>`).join("") || '<p class="muted small">This plan CSV has no step columns.</p>'}</div>
+      </fieldset>
+      <div id="ar-err" class="bad small"></div>
+    </div>
+    <footer class="modal-f row gap right"><button class="btn primary" id="ar-go" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine as alfrd serve'"}>${icon("plus")} Add</button></footer>`,
+    (root, close) => {
+      const go = $("#ar-go", root);
+      const boxes = $$("input[data-step]", root);
+      const canWrite = !go.disabled;
+      const sync = () => { go.disabled = !canWrite || !boxes.some((c) => c.checked); };
+      boxes.forEach((c) => c.addEventListener("change", sync));
+      sync();
+      go.addEventListener("click", async () => {
+        const target = $("#ar-target", root).value.trim();
+        const code = $("#ar-code", root).value.trim();
+        const err = $("#ar-err", root);
+        err.textContent = "";
+        if (!target) { err.textContent = "target is required"; return; }
+        if (rows.some((r) => r.target === target && (r.code || "") === code)) {
+          err.textContent = `${target}${code ? `@${code}` : ""} is already a row in this plan`;
+          return;
+        }
+        const chosen = boxes.filter((c) => c.checked).map((c) => c.dataset.step);
+        if (!chosen.length) { err.textContent = "select at least one step"; return; }
+        try {
+          await server.planAddRow(project, p.id, {
+            target, code, workdir: $("#ar-workdir", root).value.trim(),
+            files: $("#ar-files", root).value.trim(), steps: chosen,
+          });
+          ctx.toast(`${target}${code ? `@${code}` : ""} added to ${p.csv}`, "ok");
+          close();
+          loadPlan(ctx, project);
+        } catch (error) {
+          err.textContent = error.message;
+        }
+      });
+    });
 }
 
 // ---------------------------------------------------------------------------

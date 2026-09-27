@@ -31,8 +31,38 @@ const keyOf = (project, rel) => `${project}::${rel}`;
 const dockUi = loadUi("logdock", { keys: [] });
 const docked = Array.isArray(dockUi.keys) ? dockUi.keys.filter((k) => typeof k === "string" && k.includes("::")).slice(-MAX_DOCKED) : [];
 
+// ANSI escape sequences (SGR color/style codes, cursor moves, OSC window-title
+// codes, …): AVICA and its libraries (rich/colorama/click) write these when
+// they think stdout is a terminal, but the shim always redirects it to a
+// plain file, so the log ends up with the raw codes ("\x1b[1m…\x1b[0m") — the
+// escape character itself is invisible in a browser <pre>, so only the
+// "[1m"/"[0m" part is visible. Stripped before anything is shown or cached.
+const ANSI_RE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+
+/** Drop ANSI escape sequences a subprocess wrote to its log. */
+function stripAnsi(text) {
+  return text.includes("\x1b") ? text.replace(ANSI_RE, "") : text;
+}
+
+// An escape sequence cut off at the end of a tail read ("\x1b[1" + "m…" next time).
+const PARTIAL_ANSI_RE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*)?$/;
+const MAX_PENDING = 256; // an OSC that never ends is shown rather than held forever
+
+/** New tail text for cache entry `c`, completed with the escape held back last time; holds back a new partial one. */
+function takeChunk(c, raw) {
+  const text = (c.pending || "") + raw;
+  const m = PARTIAL_ANSI_RE.exec(text);
+  if (!m || text.length - m.index > MAX_PENDING) {
+    c.pending = "";
+    return text;
+  }
+  c.pending = m[0];
+  return text.slice(0, m.index);
+}
+
 /** Collapse carriage-return progress lines (keep what the terminal would show). */
 function clean(text) {
+  text = stripAnsi(text);
   if (!text.includes("\r")) return text;
   return text.replace(/\r\n/g, "\n").split("\n").map((line) => (line.includes("\r") ? line.split("\r").filter(Boolean).pop() || "" : line)).join("\n");
 }
@@ -106,7 +136,8 @@ async function load(ctx, project, rel) {
   if (c && typeof c.text === "string") return c;
   const decoder = typeof TextDecoder === "function" ? new TextDecoder() : null;
   const res = await ctx.readLogRange(project, rel, null, { decoder });
-  c = { project, rel, text: trim(clean(res.text || "")), offset: res.offset, id: res.id, live: res.live !== false && res.offset != null, follow: true, scrollTop: 0, decoder, idle: 0, nextAt: Date.now() + TICK_MS, size: res.size, mtime: res.mtime };
+  c = { project, rel, pending: "", offset: res.offset, id: res.id, live: res.live !== false && res.offset != null, follow: true, scrollTop: 0, decoder, idle: 0, nextAt: Date.now() + TICK_MS, size: res.size, mtime: res.mtime };
+  c.text = trim(clean(takeChunk(c, res.text || "")));
   cache.set(key, c);
   evict();
   return c;
@@ -255,7 +286,8 @@ async function tick(ctx, root) {
       const res = await ctx.readLogRange(c.project, c.rel, c.offset, { id: c.id, decoder: c.decoder });
       const grew = Boolean(res.text) || res.reset;
       const before = shown(c);
-      const raw = res.text || "";
+      if (res.reset) c.pending = "";
+      const raw = takeChunk(c, res.text || "");
       let next;
       let added = null; // text that can simply be appended to the <pre>
       if (res.reset) next = clean(raw);
@@ -264,8 +296,8 @@ async function tick(ctx, root) {
         const nl = c.text.lastIndexOf("\n");
         next = c.text.slice(0, nl + 1) + clean(c.text.slice(nl + 1) + raw);
       } else {
-        added = raw;
-        next = c.text + raw;
+        added = stripAnsi(raw);
+        next = c.text + added;
       }
       c.text = trim(next);
       const appended = added != null && c.text === next && c.text.length > 0 && before !== "(empty file)" ? added : null;
@@ -444,4 +476,4 @@ export async function mountDock(ctx, body, key) {
 }
 
 // Exposed for tests.
-export const _internals = { clean, trim, cache, openState, keyOf, docked, MAX_DOCKED };
+export const _internals = { clean, stripAnsi, takeChunk, trim, cache, openState, keyOf, docked, MAX_DOCKED };

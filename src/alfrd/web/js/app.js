@@ -5,7 +5,7 @@
 
 import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi, resetUi } from "./utils/dom.js";
 import { stepParamsFromConfig } from "./data/avica.js";
-import { ensureServerIndex, clearWorkdirCache, resetAttachments } from "./components/attach.js";
+import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
@@ -379,7 +379,8 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   } else if (bundle.workflowInfo) {
     state.workflowFile = { ...state.workflowFile, validated: false, errors: bundle.workflowInfo.errors, warnings: bundle.workflowInfo.warnings };
   }
-  clearWorkdirCache();
+  // A project re-scan only invalidates that project's work dirs.
+  clearWorkdirCache(replace === "project" ? bundle.alfrdProject : undefined);
   applyAvicaParams(bundle.avica, { quiet });
   if (!state.targets.some((t) => t.id === state.selectedTarget)) {
     const firstBad = state.targets.find((t) => rollup(t, ctx.steps()).status === "failed");
