@@ -557,18 +557,28 @@ def spawn_runner(folder: PlanDir, launcher: str | None = None) -> int | None:
         unit = f"alfrd-plan-{_slug(folder.id)}"
         command = ["systemd-run", "--user", "--collect", f"--unit={unit}", f"--working-directory={folder.root}",
                    f"--setenv=PYTHONPATH={env['PYTHONPATH']}", *command]
+    # Stamp the spawn *before* starting the process: until this runner records
+    # its own "started" (>= this stamp), reconcile must not mistake it for a dead
+    # one. Stamping after Popen raced a fast runner: its "started" could land in
+    # an earlier second (runner looked "starting" for 30 s, so reconcile skipped
+    # the plan), and re-saving the plan could overwrite what the runner wrote.
+    # The previous runner's "started" is cleared so it cannot count for this one.
+    previous = dict(plan.get("runner") or {})
+    plan["runner"] = {**previous, "spawned": now_iso(), "started": None}
+    folder.save(plan)
     log = open(folder.runner_log, "a", encoding="utf-8")
     try:
         kwargs: dict[str, Any] = {"start_new_session": True} if os.name != "nt" else {
             "creationflags": getattr(subprocess, "DETACHED_PROCESS", 0)}
         process = subprocess.Popen(command, cwd=str(folder.root), env=env, stdin=subprocess.DEVNULL,
                                    stdout=log, stderr=subprocess.STDOUT, **kwargs)
+    except BaseException:
+        plan = folder.load()
+        plan["runner"] = previous  # nothing was started: do not hold reconcile off
+        folder.save(plan)
+        raise
     finally:
         log.close()
-    # Until this runner takes the lock, reconcile must not mistake it for a dead one.
-    plan = folder.load()
-    plan["runner"] = {**(plan.get("runner") or {}), "spawned": now_iso(), "spawned_pid": process.pid}
-    folder.save(plan)
     return process.pid
 
 
