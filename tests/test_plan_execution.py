@@ -202,6 +202,9 @@ def test_dead_runner_without_live_commands_marks_the_plan_interrupted(project, m
     os.kill(folder.load()["runner"]["pid"], signal.SIGKILL)
     os.killpg(unit["pgid"], signal.SIGKILL)  # e.g. a reboot: everything is gone
     assert _wait(lambda: not scheduler.pid_alive(unit["pid"], unit["proc_start"]), timeout=10)
+    # kill() returns before the runner has exited; it holds runner.lock until then,
+    # and reconcile rightly leaves a plan alone while its runner looks alive.
+    assert _wait(lambda: not folder.runner_alive(), timeout=10)
     actions = scheduler.reconcile(project)
     assert actions == [{"plan": folder.id, "action": "interrupted"}]
     assert _cells(project)["T1"]["preprocess_fitsidi"] == "interrupted"
