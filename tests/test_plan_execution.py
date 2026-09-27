@@ -311,3 +311,44 @@ def test_command_gets_the_users_pythonpath_not_alfrds(project, monkeypatch):
     (unit,) = folder.units()
     assert unit["status"] == "done"
     assert "PP=/user/lib\n" in (project / unit["log"]).read_text()
+
+
+def test_fast_runner_is_not_mistaken_for_one_still_starting(tmp_path, monkeypatch):
+    # A runner that records "started" before spawn_runner returns (in an earlier
+    # second than a stamp taken after Popen) used to look "starting" for 30 s,
+    # so reconcile skipped the plan (seen as a flaky interrupted-plan test on CI).
+    import itertools
+    from datetime import datetime, timedelta
+
+    root = tmp_path / "p"
+    root.mkdir()
+    folder = scheduler.PlanDir(root, "x")
+    folder.path.mkdir(parents=True)
+    folder.save({"id": "x", "status": "running", "runner": {"started": "2000-01-01T00:00:00"}})
+    t0 = datetime.now().replace(microsecond=0) - timedelta(seconds=10)
+    clock = itertools.count()
+    monkeypatch.setattr(scheduler, "now_iso", lambda: (t0 + timedelta(seconds=next(clock))).isoformat())
+
+    class InstantRunner:  # the runner starts at once and records itself
+        pid = 4242
+
+        def __init__(self, *args, **kwargs):
+            assert scheduler._starting(folder.load()), "spawned but not started yet"
+            plan = folder.load()
+            plan["runner"] = {**(plan.get("runner") or {}), "pid": 4242, "started": scheduler.now_iso()}
+            folder.save(plan)
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", InstantRunner)
+    assert scheduler.spawn_runner(folder) == 4242
+    plan = folder.load()
+    assert plan["runner"]["pid"] == 4242  # what the runner wrote is kept
+    assert not scheduler._starting(plan)
+
+    # A launch that fails does not hold reconcile off.
+    def broken(*args, **kwargs):
+        raise OSError("no python")
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", broken)
+    with pytest.raises(OSError):
+        scheduler.spawn_runner(folder)
+    assert not scheduler._starting(folder.load())
