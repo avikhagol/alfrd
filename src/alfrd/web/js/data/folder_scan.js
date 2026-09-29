@@ -189,6 +189,7 @@ export async function scanProjectFolder(root, { onProgress = () => {}, statOnly 
 
   // 2. Root files alfrd.yaml refers to: AVICA config, summary cache, dataset tables.
   const configName = block.config || "avica.inp";
+  const targetsRel = String(defs.targets?.csv || "alfrd.targets.csv").replace(/^\.\//, "");
   const summaryNames = [block.config_summary_cache, "avica.summary.json", "avica.summary.txt"].filter(Boolean);
   const early = [];
   for (const c of top.filter((x) => x.kind === "file")) {
@@ -198,9 +199,20 @@ export async function scanProjectFolder(root, { onProgress = () => {}, statOnly 
     const isTable = /\.(csv|tsv)$/i.test(c.name);
     if (!isConfig && !isSummary && !isTable) continue;
     const r = await read(c.handle);
-    const e = { rel: c.name, name: c.name, size: r.file.size, mtime: r.file.lastModified, text: r.text, hint: isSummary ? "summary" : undefined };
+    const hint = isSummary ? "summary" : c.name === targetsRel ? "targets" : undefined;
+    const e = { rel: c.name, name: c.name, size: r.file.size, mtime: r.file.lastModified, text: r.text, hint };
     entries.push(e);
     early.push(e);
+  }
+  // alfrd.yaml targets.csv below the root (e.g. lists/sources.csv).
+  if (targetsRel.includes("/")) {
+    const parts = targetsRel.split("/");
+    const dir = await dirAt(base, parts.slice(0, -1).join("/"));
+    const f = dir && (await fileAt(dir, parts[parts.length - 1]));
+    if (f) {
+      const r = await read(f);
+      entries.push({ rel: targetsRel, name: parts[parts.length - 1], size: r.file.size, mtime: r.file.lastModified, text: r.text, hint: "targets" });
+    }
   }
   // Resolve target_dir exactly as buildAvicaIndex does (config ← summary).
   const config = Object.assign({}, ...early.filter((e) => /\.inp$/i.test(e.name)).map((e) => parseKeyValue(e.text || "")));
@@ -382,6 +394,15 @@ export async function readFileRange(root, rel, offset = null, { tail = 400000, d
     if (cut >= 0 && cut < 4096) text = text.slice(cut + 1);
   }
   return { text, offset: size, size, mtime: file.lastModified, id: null, reset };
+}
+
+/** Read a whole file below a folder handle; null when it does not exist. */
+export async function readWholeFromHandle(handle, rel) {
+  const parts = String(rel).split("/").filter(Boolean);
+  const name = parts.pop();
+  const dir = await dirAt(handle, parts.join("/"));
+  const f = dir && (await fileAt(dir, name));
+  return f ? (await f.getFile()).text() : null;
 }
 
 /** Read a file (last 400 kB) below a stored folder handle, e.g. after a reload. */

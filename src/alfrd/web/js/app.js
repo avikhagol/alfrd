@@ -9,7 +9,7 @@ import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
-import { canPickDirectory, pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle, forgetFolderHandles, ensureReadPermission, readFileFromHandle, readFileRange, writeFileToHandle } from "./data/folder_scan.js";
+import { canPickDirectory, pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle, forgetFolderHandles, ensureReadPermission, readFileFromHandle, readWholeFromHandle, readFileRange, writeFileToHandle } from "./data/folder_scan.js";
 import { createLive } from "./data/live.js";
 import { demoBundle, DEMO_ALFRD_PROJECT } from "./data/demo.js";
 import { server } from "./data/server.js";
@@ -78,6 +78,9 @@ const state = {
 const listeners = new Set();
 let renderQueued = false;
 let renderFrame = 0;
+
+/** Modules loaded with import() on first use (kept out of the startup payload). */
+const lazy = { targets: null, diagnostics: null };
 
 function scheduleRender() {
   if (renderQueued) return;
@@ -156,6 +159,16 @@ export const ctx = {
     storage.set("prefs", state.prefs);
   },
   openImport,
+  /** Targets CSV "import" / "download" / "remove" (names); the dialog module loads on first use. */
+  async openTargets(action = "import", project = null, names = []) {
+    try {
+      lazy.targets ||= import("./components/targets_dialog.js");
+      return await (await lazy.targets).openTargets(ctx, action, project, names);
+    } catch (error) {
+      lazy.targets = null;
+      ctx.toast(`Targets: ${error.message}`, "fail");
+    }
+  },
   applyWorkflowInfo,
   /** Read a listed file (log) of a project: in-memory text, File handle, server, or the remembered folder. */
   async readFile(project, rel) {
@@ -228,6 +241,27 @@ export const ctx = {
   },
   saveManifest,
   writeAvicaConfig,
+  /** Re-read one project after a write (server scan, or the remembered folder). */
+  async refreshProject(project) {
+    if (state.mode === "server" && state.trees?.[project]?.provider === "server") {
+      await applyServerScan(project, await server.projectScan(project));
+      return;
+    }
+    await rescan();
+  },
+  /** Whole text of a file in a browser-opened project folder (null: no folder / no file). */
+  async readProjectText(project, rel) {
+    const folder = state.folders[project] || (await loadFolderHandle(project));
+    if (!folder || !canPickDirectory() || !(await ensureReadPermission(folder))) return null;
+    return readWholeFromHandle(folder, rel);
+  },
+  /** Write a text file below a browser-opened project folder; false when there is none. */
+  async writeProjectFile(project, rel, text) {
+    const folder = state.folders[project] || (await loadFolderHandle(project));
+    if (!folder || !canPickDirectory()) return false;
+    await writeFileToHandle(folder, rel, text);
+    return true;
+  },
   canWrite(project) {
     if (state.mode === "server") return Boolean(server.session?.mutations_enabled && state.trees?.[project]?.provider === "server");
     return Boolean(state.folders[project] && canPickDirectory());
@@ -269,7 +303,7 @@ function persist() {
 function stripTrees(trees) {
   const out = {};
   Object.entries(trees || {}).forEach(([k, v]) => {
-    out[k] = { ...v, logFiles: (v.logFiles || []).map(({ file, text, ...rest }) => rest) };
+    out[k] = { ...v, logFiles: (v.logFiles || []).map(({ file, text, ...rest }) => rest), targetsFile: v.targetsFile ? { rel: v.targetsFile.rel } : null };
   });
   return out;
 }
@@ -285,6 +319,7 @@ function treeFromBundle(bundle, provider) {
     manifestDefault: Boolean(bundle.manifestDefault), // no local alfrd.yaml: the default one is shown
     template: (bundle.defs || {}).template || templateName(bundle.manifest) || null,
     configName: bundle.manifest?.avica?.config || "avica.inp",
+    targetsFile: bundle.targetsFile || null, // {rel, text}: alfrd.yaml targets.csv as imported
   };
 }
 

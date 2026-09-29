@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0.7]
+
+#### Added
+
+- **Target list** `alfrd.targets.csv` (alfrd.yaml `targets:`): sources with their FITS file names and project code, kept across plans. Import it from Overview → **Targets** or the Run dialog (column mapping, preview, merge / replace, line-numbered problems), or with `alfrd targets import FILE [--replace] [--dry-run]` / `alfrd targets show`. The Run dialog and `alfrd plan new --from-targets` take FILENAMES / PROJECT_CODE from it. Endpoints `GET/POST /api/studio/projects/<p>/targets`, `POST …/targets/preview` (writes need loopback + CSRF).
+- **rPicard diagnostics in Results**: a new artifact kind `collection` (a folder of viewable files, `path_pattern` + `include` / `exclude` / `pinned` / `depth` / `run_order`). The avica template declares `rpicard_diagnostics` (`{workdir}/wd_{band}_{target}/diagnostics_*`). The card is collapsed and reads nothing until opened. It then shows run / band / code pickers, pinned summaries, per-folder thumbnail grids (60 at a time, loaded as they scroll into view), a lightbox, a sortable `fringes_overview.csv` table, and **Compare** for two runs side by side. `.ps` is download only, and SVG / HTML are never inline. Read-only endpoints `…/collections`, `…/collections/<name>/files`, `…/collections/<name>/file`. A file is served only if it belongs to a declared run below an AVICA work dir, and symlinked run folders are not followed.
+- Overview → **Code** filter (AVICA project code).
+- Overview selection: **Run…** (Run dialog with the checked targets preselected) and **Remove from targets file** (confirm; `POST …/targets/remove`, `alfrd targets remove NAME|NAME@CODE …`).
+
+#### Changed
+
+- Installation by default now includes the `gui` extras, with `flask` and `flask_sqlalchemy`.
+
+- Overview: the browser-only "Re-queue" (which only marked a step queued in the browser) is gone. The drawer keeps **Retry step** for runtime-managed runs only.
+
+- Overview toolbar grouped into **Status** (the counters are now the only status filter, with *No work folder*; the old *Needs attention* quick filter is gone, use the **Attention** counter), **Find** (search, code, project; the project filter is only shown when several projects are loaded) and **View**. A line under it shows removable chips for the active filters, "showing N of M" and *Clear all*. Typing in search keeps focus (only the grid is redrawn).
+- Studio size budget split: the startup payload (index.html, studio.css and everything `js/app.js` imports) stays under 165 KB gzip. Features opened on demand (`import()`: targets dialog, diagnostics, `css/lazy.css`) and the templates are capped at 40 KB. A test checks the lazy modules are never imported at startup.
+
 ## [0.2.0.5]
 
 #### Added
@@ -23,6 +41,7 @@
 
 - A project connected from the Studio stayed in view only until the page was reloaded (it was added to the scope in the browser, not on the server).
 
+[0.2.0.6]: https://github.com/avikhagol/alfrd/compare/v0.2.0.5...v0.2.0.6
 [0.2.0.5]: https://github.com/avikhagol/alfrd/compare/v0.2.0.4...v0.2.0.5
 [0.2.0.4]: https://github.com/avikhagol/alfrd/compare/v0.2.0.3...v0.2.0.4
 [0.2.0.3]: https://github.com/avikhagol/alfrd/compare/v0.2.0...v0.2.0.3  

@@ -52,8 +52,28 @@ function stacked(parts, total) {
     <ul class="legend">${parts.map((p) => `<li><i class="sw seg-${p.tone}"></i>${esc(p.label)}: <b class="tabular">${p.value}</b></li>`).join("")}</ul>`;
 }
 
+/** Collection artifacts (e.g. rPicard diagnostics_*) of the project in view. */
+function collectionsOf(ctx) {
+  const t = ctx.target();
+  const project = t?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null);
+  const tree = project && ctx.state.trees?.[project];
+  const list = (tree?.defs?.artifacts || []).filter((a) => a.kind === "collection");
+  return { project, tree, list };
+}
+
+let diagnostics = null; // components/diagnostics.js, loaded when a collection card is opened
+
 export function mount(el, ctx) {
-  el.innerHTML = `<div class="rs" id="rs"></div>`;
+  el.innerHTML = `<div class="rs" id="rs"></div><div class="rs" id="rs-coll"></div>`;
+  on(el, "click", "[data-coll-open]", async (e, b) => {
+    try {
+      diagnostics ||= import("./diagnostics.js");
+      (await diagnostics).openCollection($("#rs-coll", el), ctx, b.dataset.collOpen);
+    } catch (error) {
+      diagnostics = null;
+      ctx.toast(`Diagnostics: ${error.message}`, "fail");
+    }
+  });
   on(el, "click", "[data-ladder]", (e, row) => {
     const k = row.dataset.ladder;
     ui.open.has(k) ? ui.open.delete(k) : ui.open.add(k);
@@ -128,7 +148,26 @@ export function render(el, ctx) {
         <label class="btn sm">${icon("upload")} Load reductions/&lt;target&gt;_result.csv<input type="file" id="rs-csv" accept=".csv,.tsv" multiple hidden></label></div>
       ${t ? ladder(ctx, t) : '<p class="muted">Select a target in the header.</p>'}
     </div>`;
+  renderCollections(el, ctx);
   ctx.setFooterRight(`${st.targets.length} targets · ${st.attempts} attempts`);
+}
+
+/** Collapsed cards for kind: collection artifacts; nothing is fetched until one is opened. */
+function renderCollections(el, ctx) {
+  const host = $("#rs-coll", el);
+  const { project, tree, list } = collectionsOf(ctx);
+  const key = `${project}|${list.map((c) => c.name).join(",")}`;
+  if (host.dataset.key === key) {
+    diagnostics?.then((m) => m.refresh?.(host, ctx)).catch(() => {});
+    return; // an open card keeps its state across renders
+  }
+  host.dataset.key = key;
+  if (!list.length) { host.innerHTML = ""; return; }
+  const served = tree?.provider === "server";
+  host.innerHTML = list.map((c) => `<div class="card coll-card" data-coll="${esc(c.name)}">
+    <div class="row gap wrap"><h4>${icon("graph")} ${esc(c.description || c.name)}</h4><span class="muted small mono">${esc(c.path_pattern)}</span><span class="grow"></span>
+    ${served ? `<button class="btn sm" data-coll-open="${esc(c.name)}">${icon("folder")} Show</button>` : `<span class="muted small">Needs <code>alfrd serve</code> (files are read on the server when opened).</span>`}</div>
+    <div class="coll-body" hidden></div></div>`).join("");
 }
 
 function ladder(ctx, t) {

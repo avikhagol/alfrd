@@ -39,6 +39,18 @@ results:
   calibration_step: rpicard
   calibrated_sources: '^calibrated\s+(.+)$'
 
+# The project's target list (Overview → Targets → Import targets CSV…, the Run
+# dialog, `alfrd targets import`, `alfrd plan new --from-targets`). Kept across
+# plans; execution.plan_csv is the state of one run. Written with the plan CSV's
+# column names (execution.key_column / files_column / code_column); `columns:`
+# are the header names accepted on import (case-insensitive).
+targets:
+  csv: alfrd.targets.csv
+  columns:
+    key: [TARGET_NAME, source, source_name, target, name]
+    files: [FILENAMES, fitsfilenames, fits, fitsidi, files]
+    code: [PROJECT_CODE, project_code, code]
+
 # Commands ALFRD runs (Studio → Workflow → Run…, `alfrd plan run`). alfrd.yaml
 # entrypoints with the same name replace these; `execution:` keys override one by one.
 # Placeholders: {target} {step} {from_step} {targets} {plan_csv} {root} and any
@@ -191,6 +203,33 @@ steps:
       - "{workdir}/wd_{band}_{target}/diagnostics_*/casa.log_*"
 
 artifacts:
+  # kind: collection = a folder of viewable files (Results → Diagnostics). Each
+  # path_pattern match is one run; nothing under it is read until the card is
+  # opened. include/exclude are relative to the run folder (* within one
+  # folder); depth limits how far it is walked.
+  - name: rpicard_diagnostics
+    description: rPicard calibration diagnostics (plots, flags, fringe-fit overview)
+    kind: collection
+    viewer: gallery
+    step: rpicard
+    path_pattern: "{workdir}/wd_{band}_{target}/diagnostics_*"
+    run_order: newest
+    depth: 3
+    pinned: ["*/SUMMARY_*.pdf", "fringes_overview.csv.*", "flags.list"]
+    include:
+      - "*/*.png"
+      - "*/*.pdf"
+      - "*/*.ps"
+      - "*/*/*.png"
+      - "*.pdf"
+      - "fringes_overview.csv.*"
+      - "*.list"
+      - "*.txt"
+      - "list.obs"
+      - "casa.log_*"
+      - "mpi_and_err.out_*"
+      - "used_input_files/*.inp"
+    exclude: ["*.tmp", "FLAGTABLES/*"]
   - name: avica_logs
     path_pattern: "{logs}/avica__log-*.log"
     description: AVICA run logs

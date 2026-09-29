@@ -4,11 +4,13 @@ import { $, on, esc, icon, hms, short, when, copyText, loadUi, saveUi } from "..
 import { avicaIndex, codeChips, detachCode, openAttachPicker, targetCodes } from "./attach.js";
 import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
+import { openRunDialog, plansAvailable } from "./plans.js";
+import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
 
 // Remembered in this browser until Settings → "Reset view state".
-const UI_FIELDS = ["search", "project", "status", "preset", "mode", "collapsed", "hidden", "drawer", "groupBy"];
+const UI_FIELDS = ["search", "project", "status", "code", "preset", "mode", "collapsed", "hidden", "drawer", "groupBy"];
 const saved = loadUi("overview", {
-  search: "", project: "all", status: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project",
+  search: "", project: "all", status: "all", code: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project",
 });
 const ui = {
   ...saved,
@@ -28,27 +30,20 @@ const LEADING = [
   { id: "runtime", label: "Runtime" },
 ];
 
-const PRESETS = {
-  attention: (t, r) => r.status === "failed" || r.status === "warning",
-  nometa: (t, r, codes) => !codes.length,
-};
+const STATUSES = ["completed", "failed", "warning", "running", "unknown"];
+const PRESET_LABELS = { nometa: "No work folder" };
 
-function statusMatches(filter, status) {
-  if (filter === "all") return true;
-  return status === filter;
+function helpers(ctx) {
+  return {
+    rollup: (t) => ctx.rollup(t),
+    codes: (t) => targetCodes(ctx, t).map((c) => c.code),
+    text: (t) => targetText({ ...t, notes: ctx.state.notes[t.id] }),
+  };
 }
 
 /** Targets after header project scope + local filters (used by CSV export too). */
 export function visibleTargets(ctx) {
-  const q = ui.search.trim().toLowerCase();
-  return ctx.scopedTargets().filter((t) => {
-    if (ui.project !== "all" && t.project !== ui.project) return false;
-    const r = ctx.rollup(t);
-    if (!statusMatches(ui.status, r.status)) return false;
-    if (ui.preset && !PRESETS[ui.preset](t, r, targetCodes(ctx, t))) return false;
-    if (q && !targetText({ ...t, notes: ctx.state.notes[t.id] }).includes(q)) return false;
-    return true;
-  });
+  return filterTargets(ctx.scopedTargets(), ui, helpers(ctx));
 }
 
 function badge(status, extra = "") {
@@ -105,19 +100,31 @@ function counters(ctx, targets) {
 export function mount(el, ctx) {
   el.innerHTML = `<div class="ov"><div class="card ov-head" id="ov-head"></div><div class="ov-body"><div class="card grid-card" id="ov-grid"></div><aside class="card drawer" id="ov-drawer" aria-label="Target details"></aside></div></div>`;
 
-  on(el, "input", "#ov-search", (e) => { ui.search = e.target.value; ui.page = 0; remember(); renderGrid(el, ctx); renderCounts(el, ctx); });
+  // Typing only refreshes what depends on the filter; the head keeps its input (and focus).
+  on(el, "input", "#ov-search", (e) => { ui.search = e.target.value; ui.page = 0; remember(); renderGrid(el, ctx); renderActive(el, ctx); });
   on(el, "change", "#ov-project", (e) => { ui.project = e.target.value; ui.page = 0; remember(); ctx.update(); });
-  on(el, "change", "#ov-status", (e) => { ui.status = e.target.value; ui.page = 0; remember(); ctx.update(); });
-  on(el, "change", "#ov-group", (e) => { ui.groupBy = e.target.value; ui.page = 0; remember(); ctx.update(); });
+  on(el, "change", "#ov-code", (e) => { ui.code = e.target.value; ui.page = 0; remember(); ctx.update(); });
+  on(el, "click", "[data-group-by]", (e, b) => { ui.groupBy = b.dataset.groupBy; ui.page = 0; remember(); ctx.update(); });
   on(el, "click", "[data-preset]", (e, b) => { ui.preset = ui.preset === b.dataset.preset ? null : b.dataset.preset; ui.page = 0; remember(); ctx.update(); });
   on(el, "click", "[data-mode]", (e, b) => { ui.mode = b.dataset.mode; remember(); ctx.update(); });
-  on(el, "click", "[data-counter]", (e, b) => { ui.status = b.dataset.counter; ui.preset = null; ui.page = 0; remember(); ctx.update(); });
+  on(el, "click", "[data-counter]", (e, b) => { const s = b.dataset.counter; ui.status = ui.status === s ? "all" : s; ui.page = 0; remember(); ctx.update(); });
+  on(el, "click", "[data-unfilter]", (e, b) => {
+    const keys = b.dataset.unfilter === "*" ? Object.keys(FILTER_DEFAULTS) : [b.dataset.unfilter];
+    keys.forEach((k) => { ui[k] = FILTER_DEFAULTS[k]; });
+    ui.page = 0; remember(); ctx.update();
+  });
   on(el, "click", "[data-attach]", (e) => { e.stopPropagation(); const t = ctx.target(); if (t) openAttachPicker(ctx, t); });
   on(el, "click", "[data-detach]", (e, b) => { e.stopPropagation(); const t = ctx.target(); if (t) detachCode(ctx, t, b.dataset.detach); });
   on(el, "click", "[data-fold=drawer]", () => { ui.drawer = !ui.drawer; remember(); render(el, ctx); });
   on(el, "click", "#dr-metadata", () => ctx.navigate("metadata"));
   on(el, "click", "[data-crash]", async (e, b) => { e.preventDefault(); ctx.openLog(ctx.target()?.project, b.dataset.crash); });
   on(el, "click", "#ov-import", () => ctx.openImport());
+  on(el, "click", "#ov-targets", (e, b) => ctx.menu(b, [
+    { label: "Import targets CSV…", icon: "upload", hint: "source, FITS files", run: () => ctx.openTargets("import") },
+    { label: "Download targets CSV", icon: "download", run: () => ctx.openTargets("download") },
+    "-",
+    { label: "Import results…", icon: "upload", run: () => ctx.openImport() },
+  ]));
   on(el, "click", "#ov-export", (e, b) => ctx.menu(b, [
     { label: "Overview CSV (visible rows)", icon: "download", run: () => document.querySelector("#btn-export").click() },
   ]));
@@ -148,11 +155,18 @@ export function mount(el, ctx) {
   });
   on(el, "click", "#dr-open-workflow", () => ctx.navigate("workflow", { target: ctx.state.selectedTarget }));
   on(el, "input", "#dr-notes", (e) => ctx.setNote(ctx.state.selectedTarget, e.target.value));
-  on(el, "click", "#dr-requeue", () => requeue(ctx));
+  on(el, "click", "#dr-retry", () => retryStep(ctx));
   on(el, "click", "#dr-logs", () => ctx.renderConsole());
-  on(el, "click", "#dr-bulk-requeue", () => {
-    ui.checked.forEach((id) => requeue(ctx, id, true));
-    ctx.toast(`${ui.checked.size} target(s) re-queued`, "ok");
+  on(el, "click", "#dr-bulk-run", () => {
+    const picked = checkedTargets(ctx);
+    openRunDialog(ctx, picked[0].project, { targets: picked.map((t) => t.name) });
+  });
+  on(el, "click", "#dr-bulk-remove", async () => {
+    const picked = checkedTargets(ctx);
+    const result = await ctx.openTargets("remove", picked[0].project, picked.map((t) => t.name));
+    if (!result?.removed?.length) return;
+    ui.checked.clear();
+    ctx.toast(`${result.removed.length} row(s) removed from the targets file`, "ok");
   });
   on(el, "click", "#ov-clear-check", () => { ui.checked.clear(); renderGrid(el, ctx); });
 }
@@ -161,33 +175,51 @@ function toggle(set, v) {
   set.has(v) ? set.delete(v) : set.add(v);
 }
 
-async function requeue(ctx, id = ctx.state.selectedTarget, quiet = false) {
-  const t = ctx.target(id);
-  if (!t) return;
-  const r = ctx.rollup(t);
-  const sel = document.querySelector("#dr-step");
-  const key = (!quiet && sel?.value) || (r.failed || r.warning)?.key || ctx.steps()[r.next ?? 0];
-  if (!key) return;
-  if (ctx.state.mode === "server" && t.runId) {
-    try {
-      await server.retryStep(t.runId, key);
-      ctx.log("info", `Runtime retry requested for ${t.name} → ${key} (run ${t.runId}).`, "runtime");
-      if (!quiet) ctx.toast(`Retry of ${key} submitted to the ALFRD runtime`, "ok");
-      t.steps[key] = { ...(t.steps[key] || {}), status: "queued" };
-      ctx.update();
-      return;
-    } catch (error) {
-      ctx.log("error", `Runtime retry failed: ${error.message}`, "runtime");
-      if (!quiet) ctx.toast(error.message, "fail");
-      return;
-    }
+
+/** Actions for the checked targets: run them (plan, server) and remove them from the targets file. */
+function selectionActions(ctx) {
+  const picked = checkedTargets(ctx);
+  if (!picked.length) return "";
+  if (!oneProject(picked)) return '<span class="muted small">(pick targets of one project to run or remove them)</span>';
+  const project = picked[0].project;
+  const out = [];
+  if (plansAvailable(ctx, project)) out.push(`<button class="link-btn" id="dr-bulk-run" title="New plan from the checked targets">${icon("play")} Run…</button>`);
+  if (targetsFileOf(ctx, project) || ctx.canWrite(project)) {
+    out.push(`<button class="link-btn danger" id="dr-bulk-remove" title="Delete their rows from the targets file (result CSVs and work dirs stay)">${icon("trash")} Remove from targets file</button>`);
   }
-  const prev = t.steps[key] || { attempts: [] };
-  t.steps[key] = { ...prev, status: "queued", requeuedAt: new Date().toISOString() };
-  ctx.log("warn", `${t.name}: ${key} marked queued in the browser only. Re-run it outside the browser, e.g. \`avica pipe run --t ${t.name} --resume-from ${key}\` (or \`alfrd runtime retry-step <run-id> ${key}\` for runtime-managed runs), then re-import the result CSV.`, "triage");
-  if (!quiet) ctx.toast(`${key} marked as queued (browser only)`, "warn");
-  ctx.persist();
-  ctx.update();
+  return out.join(" · ");
+}
+
+/** Checked targets, all from one project (Run / Remove act on one project's files). */
+function checkedTargets(ctx) {
+  return [...ui.checked].map((id) => ctx.target(id)).filter(Boolean);
+}
+
+function oneProject(targets) {
+  return new Set(targets.map((t) => t.project)).size === 1;
+}
+
+/** Declared targets file of a project, and whether any checked target is in it. */
+function targetsFileOf(ctx, project) {
+  return ctx.state.trees?.[project]?.targetsFile || null;
+}
+
+/** Retry a step of a runtime-managed run (server). Other runs are started from a plan (Run…). */
+async function retryStep(ctx, id = ctx.state.selectedTarget) {
+  const t = ctx.target(id);
+  if (!t?.runId) return;
+  const key = document.querySelector("#dr-step")?.value;
+  if (!key) return;
+  try {
+    await server.retryStep(t.runId, key);
+    ctx.log("info", `Runtime retry requested for ${t.name} → ${key} (run ${t.runId}).`, "runtime");
+    ctx.toast(`Retry of ${key} submitted to the ALFRD runtime`, "ok");
+    t.steps[key] = { ...(t.steps[key] || {}), status: "queued" };
+    ctx.update();
+  } catch (error) {
+    ctx.log("error", `Runtime retry failed: ${error.message}`, "runtime");
+    ctx.toast(error.message, "fail");
+  }
 }
 
 function pageTargets(ctx) {
@@ -206,50 +238,105 @@ export function render(el, ctx) {
 }
 
 function renderHead(el, ctx) {
-  const projects = ctx.projects();
-  if (ui.project !== "all" && !projects.some((p) => p.id === ui.project)) ui.project = "all";
-  const scoped = ctx.scopedTargets();
-  const nAttention = scoped.filter((t) => PRESETS.attention(t, ctx.rollup(t))).length;
-  const nNoMeta = scoped.filter((t) => !targetCodes(ctx, t).length).length;
-  const src = ctx.state.source;
-  const srcLabel = src === "demo" ? "Demo Data" : src === "server" ? "Runtime" : src === "imported" ? "Imported" : "No data";
-  const visibleCols = LEADING.filter((c) => !ui.hidden.has(c.id)).length + 1 + (ui.hidden.has("stages-all") ? 0 : ctx.steps().length);
-  const totalCols = LEADING.length + 1 + ctx.steps().length;
-  $("#ov-head", el).innerHTML = `
-    <div class="row gap wrap ov-title">
-      <h2>Project Overview</h2>
-      <span class="chip">${esc(srcLabel)} — ${projects.length} Project${projects.length === 1 ? "" : "s"}, ${scoped.length} Target${scoped.length === 1 ? "" : "s"}</span>
-      <span class="vsep"></span>
-      <div class="counters" id="ov-counts"></div>
-      <span class="grow"></span>
-      <button class="btn" id="ov-import">${icon("upload")} Import results</button>
-      <button class="btn" id="ov-export">${icon("download")} Export CSV</button>
-    </div>
-    <div class="row gap wrap ov-filters">
-      <label class="search grow">${icon("search")}<input id="ov-search" type="search" placeholder="Search projects, targets, filenames, comments…" value="${esc(ui.search)}" aria-label="Search"></label>
-      <label class="select-wrap">${icon("folder")}<select id="ov-project" aria-label="Project filter"><option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${ui.project === p.id ? "selected" : ""}>${esc(p.title || p.name)}</option>`).join("")}</select></label>
-      <label class="select-wrap">${icon("filter")}<select id="ov-status" aria-label="Status filter">${["all", "completed", "failed", "warning", "running", "unknown"].map((s) => `<option value="${s}" ${ui.status === s ? "selected" : ""}>Status: ${s === "all" ? "All" : OVERALL_STATUS[s].label}</option>`).join("")}</select></label>
-      <button class="pill warn ${ui.preset === "attention" ? "on" : ""}" data-preset="attention">Needs attention (${nAttention})</button>
-      <button class="pill ${ui.preset === "nometa" ? "on" : ""}" data-preset="nometa">No work folder (${nNoMeta})</button>
-      <span class="vsep"></span>
-      <label class="select-wrap" title="Group rows">${icon("columns")}<select id="ov-group" aria-label="Group by"><option value="project" ${ui.groupBy === "project" ? "selected" : ""}>Group: ALFRD project</option><option value="code" ${ui.groupBy === "code" ? "selected" : ""}>Group: project code</option></select></label>
-      <div class="seg" role="group" aria-label="View mode"><button data-mode="summary" class="${ui.mode === "summary" ? "on" : ""}">Summary</button><button data-mode="details" class="${ui.mode === "details" ? "on" : ""}">Stage details</button></div>
-      <button class="btn" id="ov-columns">${icon("columns")} Columns (${visibleCols}/${totalCols})</button>
-    </div>`;
-  renderCounts(el, ctx);
+  const head = $("#ov-head", el);
+  // The search box is built once so live refreshes never take its focus or caret.
+  if (!$("#ov-search", head)) {
+    head.innerHTML = `
+      <div class="row gap wrap ov-title" id="ov-title"></div>
+      <div class="ov-toolbar">
+        <div class="ov-group" role="group" aria-labelledby="ov-l-status"><span class="ov-label" id="ov-l-status">Status</span><div class="chipbar" id="ov-status-bar"></div></div>
+        <div class="ov-row">
+          <div class="ov-group grow" role="group" aria-labelledby="ov-l-find"><span class="ov-label" id="ov-l-find">Find</span>
+            <label class="search grow">${icon("search")}<input id="ov-search" type="search" placeholder="Search targets, files, codes, notes…" aria-label="Search"></label>
+            <span class="row gap" id="ov-find-rest"></span></div>
+          <div class="ov-group" role="group" aria-labelledby="ov-l-view" id="ov-view"></div>
+        </div>
+        <div class="ov-active" id="ov-active" hidden></div>
+      </div>`;
+    $("#ov-search", head).value = ui.search;
+  } else if (document.activeElement !== $("#ov-search", head)) {
+    $("#ov-search", head).value = ui.search;
+  }
+  renderTitle(el, ctx);
+  renderStatusBar(el, ctx);
+  renderFindView(el, ctx);
+  renderActive(el, ctx);
 }
 
-function renderCounts(el, ctx) {
+function renderTitle(el, ctx) {
+  const projects = ctx.projects();
+  const scoped = ctx.scopedTargets();
+  const src = ctx.state.source;
+  const srcLabel = src === "demo" ? "Demo Data" : src === "server" ? "Runtime" : src === "imported" ? "Imported" : "No data";
+  $("#ov-title", el).innerHTML = `
+      <h2>Project Overview</h2>
+      <span class="chip">${esc(srcLabel)} · ${projects.length} project${projects.length === 1 ? "" : "s"} · ${scoped.length} target${scoped.length === 1 ? "" : "s"}</span>
+      <span class="grow"></span>
+      <button class="btn" id="ov-targets" aria-haspopup="menu">${icon("upload")} Targets ${icon("caret")}</button>
+      <button class="btn" id="ov-export" aria-haspopup="menu">${icon("download")} Export ${icon("caret")}</button>`;
+}
+
+function renderStatusBar(el, ctx) {
   const scoped = ctx.scopedTargets();
   const c = counters(ctx, scoped);
+  const h = helpers(ctx);
+  const nNoMeta = scoped.filter((t) => !h.codes(t).length).length;
+  const chip = (s, n, tone) => `<button class="count ${tone ? `tone-${tone}` : ""} ${ui.status === s ? "on" : ""}" data-counter="${s}" aria-pressed="${ui.status === s}">${tone ? "<i></i>" : ""}${n} ${esc(s === "all" ? "All" : OVERALL_STATUS[s].label)}</button>`;
+  $("#ov-status-bar", el).innerHTML = `
+    ${chip("all", scoped.length, "")}
+    ${chip("completed", c.completed, "ok")}${chip("failed", c.failed, "fail")}${chip("warning", c.warning, "warn")}
+    ${c.running || ui.status === "running" ? chip("running", c.running, "run") : ""}${chip("unknown", c.unknown, "")}
+    <span class="vsep"></span>
+    <button class="pill ${ui.preset === "nometa" ? "on" : ""}" data-preset="nometa" aria-pressed="${ui.preset === "nometa"}">${PRESET_LABELS.nometa} ${nNoMeta}</button>`;
+}
+
+function allCodes(ctx) {
+  const h = helpers(ctx);
+  const seen = new Map();
+  let none = 0;
+  ctx.scopedTargets().forEach((t) => {
+    const list = h.codes(t);
+    if (!list.length) none += 1;
+    list.forEach((c) => seen.set(c, (seen.get(c) || 0) + 1));
+  });
+  return { codes: [...seen.entries()].sort((a, b) => a[0].localeCompare(b[0])), none };
+}
+
+function renderFindView(el, ctx) {
   const projects = ctx.projects();
-  $("#ov-counts", el).innerHTML = `
-    <button class="count" data-counter="all">${scoped.length} Target${scoped.length === 1 ? "" : "s"}</button>
-    <button class="count tone-ok" data-counter="completed"><i></i>${c.completed} Completed</button>
-    <button class="count tone-fail" data-counter="failed"><i></i>${c.failed} Failed</button>
-    <button class="count tone-warn" data-counter="warning"><i></i>${c.warning} Warning</button>
-    ${c.running ? `<button class="count tone-run" data-counter="running"><i></i>${c.running} Running</button>` : ""}
-    <button class="count" data-counter="unknown">${c.unknown} Unknown</button>`;
+  if (ui.project !== "all" && !projects.some((p) => p.id === ui.project)) ui.project = "all";
+  const { codes, none } = allCodes(ctx);
+  if (ui.code !== "all" && ui.code !== NO_CODE && !codes.some(([c]) => c === ui.code)) ui.code = "all";
+  const visibleCols = LEADING.filter((c) => !ui.hidden.has(c.id)).length + 1 + (ui.hidden.has("stages-all") ? 0 : ctx.steps().length);
+  const totalCols = LEADING.length + 1 + ctx.steps().length;
+  $("#ov-find-rest", el).innerHTML = `
+    <label class="select-wrap" title="AVICA project code">${icon("folder")}<select id="ov-code" aria-label="Project code filter">
+      <option value="all">All codes (${codes.length})</option>
+      ${codes.map(([c, n]) => `<option value="${esc(c)}" ${ui.code === c ? "selected" : ""}>${esc(c)} (${n})</option>`).join("")}
+      ${none ? `<option value="${NO_CODE}" ${ui.code === NO_CODE ? "selected" : ""}>No code (${none})</option>` : ""}
+    </select></label>
+    ${projects.length > 1 ? `<label class="select-wrap" title="ALFRD project">${icon("database")}<select id="ov-project" aria-label="ALFRD project filter"><option value="all">All projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${ui.project === p.id ? "selected" : ""}>${esc(p.title || p.name)}</option>`).join("")}</select></label>` : ""}`;
+  $("#ov-view", el).innerHTML = `<span class="ov-label" id="ov-l-view">View</span>
+    <div class="seg" role="group" aria-label="Group rows by"><button data-group-by="project" class="${ui.groupBy === "project" ? "on" : ""}" title="Group rows by ALFRD project">Project</button><button data-group-by="code" class="${ui.groupBy === "code" ? "on" : ""}" title="Group rows by AVICA project code">Code</button></div>
+    <div class="seg" role="group" aria-label="Cell detail"><button data-mode="summary" class="${ui.mode === "summary" ? "on" : ""}">Summary</button><button data-mode="details" class="${ui.mode === "details" ? "on" : ""}">Details</button></div>
+    <button class="btn" id="ov-columns">${icon("columns")} Columns ${visibleCols}/${totalCols}</button>`;
+}
+
+function renderActive(el, ctx) {
+  const box = $("#ov-active", el);
+  const labels = {
+    status: Object.fromEntries(STATUSES.map((s) => [s, OVERALL_STATUS[s].label])),
+    preset: PRESET_LABELS,
+    project: Object.fromEntries(ctx.projects().map((p) => [p.id, p.title || p.name])),
+  };
+  const list = activeFilters(ui, labels);
+  box.hidden = !list.length;
+  if (!list.length) { box.innerHTML = ""; return; }
+  const shown = visibleTargets(ctx).length;
+  box.innerHTML = `${icon("filter")}
+    ${list.map((f) => `<span class="chip">${esc(f.label)}<button class="icon-btn xs" data-unfilter="${f.key}" aria-label="Remove filter ${esc(f.label)}">${icon("close")}</button></span>`).join("")}
+    <span class="muted small tabular">showing ${shown} of ${ctx.scopedTargets().length}</span>
+    <button class="link-btn small" data-unfilter="*">Clear all</button>`;
 }
 
 function renderGrid(el, ctx) {
@@ -323,7 +410,7 @@ function renderGrid(el, ctx) {
       <tbody>${body}${empty}</tbody>
     </table></div>
     <div class="grid-foot">
-      <span>${ui.checked.size ? `Selected: <b>${ui.checked.size}</b> target${ui.checked.size === 1 ? "" : "s"} <button class="link-btn" id="dr-bulk-requeue">Re-queue next step</button> · <button class="link-btn" id="ov-clear-check">clear</button>` : `Selected: <b>${esc(ctx.target()?.name || "none")}</b>`}</span>
+      <span>${ui.checked.size ? `Selected: <b>${ui.checked.size}</b> target${ui.checked.size === 1 ? "" : "s"} ${selectionActions(ctx)} · <button class="link-btn" id="ov-clear-check">clear</button>` : `Selected: <b>${esc(ctx.target()?.name || "none")}</b>`}</span>
       <span class="vsep"></span>
       <span class="muted">Showing ${rows.length} of ${all.length} targets across ${groups.size} active group${groups.size === 1 ? "" : "s"}</span>
       <span class="grow"></span>
@@ -401,8 +488,8 @@ function renderDrawer(el, ctx) {
     <h4><label for="dr-notes">Triage &amp; analysis notes</label></h4>
     <textarea id="dr-notes" class="input" rows="3" placeholder="Notes are kept in this browser (and in Studio snapshots).">${esc(ctx.state.notes[t.id] || "")}</textarea>
     <div class="row gap dr-actions">
-      <select id="dr-step" class="input" aria-label="Step to re-queue">${steps.map((s, i) => `<option value="${esc(s.key)}" ${(issue?.key || steps[r.next ?? 0]?.key) === s.key ? "selected" : ""}>${i + 1}. ${esc(s.key)}</option>`).join("")}</select>
-      <button class="btn grow" id="dr-requeue" title="${ctx.state.mode === "server" && t.runId ? "Submit a retry to the ALFRD runtime" : "Browser only: marks the step queued; execution happens externally"}">Re-queue step</button>
+      ${ctx.state.mode === "server" && t.runId ? `<select id="dr-step" class="input" aria-label="Step to retry">${steps.map((s, i) => `<option value="${esc(s.key)}" ${(issue?.key || steps[r.next ?? 0]?.key) === s.key ? "selected" : ""}>${i + 1}. ${esc(s.key)}</option>`).join("")}</select>
+      <button class="btn grow" id="dr-retry" title="Submit a retry to the ALFRD runtime">Retry step</button>` : ""}
       <button class="icon-btn" id="dr-logs" title="Open log stream" aria-label="Open log stream">${icon("terminal")}</button>
     </div>
     ${t.history?.length ? `<details class="hist"><summary>Attempt history (${t.history.length})</summary><table class="tbl small"><thead><tr><th>Step</th><th>#</th><th>Status</th><th>Start</th><th>Runtime</th></tr></thead><tbody>${t.history.map((h) => `<tr class="st-${h.status}"><td class="mono">${esc(h.step)}</td><td>${h.attempt}</td><td>${esc(STEP_STATUS[h.status]?.label || h.status)}</td><td class="mono">${esc(when(h.started))}</td><td class="tabular">${esc(short(h.duration))}</td></tr>`).join("")}</tbody></table></details>` : ""}

@@ -34,6 +34,7 @@ KNOWN_ARTIFACT_KINDS: frozenset[str] = frozenset(
         "log",
         "image",
         "image_collection",
+        "collection",
         "html",
         "archive",
     }

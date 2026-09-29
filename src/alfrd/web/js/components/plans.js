@@ -376,7 +376,7 @@ function selectionRows(ctx, project, info) {
   }));
 }
 
-export async function openRunDialog(ctx, project, { dry = false, only = null, onStarted = null } = {}) {
+export async function openRunDialog(ctx, project, { dry = false, only = null, targets = null, onStarted = null } = {}) {
   let info;
   try { execCache.delete(project); info = await execInfo(project); } catch (error) { ctx.toast(`Execution settings: ${error.message}`, "fail"); return; }
   if (info.error || !info.configured) {
@@ -394,13 +394,13 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, on
     <header class="modal-h"><h2>${icon("play")} ${dry ? "Dry run" : "Run"} · ${esc(ctx.projectName(project))}</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b run-dlg">
       <p class="muted small">Commands come from alfrd.yaml and run on the server machine in <code>${esc(info.cwd)}</code>. They keep running when you close the Studio or stop <code>alfrd serve</code>; the Studio re-attaches when the project is loaded again.</p>
-      <fieldset><legend>Targets</legend>
-        ${hasCsv ? `<label class="check"><input type="radio" name="src" value="csv" ${only ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
-        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !only ? "" : "checked"}> <span>New plan from these targets${hasCsv ? ` <em class="muted">(replaces ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
+      <fieldset><legend>Targets <button class="link-btn small" id="run-import" title="Add sources and their FITS file names to the targets CSV">${icon("upload")} Import targets CSV…</button></legend>
+        ${hasCsv ? `<label class="check"><input type="radio" name="src" value="csv" ${only || targets ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
+        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !only && !targets ? "" : "checked"}> <span>New plan from these targets${hasCsv ? ` <em class="muted">(replaces ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
         <div class="run-targets" id="run-targets">
           <div class="row gap small"><button class="link-btn" data-all="1">all</button><button class="link-btn" data-all="0">none</button><input class="input sm grow" id="run-filter" placeholder="Filter targets"></div>
           <table class="tbl small"><thead><tr><th></th><th>Target</th><th>${esc(info.files_column)}</th><th>${esc(info.code_column)}</th></tr></thead><tbody>
-          ${sel.map((r, i) => `<tr data-name="${esc(r.target.toLowerCase())}"><td><input type="checkbox" data-i="${i}" ${!current || current.name === r.target ? "checked" : ""}></td><td class="mono">${esc(r.target)}</td><td><input class="input sm mono" data-files="${i}" value="${esc(r.files)}" placeholder="a.idifits,b.idifits"></td><td><input class="input sm mono" data-code="${i}" value="${esc(r.code)}" size="7"></td></tr>`).join("") || '<tr><td colspan="4" class="muted">No targets in this project yet — add rows to the plan CSV, or use <code>alfrd plan new --targets …</code>.</td></tr>'}
+          ${sel.map((r, i) => `<tr data-name="${esc(r.target.toLowerCase())}"><td><input type="checkbox" data-i="${i}" ${(targets ? targets.includes(r.target) : !current || current.name === r.target) ? "checked" : ""}></td><td class="mono">${esc(r.target)}</td><td><input class="input sm mono" data-files="${i}" value="${esc(r.files)}" placeholder="a.idifits,b.idifits"></td><td><input class="input sm mono" data-code="${i}" value="${esc(r.code)}" size="7"></td></tr>`).join("") || '<tr><td colspan="4" class="muted">No targets in this project yet — add rows to the plan CSV, or use <code>alfrd plan new --targets …</code>.</td></tr>'}
           </tbody></table>
         </div>
       </fieldset>
@@ -447,6 +447,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, on
       }
     };
     $("#run-dry", root).addEventListener("click", showPreview);
+    $("#run-import", root).addEventListener("click", () => { close(); ctx.openTargets("import", project); });
     $("#run-filter", root)?.addEventListener("input", (e) => {
       const q = e.target.value.trim().toLowerCase();
       $$("tr[data-name]", root).forEach((tr) => { tr.hidden = Boolean(q) && !tr.dataset.name.includes(q); });

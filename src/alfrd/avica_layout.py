@@ -117,6 +117,21 @@ def manifest_avica(root: str | Path) -> dict[str, Any]:
     return dict(block) if isinstance(block, dict) else {}
 
 
+def _targets_csv_rel(root: Path) -> str | None:
+    """``targets.csv`` of alfrd.yaml (default ``alfrd.targets.csv``), relative, or None when outside the root."""
+    try:
+        from alfrd.studio_defs import studio_manifest
+
+        block = studio_manifest(root).get("targets")
+    except Exception:  # noqa: BLE001 - a broken alfrd.yaml is reported elsewhere
+        block = None
+    name = str(block.get("csv") or "") if isinstance(block, dict) else ""
+    path = Path(name or "alfrd.targets.csv")
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    return path.as_posix()
+
+
 # ---------------------------------------------------------------------------
 # key = value files
 
@@ -832,6 +847,9 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
     for name in [block.get("config_summary_cache"), *SUMMARY_FILENAMES]:
         if name:
             add(base / str(name), hint="summary")
+    targets_rel = _targets_csv_rel(base)
+    if targets_rel:
+        add(base / targets_rel, hint="targets")  # read last by the Studio: its FITS names / codes win
     for path in sorted(base.glob("*.csv")) + sorted(base.glob("*.tsv")):
         add(path)
 

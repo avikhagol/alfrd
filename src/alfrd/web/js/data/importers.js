@@ -252,6 +252,7 @@ export function entriesFromScanBundle(data) {
 
 function kindOf(entry) {
   const { rel, name } = entry;
+  if (entry.hint === "targets") return "table"; // alfrd.yaml targets.csv (may sit below the root)
   if (entry.hint) return entry.hint;
   if (entry.log) return "log";
   const depth = rel.split("/").length;
@@ -382,15 +383,29 @@ export function buildBundle(files, { source = "import", projectHint = null, root
   }
 
   // 4. Dataset tables provide target identity, project code and paths.
+  // The declared targets file (hint "targets") is read last, so its FITS names
+  // and codes win over other root tables (the plan CSV included).
   const datasetRows = new Map();
-  kinds.filter((f) => f.kind === "table").forEach((f) => {
+  const targetsRel = String(defs.targets?.csv || "alfrd.targets.csv").replace(/^\.\//, "");
+  kinds.forEach((f) => { if (f.kind === "table" && f.rel === targetsRel) f.hint = "targets"; });
+  const tables = kinds.filter((f) => f.kind === "table");
+  const targetsFile = tables.find((f) => f.hint === "targets");
+  if (targetsFile) bundle.targetsFile = { rel: targetsFile.rel, text: targetsFile.text || "" };
+  [...tables.filter((f) => f.hint !== "targets"), ...tables.filter((f) => f.hint === "targets")].forEach((f) => {
     const { header, rows } = parseCsv(f.text);
     const key = header.find((h) => h === primaryKey) || header.find((h) => /^(target(_name)?|source|name)$/i.test(h));
-    bundle.tables.push({ path: f.rel, header, rows: rows.length });
+    bundle.tables.push({ path: f.rel, header, rows: rows.length, ...(f.hint === "targets" ? { targets: true } : {}) });
     if (!key) return;
+    const codeCol = header.find((h) => /^project_code$/i.test(h));
+    const fileCodes = new Map();
     rows.forEach((row) => {
       const id = String(row[key] || "").trim();
-      if (id) datasetRows.set(id, { ...(datasetRows.get(id) || {}), ...row, __file: f.rel });
+      if (!id) return;
+      // One row per (target, code) in the targets file: keep every code.
+      if (codeCol && row[codeCol]) fileCodes.set(id, [...new Set([...(fileCodes.get(id) || []), row[codeCol]])]);
+      const merged = { ...(datasetRows.get(id) || {}), ...row, __file: f.rel };
+      if (codeCol && fileCodes.has(id)) merged[codeCol] = fileCodes.get(id).join(";");
+      datasetRows.set(id, merged);
     });
   });
 

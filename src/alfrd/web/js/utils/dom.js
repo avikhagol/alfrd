@@ -64,6 +64,16 @@ export function when(iso) {
   return d.toISOString().replace("T", " ").slice(0, 19);
 }
 
+/** Add a stylesheet once (css/lazy.css for features loaded on first use). */
+export function loadCss(href) {
+  if (document.querySelector(`link[data-lazy="${href}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  link.dataset.lazy = href;
+  document.head.appendChild(link);
+}
+
 /** Trigger a client-side download of text content. */
 export function download(filename, text, type = "text/plain") {
   const blob = new Blob([text], { type });

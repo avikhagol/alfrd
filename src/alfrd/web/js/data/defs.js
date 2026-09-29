@@ -83,7 +83,7 @@ export function stepId(step) {
 
 /**
  * alfrd.yaml merged with its template:
- * { template, stages, steps: {id: def}, stepOrder, stepDefaults, overview, results, settings, artifacts }
+ * { template, stages, steps: {id: def}, stepOrder, stepDefaults, overview, results, settings, targets, execution, artifacts }
  */
 export function studioManifest(manifest) {
   const m = manifest && typeof manifest === "object" && !Array.isArray(manifest) ? manifest : {};
@@ -111,6 +111,8 @@ export function studioManifest(manifest) {
     overview: { ...(tpl.overview || {}), ...(m.overview || {}) },
     results: { ...(tpl.results || {}), ...(m.results || {}) },
     settings: { ...(tpl.project_settings || {}), ...(m.project_settings || {}) },
+    targets: { ...(tpl.targets || {}), ...(m.targets && typeof m.targets === "object" ? m.targets : {}) },
+    execution: { ...(tpl.execution || {}), ...(m.execution && typeof m.execution === "object" ? m.execution : {}) },
     artifacts: [...byName.values()],
   };
 }

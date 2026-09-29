@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 import re
 import shutil
 import subprocess
@@ -47,11 +48,52 @@ def test_index_references_local_assets_only():
             assert "@import url(" not in text, path
 
 
-def test_payload_budget_under_165kb_compressed():
-    # 150 KB until 0.2.1 (the Studio was at ~149 KB); scheduled runs (plans.js,
-    # Run dialog, Schedule view) added ~12 KB.
-    total = sum(len(gzip.compress(p.read_bytes(), 9)) for p in _web_files())
+_STATIC_IMPORT = re.compile(
+    r"""^\s*(?:import|export)\s[^;]*?\bfrom\s+["'](\.[^"']+)["']|^\s*import\s+["'](\.[^"']+)["']""",
+    re.M,
+)
+#: Modules the Studio loads with ``import()`` on first use; never part of startup.
+LAZY_MODULES = {"js/components/diagnostics.js", "js/components/targets_dialog.js", "js/data/targets.js"}
+
+
+def _startup_files() -> set[Path]:
+    """index.html, studio.css and the static import closure of js/app.js."""
+    root = web_root()
+    seen: set[Path] = set()
+    todo = [root / "js" / "app.js"]
+    while todo:
+        path = todo.pop().resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        for match in _STATIC_IMPORT.finditer(path.read_text(encoding="utf-8")):
+            todo.append(path.parent / (match.group(1) or match.group(2)))
+    return seen | {(root / "index.html").resolve(), (root / "css" / "studio.css").resolve()}
+
+
+def _gz(path: Path) -> int:
+    return len(gzip.compress(path.read_bytes(), 9))
+
+
+def test_startup_payload_under_165kb_compressed():
+    # What the Studio loads when it opens. 150 KB until 0.2.1 (~149 KB then);
+    # scheduled runs added ~12 KB. Features opened on demand load with import()
+    # and count under the lazy cap below instead.
+    total = sum(_gz(p) for p in _startup_files())
     assert total < 165 * 1024, f"{total} bytes gzip"
+
+
+def test_lazy_payload_under_40kb_compressed():
+    # Everything else: import() modules, css/lazy.css, templates and assets.
+    startup = _startup_files()
+    total = sum(_gz(p) for p in _web_files() if p.resolve() not in startup)
+    assert total < 40 * 1024, f"{total} bytes gzip"
+
+
+def test_lazy_modules_are_not_imported_statically():
+    root = web_root()
+    startup = {os.path.relpath(p, root.resolve()).replace(os.sep, "/") for p in _startup_files()}
+    assert not (LAZY_MODULES & startup), sorted(LAZY_MODULES & startup)
 
 
 def test_no_pipeline_names_are_hardcoded_in_the_studio_code():
@@ -173,9 +215,7 @@ def test_js_parsers_with_node():
     if not node:
         pytest.skip("Node.js not available")
     result = subprocess.run(
-        [node, "--test", str(PROJECT_ROOT / "tests" / "studio_js" / "parsers.test.mjs"),
-         str(PROJECT_ROOT / "tests" / "studio_js" / "live.test.mjs"),
-         str(PROJECT_ROOT / "tests" / "studio_js" / "folders.test.mjs")],
+        [node, "--test", *sorted(str(p) for p in (PROJECT_ROOT / "tests" / "studio_js").glob("*.test.mjs"))],
         capture_output=True,
         text=True,
         timeout=120,
