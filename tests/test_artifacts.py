@@ -28,6 +28,7 @@ def test_known_artifact_kinds_match_roadmap_contract():
         "log",
         "image",
         "image_collection",
+        "collection",  # a folder of viewable files, served lazily (alfrd.artifact_collections)
         "html",
         "archive",
     }
