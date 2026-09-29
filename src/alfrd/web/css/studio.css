@@ -131,6 +131,7 @@ body.console-open .view { padding-bottom: calc(var(--console-h, 280px) + 10px); 
 .btn.primary:hover { background: var(--accent-600); }
 .btn.danger { color: var(--fail); border-color: #FECACA; }
 .btn.danger:hover { background: var(--fail-bg); }
+.link-btn.danger { color: var(--fail); }
 .btn.sm { height: 28px; padding: 0 10px; font-size: 12px; }
 .btn[disabled], .icon-btn[disabled] { opacity: .45; cursor: not-allowed; }
 .icon-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: var(--r); border: 1px solid transparent; background: transparent; color: var(--text-2); cursor: pointer; flex: none; }
@@ -243,7 +244,18 @@ span.count { cursor: default; }
 /* ---------------------------------------------------------------- overview */
 .ov { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; }
 .ov-head { flex: none; }
-.ov-title { margin-bottom: 12px; }
+.ov-title { margin-bottom: 10px; }
+.ov-toolbar { display: flex; flex-direction: column; gap: 8px; }
+.ov-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.ov-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--r); background: var(--subtle); min-width: 0; }
+.ov-group .search { background: var(--surface); height: 32px; }
+.ov-group .select-wrap { height: 32px; }
+.ov-label { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); margin-right: 4px; }
+.chipbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.count.on, .count[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; color: var(--text); }
+.ov-active { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-3); font-size: 12.5px; }
+.ov-active[hidden] { display: none; }
+.ov-active .chip { background: var(--accent-bg); border-color: #BFDBFE; color: var(--accent-600); padding-right: 3px; }
 .ov-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; }
 .ov-body.no-drawer { grid-template-columns: minmax(0, 1fr); }
 .ov-body.no-drawer .drawer { display: none; }

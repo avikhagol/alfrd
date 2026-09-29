@@ -71,6 +71,7 @@
               "log",
               "image",
               "image_collection",
+              "collection",
               "html",
               "archive"
             ]

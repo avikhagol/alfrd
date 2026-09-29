@@ -527,7 +527,7 @@ def studio(
         None, "--export", help="Copy the static Studio into this directory (e.g. for GitHub Pages) and exit."
     ),
     demo: bool = typer.Option(False, "--demo", help="Open the Studio with the built-in demo data."),
-):
+    ):
     """Launch ALFRD Studio locally (browser-only, no backend)."""
     from http.server import ThreadingHTTPServer
 
@@ -585,7 +585,7 @@ def projects_forget(
     name: str = typer.Argument(..., help="Project name (see `alfrd projects list`)."),
     db: Optional[str] = typer.Option(None, "--db", help="Path to the runtime SQLite database."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation."),
-):
+    ):
     """Remove a project from the runtime database. Files on disk are not touched."""
     from alfrd.runtime import RuntimeNotFound
 
@@ -609,7 +609,7 @@ def avica_summary_command(
     root: str = typer.Argument(".", help="Folder containing alfrd.yaml and avica.inp."),
     run: bool = typer.Option(True, "--run/--no-run", help="Run `avica pipe config --summary` (else read the cache)."),
     as_json: bool = typer.Option(False, "--json", help="Print the parsed rows as JSON."),
-):
+    ):
     """Cache `avica pipe config --summary` as avica.summary.json for the Studio."""
     import json as _json
 
@@ -638,7 +638,7 @@ def avica_scan_command(
     root: str = typer.Argument(".", help="Folder containing alfrd.yaml and avica.inp."),
     bundle: Optional[str] = typer.Option(None, "--bundle", help="Write the files the Studio reads to this JSON (import it in the Studio)."),
     log_tail: int = typer.Option(64, "--log-tail", help="With --bundle: KiB kept from the end of each avica.logs/*.log (0 = list only)."),
-):
+    ):
     """Print the detected layout as JSON, or write a Studio import bundle with --bundle."""
     import json as _json
 
@@ -901,6 +901,80 @@ def _spawn_worker(run_id: str, db: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# alfrd targets: the project's target list (alfrd.targets.csv)
+
+targets_cli = typer.Typer(help="The project's target list (target, FITS file names, project code), shared by the Studio and plans.")
+alfrd_cli.add_typer(targets_cli, name="targets")
+
+
+@targets_cli.command("show")
+def targets_show(root: str = typer.Option(".", "--root", "-C", help="Project folder (contains alfrd.yaml).")):
+    """Print the targets file."""
+    from alfrd import targets_csv as tc
+    from alfrd.execution import ExecutionError
+
+    try:
+        spec = tc.load_spec(root)
+        table = tc.read(spec)
+    except (ExecutionError, ValueError, OSError) as error:
+        print(f"error: {error}")
+        raise typer.Exit(code=1)
+    if not spec.csv.is_file():
+        print(f"{spec.rel}: not created yet (alfrd targets import FILE)")
+        return
+    print(f"{spec.rel}: {len(table['rows'])} target(s)")
+    for row in table["rows"]:
+        print(f"  {row['target']}{'@' + row['code'] if row['code'] else ''}  {row['files'] or '-'}")
+
+
+@targets_cli.command("import")
+def targets_import(
+    csv_file: str = typer.Argument(..., help="CSV/TSV with a target column and FITS file names (and optionally a project code)."),
+    root: str = typer.Option(".", "--root", "-C", help="Project folder (contains alfrd.yaml)."),
+    replace: bool = typer.Option(False, "--replace", help="Replace the targets file instead of merging into it."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only show what would change."),
+):
+    """Merge (or replace) rows into the targets file. Header names are matched with alfrd.yaml targets.columns."""
+    from alfrd import targets_csv as tc
+    from alfrd.execution import ExecutionError
+
+    mode = "replace" if replace else "merge"
+    try:
+        spec = tc.load_spec(root)
+        text = Path(csv_file).read_text(encoding="utf-8-sig")
+        result = tc.preview(spec, text, mode) if dry_run else tc.save(spec, text, mode)
+    except (ExecutionError, ValueError, OSError) as error:
+        print(f"error: {error}")
+        raise typer.Exit(code=1)
+    for problem in result.get("problems") or []:
+        print(f"  line {problem['line']}: {problem['message']}")
+    counts = ", ".join(f"{len(result[k])} {k}" for k in ("added", "updated", "unchanged", "removed") if result[k])
+    print(f"{spec.rel}: {counts or 'no change'}{' (dry run)' if dry_run else ''}")
+
+
+@targets_cli.command("remove")
+def targets_remove(
+    names: list[str] = typer.Argument(..., help="Target names (every row of it), or TARGET@CODE for one row."),
+    root: str = typer.Option(".", "--root", "-C", help="Project folder (contains alfrd.yaml)."),
+):
+    """Remove targets from the targets file. Result CSVs and work dirs are not touched."""
+    from alfrd import targets_csv as tc
+    from alfrd.execution import ExecutionError
+
+    try:
+        spec = tc.load_spec(root)
+        result = tc.remove(spec, names)
+    except (ExecutionError, ValueError, OSError) as error:
+        print(f"error: {error}")
+        raise typer.Exit(code=1)
+    if result["missing"]:
+        print(f"  not in {spec.rel}: {', '.join(result['missing'])}")
+    print(f"{spec.rel}: {len(result['removed'])} row(s) removed")
+    if not result["removed"]:
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
 # alfrd plan: run a plan CSV (targets x steps) with the commands in alfrd.yaml
 
 plan_cli = typer.Typer(help="Plan and run workflow steps per target from a plan CSV (keeps running after the server stops).")
@@ -933,6 +1007,7 @@ def plan_new(
     targets: Optional[str] = typer.Option(None, "--targets", "-t", help="Comma-separated target names."),
     from_csv: Optional[str] = typer.Option(None, "--from-csv", help="Dataset table with the key column (TARGET_NAME), FILENAMES, PROJECT_CODE."),
     from_results: bool = typer.Option(False, "--from-results", help="Every target (and project code) found in result CSVs."),
+    from_targets: bool = typer.Option(False, "--from-targets", help="Every row of the targets CSV (alfrd.yaml targets.csv, default alfrd.targets.csv)."),
     files: Optional[str] = typer.Option(None, "--files", "-f", help="FITS file names for --targets (comma-separated)."),
     steps: Optional[str] = typer.Option(None, "--steps", help="Steps to mark todo (comma-separated)."),
     first: Optional[str] = typer.Option(None, "--from", help="First step to mark todo."),
@@ -960,6 +1035,13 @@ def plan_new(
                     if name:
                         rows.append({"target": name.strip(), "files": lower.get(cfg.files_column.lower(), "") or "",
                                      "code": lower.get(cfg.code_column.lower(), "") or ""})
+        if from_targets:
+            from alfrd import targets_csv as tc
+
+            spec = tc.load_spec(cfg.root)
+            if not spec.csv.is_file():
+                raise ValueError(f"{spec.rel} does not exist (create it with `alfrd targets import FILE`)")
+            rows += [{"target": r["target"], "files": r["files"], "code": r["code"]} for r in tc.read(spec)["rows"]]
         if from_results:
             from alfrd.avica_layout import scan_layout
 
@@ -970,7 +1052,7 @@ def plan_new(
                     seen.add(key)
                     rows.append({"target": item["target"], "code": item.get("project_code", ""), "workdir": item.get("workdir", "")})
         if not rows:
-            raise ValueError("no targets: use --targets, --from-csv or --from-results")
+            raise ValueError("no targets: use --targets, --from-csv, --from-targets or --from-results")
         out = Path(output) if output else cfg.plan_csv
         if out.exists() and not force:
             raise ValueError(f"{out} exists (use --force to overwrite)")

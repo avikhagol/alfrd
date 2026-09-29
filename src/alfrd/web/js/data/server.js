@@ -57,6 +57,32 @@ export const server = {
     return project;
   },
 
+  // The project's target list (alfrd.targets.csv; alfrd.targets_csv).
+  targets(project) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/targets`);
+  },
+  targetsPreview(project, payload) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/targets/preview`, payload);
+  },
+  targetsSave(project, payload) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/targets`, payload);
+  },
+  targetsRemove(project, targets) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/targets/remove`, { targets });
+  },
+  // Collections (kind: collection artifacts, e.g. rPicard diagnostics_*); lazy, read-only.
+  collections(project, query) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/collections?${new URLSearchParams(query)}`);
+  },
+  collectionFiles(project, name, run, query = {}) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(name)}/files?${new URLSearchParams({ run, ...query })}`);
+  },
+  /** URL of one collection file (for <img src>, links, fetch). */
+  collectionFileUrl(project, name, run, path, download = false) {
+    const q = new URLSearchParams({ run, path, ...(download ? { download: "1" } : {}) });
+    return `${API}/studio/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(name)}/file?${q}`;
+  },
+
   // Plans: run a plan CSV (targets × steps) with alfrd.yaml's commands (alfrd.runtime.scheduler).
   executionInfo(project) {
     return getJson(`/studio/projects/${encodeURIComponent(project)}/execution`);
