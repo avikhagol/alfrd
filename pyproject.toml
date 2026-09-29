@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfrd"
-version = "0.2.0.6"
+version = "0.2.0.7"
 description = "Automated Logical FRamework for Dynamic script execution (ALFRD)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = "BSD-3-Clause"
 authors = [
   { name = "Avinash Kumar", email = "avialxee@gmail.com" }
 ]
-urls = { "Homepage" = "https://github.com/avialxee/alfrd/" }
+urls = { "Homepage" = "https://github.com/avikhagol/alfrd/" }
 classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -30,6 +30,7 @@ dependencies = [
   "pyyaml",
   "platformdirs",
   "sqlalchemy>=2.0",
+  "flask", "flask_sqlalchemy"
 ]
 
 [project.optional-dependencies]
@@ -41,9 +42,8 @@ google = [
   "gspread",
   "gspread-formatting",
 ]
-gui = ["flask", "flask_sqlalchemy"]
 polars = ["polars"]
-all = ["alfrd[google,gui,polars]"]
+all = ["alfrd[google,polars]"]
 
 [project.scripts]
 alfrd = "alfrd.cli:alfrd_cli"

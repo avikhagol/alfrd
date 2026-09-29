@@ -4,6 +4,8 @@
 
 Run pipeline steps. Track their progress in a table. See it all in a web UI.
 
+> Contact me if you have any questions: [akumar@ia.forth.gr](mailto:akumar@ia.forth.gr)
+
 ---
 
 ## Contents
@@ -24,8 +26,18 @@ Run pipeline steps. Track their progress in a table. See it all in a web UI.
 
 ## Install
 
+### Recommended
+
+install [uv](https://docs.astral.sh/uv/) first, then `alfrd`.
+
 ```bash
-pip install "alfrd[gui]"     # with the web UI (recommended)
+uv tool install alfrd
+```
+
+### From PyPI
+
+```bash
+pip install "alfrd"     # with the web UI (recommended)
 pip install alfrd            # core only
 ```
 
@@ -34,7 +46,7 @@ From source:
 ```bash
 git clone https://github.com/avialxee/alfrd
 cd alfrd
-pip install ".[gui]"
+pip install "."
 ```
 
 Needs Python 3.10+.
@@ -52,7 +64,7 @@ alfrd serve
 Your browser opens **ALFRD Studio**.
 
 - It reads the project in that folder.
-- It never runs your pipeline. It only reads files.
+- It can schedule and run AVICA pipeline.
 - The URL is `http://127.0.0.1:5000/studio/`.
 
 What you get:
@@ -62,7 +74,7 @@ What you get:
 | **Overview** | All targets × steps. Status, MS path, notes. |
 | **Workflow** | Steps as a list or graph. Step parameters and logs. |
 | **Metadata** | Metadata health per step. Config. Input files. |
-| **Results** | Timings and progress. Latest run or full history. |
+| **Results** | Timings and progress. Latest run or full history and AVICA pipeline results. |
 | **Logs** | Every log file, grouped. Click to open. Expand to full screen, or dock it as a Log Stream tab that keeps following on every view. |
 | **Settings** | Edit and save `alfrd.yaml`. |
 
@@ -77,6 +89,8 @@ Full guide: [docs/studio-guide.md](https://github.com/avialxee/alfrd/blob/HEAD/d
 ---
 
 ## `alfrd serve` examples
+
+Follow the configuration instructions for [avica](https://avikhagol.github.io/avica-demos)
 
 ```bash
 # Open the project in the current folder
