@@ -142,10 +142,10 @@ Edit them in **Settings → Project settings**.
 
 ## Views
 
-- **Overview** – targets × steps. Filters, search, groups, CSV export. Drawer with the first failure, files and notes.
+- **Overview** – targets × steps. The toolbar has three groups: **Status** (the counters are the status filter, plus *No work folder*), **Find** (search, AVICA project code, project) and **View** (group by, summary/details, columns). Active filters show as removable chips with *Clear all*. **Targets** → *Import targets CSV…* / *Download targets CSV*. Check targets to get **Run…** (a new plan from them, server) and **Remove from targets file** (asks first; result CSVs, work dirs and the plan CSV are not touched). The drawer's **Retry step** is only there for runtime-managed runs. CSV export. Drawer with the first failure, files and notes.
 - **Workflow** – list view first. Graph view, validation, simulation (visual only). Inspector: parameters, bindings, logs.
 - **Metadata** – metadata health per step. `avica.meta` grouped by step. AVICA config. rPicard inputs.
-- **Results** – time and progress. **Recent only** (default) or **Full history**.
+- **Results** – time and progress. **Recent only** (default) or **Full history**. Below: one card per `kind: collection` artifact (rPicard diagnostics). Nothing is read until you press **Show** (server mode).
 - **Logs** – every declared log. Grouped by step or artifact. Click to open. `⤢` for full screen, `>_` to follow it in a Log Stream tab.
 - **Settings** – edit, validate and save `alfrd.yaml`. Field alias form.
 
@@ -184,9 +184,28 @@ rPicard inputs:
 
 - Keys overridden by `picard_input_template_update` are **bold**. The old value is struck through.
 
+Target list (`alfrd.targets.csv`):
+
+- Sources with their FITS file names and project code, one row per (target, code). Declared by `targets:` in alfrd.yaml (`csv:` path, `columns:` header names accepted on import, case-insensitive). Written with the plan CSV's column names (`TARGET_NAME,FILENAMES,PROJECT_CODE`).
+- Kept across plans. `alfrd.plan.csv` stays the state of one run and is what the runner reads. The Run dialog and `alfrd plan new --from-targets` fill FILENAMES / PROJECT_CODE from it.
+- Overview reads it like every other root CSV. When it and the plan CSV disagree, the targets file wins for Overview.
+- Import (Overview → **Targets**, the Run dialog, `alfrd targets import FILE [--replace] [--dry-run]`): column mapping, a preview (new / updated / unchanged / removed), **Merge** (default: an empty FITS cell never erases a known one) or **Replace**. Rows with problems (`#…` or `@` in a name, a repeated target+code) block the import, with their line numbers. Browser mode writes into the opened folder, or downloads the file.
+
+rPicard diagnostics (Results):
+
+- The avica template declares `rpicard_diagnostics` (`kind: collection`, `path_pattern: "{workdir}/wd_{band}_{target}/diagnostics_*"`). Each matching folder is one run, newest first (by the date in its name).
+- **Show** lists the runs of the selected target (× shows every target). Pick code/work dir, band and run. `SUMMARY_*.pdf`, `fringes_overview.csv.*` and `flags.list` are pinned on top. Each folder (ACCOR, C_BP, GAIN, …) opens as a thumbnail grid, 60 at a time, loaded as they scroll into view. Click a plot for full size (←/→ walk the folder).
+- **Compare** shows a second run next to the first. Opening a folder opens it on both sides.
+- `fringes_overview.csv.*` opens as a sortable table, text files in a viewer. PDFs open in a new tab. `.ps` is download only. Files are served only when they are part of a declared run (`include` / `exclude` / `depth`). SVG and HTML are never shown inline.
+- More collections: add `kind: collection` entries under `artifacts:` in alfrd.yaml.
+
 Commands:
 
 ```bash
+alfrd targets show [-C ROOT]            # the target list
+alfrd targets import FILE [--replace] [--dry-run]
+alfrd targets remove NAME [NAME@CODE …]
+alfrd plan new --from-targets           # a plan from every row of the target list
 alfrd avica summary [ROOT]              # run and cache `avica pipe config --summary`
 alfrd avica summary --no-run            # show the cache
 alfrd avica scan [ROOT]                 # JSON of the tree
@@ -233,5 +252,5 @@ Tests:
 
 ```bash
 python -m pytest -q
-node --test tests/studio_js/parsers.test.mjs
+node --test tests/studio_js/*.test.mjs
 ```
