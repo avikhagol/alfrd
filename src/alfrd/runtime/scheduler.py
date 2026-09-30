@@ -271,6 +271,159 @@ def unit_for_row(row: pc.PlanRow, steps: Sequence[str], mode: str, on_failure: s
     return UnitSpec([row], [s for s in tail if row.cell(s) == pc.TODO], mode)
 
 
+# ---------------------------------------------------------------------------
+# Concurrent rows: serialize the ones that conflict (execution.serialize_on)
+
+
+def _shared(a: Mapping[str, set[str]], b: Mapping[str, set[str]], names: Sequence[str], match: str) -> list[tuple[str, list[str]]]:
+    """What rows ``a`` and ``b`` share, per name; [] when they don't conflict."""
+    shared: list[tuple[str, list[str]]] = []
+    for name in names:
+        common = a.get(name, set()) & b.get(name, set())
+        if common:
+            shared.append((name, sorted(common)))
+        elif match == "all":
+            return []
+    return shared
+
+
+def _row_label(row: pc.PlanRow) -> str:
+    return f"{row.target} ({row.code})" if row.code else row.target
+
+
+def _describe(shared: Sequence[tuple[str, list[str]]], match: str) -> str:
+    parts = []
+    for name, values in shared:
+        if name == "target":
+            parts.append("same target")
+        elif name == "files":
+            shown = ", ".join(Path(v).name for v in values[:2]) + (" …" if len(values) > 2 else "")
+            parts.append(f"shares {shown}")
+        else:
+            parts.append(f"same {name} {values[0]}")
+    return (" and " if match == "all" else ", ").join(parts)
+
+
+def serialize_settings(plan: Mapping[str, Any], cfg: ExecutionConfig | None = None) -> tuple[list[str], str]:
+    """``(serialize_on, serialize_match)`` of a plan (plans made before 0.2.0.8: from alfrd.yaml)."""
+    if "serialize_on" in plan:
+        return list(plan.get("serialize_on") or []), str(plan.get("serialize_match") or "all")
+    settings = cfg.settings if cfg is not None else {}
+    return list(settings.get("serialize_on") or []), str(settings.get("serialize_match") or "all")
+
+
+@dataclass
+class Picked:
+    start: list[tuple[pc.PlanRow, UnitSpec]]
+    waiting: list[dict[str, Any]]
+
+
+def pick_rows(table: pc.PlanTable, *, mode: str, on_failure: str, limit: int, free: int,
+              names: Sequence[str], match: str = "all", base: str | Path | None = None,
+              running_rows: Iterable[str] = (), started_rows: Iterable[str] = (),
+              locks: Iterable[str] = ()) -> Picked:
+    """Rows to start now (CSV order, at most ``free``) and why others wait.
+
+    With ``limit > 1`` a row holds its ``serialize_on`` values from its first
+    step until it has nothing left to run (not per step), so no conflicting row
+    slips in between two of its steps. A blocked row doesn't hold up later rows
+    it doesn't conflict with; rows that conflict keep their CSV order. Only when
+    no ``serialize_on`` rule is declared, rows of the same work dir
+    (``locks``: ``code/workdir`` of live units) run one at a time as a safety net;
+    a declared rule (AVICA: shared FITS files) is the whole story.
+    With ``limit == 1`` nothing here changes what runs next.
+    """
+    running = set(running_rows)
+    started = set(started_rows)
+    names = list(names) if limit > 1 and mode != "batch" else []
+    locks = set(locks)
+    keys_cache: dict[str, dict[str, set[str]]] = {}
+
+    def keys_of(row: pc.PlanRow) -> dict[str, set[str]]:
+        if row.key not in keys_cache:
+            keys_cache[row.key] = pc.conflict_keys(row, names, table, base)
+        return keys_cache[row.key]
+
+    order = {row.key: i for i, row in enumerate(table.rows)}
+    # Holders: running rows always; rows between two of their steps (started, work left) too.
+    live_holders = [row for row in table.rows if row.key in running] if names else []
+    paused_holders = [row for row in table.rows if names and row.key not in running and row.key in started
+                      and unit_for_row(row, table.steps, mode, on_failure)]
+    chosen: list[pc.PlanRow] = []
+    start: list[tuple[pc.PlanRow, UnitSpec]] = []
+    waiting: list[dict[str, Any]] = []
+    passed: list[pc.PlanRow] = []  # rows with work that did not start: later conflicting rows stay behind them
+
+    def conflict(row: pc.PlanRow, others: Iterable[pc.PlanRow], note: str = "") -> tuple[pc.PlanRow, str] | None:
+        mine = keys_of(row)
+        for other in others:
+            if other.key == row.key:
+                continue
+            shared = _shared(mine, keys_of(other), names, match)
+            if shared:
+                return other, f"waiting: {_describe(shared, match)} with {_row_label(other)}{note}"
+        return None
+
+    for row in table.rows:
+        if row.key in running:
+            continue
+        spec = unit_for_row(row, table.steps, mode, on_failure)
+        if spec is None:
+            continue
+        blocked = None
+        if names:
+            mid_row = row.key in started
+            # A row between two steps only waits for running rows, rows picked this pass, and
+            # conflicting rows that are also mid-row and earlier in the CSV (so one of them always goes).
+            # A row that has not started also waits for every mid-row holder and for earlier
+            # conflicting rows that did not start yet (CSV order).
+            others = [*live_holders, *chosen, *(h for h in paused_holders if not mid_row or order[h.key] < order[row.key])]
+            blocked = conflict(row, others)
+            if blocked is None and not mid_row:
+                blocked = conflict(row, passed, " (earlier in the plan)")
+        lock = f"{row.code}/{row.workdir}" if row.code and limit > 1 and not names else None
+        if blocked is None and lock and lock in locks:
+            blocked = (None, f"waiting: work dir {lock} is in use")
+        if blocked is not None:
+            other, reason = blocked
+            waiting.append({"row": row.key, "target": row.target, "code": row.code, "reason": reason,
+                            "blocked_by": other.key if other is not None else lock})
+            passed.append(row)
+            continue
+        if len(start) >= free:
+            passed.append(row)
+            continue
+        start.append((row, spec))
+        chosen.append(row)
+        if lock:
+            locks.add(lock)
+    return Picked(start, waiting)
+
+
+def conflict_groups(table: pc.PlanTable, names: Sequence[str], match: str = "all",
+                    base: str | Path | None = None, rows: Sequence[pc.PlanRow] | None = None) -> list[list[str]]:
+    """Rows (with work) grouped into connected components of conflicts; each group runs one row at a time."""
+    rows = list(rows if rows is not None else table.rows)
+    parent = {r.key: r.key for r in rows}
+
+    def find(k: str) -> str:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    if names:
+        keys = {r.key: pc.conflict_keys(r, names, table, base) for r in rows}
+        for i, a in enumerate(rows):
+            for b in rows[i + 1:]:
+                if _shared(keys[a.key], keys[b.key], names, match):
+                    parent[find(b.key)] = find(a.key)
+    groups: dict[str, list[str]] = {}
+    for r in rows:
+        groups.setdefault(find(r.key), []).append(r.key)
+    return list(groups.values())
+
+
 def values_for(cfg: ExecutionConfig, unit: UnitSpec, plan: Mapping[str, Any], csv_file: Path) -> dict[str, Any]:
     base: dict[str, Any] = {
         "root": str(cfg.root),
@@ -317,8 +470,13 @@ def command_for(cfg: ExecutionConfig, unit: UnitSpec, plan: Mapping[str, Any], c
 
 
 def preview(root: str | Path, csv_file: str | Path | None = None, *, mode: str | None = None,
-            on_failure: str | None = None, cfg: ExecutionConfig | None = None) -> dict[str, Any]:
-    """Commands the runner would start, in order, if every command succeeded."""
+            on_failure: str | None = None, cfg: ExecutionConfig | None = None,
+            concurrency: int | None = None) -> dict[str, Any]:
+    """Commands the runner would start, in order, if every command succeeded.
+
+    ``conflicts`` groups the rows with work into conflict groups (rows in one
+    group run one at a time) and says how many can run at once.
+    """
     cfg = cfg or load_execution(root)
     path = Path(csv_file) if csv_file else cfg.plan_csv
     if not path.is_absolute():
@@ -361,9 +519,21 @@ def preview(root: str | Path, csv_file: str | Path | None = None, *, mode: str |
         except ExecutionError as exc:
             item.update(error=str(exc))
         items.append(item)
+    limit = max(1, int(concurrency or cfg.settings.get("concurrency") or 1))
+    names, match = serialize_settings({}, cfg)
+    with_work = [r for r in table.rows if unit_for_row(r, table.steps, mode, on_failure)] if mode != "batch" else []
+    groups = conflict_groups(table, names if limit > 1 else [], match, cfg.cwd, with_work)
+    parallel = 1 if mode == "batch" else min(limit, len(groups)) if groups else 0
+    conflicts = {
+        "rows": len(with_work), "groups": [g for g in groups if len(g) > 1], "group_count": len(groups),
+        "concurrency": limit, "parallel": parallel, "serialize_on": names if limit > 1 else [], "serialize_match": match,
+        "text": (f"{len(with_work)} row(s), {len(groups)} conflict group(s), up to {parallel} at once"
+                 if mode != "batch" else "batch: one command for the whole plan"),
+    }
     return {
         "csv": str(path),
         "mode": mode,
+        "conflicts": conflicts,
         "cwd": str(cfg.cwd),
         "steps": table.steps,
         "missing_step_columns": missing_steps,
@@ -517,6 +687,9 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
         "launcher": settings["launcher"],
         "kill_grace": settings.get("kill_grace", 30),
         "heartbeat": settings.get("heartbeat", 10),
+        "serialize_on": list(settings.get("serialize_on") or []),
+        "serialize_match": settings.get("serialize_match") or "all",
+        "usage_interval": settings.get("usage_interval", 5),
         "status": "running",
         "runner": {},
         "history": [{"at": now_iso(), "event": "created"}],
@@ -667,6 +840,7 @@ class Runner:
         self.folder = PlanDir(Path(root).resolve(), plan_id)
         self.plan = self.folder.load()
         self.live: dict[str, Live] = {}
+        self.started_rows: set[str] = set()  # rows that ran a unit in this plan (they hold their keys)
         self.stop_new = False
         self.host = socket.gethostname()
         self._cfg: ExecutionConfig | None = None
@@ -771,7 +945,7 @@ class Runner:
                     break
             time.sleep(POLL)
         counts = self.counts()
-        self.save_plan(status=final, counts=counts, runner={"stopped": now_iso(), "heartbeat": now_iso()})
+        self.save_plan(status=final, counts=counts, waiting=[], runner={"stopped": now_iso(), "heartbeat": now_iso()})
         self.event(f"runner stopped: {final} ({', '.join(f'{k} {v}' for k, v in counts.items() if v)})")
         self.log(f"stopped: {final}")
         return 0
@@ -810,23 +984,31 @@ class Runner:
                 return 0
             steps = [s for s in table.steps if any(r.cell(s) == pc.TODO for r in rows)]
             return self.launch(UnitSpec(rows, steps, mode), table)
-        busy = self._busy_rows()
-        locks = {self._lock_key(l.unit) for l in self.live.values()} - {None}
+        names, match = serialize_settings(self.plan, self.cfg)
+        picked = pick_rows(
+            table, mode=mode, on_failure=self.plan["on_failure"], limit=limit, free=limit - len(self.live),
+            names=names, match=match, base=self.cfg.cwd, running_rows=self._busy_rows(),
+            started_rows=self.started_rows, locks={self._lock_key(l.unit) for l in self.live.values()} - {None},
+        )
+        if not picked.start and not self.live and picked.waiting:
+            # Safety net: nothing runs, yet rows wait on each other. Release the holds rather
+            # than end the plan with cells still to do.
+            self.log("rows wait on each other with nothing running; releasing their holds")
+            self.started_rows.clear()
+            picked = pick_rows(table, mode=mode, on_failure=self.plan["on_failure"], limit=limit, free=limit,
+                               names=names, match=match, base=self.cfg.cwd)
         started = 0
-        for row in table.rows:
-            if len(self.live) >= limit:
-                break
-            if row.key in busy:
-                continue
-            spec = unit_for_row(row, table.steps, mode, self.plan["on_failure"])
-            if spec is None:
-                continue
-            key = f"{row.code}/{row.workdir}" if row.code and limit > 1 else None
-            if key and key in locks:
-                continue
+        for row, spec in picked.start:
+            self.started_rows.add(row.key)
             started += self.launch(spec, table)
-            if key:
-                locks.add(key)
+        # A row with nothing left to run holds nothing (and holds again only once it starts anew).
+        busy = self._busy_rows()
+        self.started_rows = {k for k in self.started_rows if k in busy or (
+            (r := table.row(k)) is not None and unit_for_row(r, table.steps, mode, self.plan["on_failure"]))}
+        # Rows waiting on a conflict are only "waiting" while something they wait for still runs.
+        waiting = picked.waiting
+        if waiting != (self.plan.get("waiting") or []):
+            self.save_plan(waiting=waiting)
         return started
 
     @staticmethod
@@ -854,6 +1036,7 @@ class Runner:
             "started": now_iso(),
             "host": self.host,
             "results": {},
+            "schema": 2,  # 2: usage / usage_file after the command ends
         }
         cells_rows = spec.rows
         try:
@@ -871,12 +1054,19 @@ class Runner:
         self.folder.logs_dir.mkdir(parents=True, exist_ok=True)
         cwd = self.cfg.cwd
         unit.update(argv=argv, cwd=str(cwd), log=str(log_path.relative_to(self.folder.root)),
-                    exit_file=str(exit_path.relative_to(self.folder.root)), timeout=timeout)
+                    exit_file=str(exit_path.relative_to(self.folder.root)), timeout=timeout,
+                    usage_file=str(exit_path.with_suffix(".usage.jsonl").relative_to(self.folder.root)))
         process_env = os.environ.copy()
         process_env.update({str(k): str(v) for k, v in (self.cfg.settings.get("env") or {}).items()})
         process_env.update(env)
         process_env.update({"ALFRD_PLAN_ID": self.folder.id, "ALFRD_TARGET": spec.target,
-                            "ALFRD_STEPS": ",".join(spec.steps), "ALFRD_ROOT": str(self.folder.root)})
+                            "ALFRD_STEPS": ",".join(spec.steps), "ALFRD_ROOT": str(self.folder.root),
+                            "ALFRD_USAGE_INTERVAL": str(self.plan.get("usage_interval", self.cfg.settings.get("usage_interval", 5))),
+                            "ALFRD_LAUNCHER": str(self.plan.get("launcher") or "detach"),
+                            "ALFRD_UNIT": unit["id"]})  # marks every process of this command (usage)
+        usage_dir = self._workdir_path(spec)
+        if usage_dir:
+            process_env["ALFRD_USAGE_DIR"] = usage_dir
         wanted = {**(self.cfg.settings.get("env") or {}), **env}
         if "PYTHONPATH" in wanted:  # alfrd.yaml sets the command's PYTHONPATH itself
             process_env[ORIG_PYTHONPATH] = str(wanted["PYTHONPATH"])
@@ -905,6 +1095,20 @@ class Runner:
         self.live[unit["id"]] = Live(unit=unit, process=process)
         self.log(f"{unit['id']}: started pid {process.pid}: {' '.join(argv)}")
         return 1
+
+    def _workdir_path(self, spec: UnitSpec) -> str | None:
+        """The row's AVICA work dir (``{target_dir}/{code}/{workdir}``) when it exists, for the size at start/end."""
+        row = spec.rows[0] if spec.mode != "batch" else None
+        if row is None or not row.code or not row.workdir:
+            return None
+        try:
+            from alfrd.avica_layout import resolve_config, resolve_dir
+
+            target_dir = resolve_dir(self.folder.root, resolve_config(self.folder.root).get("target_dir"))
+            path = Path(target_dir) / row.code / row.workdir if target_dir else None
+        except Exception:  # noqa: BLE001 - not an AVICA layout
+            return None
+        return str(path) if path and path.is_dir() else None
 
     # -- watching --------------------------------------------------------
     def _alive(self, live: Live) -> bool:
@@ -969,10 +1173,12 @@ class Runner:
             self.finalize(live.unit, process=live.process, reason="cancelled")
 
     def adopt(self) -> None:
-        """Take over units an earlier runner left behind."""
+        """Take over units an earlier runner left behind (and the rows they hold)."""
         table = self.table()
         running_rows = set()
-        for unit in self.folder.units():
+        units = self.folder.units()
+        self.started_rows.update(k for u in units if u.get("mode") != "batch" for k in (u.get("rows") or [u.get("row")]) if k)
+        for unit in units:
             if unit.get("status") != "running":
                 continue
             if unit.get("host") and unit["host"] != self.host:
@@ -1093,6 +1299,8 @@ class Runner:
                 error = first[failed_step].get("desc") or f"{failed_step} failed (result CSV)"
         unit.update(status=status, finished=now_iso(), exit_code=exit_code,
                     results={k: v for k, v in results_all.items() if v}, error=error)
+        if isinstance(exit_data, dict) and isinstance(exit_data.get("usage"), dict):
+            unit["usage"] = exit_data["usage"]  # peak memory, CPU s, cores, I/O, wall (alfrd.runtime.usage)
         if adopted:
             unit["note"] = "finalized after a runner restart"
         self.folder.save_unit(unit)
@@ -1174,12 +1382,16 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
         plan_id = plans[0]["id"]
     folder = PlanDir(base, plan_id)
     plan = folder.load()
+    all_units = folder.units()
+    waiting: list[dict[str, Any]] = []
     try:
         cfg = load_execution(base)
-        table = table_for(cfg, folder.csv_path(plan), plan.get("steps")).to_dict()
+        parsed = table_for(cfg, folder.csv_path(plan), plan.get("steps"))
+        table = parsed.to_dict()
+        if plan.get("status") in ACTIVE:
+            waiting = waiting_rows(plan, parsed, all_units, cfg)
     except Exception as exc:  # noqa: BLE001
         table = {"error": str(exc), "rows": [], "steps": plan.get("steps") or []}
-    all_units = folder.units()
     alive = folder.runner_alive()
     runner = dict(plan.get("runner") or {})
     beat = _parse_stamp(runner.get("heartbeat"))
@@ -1195,8 +1407,25 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
         "queue": queue(table, durations, int(plan.get("concurrency") or 1), plan.get("on_failure") or "stop_target",
                        [u for u in all_units if u.get("status") == "running"]),
         "durations": durations,
+        "waiting": waiting,
         "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv")} for p in plans[:20]],
     }
+
+
+def waiting_rows(plan: Mapping[str, Any], table: pc.PlanTable, units: Sequence[Mapping[str, Any]],
+                 cfg: ExecutionConfig) -> list[dict[str, Any]]:
+    """Why rows wait (read-only; the same rule the runner applies), from the plan's units."""
+    if plan.get("mode") == "batch":
+        return []
+    limit = int(plan.get("concurrency") or 1)
+    running = [u for u in units if u.get("status") == "running"]
+    names, match = serialize_settings(plan, cfg)
+    locks = {f"{u['code']}/{u.get('workdir') or ''}" for u in running if u.get("code")}
+    picked = pick_rows(table, mode=str(plan.get("mode") or "step"), on_failure=str(plan.get("on_failure") or "stop_target"),
+                       limit=limit, free=max(0, limit - len(running)), names=names, match=match, base=cfg.cwd,
+                       running_rows={k for u in running for k in (u.get("rows") or [u.get("row")])},
+                       started_rows={k for u in units for k in (u.get("rows") or [u.get("row")]) if k}, locks=locks)
+    return picked.waiting
 
 
 def queue(table: Mapping[str, Any], durations: Mapping[str, float], concurrency: int, on_failure: str,
@@ -1239,6 +1468,6 @@ def queue(table: Mapping[str, Any], durations: Mapping[str, float], concurrency:
 
 
 __all__ = [
-    "PlanDir", "Runner", "active_plan", "add_row", "control", "create_plan", "list_plans", "plan_status",
-    "preview", "reconcile", "reset_failed", "resolve_csv", "spawn_runner", "step_durations", "verify_steps",
+    "PlanDir", "Runner", "active_plan", "add_row", "conflict_groups", "control", "create_plan", "list_plans",
+    "pick_rows", "plan_status", "preview", "reconcile", "reset_failed", "resolve_csv", "spawn_runner", "step_durations", "verify_steps",
 ]

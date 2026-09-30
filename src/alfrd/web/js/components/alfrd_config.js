@@ -104,6 +104,7 @@ export function mount(el, ctx) {
     if (a === "save") save(el, ctx);
     if (a === "revert") { ui.text = loadedText(ctx, p); ui.dirty = false; ui.report = null; ui.aliases = null; render(el, ctx); }
     if (a === "download") download("alfrd.yaml", ui.text, "text/yaml");
+    if (a === "history") ctx.openHistory(p, { onRestored: () => { ui.dirty = false; ui.text = loadedText(ctx, p); render(el, ctx); } });
     if (a === "copy") { const ok = await copyText(ui.text); ctx.toast(ok ? "Copied" : "Copy failed", ok ? "ok" : "fail"); }
     if (a === "alias-add") { ui.aliases.push({ from: "", to: "" }); render(el, ctx); }
     if (a === "alias-rm") { ui.aliases.splice(Number(b.dataset.i), 1); render(el, ctx); }
@@ -137,13 +138,24 @@ async function save(el, ctx) {
   const report = validate(ctx, ui.text);
   ui.report = report;
   if (!report.ok) { renderStatus(el, ctx); ctx.toast("Not saved: fix the errors first", "fail"); return; }
+  const done = () => {
+    ui.dirty = false;
+    ctx.toast(`alfrd.yaml saved${ctx.state.mode === "server" ? " (a version is kept in History)" : ""}`, "ok");
+    ctx.update();
+  };
   try {
     await ctx.saveManifest(p, ui.text);
-    ui.dirty = false;
-    ctx.toast(`alfrd.yaml saved${ctx.state.mode === "server" ? " (previous version kept as alfrd.yaml.bak)" : ""}`, "ok");
-    ctx.update();
+    done();
   } catch (error) {
-    ctx.toast(`Not saved: ${error.message}`, "fail");
+    if (error.status !== 409) { ctx.toast(`Not saved: ${error.message}`, "fail"); return; }
+    // Changed on disk since it was loaded: show the difference instead of overwriting.
+    const mine = ui.text;
+    ctx.openHistory(p, {
+      conflict: error.body || {},
+      proposed: mine,
+      overwrite: async () => { await ctx.saveManifest(p, mine, { force: true }); done(); },
+      loadDisk: () => { ctx.refreshProject(p).then(() => { ui.dirty = false; ui.text = loadedText(ctx, p); render(el, ctx); }); },
+    });
   }
 }
 
@@ -215,6 +227,7 @@ export function render(el, ctx) {
       <button class="btn sm" data-act="validate">${icon("validate")} Validate</button>
       <button class="btn sm" data-act="revert">${icon("reset")} Revert</button>
       <button class="btn sm" data-act="download">${icon("download")} Download</button>
+      ${ctx.state.mode === "server" && tree.provider === "server" ? `<button class="btn sm" data-act="history" title="Earlier versions of alfrd.yaml: diff and restore">${icon("clock")} History</button>` : ""}
       <button class="btn sm ${ui.dirty ? "primary" : ""}" data-act="save">${icon("save")} Save alfrd.yaml</button></div>
       <p class="muted small">${esc(where)} Ctrl+S saves. After saving, the workflow, stages, metadata health, logs and field aliases are re-read from the file.</p>
       <div class="ps-status" id="ps-status"></div></div>

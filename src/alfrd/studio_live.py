@@ -210,12 +210,32 @@ class TreeWatcher(Watcher):
         self.root = Path(root)
 
     def probe(self) -> Snapshot:
-        return tree_snapshot(self.root)
+        snap = tree_snapshot(self.root)
+        if self._snapshot is None:  # first pass: edits made while nobody watched become versions
+            self._history([rel for rel, value in snap.items() if value[0] == "content"])
+        return snap
+
+    def _history(self, rels) -> None:
+        """Tracked config files (alfrd.yaml …) that changed get a version (alfrd.history, source external)."""
+        try:
+            from alfrd.history import capture_external
+
+            capture_external(self.root, rels)
+        except Exception:  # noqa: BLE001 - history must never break live updates
+            pass
 
     def compare(self, old: Snapshot, new: Snapshot) -> dict[str, Any] | None:
         diff = diff_snapshots(old, new)
         if not (diff["changed"] or diff["removed"] or diff["logs"]):
             return None
+        if diff["changed"]:
+            self._history(diff["changed"])
+        try:  # keep a built full-text index current (alfrd.search)
+            from alfrd.search import on_tree_event
+
+            on_tree_event(self.root, self.key, diff)
+        except Exception:  # noqa: BLE001
+            pass
         return {"project": self.key, **diff}
 
 

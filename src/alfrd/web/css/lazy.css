@@ -41,3 +41,65 @@
 .coll-lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .ic.rot-l { transform: rotate(90deg); } .ic.rot-r { transform: rotate(-90deg); }
 @media (max-width: 900px) { .coll-runs.two { grid-template-columns: 1fr; } }
+
+/* Step picker (Run dialog, Add target) */
+.sp { display: flex; flex-direction: column; gap: 6px; }
+.sp-h { align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.sp-h select { max-width: 11em; }
+.sp-gh { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; font-size: 12.5px; }
+.sp-g .run-steps { padding-left: 22px; }
+.sp-g .run-steps[hidden] { display: none; }
+
+/* History (Project settings → History) */
+.hist { display: flex; flex-direction: column; gap: 10px; }
+.hist-t td { vertical-align: middle; }
+.diff { max-height: 50vh; overflow: auto; font-size: 12px; line-height: 1.45; padding: 8px 10px; background: var(--subtle); border-radius: var(--r); white-space: pre; }
+.diff .d-add { color: var(--ok); background: var(--ok-bg); display: inline-block; min-width: 100%; }
+.diff .d-del { color: var(--fail); background: var(--fail-bg); display: inline-block; min-width: 100%; }
+.diff .d-h { color: var(--accent); }
+.diff .d-f { color: var(--text-3); }
+
+/* Command palette (Ctrl+K) */
+.modal.pal-modal { width: min(680px, 94vw); align-self: flex-start; margin-top: 12vh; padding: 0; }
+.pal-in { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.pal-in .input { flex: 1; border: 0; box-shadow: none; font-size: 15px; background: transparent; }
+#pal-list { list-style: none; margin: 0; padding: 4px; max-height: 55vh; overflow: auto; }
+#pal-list li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--r); cursor: pointer; }
+#pal-list li.on { background: var(--accent-bg); }
+#pal-list .pal-l { font-weight: 500; white-space: nowrap; }
+#pal-list .pal-d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-f { margin: 0; padding: 6px 12px; border-top: 1px solid var(--border); }
+.pal-f kbd { font: 11px var(--mono, monospace); padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; margin-right: 2px; }
+
+/* Resource usage (plan commands) */
+.usage .spark { display: block; width: 100%; max-width: 640px; height: 56px; background: var(--subtle); border-radius: var(--r); }
+.usage .s-cpu { color: var(--accent); }
+.usage .s-mem { color: var(--warn); }
+.usage h5 { margin: 10px 0 4px; }
+
+/* Full-text search */
+.srch { display: flex; flex-direction: column; gap: 6px; }
+.srch-b { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px; min-height: 40vh; }
+.srch-list { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow: auto; }
+.srch-hit { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 6px 8px; border: 0; background: none; border-radius: var(--r); cursor: pointer; color: inherit; }
+.srch-hit:hover, .srch-hit:focus { background: var(--accent-bg); }
+.srch mark { background: var(--warn-bg); color: inherit; padding: 0 1px; }
+.srch-pre { max-height: 56vh; overflow: auto; }
+.srch-pre i { display: inline-block; width: 4.5em; color: var(--text-3); font-style: normal; user-select: none; }
+.srch-pre .hit { background: var(--accent-bg); display: inline-block; min-width: 100%; }
+@media (max-width: 800px) { .srch-b { grid-template-columns: 1fr; } }
+
+/* Notes panel */
+.notes { display: flex; flex-direction: column; gap: 8px; }
+.nt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
+.nt { border: 1px solid var(--border); border-radius: var(--r); padding: 6px 10px; }
+.nt.focus { border-color: var(--accent); }
+.nt-text { white-space: pre-wrap; margin: 4px 0; }
+.nt-add textarea { width: 100%; margin: 6px 0; }
+.chip.on { background: var(--accent-bg); border-color: var(--accent); }
+
+/* Template panels (Metadata → views.metadata) */
+.pn { margin: 6px 0; }
+.pn > summary { cursor: pointer; }
+.pn-imgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.pn-imgs img { width: 100%; height: 110px; object-fit: contain; background: var(--subtle); border-radius: var(--r); }

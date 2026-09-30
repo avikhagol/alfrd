@@ -35,6 +35,7 @@ ON_FAILURE = ("stop_target", "continue", "stop_plan")
 STATUS_FROM = ("exit_code", "result_csv", "both")
 LAUNCHERS = ("detach", "systemd-run")
 AUTO_RESUME = ("adopt", "always", "never")
+SERIALIZE_MATCH = ("all", "any")
 
 DEFAULT_EXECUTION: dict[str, Any] = {
     "cwd": ".",                    # relative to alfrd.yaml
@@ -55,6 +56,13 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     "files_column": "FILENAMES",
     "code_column": "PROJECT_CODE",
     "workdir_column": "WORKDIR",
+    # concurrency > 1: rows that share a value in the listed columns run one at a
+    # time. Names: ``target`` (the key column), ``files`` (the file column, compared
+    # as a set) or any plan CSV column. ``serialize_match: all`` = conflict only when
+    # every listed column is shared, ``any`` = when one is. [] = only the work dir lock.
+    "serialize_on": [],
+    "serialize_match": "all",
+    "usage_interval": 5,           # seconds between resource samples (0 = off)
 }
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -169,6 +177,16 @@ class ExecutionConfig:
         }
 
 
+def _serialize_on(raw: Any) -> list[str]:
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)) or not all(isinstance(x, str) and x.strip() for x in raw):
+        raise ExecutionError("execution.serialize_on must be a list of column names (target, files, PROJECT_CODE, ...)")
+    return list(dict.fromkeys(x.strip() for x in raw))
+
+
 def _entrypoints(raw: Any) -> dict[str, tuple[str, ...]]:
     out: dict[str, tuple[str, ...]] = {}
     for item in raw or []:
@@ -208,13 +226,19 @@ def load_execution(root: str | Path) -> ExecutionConfig:
     merged = merged_manifest(base)
     settings = {**DEFAULT_EXECUTION, **(merged.get("execution") or {})}
     for key, allowed in (("mode", MODES), ("on_failure", ON_FAILURE), ("status_from", STATUS_FROM),
-                         ("launcher", LAUNCHERS), ("auto_resume", AUTO_RESUME)):
+                         ("launcher", LAUNCHERS), ("auto_resume", AUTO_RESUME),
+                         ("serialize_match", SERIALIZE_MATCH)):
         if settings[key] not in allowed:
             raise ExecutionError(f"execution.{key} must be one of {', '.join(allowed)} (got {settings[key]!r})")
     try:
         settings["concurrency"] = max(1, int(settings["concurrency"]))
     except (TypeError, ValueError) as exc:
         raise ExecutionError("execution.concurrency must be an integer") from exc
+    settings["serialize_on"] = _serialize_on(settings.get("serialize_on"))
+    try:
+        settings["usage_interval"] = max(0.0, float(settings.get("usage_interval") or 0))
+    except (TypeError, ValueError) as exc:
+        raise ExecutionError("execution.usage_interval must be a number of seconds") from exc
     entrypoints = _entrypoints(merged.get("entrypoint"))
     workflow = merged.get("_workflow") or {}
     default_entry = workflow.get("entrypoint") or settings.get("step_entrypoint")

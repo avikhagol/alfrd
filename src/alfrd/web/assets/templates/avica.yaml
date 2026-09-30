@@ -21,6 +21,35 @@ stages:
   - {id: automation, title: Automated Metadata and Input generation}
   - {id: calib, title: Calibration Setup & Execution}
 
+# Folder hierarchy below the project (Metadata view, entity paths). A pattern
+# starting with {target_dir} is relative to the project root, others to the
+# parent level's folder; {from: avica.<key>} reuses the avica: block's patterns
+# (alfrd.yaml avica.workdir / band_dir overrides apply). targets_from: files
+# whose {target} names a target of that folder.
+hierarchy:
+  - {level: project_code, dir: "{target_dir}/{project_code}"}
+  - level: workdir
+    dir: {from: avica.workdir}
+    targets_from: ["avica.meta/*_{band}_{target}.avica", "avica.meta/*_{band}_{target}.out"]
+  - {level: band, dir: {from: avica.band_dir}}
+
+# Metadata view panels, top to bottom. Panel types: file_status, files,
+# json_fields, csv_table, text, image (read by alfrd serve) and avica_config,
+# avica_inputs (AVICA's configuration and rPicard inputs, drawn by the Studio).
+# scope: the level a panel is evaluated at (project_code, workdir, band) or
+# target (once per target, across its work dirs). Replace the list in
+# alfrd.yaml `views: {metadata: [...]}`.
+views:
+  vars:
+    meta_dir: {from: avica.meta_dir, prefix: "{workdir}/"}
+  metadata:
+    - {panel: file_status, title: Metadata health, scope: workdir, files: from_steps}
+    - {panel: files, title: avica.meta, scope: workdir, source: "{meta_dir}/*"}
+    - {panel: csv_table, title: Result CSV, scope: target, source: result_csv}
+    - {panel: image, title: Diagnostics plots, scope: workdir, source: "{workdir}/wd_{band}_{target}/diagnostics_*/*.png", limit: 12}
+    - {panel: avica_config, title: AVICA configuration, scope: target}
+    - {panel: avica_inputs, title: Input parameters (rPicard *.inp), scope: workdir}
+
 overview:
   # "MS Storage Path" column: first match per target (all matches in the tooltip).
   ms_path:
@@ -71,6 +100,13 @@ execution:
   target_entrypoint: avica-target
   batch_entrypoint: avica-batch
   concurrency: 1                        # targets at once (CASA MPI cores are per step)
+  # With concurrency > 1, rows that share a FITS file name run one after the
+  # other: AVICA writes files named after the FITS input, so they would clash.
+  # The same target with other FITS files runs in parallel. Add columns to
+  # serialize on more (e.g. [files, target]; serialize_match: any = one shared
+  # value is enough, all = every listed one must be shared).
+  serialize_on: [files]
+  serialize_match: all
   on_failure: stop_target               # stop_target | continue | stop_plan
   # `avica pipe run` exits 0 after a failed step: the result CSV row decides too.
   status_from: both                     # exit_code | result_csv | both

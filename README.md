@@ -249,12 +249,18 @@ alfrd plan new --from-csv targets.csv --from fits_to_ms   # or --targets a,b --f
 alfrd plan run --dry-run                                  # the commands, in order
 alfrd plan run                                            # starts a background runner
 alfrd plan status                                         # grid, running commands, queue
+alfrd plan status --json                                  # the same as a stable document (scripts, Claude)
+alfrd plan wait --until done --timeout 3600               # block until it finishes (exit code says how)
 alfrd plan pause | resume [--retry-failed] | cancel
 ```
 
+With `execution.concurrency` above 1, rows run in parallel unless they conflict: the avica template serializes rows that share a FITS file name (`execution.serialize_on: [files]`), since those write the same files; the same target with other FITS files runs in parallel.
+
+To follow a plan from a script or an AI assistant, use `alfrd plan status|wait|events|log --json` or `GET /api/v1/projects/<p>/plans/latest` on `alfrd serve`: a read-only, versioned document with a one-line summary, failures with reasons and a resume cursor. See [docs/status-api.md](docs/status-api.md).
+
 In the Studio (`alfrd serve`), open **Workflow → Run…**. The **Schedule** tab shows the targets × steps grid and the execution order (running, queued with ETAs, failed, done). The graph and list show the plan's progress.
 
-Runs keep going when the Studio, `alfrd serve` or the terminal is closed. The runner is a detached process, and every command writes straight to its log under `.alfrd/plans/<id>/`. A new runner re-adopts commands that are still alive. After a reboot, `alfrd serve` or `alfrd plan status` marks the plan *interrupted*, and **Resume** continues from the first unfinished cell. Result CSVs are found by name: `result_<target>_<code>_<workdir>.csv` (newer AVICA) and `<target>_result.csv`.
+Runs keep going when the Studio, `alfrd serve` or the terminal is closed. The runner is a detached process, and every command writes straight to its log under `.alfrd/plans/<id>/`. A new runner re-adopts commands that are still alive. After a reboot, `alfrd serve` or `alfrd plan reconcile` marks the plan *interrupted*, and **Resume** continues from the first unfinished cell. Result CSVs are found by name: `result_<target>_<code>_<workdir>.csv` (newer AVICA) and `<target>_result.csv`.
 
 ---
 

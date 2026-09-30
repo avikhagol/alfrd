@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Fake `mpirun` for resource-usage tests: starts ranks the way MPI launchers do.
+
+  fake_mpirun -n N --burn SECONDS [--mode setsid|daemon|child]
+
+  child   ranks are plain children (same process group)
+  setsid  ranks call setsid() (their own session and group, like orted / pmi_proxy)
+  daemon  ranks double-fork and setsid(): orphaned, re-parented away from the launcher
+The launcher waits until every rank has finished (it polls a pid file for daemons).
+"""
+import os
+import sys
+import time
+
+
+def burn(seconds):
+    until = time.time() + seconds
+    n = 0
+    while time.time() < until:
+        n += 1
+
+
+def main(argv):
+    n, secs, mode = 2, 1.0, "setsid"
+    it = iter(argv)
+    for a in it:
+        if a == "-n":
+            n = int(next(it))
+        elif a == "--burn":
+            secs = float(next(it))
+        elif a == "--mode":
+            mode = next(it)
+    rfds = []
+    kids = []
+    for _ in range(n):
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(r)
+            if mode in ("setsid", "daemon"):
+                os.setsid()
+            if mode == "daemon" and os.fork():
+                os._exit(0)  # the middle process exits: the rank is orphaned
+            burn(secs)
+            os.write(w, b"x")
+            os._exit(0)
+        os.close(w)
+        rfds.append(r)
+        kids.append(pid)
+    for pid in kids:
+        os.waitpid(pid, 0)
+    for r in rfds:  # daemons: wait until each rank wrote (or closed) its pipe
+        os.read(r, 1)
+    print(f"fake_mpirun: {n} ranks x {secs} s ({mode})", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

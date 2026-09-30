@@ -3,6 +3,7 @@
 
 import { $, on, esc, icon, hms, short, when, elapsed, loadUi, saveUi } from "../utils/dom.js";
 import { STEP_STATUS } from "../data/model.js";
+import { notesAt, noteMark } from "../data/notes.js";
 import { readFiles, buildBundle } from "../data/importers.js";
 import { resultStats, attemptsOf } from "../data/results_stats.js";
 
@@ -189,7 +190,7 @@ function ladder(ctx, t) {
     const retries = H && attempts.length > 1 ? ` <small class="muted">(${attempts.length - 1} retr${attempts.length === 2 ? "y" : "ies"})</small>` : "";
     const main = `<tr class="st-${status} ${attempts.length ? "clickable" : ""}" ${attempts.length ? `data-ladder="${esc(t.id)}:${esc(s.key)}" aria-expanded="${open}"` : ""}>
       <td>${attempts.length ? `<span class="caret ${open ? "open" : ""}">${icon("caret")}</span>` : ""}${i + 1}</td>
-      <td class="mono"><b>${esc(s.key)}</b>${st?.alias ? ` <small class="muted">(from ${esc(st.alias)})</small>` : ""}</td>
+      <td class="mono"><b>${esc(s.key)}</b>${st?.alias ? ` <small class="muted">(from ${esc(st.alias)})</small>` : ""}${noteMark(t.project, { target: t.name, step: s.key }, notesAt(ctx, t.project, { target: t.name, step: s.key }).length)}</td>
       <td><span class="badge tone-${m.tone}">${icon(m.icon)}${esc(m.label)}</span></td>
       <td class="tabular">${H ? attempts.length : st ? `#${st.attempt || 1}` : 0}${retries}</td>
       <td class="tabular">${esc(short(dur) || "—")}</td>

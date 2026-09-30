@@ -1,0 +1,37 @@
+version: 1
+name: imaging-demo
+description: A small optical imaging reduction (not AVICA) described only by this file.
+
+# No template: the layout, the steps and the Metadata panels are declared here.
+primary_key: TARGET_NAME
+
+stages:
+  - {id: prep, title: Preparation}
+  - {id: reduce, title: Reduction}
+
+workflows:
+  - name: imaging
+    steps:
+      - {id: bias, stage: prep, label: Bias frames, metadata: [{file: "{target}_bias.json", label: Bias summary, require: [nframes]}]}
+      - {id: flat, stage: prep, label: Flat fields, metadata: [{file: "{target}_flat.json", label: Flat summary, require: [nframes]}]}
+      - {id: stack, stage: reduce, label: Stack exposures, metadata: [{file: "{target}.json", label: Frame info, require: [exp]}]}
+      - {id: photometry, stage: reduce, label: Photometry}
+
+targets:
+  csv: targets.csv
+
+hierarchy:
+  - {level: night, dir: "nights/{night}"}
+  - {level: chip, dir: "{chip}", targets_from: ["{target}.json", "{target}_*.json"]}
+
+views:
+  vars: {chip_dir: "nights/{night}/{chip}"}
+  metadata:
+    - {panel: file_status, title: Step outputs, scope: chip, files: from_steps, base: "{chip_dir}"}
+    - {panel: files, title: Chip files, scope: chip, source: "{chip_dir}/*", base: "{chip_dir}"}
+    - {panel: json_fields, title: Exposures, scope: target, source: "{chip_dir}/{target}.json", fields: ["exp[*].t", filter, airmass]}
+    - {panel: csv_table, title: Photometry, scope: target, source: "photometry_{target}.csv"}
+    - {panel: text, title: Night log, scope: night, source: "nights/{night}/night.txt"}
+
+artifacts:
+  - {name: night_logs, path_pattern: "nights/*/night.txt", kind: log, description: Observing logs}

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/avikhagol/alfrd/schemas/plan_status.v1.json",
+  "title": "alfrd.plan_status/1",
+  "description": "Read-only status of one ALFRD plan run (alfrd plan status --json, GET /api/v1/projects/<p>/plans/<id>). Within v1 fields are only added.",
+  "type": "object",
+  "required": ["schema", "generated_at", "cursor", "project", "plan", "changed"],
+  "properties": {
+    "schema": {"const": "alfrd.plan_status/1"},
+    "generated_at": {"$ref": "#/$defs/time"},
+    "cursor": {"type": "string", "pattern": "^c1\\."},
+    "changed": {"type": "boolean"},
+    "project": {
+      "type": "object",
+      "required": ["name", "identifier"],
+      "properties": {"name": {"type": "string"}, "identifier": {"type": "string"}}
+    },
+    "plan": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": {"type": "string"},
+        "status": {"enum": ["running", "paused", "finished", "failed", "cancelled", "interrupted"]},
+        "csv": {"type": ["string", "null"]},
+        "mode": {"enum": ["step", "target", "batch", null]},
+        "control": {"enum": ["run", "pause", "cancel"]},
+        "concurrency": {"type": "integer", "minimum": 1},
+        "on_failure": {"type": ["string", "null"]},
+        "steps": {"type": "array", "items": {"type": "string"}},
+        "created_at": {"$ref": "#/$defs/time_or_null"},
+        "started_at": {"$ref": "#/$defs/time_or_null"},
+        "finished_at": {"$ref": "#/$defs/time_or_null"}
+      }
+    },
+    "runner": {
+      "type": "object",
+      "required": ["alive", "stale", "owned_by_this_host"],
+      "properties": {
+        "alive": {"type": "boolean"},
+        "host": {"type": ["string", "null"]},
+        "pid": {"type": ["integer", "null"]},
+        "heartbeat_age_s": {"type": ["number", "null"]},
+        "stale": {"type": "boolean"},
+        "owned_by_this_host": {"type": "boolean"}
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["todo", "queued", "running", "done", "failed", "skipped", "cancelled", "interrupted"],
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "progress": {
+      "type": "object",
+      "required": ["cells_done", "cells_total", "eta_s"],
+      "properties": {
+        "cells_done": {"type": "integer"},
+        "cells_total": {"type": "integer"},
+        "eta_s": {"type": ["number", "null"]}
+      }
+    },
+    "running": {"type": "array", "items": {"$ref": "#/$defs/running"}},
+    "failures": {"type": "array", "items": {"$ref": "#/$defs/failure"}},
+    "waiting": {"type": "array", "items": {"$ref": "#/$defs/waiting"}},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
+    "rows": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+    "rows_total": {"type": "integer"},
+    "summary": {"type": "string"},
+    "exit_code": {"type": "integer", "enum": [0, 1, 2, 3, 5]},
+    "error": {"type": "string"},
+    "reason": {"enum": ["done", "failed", "changed", "timeout"]}
+  },
+  "$defs": {
+    "time": {"type": "string", "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$"},
+    "time_or_null": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
+    "entity": {
+      "type": "object",
+      "required": ["project"],
+      "properties": {
+        "project": {"type": "string"}, "target": {"type": "string"}, "project_code": {"type": "string"},
+        "workdir": {"type": "string"}, "band": {"type": "string"}, "step": {"type": "string"},
+        "file": {"type": "string"}, "line": {"type": "integer", "minimum": 1}
+      }
+    },
+    "running": {
+      "type": "object",
+      "required": ["row", "target", "step", "unit", "started_at", "elapsed_s", "entity"],
+      "properties": {
+        "row": {"type": "string"}, "target": {"type": ["string", "null"]}, "project_code": {"type": ["string", "null"]},
+        "workdir": {"type": ["string", "null"]}, "step": {"type": "string"}, "steps": {"type": "array"},
+        "unit": {"type": "string"}, "started_at": {"$ref": "#/$defs/time_or_null"}, "elapsed_s": {"type": ["number", "null"]},
+        "median_s": {"type": ["number", "null"]}, "pid": {"type": ["integer", "null"]}, "log": {"type": ["string", "null"]},
+        "entity": {"$ref": "#/$defs/entity"}
+      }
+    },
+    "failure": {
+      "type": "object",
+      "required": ["row", "target", "step", "reason"],
+      "properties": {
+        "row": {"type": "string"}, "target": {"type": "string"}, "project_code": {"type": ["string", "null"]},
+        "workdir": {"type": ["string", "null"]}, "step": {"type": "string"}, "reason": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"]}, "finished_at": {"$ref": "#/$defs/time_or_null"},
+        "unit": {"type": ["string", "null"]}, "log": {"type": ["string", "null"]}, "entity": {"$ref": "#/$defs/entity"}
+      }
+    },
+    "waiting": {
+      "type": "object",
+      "required": ["row", "reason", "blocked_by"],
+      "properties": {
+        "row": {"type": "string"}, "target": {"type": "string"}, "code": {"type": "string"},
+        "reason": {"type": "string"}, "blocked_by": {"type": ["string", "null"]}
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": ["id", "at", "type"],
+      "properties": {
+        "id": {"type": "string"}, "at": {"$ref": "#/$defs/time"}, "type": {"enum": ["plan", "started", "finished"]}
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": ["row", "target", "cells"],
+      "properties": {
+        "row": {"type": "string"}, "target": {"type": "string"}, "project_code": {"type": ["string", "null"]},
+        "workdir": {"type": ["string", "null"]}, "files": {"type": "array", "items": {"type": "string"}},
+        "cells": {"type": "object", "additionalProperties": {"type": "string"}},
+        "entity": {"$ref": "#/$defs/entity"},
+        "detail": {"type": "object"}
+      }
+    }
+  }
+}

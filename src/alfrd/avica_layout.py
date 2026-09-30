@@ -850,6 +850,7 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
     targets_rel = _targets_csv_rel(base)
     if targets_rel:
         add(base / targets_rel, hint="targets")  # read last by the Studio: its FITS names / codes win
+    add(base / "alfrd.notes.jsonl", limit=4 * 1024 * 1024, hint="notes")  # annotations (alfrd.notes): travel with the data
     for path in sorted(base.glob("*.csv")) + sorted(base.glob("*.tsv")):
         add(path)
 

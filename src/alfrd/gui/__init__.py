@@ -78,9 +78,16 @@ def create_app(config=None):
     import alfrd.gui.studio_plans  # noqa: F401  (adds the plan routes to studio_api)
     import alfrd.gui.studio_targets  # noqa: F401  (adds the targets CSV routes to studio_api)
     import alfrd.gui.studio_collections  # noqa: F401  (adds the collection routes to studio_api)
+    import alfrd.gui.studio_history  # noqa: F401  (adds the alfrd.yaml history routes to studio_api)
+    import alfrd.gui.studio_search  # noqa: F401  (adds the full-text search routes to studio_api)
+    import alfrd.gui.studio_notes  # noqa: F401  (adds the annotation routes to studio_api)
+    import alfrd.gui.studio_views  # noqa: F401  (adds the template-driven view route to studio_api)
+
+    from alfrd.gui.api_v1 import api_v1
 
     app.register_blueprint(studio)
     app.register_blueprint(studio_api)
+    app.register_blueprint(api_v1)
     app.register_blueprint(api)
     app.register_blueprint(dashboard)
     app.register_blueprint(system)

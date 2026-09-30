@@ -365,7 +365,9 @@ export function buildBundle(files, { source = "import", projectHint = null, root
     workdirs: Object.values(bundle.avica?.codes || {}).map((c) => ({ rel: c.wd, id: c.id, code: c.code })),
   };
   const known = entries.filter((e) => e.log);
-  const listed = classifyLogs(entries.filter((e) => !e.marker && (e.file || e.log || kindOf(e) === "avica" || /\.(log|json|out)|\.log_|\.out_/i.test(e.name))), defs, ctxPaths);
+  const notesFile = kinds.find((f) => f.kind === "notes");
+  if (notesFile) bundle.notesText = notesFile.text || "";
+  const listed = classifyLogs(entries.filter((e) => !e.marker && e.hint !== "notes" && (e.file || e.log || kindOf(e) === "avica" || /\.(log|json|out)|\.log_|\.out_/i.test(e.name))), defs, ctxPaths);
   const byRel = new Map(listed.map((l) => [l.rel, l]));
   known.forEach((e) => {
     const cur = byRel.get(e.rel) || { rel: e.rel, name: e.name, size: e.size, mtime: e.mtime, file: e.file, text: e.text, groups: [], steps: [] };
