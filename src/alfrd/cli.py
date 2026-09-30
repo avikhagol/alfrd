@@ -714,6 +714,13 @@ def manifest_default(
     if target.exists() and not force:
         raise typer.BadParameter(f"{target} exists (use --force to overwrite)")
     target.write_text(default_manifest_text(target.resolve().parent) or "", encoding="utf-8")
+    if target.name == "alfrd.yaml":
+        from alfrd import history
+
+        try:
+            history.record(target.resolve().parent, "alfrd.yaml", source="cli", message="alfrd manifest default")
+        except (history.HistoryError, OSError):
+            pass
     print(f"Wrote {target} (from {path}).")
 
 
@@ -1151,39 +1158,135 @@ def plan_run(
 def plan_status_command(
     plan_id: Optional[str] = typer.Argument(None, help="Plan id (default: the latest)."),
     root: str = _ROOT_OPT,
-    as_json: bool = typer.Option(False, "--json"),
-    no_reconcile: bool = typer.Option(False, "--no-reconcile", help="Do not re-attach to a plan whose runner stopped."),
+    as_json: bool = typer.Option(False, "--json", help="The alfrd.plan_status/1 document (for scripts and Claude)."),
+    detail: str = typer.Option("summary", "--detail", help="summary | rows | full (with --json)."),
+    since: Optional[str] = typer.Option(None, "--since", help="Cursor from an earlier call: only say what changed."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Rows per page (--detail rows|full)."),
+    offset: int = typer.Option(0, "--offset", help="First row (--detail rows|full)."),
+    reconcile: bool = typer.Option(False, "--reconcile", help="Re-attach to a plan whose runner stopped first (the only way this command changes anything)."),
+    no_reconcile: bool = typer.Option(False, "--no-reconcile", hidden=True, help="Kept for old scripts: reading never reconciles now."),
 ):
-    """Show a plan: runner, the targets × steps grid, running commands and the queue."""
+    """Show a plan: runner, the targets × steps grid, running commands and the queue. Read-only.
+
+    Exit code: 0 finished, 1 finished with failures, 2 running, 3 paused /
+    interrupted / cancelled, 4 plan or project not found, 5 runner dead (status is stale).
+    """
     import json as _json
 
+    from alfrd.api import status as api
     from alfrd.runtime import scheduler
 
-    if not no_reconcile:
-        for item in scheduler.reconcile(root):
-            print(f"plan {item['plan']}: {item['action']}")
-    data = scheduler.plan_status(root, plan_id)
+    try:
+        doc = api.plan_status(root, plan_id, detail=detail, since=since, limit=limit, offset=offset, reconcile=reconcile)
+    except api.StatusNotFound as error:
+        if as_json:
+            print(_json.dumps({"schema": api.SCHEMA, "error": {"code": 404, "message": str(error)}}))
+        else:
+            print(f"{error} (alfrd plan new, then alfrd plan run)")
+        raise typer.Exit(code=api.EXIT_NOT_FOUND)
+    except ValueError as error:
+        _plan_fail(error)
     if as_json:
-        print(_json.dumps(data, indent=1, default=str))
-        return
-    plan = data.get("plan")
-    if not plan:
-        print("no plans in this project (alfrd plan new, then alfrd plan run)")
-        return
-    runner = data["runner"]
-    who = f"runner pid {runner.get('pid')} on {runner.get('host')}" if runner.get("alive") else "no runner"
+        print(_json.dumps(doc, indent=1, default=str))
+        raise typer.Exit(code=doc["exit_code"])
+    data = scheduler.plan_status(root, doc["plan"]["id"])
+    plan = data["plan"]
+    runner = doc["runner"]
+    who = f"runner pid {runner.get('pid')} on {runner.get('host')}" if runner.get("alive") else (
+        "no runner (stale: run `alfrd plan reconcile`)" if runner.get("stale") else "no runner")
     print(f"plan {plan['id']} · {plan['status']} · {who} · {plan['csv']} · mode {plan['mode']} × {plan['concurrency']}")
     table = data["table"]
     steps = table.get("steps") or []
     marks = {"done": "✓", "failed": "✗", "running": "▶", "todo": "·", "blocked": "⊘", "interrupted": "!", "cancelled": "–", "skip": " "}
     width = max([len(r["key"]) for r in table.get("rows") or []] + [6])
     print(" " * (width + 2) + " ".join(s[:3] for s in steps))
+    waiting = {w["row"]: w["reason"] for w in doc.get("waiting") or []}
     for row in table.get("rows") or []:
-        print(f"  {row['key']:<{width}} " + " ".join(f"{marks.get(row['cells'].get(s), '?'):^3}" for s in steps))
+        note = f"  {waiting[row['key']]}" if row["key"] in waiting else ""
+        print(f"  {row['key']:<{width}} " + " ".join(f"{marks.get(row['cells'].get(s), '?'):^3}" for s in steps) + note)
     for unit in data["running"]:
         print(f"running: {unit['id']} pid {unit.get('pid')} since {unit.get('started')}  log {unit.get('log')}")
     if data["queue"]:
         print(f"queued: {len(data['queue'])} cell(s); next {data['queue'][0]['target']} · {data['queue'][0]['step']}")
+    print(doc["summary"])
+    raise typer.Exit(code=doc["exit_code"])
+
+
+@plan_cli.command("wait")
+def plan_wait_command(
+    plan_id: Optional[str] = typer.Argument(None, help="Plan id (default: the latest)."),
+    root: str = _ROOT_OPT,
+    until: str = typer.Option("done", "--until", help="done | failed | any-change."),
+    timeout: float = typer.Option(3600, "--timeout", help="Seconds before giving up (reason: timeout)."),
+    since: Optional[str] = typer.Option(None, "--since", help="Cursor: any-change counts from here."),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Block until the plan is done / has a failure / changes (or the timeout). Read-only; same exit codes as status."""
+    import json as _json
+
+    from alfrd.api import status as api
+
+    try:
+        doc = api.wait(root, plan_id, until=until, timeout=timeout, since=since)
+    except api.StatusNotFound as error:
+        print(_json.dumps({"schema": api.SCHEMA, "error": {"code": 404, "message": str(error)}}) if as_json else str(error))
+        raise typer.Exit(code=api.EXIT_NOT_FOUND)
+    except ValueError as error:
+        _plan_fail(error)
+    print(_json.dumps(doc, indent=1, default=str) if as_json else f"{doc['reason']}: {doc['summary']}")
+    raise typer.Exit(code=doc["exit_code"])
+
+
+@plan_cli.command("events")
+def plan_events_command(
+    plan_id: Optional[str] = typer.Argument(None, help="Plan id (default: the latest)."),
+    root: str = _ROOT_OPT,
+    since: Optional[str] = typer.Option(None, "--since", help="Cursor of the last event you saw (each event carries one)."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Keep printing new events until the plan stops."),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="Stop following after this many seconds."),
+):
+    """Plan events as JSON Lines (started / finished commands, plan history). Read-only."""
+    import json as _json
+
+    from alfrd.api import status as api
+
+    try:
+        for event in api.follow(root, plan_id, since=since, keep=follow, timeout=timeout):
+            print(_json.dumps(event, default=str), flush=True)
+    except api.StatusNotFound as error:
+        print(_json.dumps({"schema": api.EVENT_SCHEMA, "error": {"code": 404, "message": str(error)}}))
+        raise typer.Exit(code=api.EXIT_NOT_FOUND)
+    except ValueError as error:
+        _plan_fail(error)
+
+
+@plan_cli.command("log")
+def plan_log_command(
+    plan_id: Optional[str] = typer.Argument(None, help="Plan id (default: the latest)."),
+    root: str = _ROOT_OPT,
+    target: Optional[str] = typer.Option(None, "--target", "-t", help="Target (or row key target@CODE)."),
+    step: Optional[str] = typer.Option(None, "--step", help="Step (default: the row's latest command)."),
+    unit: Optional[str] = typer.Option(None, "--unit", help="Command (unit) id instead of target/step."),
+    lines: int = typer.Option(50, "--lines", "-n", help="Last N lines (max 200)."),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """The end of a plan command's log (ANSI stripped, at most 200 lines / 64 KiB). Read-only."""
+    import json as _json
+
+    from alfrd.api import status as api
+
+    if not (target or unit):
+        _plan_fail(ValueError("give --target (and --step) or --unit"))
+    try:
+        doc = api.log_tail(root, plan_id, target=target, step=step, unit=unit, lines=lines)
+    except api.StatusNotFound as error:
+        print(_json.dumps({"schema": api.LOG_SCHEMA, "error": {"code": 404, "message": str(error)}}) if as_json else str(error))
+        raise typer.Exit(code=api.EXIT_NOT_FOUND)
+    if as_json:
+        print(_json.dumps(doc, indent=1))
+    else:
+        print(f"# {doc['log']} ({doc['status']})")
+        print("\n".join(doc["lines"]))
 
 
 def _plan_control(action: str, plan_id: Optional[str], root: str, retry_failed: bool = False) -> None:

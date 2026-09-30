@@ -11,7 +11,7 @@ import { STEP_STATUS } from "../data/model.js";
 import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
 import { logItem, logForTarget, projectLogs, zoomablePre } from "./logview.js";
-import { CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule } from "./plans.js";
+import { CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule, usageButton } from "./plans.js";
 
 const W = 1040;
 const GAP = 32;
@@ -304,6 +304,12 @@ function ensureDraft(ctx) {
   if (!ui.draft || ui.draft.key !== ui.selected) {
     ui.draft = { key: ui.selected, params: { ...(s?.params || {}) } };
   }
+}
+
+/** Open the Workflow view on one step (command palette). */
+export function showStep(ctx, key) {
+  select(ctx, key);
+  ctx.goTo("workflow");
 }
 
 function select(ctx, key) {
@@ -878,7 +884,7 @@ function renderInspector(el, ctx) {
   const cell = po?.row?.cells?.[s.key];
   const unit = cell ? (planOf(project)?.units || []).slice().reverse().find((u) => (u.rows || [u.row]).includes(po.row.key) && (u.steps || []).includes(s.key)) : null;
   const planLine = cell && cell !== "skip"
-    ? `<div class="insp-plan small"><span class="badge tone-${CELL[cell]?.tone || "muted"}">${icon(CELL[cell]?.icon || "info", cell === "running" ? "spin" : "")}plan: ${esc(CELL[cell]?.label || cell)}</span>${unit?.log ? ` ${logButtons(project, unit.log, { label: "command log" })}` : ""}${unit?.argv ? `<code class="trunc" title="${esc(unit.argv.join(" "))}">${esc(unit.argv.join(" "))}</code>` : ""}${unit?.error ? `<span class="muted">${esc(unit.error)}</span>` : ""}</div>`
+    ? `<div class="insp-plan small"><span class="badge tone-${CELL[cell]?.tone || "muted"}">${icon(CELL[cell]?.icon || "info", cell === "running" ? "spin" : "")}plan: ${esc(CELL[cell]?.label || cell)}</span>${unit?.log ? ` ${logButtons(project, unit.log, { label: "command log" })}` : ""}${unit ? ` ${usageButton(project, unit)}` : ""}${unit?.argv ? `<code class="trunc" title="${esc(unit.argv.join(" "))}">${esc(unit.argv.join(" "))}</code>` : ""}${unit?.error ? `<span class="muted">${esc(unit.error)}</span>` : ""}</div>`
     : "";
   box.innerHTML = `
     <header class="insp-h"><span class="node-ic">${icon(s.icon)}</span><div class="grow"><div class="row gap"><b class="mono">${esc(s.key)}</b><span class="chip caps">${esc(s.category)}</span></div><div>${esc(s.label)}</div></div><button class="icon-btn sm" data-fold="inspector" title="Fold inspector" aria-label="Fold inspector" aria-expanded="true">${icon("fold")}</button></header>

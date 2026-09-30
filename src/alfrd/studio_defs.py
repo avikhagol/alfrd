@@ -42,7 +42,7 @@ _GROUPS = {
 _NO_DESCEND = re.compile(r"(\.ms|\.ms\..+|\.flagversions)$|^(raw|tmp_files|tmp_fringe_testing|calibration_tables|__pycache__|\..+)$")
 _MAX_HITS = 5000
 #: Logs written by `alfrd plan` runs (see alfrd.runtime.scheduler).
-_PLAN_LOG = re.compile(r"^\.alfrd/plans/[^/]+/(?:logs/[^/]+\.log|runner\.log)$")
+_PLAN_LOG = re.compile(r"^\.alfrd/plans/[^/]+/(?:logs/[^/]+\.(?:log|usage\.jsonl)|runner\.log)$")
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ def studio_manifest(root: str | Path) -> dict[str, Any]:
     template = _load_yaml(template_path(name)) if name and template_path(name) else {}
     merged: dict[str, Any] = copy.deepcopy(template)
     for key, value in manifest.items():
-        if key in {"project_settings", "overview", "results", "step_defaults"} and isinstance(value, dict):
+        if key in {"project_settings", "overview", "results", "step_defaults", "views"} and isinstance(value, dict):
             merged[key] = {**(merged.get(key) or {}), **value}
         elif key == "artifacts" and isinstance(value, list):
             names = {a.get("name") for a in value if isinstance(a, dict)}

@@ -353,19 +353,33 @@ def live_changes():
 
 @studio_api.post("/studio/projects/<project_name>/manifest")
 def project_manifest_save(project_name: str):
-    """Save alfrd.yaml from Project settings (loopback + CSRF; old file kept as .bak)."""
-    from alfrd.studio_defs import save_manifest
+    """Save alfrd.yaml from Project settings (loopback + CSRF; old file kept as .bak).
+
+    Conflict guard: with ``base_hash`` (SHA-256 of the text the Studio loaded)
+    or ``base_text``, a file changed on disk since then is not overwritten: 409
+    with ``current_text`` and a ``diff``. ``force: true`` overwrites anyway.
+    Every save is a version in the history (alfrd.history).
+    """
+    from alfrd import history
+    from alfrd.studio_defs import manifest_file
 
     payload = request.get_json(silent=True) or {}
     text = payload.get("text")
     if not isinstance(text, str) or not text.strip():
         return _json_error(ValueError("text is required"), 400)
+    root = _project_root(project_name)
+    path = manifest_file(root) or root / "alfrd.yaml"
     try:
-        path = save_manifest(_project_root(project_name), text)
+        entry = history.save(root, "alfrd.yaml", text, source="studio", message=payload.get("message"),
+                             base_hash=payload.get("base_hash"), base_text=payload.get("base_text"),
+                             force=bool(payload.get("force")))
+    except history.Conflict as conflict:
+        return jsonify(error={"code": 409, "message": str(conflict)}, current_text=conflict.current,
+                       current_hash=conflict.current_hash, diff=conflict.diff), 409
     except Exception as error:  # yaml errors, missing name, OS errors
         return _json_error(error, 400)
     _poke(project_name)
-    return jsonify(saved=path.name, backup=f"{path.name}.bak")
+    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
 
 
 @studio_api.post("/studio/avica/<project_name>/config")
@@ -389,10 +403,17 @@ def avica_config_update(project_name: str):
     config_name = str(block.get("config") or "avica.inp")
     if "/" in config_name or config_name.startswith("."):
         return _json_error(ValueError("invalid avica.config"), 400)
+    from alfrd import history
+
+    tracked = history.is_tracked(root, config_name)
+    if tracked:
+        history.ensure_baseline(root, config_name)
     try:
         written = update_key_values(root / config_name, changes)
     except OSError as error:
         return _json_error(error, 500)
+    if tracked:
+        history.record(root, config_name, source="studio", message="parameters: " + ", ".join(sorted(written))[:200])
     cache = root / str(block.get("config_summary_cache") or SUMMARY_FILENAMES[0])
     if cache.is_file() and cache.suffix == ".json":
         try:

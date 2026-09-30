@@ -58,6 +58,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             env.pop("PYTHONPATH", None)
     try:
+        from alfrd.runtime.usage import become_subreaper
+
+        become_subreaper()  # daemonized ranks come back to us, so they are counted and reaped
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         child = subprocess.Popen(command, stdin=subprocess.DEVNULL, env=env)
     except OSError as exc:
         print(f"[alfrd] cannot start {command[0]!r}: {exc}", file=sys.stderr, flush=True)
@@ -73,14 +79,87 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, forward)
     signal.signal(signal.SIGINT, forward)
-    code = child.wait()
+    code, rusage, usage, reaped_cpu = _wait(child, exit_file, env)
     print(f"\n[alfrd] exit code {code} after {time.time() - started:.0f} s", flush=True)
-    _write_json(exit_file, {
+    data = {
         "exit_code": code,
         "signal": -code if code < 0 else None,
         "finished": datetime.now().isoformat(timespec="seconds"),
-    })
+    }
+    if code == LOST:
+        data["error"] = "exit status lost"
+    _write_json(exit_file, data)  # the exit code first: the usage summary (work dir size) can take a while
+    if usage is not None:
+        try:
+            data["usage"] = usage.summary(rusage, launcher=os.environ.get("ALFRD_LAUNCHER"), child=child.pid,
+                                          reaped_cpu=reaped_cpu)
+        except Exception as exc:  # noqa: BLE001 - usage must never lose the exit code
+            data["usage_error"] = str(exc)
+        _write_json(exit_file, data)
     return code if code >= 0 else 128 - code
+
+
+LOST = 255  # the child was reaped elsewhere: its exit status is unknown
+
+
+ORPHAN_GRACE = 2.0  # seconds to keep reaping re-parented ranks after the command itself ended
+
+
+def _wait(child: subprocess.Popen, exit_file: Path, env: dict) -> tuple[int, object, object, float]:
+    """Wait for the command, sampling its resource usage (alfrd.runtime.usage) meanwhile.
+
+    The shim is a child subreaper, so it also reaps descendants that daemonized
+    (MPI ranks); their CPU time is summed into the last value.
+    """
+    try:
+        interval = float(os.environ.get("ALFRD_USAGE_INTERVAL", "5") or 0)
+    except ValueError:
+        interval = 5.0
+    sampler = None
+    try:
+        from alfrd.runtime.usage import Sampler
+
+        out = exit_file.with_suffix(".usage.jsonl")
+        sampler = Sampler(os.getpid(), out, interval, marker=_marker(),
+                          workdir=os.environ.get("ALFRD_USAGE_DIR") or None)
+    except Exception:  # noqa: BLE001
+        sampler = None
+    if not hasattr(os, "wait4"):  # pragma: no cover - not POSIX
+        return child.wait(), None, sampler, 0.0
+    reaped_cpu = 0.0
+    result: tuple[int, object] | None = None
+    ended_at = 0.0
+    while True:
+        try:
+            pid, status, rusage = os.wait4(-1, os.WNOHANG)
+        except ChildProcessError:  # nothing left to reap
+            if result is None:
+                return (child.returncode if child.returncode is not None else LOST), None, sampler, reaped_cpu
+            return result[0], result[1], sampler, reaped_cpu
+        except InterruptedError:
+            continue
+        if pid:
+            reaped_cpu += float(rusage.ru_utime + rusage.ru_stime)
+            if pid == child.pid:
+                code = os.waitstatus_to_exitcode(status)
+                child.returncode = code
+                result = (code, rusage)
+                ended_at = time.time()
+            continue  # reap everything that is ready before sleeping
+        if result is not None and time.time() - ended_at >= ORPHAN_GRACE:
+            return result[0], result[1], sampler, reaped_cpu
+        now = time.time()
+        if sampler is not None and sampler.due(now):
+            try:
+                sampler.take(now)
+            except Exception:  # noqa: BLE001
+                sampler.enabled = False
+        time.sleep(0.1 if sampler is None or not sampler.enabled else min(0.25, max(0.02, sampler.interval / 4)))
+
+
+def _marker() -> str | None:
+    unit = os.environ.get("ALFRD_UNIT")
+    return f"ALFRD_UNIT={unit}" if unit else None
 
 
 if __name__ == "__main__":

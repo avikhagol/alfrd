@@ -16,6 +16,7 @@ import { server } from "./data/server.js";
 import { mountFolderBrowser } from "./components/folder_browser.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
 import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
+import { projectNotes } from "./data/notes.js";
 import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull, dockedLogs, undockLog, mountDock } from "./components/logview.js";
 import * as logs from "./components/logs.js";
 import * as overview from "./components/overview.js";
@@ -80,7 +81,7 @@ let renderQueued = false;
 let renderFrame = 0;
 
 /** Modules loaded with import() on first use (kept out of the startup payload). */
-const lazy = { targets: null, diagnostics: null };
+const lazy = { targets: null, diagnostics: null, history: null, palette: null, search: null, notes: null };
 
 function scheduleRender() {
   if (renderQueued) return;
@@ -241,6 +242,16 @@ export const ctx = {
   },
   saveManifest,
   writeAvicaConfig,
+  /** Version history of alfrd.yaml (and other tracked files), or a save conflict (opts.conflict); loads on first use. */
+  async openHistory(project, opts = {}) {
+    try {
+      lazy.history ||= import("./components/history.js");
+      return await (await lazy.history).openHistory(ctx, project, opts);
+    } catch (error) {
+      lazy.history = null;
+      ctx.toast(`History: ${error.message}`, "fail");
+    }
+  },
   /** Re-read one project after a write (server scan, or the remembered folder). */
   async refreshProject(project) {
     if (state.mode === "server" && state.trees?.[project]?.provider === "server") {
@@ -320,6 +331,7 @@ function treeFromBundle(bundle, provider) {
     template: (bundle.defs || {}).template || templateName(bundle.manifest) || null,
     configName: bundle.manifest?.avica?.config || "avica.inp",
     targetsFile: bundle.targetsFile || null, // {rel, text}: alfrd.yaml targets.csv as imported
+    notesText: bundle.notesText ?? null, // alfrd.notes.jsonl (shared annotations; data/notes.js)
   };
 }
 
@@ -409,8 +421,13 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   }
   state.aliasBannerDismissed = false;
   state.source = source;
-  if (bundle.workflowInfo && bundle.workflowInfo.workflows.length) {
-    applyWorkflowInfo(bundle.workflowInfo, bundle.manifestFile || "alfrd.yaml", bundle.manifestText);
+  const bp = bundle.alfrdProject || null;
+  if (bp) workflowCache.delete(bp); // its alfrd.yaml was just read: build it again when shown
+  if (bundle.workflowInfo && bundle.workflowInfo.workflows.length && bp && replace === "project" && state.workflowProject && bp !== activeProject()) {
+    // Another project's scan: keep showing the active one's workflow.
+  } else if (bundle.workflowInfo && bundle.workflowInfo.workflows.length) {
+    applyWorkflowInfo(bundle.workflowInfo, bundle.manifestFile || "alfrd.yaml", bundle.manifestText, { quiet });
+    state.workflowProject = bp;
   } else if (bundle.workflowInfo) {
     state.workflowFile = { ...state.workflowFile, validated: false, errors: bundle.workflowInfo.errors, warnings: bundle.workflowInfo.warnings };
   }
@@ -430,7 +447,38 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   if (render) scheduleRender();
 }
 
-function applyWorkflowInfo(info, fileName, text) {
+// The workflow (graph, list, step columns, results) always belongs to the active
+// project: the header's project, else the selected target's, else the default one.
+// Each project's workflow (with unsaved edits) is kept while another is shown.
+const workflowCache = new Map(); // project -> {workflow, workflowFile}
+
+function activeProject() {
+  if (state.selectedProject && state.selectedProject !== "all") return state.selectedProject;
+  return ctx.target()?.project || server.session?.default_project || Object.keys(state.trees || {})[0] || null;
+}
+
+/** Show the active project's workflow (built from its alfrd.yaml the first time). */
+function syncWorkflow() {
+  const p = activeProject();
+  if (!p || p === state.workflowProject) return;
+  const tree = state.trees?.[p];
+  if (!workflowCache.has(p) && !tree?.manifestText) return; // not loaded yet
+  if (state.workflowProject) workflowCache.set(state.workflowProject, { workflow: state.workflow, workflowFile: state.workflowFile });
+  const cached = workflowCache.get(p);
+  if (cached) {
+    state.workflow = cached.workflow;
+    state.workflowFile = cached.workflowFile;
+  } else {
+    const info = manifestToWorkflows(parseYaml(tree.manifestText), tree.manifestFile || "alfrd.yaml");
+    if (!info.workflows.length) return;
+    applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", tree.manifestText, { quiet: true });
+  }
+  state.workflowProject = p;
+  canvas.resetSimulation?.();
+  applyAvicaParams(state.avica?.[p], { quiet: true });
+}
+
+function applyWorkflowInfo(info, fileName, text, { quiet = false } = {}) {
   const wf = info.workflows[0];
   if (wf) state.workflow = wf;
   state.workflowFile = {
@@ -445,7 +493,7 @@ function applyWorkflowInfo(info, fileName, text) {
   info.aliases.forEach((a) => {
     if (!state.aliases.some((x) => x.from === a.from)) state.aliases.push(a);
   });
-  ctx.log(info.errors.length ? "error" : "info", `Workflow "${wf?.name ?? "?"}" loaded from ${fileName}: ${wf ? wf.steps.length : 0} steps, ${info.errors.length} error(s), ${info.warnings.length} warning(s).`, "workflow");
+  if (!quiet) ctx.log(info.errors.length ? "error" : "info", `Workflow "${wf?.name ?? "?"}" loaded from ${fileName}: ${wf ? wf.steps.length : 0} steps, ${info.errors.length} error(s), ${info.warnings.length} warning(s).`, "workflow");
   canvas.resetSimulation?.();
   scheduleRender();
 }
@@ -467,6 +515,7 @@ async function loadServer() {
   try {
     ctx.log("info", "Loading projects from alfrd serve…", "server");
     const data = await server.loadAll();
+    const keep = { project: state.selectedProject, target: state.selectedTarget }; // the header, across a Re-scan
     state.serverWorkflows = data.workflows;
     state.projectTitles = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.description || p.name]));
     state.projectNames = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.manifest_name || p.name]));
@@ -475,6 +524,7 @@ async function loadServer() {
       const wf = data.workflows[0];
       state.workflow = wf;
       state.workflowFile = { name: `${ctx.projectName(wf.project)} / ${wf.name} (runtime)`, validated: true, errors: [], warnings: [], text: null, modified: false };
+      state.workflowProject = null; // replaced by the active project's alfrd.yaml below
     }
     // Each connected project's tree, read by the server exactly as alfrd.yaml describes it.
     const scans = await Promise.all(data.projects.map(async (p) => {
@@ -490,17 +540,19 @@ async function loadServer() {
       const bundle = await applyServerScan(p.name, scan, { runtimeRows: state.targets.filter((t) => t.project === p.name) });
       ctx.log("info", `${p.title || p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
     }
+    // applyBundle drops a header project with no targets yet (e.g. only on disk, not in the runtime): restore it.
+    if (keep.project !== "all" && state.targets.some((t) => t.project === keep.project)) state.selectedProject = keep.project;
+    if (state.targets.some((t) => t.id === keep.target)) state.selectedTarget = keep.target;
     const def = server.session?.default_project;
     if (def && state.targets.some((t) => t.project === def) && (state.selectedProject === "all" || !state.targets.some((t) => t.project === state.selectedProject))) {
       state.selectedProject = def;
-      const tree = state.trees[def];
-      if (tree?.manifestText) {
-        const info = manifestToWorkflows(parseYaml(tree.manifestText), tree.manifestFile || "alfrd.yaml");
-        if (info.workflows.length) applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", tree.manifestText);
-      }
-      const inScope = ctx.scopedTargets();
-      if (!inScope.some((t) => t.id === state.selectedTarget)) state.selectedTarget = inScope[0]?.id || null;
     }
+    // The header's project (kept across a Re-scan), or the default one: its workflow and targets.
+    const inScope = ctx.scopedTargets();
+    if (!inScope.some((t) => t.id === state.selectedTarget)) state.selectedTarget = inScope[0]?.id || null;
+    workflowCache.clear();
+    state.workflowProject = null;
+    syncWorkflow();
     applyAvicaParams(state.avica?.[ctx.target()?.project]);
     ctx.log("info", `Server: ${data.projects.length} project(s), ${state.targets.length} target(s).`, "server");
     scheduleRender();
@@ -874,11 +926,20 @@ function restoreSnapshot(snap) {
 // Writes: alfrd.yaml (Project settings) and avica.inp (Workflow inspector)
 
 /** Save alfrd.yaml for a project: server (loopback), the opened folder, or a download. */
-async function saveManifest(project, text) {
+/** SHA-256 hex of text (the base_hash of the conflict guard); null where crypto.subtle is missing. */
+async function sha256(text) {
+  if (!globalThis.crypto?.subtle) return null;
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function saveManifest(project, text, { force = false } = {}) {
   const tree = state.trees[project] || {};
   const info = manifestToWorkflows(parseYaml(text), tree.manifestFile || "alfrd.yaml");
   if (state.mode === "server" && tree.provider === "server") {
-    await server.saveManifest(project, text);
+    // Conflict guard: the server refuses (409) when the file changed since it was loaded.
+    const base = tree.manifestDefault || tree.manifestText == null ? {} : (await sha256(tree.manifestText)) ? { base_hash: await sha256(tree.manifestText) } : { base_text: tree.manifestText };
+    await server.saveManifest(project, text, { ...base, ...(force ? { force: true } : {}) });
   } else if (state.folders[project] || (await loadFolderHandle(project))) {
     const folder = state.folders[project] || (await loadFolderHandle(project));
     await writeFileToHandle(folder, tree.manifestFile || "alfrd.yaml", text);
@@ -888,7 +949,8 @@ async function saveManifest(project, text) {
   }
   await ensureTemplatesFor(text);
   state.trees = { ...state.trees, [project]: { ...tree, manifestText: text, manifestDefault: false, defs: studioManifest(parseYaml(text)) } };
-  if (info.workflows.length) applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", text);
+  workflowCache.delete(project);
+  if (info.workflows.length) { applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", text); state.workflowProject = project; }
   persist();
   return info;
 }
@@ -1000,25 +1062,42 @@ function closeMenus() {
 ctx.menu = menu;
 
 function openSettings() {
+  const sess = server.session || {};
+  const serverMode = state.mode === "server";
+  const liveNote = serverMode
+    ? (sess.live?.enabled === false ? "Off on this server (<code>alfrd serve --live-interval 0</code>)." : `The server checks every ${sess.live?.interval ?? 2} s while busy, ${sess.live?.idle ?? 5} s when idle.`)
+    : "The remembered folder is checked every 5–30 s.";
   modal(`
     <header class="modal-h"><h2>Studio settings</h2><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b">
-      <dl class="kv">
-        <dt>Mode</dt><dd>${state.mode === "server" ? `<code>alfrd</code> ${esc(server.session?.version || "")} — runtime API ${server.session?.runtime_enabled ? "available" : "not configured"}, mutations ${server.session?.mutations_enabled ? "enabled (loopback)" : "disabled"}` : "Browser-only (static files; no backend)"}</dd>
-        <dt>Data source</dt><dd>${esc(state.source)}</dd>
-        <dt>Local storage</dt><dd>${bytes(storage.size())} used by this Studio in this browser</dd>
-      </dl>
-      ${state.mode === "server" ? `<div class="row gap"><h3>${icon("database")} Known projects</h3><span class="grow"></span><button class="btn sm" id="set-rediscover" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine'"} title="Register the alfrd serve folder and projects forgotten since the server started again">${icon("sync")} Rediscover</button></div>
-      <p class="muted small">Every project connected to <code>alfrd serve</code> is kept in the runtime database. Click a project's <b>opened / shown / hidden</b> badge to change how this Studio lists it (no re-connect). <b>Forget</b> removes it (and its runs) from there. Files on disk are not touched. <b>Rediscover</b> / <b>Restore</b> connect a forgotten project again without restarting <code>alfrd serve</code>.</p>
-      <table class="tbl small" id="set-projects"><tbody><tr><td class="muted">Loading…</td></tr></tbody></table>` : ""}
-      <label class="check set-live"><input type="checkbox" id="set-live" ${live.enabled ? "checked" : ""}> <span><b>Live updates</b> — follow the project folder and open logs without Re-scan${state.mode === "server" ? (server.session?.live?.enabled === false ? " (off on this server: <code>alfrd serve --live-interval 0</code>)" : ` (server checks every ${server.session?.live?.interval ?? 2} s while busy, ${server.session?.live?.idle ?? 5} s when idle)`) : " (the remembered folder is checked every 5–30 s)"}. Nothing runs while this tab is hidden.</span></label>
-      <label class="field"><span>Rows per page</span><select id="set-page" class="input">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
-      <p class="muted small">Field aliases, workflow stages, step metadata and logs are edited in <a href="#/config" data-close>Settings → Project settings</a> (alfrd.yaml).</p>
-      <div class="row gap right"><button class="btn" id="set-reset-ui">${icon("reset")} Reset view state</button><button class="btn danger" id="set-clear">${icon("trash")} Clear saved Studio data</button></div>
-      <p class="muted small">The Studio remembers filters, folded panels, zoom, selections and folder attachments in this browser. <b>Reset view state</b> forgets them; <b>Clear</b> also removes imported data and notes.</p>
-      ${state.mode === "server" ? `<h3>${icon("power")} Stop the server</h3>
-      <div class="row gap"><button class="btn danger" id="set-quit" ${server.session?.can_quit ? "" : "disabled"}>${icon("power")} Quit </button>
-        <span class="muted small">${server.session?.can_quit ? "Stops <code>alfrd serve</code> on this machine. Same as Ctrl+C in its terminal." : "Only from a browser on the same machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>` : ""}
+    <div class="modal-b set">
+      <div class="set-facts">
+        <div><span>Mode</span><b>${serverMode ? `alfrd ${esc(sess.version || "")}` : "Browser only"}</b><small>${serverMode ? `runtime ${sess.runtime_enabled ? "on" : "off"} · changes ${sess.mutations_enabled ? "allowed (this machine)" : "read-only"}` : "static files, no backend"}</small></div>
+        <div><span>Data</span><b>${esc(state.source)}</b></div>
+        <div><span>Saved in this browser</span><b>${bytes(storage.size())}</b></div>
+      </div>
+      ${serverMode ? `<section class="set-sec">
+        <div class="set-sec-h"><h3>${icon("database")} Projects</h3><span class="grow"></span><button class="btn sm" id="set-rediscover" hidden ${sess.mutations_enabled ? "" : "disabled"} title="Connect projects forgotten since the server started">${icon("sync")} Rediscover</button></div>
+        <p class="muted small">How this Studio lists each project: <b>opened</b> (selected on load), <b>shown</b> or <b>hidden</b>. Forget removes a project and its runs from the runtime database; files are never touched.</p>
+        <ul class="set-projects" id="set-projects"><li class="muted small">Loading…</li></ul>
+      </section>` : ""}
+      <section class="set-sec">
+        <h3>${icon("gear")} Preferences</h3>
+        <div class="set-prefs">
+          <label class="check"><input type="checkbox" id="set-live" ${live.enabled ? "checked" : ""}> <span><b>Live updates</b><small>Follow the folder and open logs without Re-scan. ${liveNote} Paused while the tab is hidden.</small></span></label>
+          <label class="field"><span>Rows per page</span><select id="set-page" class="input sm">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+        </div>
+        <p class="muted small">Field aliases, stages, step metadata and logs live in alfrd.yaml: <a href="#/config" data-close>Settings → Project settings</a>.</p>
+      </section>
+      <section class="set-sec">
+        <h3>${icon("reset")} Browser data</h3>
+        <p class="muted small">Filters, folded panels, zoom, selections and folder attachments are remembered in this browser.</p>
+        <div class="row gap wrap"><button class="btn sm" id="set-reset-ui">${icon("reset")} Reset view state</button><button class="btn sm danger" id="set-clear" title="Also removes imported data and notes">${icon("trash")} Clear all saved data</button></div>
+      </section>
+      ${serverMode ? `<section class="set-sec">
+        <h3>${icon("power")} Server</h3>
+        <div class="row gap wrap"><button class="btn sm danger" id="set-quit" ${sess.can_quit ? "" : "disabled"}>${icon("power")} Quit alfrd serve</button>
+          <span class="muted small">${sess.can_quit ? "Same as Ctrl+C in its terminal." : "Only from this machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>
+      </section>` : ""}
     </div>`, (root, close) => {
     if (state.mode === "server") drawProjects(root);
     $("#set-quit", root)?.addEventListener("click", () => { close(); quitServer(); });
@@ -1056,6 +1135,17 @@ function visBadge(current, key, label, canWrite) {
   return `<button type="button" class="badge vis-badge ${st.tone}" data-vis="${esc(key)}" data-label="${esc(label)}" data-current="${st.id}" title="Change: opened / shown / hidden" aria-haspopup="menu">${st.id}${icon("chevron")}</button>`;
 }
 
+/** "/very/long/path/to/project" → "/very/…/to/project" (the full path is in the tooltip). */
+function shortPath(path, max = 56) {
+  const text = String(path || "");
+  if (text.length <= max) return text;
+  const parts = text.split("/");
+  let tail = parts.pop();
+  while (parts.length > 2 && (parts.at(-1).length + tail.length + 1) < max - 12) tail = `${parts.pop()}/${tail}`;
+  const head = parts.slice(0, 2).join("/");
+  return `${head}/…/${tail}`.length < text.length ? `${head}/…/${tail}` : text;
+}
+
 /** Remembered projects with visibility and Forget buttons (Studio settings, server mode). */
 async function drawProjects(root) {
   const table = $("#set-projects", root);
@@ -1064,7 +1154,7 @@ async function drawProjects(root) {
   try {
     list = await server.listProjects();
   } catch (error) {
-    table.innerHTML = `<tbody><tr><td class="muted">${esc(error.message)}</td></tr></tbody>`;
+    table.innerHTML = `<li class="muted small">${esc(error.message)}</li>`;
     return;
   }
   let lost = [];
@@ -1075,14 +1165,22 @@ async function drawProjects(root) {
   const canWrite = server.session?.mutations_enabled;
   const btn = $("#set-rediscover", root);
   if (btn) btn.hidden = !lost.length;
-  const lostRows = lost.map((c) => `<tr class="muted">
-      <td class="mono"><b>${esc(c.name || c.root.split("/").pop())}</b> <span class="badge tone-muted">${c.start ? "serve folder · forgotten" : "forgotten"}</span>${c.default_manifest ? ' <span class="badge" title="No alfrd.yaml in the folder: the default one is used">default alfrd.yaml</span>' : ""}</td>
-      <td class="mono small">${esc(c.root)}${c.exists ? "" : ' <span class="fail-t">(folder missing)</span>'}</td>
-      <td class="right"><button class="btn sm" data-restore="${esc(c.root)}" ${canWrite && c.exists ? "" : "disabled"}>${icon("sync")} Restore</button></td></tr>`).join("");
-  table.innerHTML = `<thead><tr><th>Project</th><th>Folder</th><th></th></tr></thead><tbody>${list.map((p) => { const key = p.identifier || p.name; return `<tr>
-      <td class="mono"><b>${esc(p.display_name || p.name)}</b> ${visBadge(visOf(key), key, p.display_name || p.name, canWrite)}</td>
-      <td class="mono small">${esc(p.root_path || "")}</td>
-      <td class="right"><button class="btn sm danger" data-forget="${esc(key)}" data-label="${esc(p.display_name || p.name)}" ${canWrite ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("trash")} Forget</button></td></tr>`; }).join("") || (lost.length ? "" : '<tr><td class="muted" colspan="3">No projects remembered.</td></tr>')}${lostRows}</tbody>`;
+  const item = ({ name, badges, path, missing, actions, muted }) => `<li class="set-proj${muted ? " muted" : ""}">
+      <div class="set-proj-t"><b class="ellip" title="${esc(name)}">${esc(name)}</b>${badges}</div>
+      <div class="set-proj-p mono small" title="${esc(path)}">${esc(shortPath(path))}${missing ? ' <span class="fail-t">(folder missing)</span>' : ""}</div>
+      <div class="set-proj-a">${actions}</div></li>`;
+  const rows = list.map((p) => {
+    const key = p.identifier || p.name;
+    const label = p.display_name || p.name;
+    return item({ name: label, path: p.root_path || "", badges: visBadge(visOf(key), key, label, canWrite),
+      actions: `<button class="icon-btn sm" data-forget="${esc(key)}" data-label="${esc(label)}" ${canWrite ? "" : "disabled"} title="${canWrite ? "Forget (runtime database only)" : "Only from a browser on the same machine"}" aria-label="Forget ${esc(label)}">${icon("trash")}</button>` });
+  });
+  const lostRows = lost.map((c) => item({
+    muted: true, name: c.name || c.root.split("/").pop(), path: c.root, missing: !c.exists,
+    badges: `<span class="badge tone-muted">${c.start ? "serve folder · forgotten" : "forgotten"}</span>${c.default_manifest ? ' <span class="badge" title="No alfrd.yaml in the folder: the default one is used">default alfrd.yaml</span>' : ""}`,
+    actions: `<button class="btn sm" data-restore="${esc(c.root)}" ${canWrite && c.exists ? "" : "disabled"}>${icon("sync")} Restore</button>`,
+  }));
+  table.innerHTML = [...rows, ...lostRows].join("") || '<li class="muted small">No projects remembered.</li>';
   const restore = async (rootPath, b) => {
     if (b) b.disabled = true;
     try {
@@ -1193,6 +1291,61 @@ function goTo(view) {
   if (location.hash !== url) location.replace(url);
 }
 ctx.openAliasRules = openAliasRules;
+
+// Command palette (Ctrl/Cmd+K; components/palette.js loads on first use). Views
+// add items with ctx.palette.register(fn): fn(ctx, query) → [{label, detail, group, icon, run}].
+ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) this.providers.push(fn); } };
+ctx.views = VIEWS.map(({ id, label, icon: ic }) => ({ id, label, icon: ic }));
+ctx.goTo = goTo;
+ctx.rescan = () => rescan();
+ctx.setLive = (on) => setLive(on);
+/** Shared notes of a project (alfrd.notes.jsonl), filtered to `where` (an anchor); components/notes_panel.js. */
+ctx.openNotes = async (project, where = {}, opts = {}) => {
+  try {
+    lazy.notes ||= import("./components/notes_panel.js");
+    (await lazy.notes).openNotes(ctx, project, where, opts);
+  } catch (error) {
+    lazy.notes = null;
+    ctx.toast(`Notes: ${error.message}`, "fail");
+  }
+};
+document.addEventListener("click", (e) => {
+  const b = e.target.closest?.("[data-notes]");
+  if (!b) return;
+  e.stopPropagation();
+  let where = {};
+  try { where = JSON.parse(b.dataset.notes || "{}"); } catch { /* keep {} */ }
+  ctx.openNotes(b.dataset.notesProject, where);
+}, true);
+ctx.palette.register((c) => Object.keys(state.trees || {}).flatMap((p) => projectNotes(c, p).filter((n) => n.status === "open").map((n) => ({
+  id: `note:${n.id}`, group: "note", icon: "file", label: n.text.slice(0, 70),
+  detail: `note · ${[n.anchor.target, n.anchor.step, n.anchor.file && `${n.anchor.file.split("/").pop()}${n.anchor.line ? `:${n.anchor.line}` : ""}`].filter(Boolean).join(" · ")}${n.tags.length ? ` · #${n.tags.join(" #")}` : ""}`,
+  run: () => c.openNotes(p, {}, { focus: n.id }),
+}))));
+
+/** Full-text search over logs, CSVs, alfrd.yaml and notes (alfrd serve; components/search_view.js). */
+ctx.openSearch = async (query = "") => {
+  if (state.mode !== "server") { ctx.toast("Full-text search needs alfrd serve", "warn"); return; }
+  try {
+    lazy.search ||= import("./components/search_view.js");
+    (await lazy.search).openSearch(ctx, query);
+  } catch (error) {
+    lazy.search = null;
+    ctx.toast(`Search: ${error.message}`, "fail");
+  }
+};
+ctx.openPalette = async (query = "") => {
+  try {
+    lazy.palette ||= import("./components/palette.js");
+    (await lazy.palette).openPalette(ctx, query);
+  } catch (error) {
+    lazy.palette = null;
+    ctx.toast(`Palette: ${error.message}`, "fail");
+  }
+};
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); ctx.openPalette(); }
+});
 
 // ---------------------------------------------------------------------------
 // Live updates (see data/live.js): refresh what changed, keep the reader's place
@@ -1450,6 +1603,7 @@ function renderShell() {
       <label class="picker" title="Project">${icon("folder")}<span class="picker-l">Project:</span><select id="pick-project" aria-label="Project"></select></label>
       <label class="picker" title="Target">${icon("target")}<span class="picker-l">Target:</span><select id="pick-target" aria-label="Target"></select></label>
       <span class="grow"></span>
+      <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (Ctrl+K)">${icon("search")}</button>
       <button class="live-badge live-off" id="btn-live" aria-pressed="false"><i></i><span>Live off</span></button>
       <button class="btn" id="btn-rescan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")} Re-scan</button>
       <button class="btn" id="btn-import">${icon("upload")} Import</button>
@@ -1475,6 +1629,7 @@ function renderShell() {
   $("#btn-import").addEventListener("click", () => openImport());
   $("#btn-rescan").addEventListener("click", () => rescan());
   $("#btn-live").addEventListener("click", onLiveBadge);
+  $("#btn-palette").addEventListener("click", () => ctx.openPalette());
   $("#btn-export").addEventListener("click", (e) => menu(e.currentTarget, [
     { label: "Overview CSV (visible rows)", icon: "download", run: () => exportOverviewCsv(false) },
     { label: "Stage details CSV", icon: "download", run: () => exportOverviewCsv(true) },
@@ -1648,6 +1803,7 @@ ctx.showDock = (key) => {
 };
 
 function renderAll() {
+  syncWorkflow();
   saveUi("app", state, ["selectedProject", "selectedTarget"]);
   renderHeader();
   VIEWS.forEach((v) => {

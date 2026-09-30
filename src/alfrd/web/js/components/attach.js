@@ -89,7 +89,7 @@ async function fetchServerIndex(ctx, project) {
 const workdirGen = new Map();
 let workdirGenAll = 0;
 
-function workdirGeneration(project) {
+export function workdirGeneration(project) {
   return `${workdirGenAll}:${workdirGen.get(project) || 0}`;
 }
 
@@ -108,6 +108,23 @@ export async function loadWorkdir(ctx, t, code) {
   }
   if (workdirGeneration(t.project) === gen) workdirCache.set(key, wd);
   return wd;
+}
+
+/** Entity path → query string (same order and escaping as data/entities.js, without importing it at startup). */
+export function entityQuery(entity) {
+  return Object.entries(entity).filter(([, v]) => v != null && v !== "").map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+}
+
+/** The template's panels (alfrd.layout_generic) for an entity, cached with the work dirs (same generation guard). */
+export async function loadView(ctx, project, entity) {
+  const query = entityQuery(entity);
+  const key = `${project}|view|${query}`;
+  if (workdirCache.has(key)) return workdirCache.get(key);
+  const gen = workdirGeneration(project);
+  const view = await server.projectView(project, query);
+  view.query = query;
+  if (workdirGeneration(project) === gen) workdirCache.set(key, view);
+  return view;
 }
 
 /** Forget cached work dirs: one project's, or (no argument) every project's. */

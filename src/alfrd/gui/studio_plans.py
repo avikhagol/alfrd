@@ -80,7 +80,8 @@ def plan_preview(project_name: str):
             path = cfg.root / ".alfrd" / "tmp" / "preview.plan.csv"
             path.parent.mkdir(parents=True, exist_ok=True)
             _write_rows(cfg, path, {**payload, "overwrite": True})
-        result = scheduler.preview(cfg.root, path, mode=payload.get("mode"), on_failure=payload.get("on_failure"), cfg=cfg)
+        result = scheduler.preview(cfg.root, path, mode=payload.get("mode"), on_failure=payload.get("on_failure"), cfg=cfg,
+                                   concurrency=payload.get("concurrency"))
     except (ExecutionError, OSError) as error:
         return _json_error(error, 400)
     return jsonify(result)

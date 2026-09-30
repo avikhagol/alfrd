@@ -6,11 +6,35 @@
 // The same state feeds the Workflow graph and list (step badges) and the
 // Schedule view (targets × steps grid + execution order).
 
-import { $, $$, esc, icon, short } from "../utils/dom.js";
+import { $, $$, esc, icon, short, bytes } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { addLogSource, dockLog, openFileFull } from "./logview.js";
+import { notesAt } from "../data/notes.js";
 
 const cache = new Map(); // project -> { status, fetched, error, loading }
+let pickerMod = null;
+/** The step picker loads with import() the first time a dialog needs it. */
+const loadPicker = () => (pickerMod ||= import("./step_picker.js").catch((e) => { pickerMod = null; throw e; }));
+const defsOf = (ctx, project) => ctx.state.trees?.[project]?.defs || null;
+let usageMod = null;
+let usageCtx = null;
+const loadUsage = () => (usageMod ||= import("./usage_view.js").catch((e) => { usageMod = null; throw e; }));
+const unitById = (project, id) => (planOf(project)?.units || []).find((u) => u.id === id) || null;
+
+/** Button for a command's resource usage (peak memory once it ended; live curves while it runs). */
+export function usageButton(project, u) {
+  if (!u?.usage_file) return "";
+  const label = u.usage ? `${bytes(u.usage.peak_mem || 0)} · ${u.usage.avg_cores ?? "–"} cores` : "usage";
+  return `<button class="link-btn small" data-usage="${esc(u.id)}" data-usage-project="${esc(project)}" title="CPU, memory and I/O of this command">${icon("graph")}${esc(label)}</button>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest?.("[data-usage]");
+  if (!b || !usageCtx) return;
+  const project = b.dataset.usageProject;
+  const u = unitById(project, b.dataset.usage);
+  if (!u) return;
+  try { (await loadUsage()).openUsage(usageCtx, project, u, () => unitById(project, u.id) || u); } catch (error) { usageCtx.toast(error.message, "fail"); }
+});
 const execCache = new Map(); // project -> execution settings
 let pollTimer = null;
 let pollProject = null;
@@ -69,6 +93,7 @@ export function activePlan(project) {
 
 export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) {
   if (!plansAvailable(ctx, project)) return null;
+  usageCtx = ctx;
   const entry = cache.get(project) || {};
   if (entry.loading) return entry.status;
   entry.loading = true;
@@ -135,11 +160,38 @@ function eta(sec) {
   return sec < 1 ? "now" : `in ${short(sec)}`;
 }
 
-function runnerChip(s) {
+function runnerTitle(s) {
   const r = s.runner || {};
-  if (r.alive) return `<span class="chip tone-run" title="Heartbeat ${esc(ago(r.heartbeat))}">${icon("server")} runner ${esc(r.pid)} @ ${esc(r.host)}</span>`;
+  if (r.alive) return `runner ${r.pid} @ ${r.host}, heartbeat ${ago(r.heartbeat)}`;
   const n = s.running?.length || 0;
-  return `<span class="chip" title="The plan keeps its state in .alfrd/plans/${esc(s.plan.id)}/">${icon("power")} no runner${n ? ` · ${n} command(s) still marked running` : ""}</span>`;
+  return `no runner${n ? ` · ${n} command(s) still marked running` : ""}`;
+}
+
+/** The Schedule toolbar's "More" menu. */
+function moreMenu(ctx, project, anchor) {
+  const s = planOf(project);
+  const p = s?.plan;
+  if (!p) return;
+  const canAct = Boolean(server.session?.mutations_enabled);
+  const active = ["running", "paused", "interrupted"].includes(p.status);
+  const act = (a) => () => planAct(ctx, project, a, anchor);
+  const log = `.alfrd/plans/${p.id}/runner.log`;
+  ctx.menu(anchor, [
+    canAct && { icon: "plus", label: "Add target…", hint: "append a row to this plan's CSV", run: act("add-row") },
+    canAct && { icon: "play", label: "New run…", run: act("new") },
+    (s.units || []).some((u) => u.usage) && { icon: "graph", label: "Usage", hint: "CPU / memory per step", run: act("usage") },
+    { icon: "terminal", label: "Runner log", hint: "follow in the Log Stream", run: () => { dockLog(ctx, project, log); } },
+    { icon: "sync", label: "Refresh", run: act("refresh") },
+    canAct && active && { icon: "stop", label: "Cancel plan…", danger: true, run: act("cancel") },
+  ].filter(Boolean));
+}
+
+const ORDER_KEY = "alfrd.sched.order";
+function orderPrefs() {
+  try { return { dock: "bottom", folded: false, ...JSON.parse(localStorage.getItem(ORDER_KEY) || "{}") }; } catch { return { dock: "bottom", folded: false }; }
+}
+function saveOrderPrefs(prefs) {
+  try { localStorage.setItem(ORDER_KEY, JSON.stringify(prefs)); } catch { /* private mode */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +213,7 @@ export function renderSchedule(box, ctx, project) {
   const canAct = Boolean(server.session?.mutations_enabled);
   const steps = s.table?.steps || [];
   const rows = s.table?.rows || [];
+  const waitingBy = new Map((s.waiting || []).map((w) => [w.row, w]));
   const unitsByCell = new Map();
   (s.units || []).forEach((u) => (u.rows || [u.row]).forEach((k) => (u.steps || []).forEach((st) => unitsByCell.set(`${k}\u0000${st}`, u))));
   const tot = {};
@@ -169,36 +222,35 @@ export function renderSchedule(box, ctx, project) {
   const pct = all ? Math.round(((tot.done || 0) / all) * 100) : 0;
   const failedCells = (tot.failed || 0) + (tot.blocked || 0) + (tot.interrupted || 0) + (tot.cancelled || 0);
   const active = ["running", "paused", "interrupted"].includes(p.status);
+  // One primary action for the plan's state; everything else in "More".
+  const primary = !canAct ? "" : p.status === "running" ? `<button class="btn sm" data-plan="pause">${icon("pause")} Pause</button>`
+    : active ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Resume</button>`
+      : tot.todo ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Run remaining</button>`
+        : `<button class="btn sm primary" data-plan="new">${icon("play")} New run…</button>`;
+  const counts = ["running", "failed", "blocked", "todo"].filter((k) => tot[k]).map((k) => `<span class="pc pc-${k}" title="${esc(CELL[k]?.label || k)}">${tot[k]} ${esc(k)}</span>`).join("");
   box.innerHTML = `
     <div class="sched-h">
       <select class="input sm" data-plan-pick aria-label="Plan">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>${esc(x.id)} · ${esc(x.status)}</option>`).join("")}</select>
-      <span class="badge tone-${PLAN_TONE[p.status] || "muted"}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(p.status)}</span>
-      ${runnerChip(s)}
-      <span class="chip mono" title="Plan CSV">${icon("file")} ${esc(p.csv)}</span>
-      <span class="chip" title="The runner's own log">runner.log ${logButtons(project, `.alfrd/plans/${p.id}/runner.log`)}</span>
-      <span class="chip">${esc(p.mode)} × ${esc(p.concurrency)} · ${esc(p.on_failure)}</span>
-      <span class="grow"></span>
+      <span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(p.status)}</span>
       <div class="plan-bar" title="${pct}% of planned cells done"><i style="width:${pct}%"></i></div><span class="tabular small">${tot.done || 0}/${all}</span>
-      ${canAct ? `
-        ${p.status === "running" ? `<button class="btn sm" data-plan="pause">${icon("pause")} Pause</button>` : ""}
-        ${active && p.status !== "running" ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Resume</button>` : ""}
-        ${!active && tot.todo ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Run remaining</button>` : ""}
-        ${failedCells ? `<button class="btn sm" data-plan="retry" title="Failed, blocked, interrupted and cancelled cells back to todo, then resume">${icon("reset")} Retry ${failedCells}</button>` : ""}
-        ${active ? `<button class="btn sm danger" data-plan="cancel">${icon("stop")} Cancel</button>` : ""}
-        <button class="btn sm" data-plan="add-row" title="Append a target to this plan's CSV without rebuilding it">${icon("plus")} Add target</button>
-        <button class="btn sm" data-plan="new">${icon("plus")} New run…</button>` : ""}
-      <button class="icon-btn sm" data-plan="refresh" title="Refresh" aria-label="Refresh">${icon("sync")}</button>
+      <span class="sched-counts">${counts}</span>
+      <span class="grow"></span>
+      ${primary}
+      ${canAct && failedCells ? `<button class="btn sm" data-plan="retry" title="Failed, blocked, interrupted and cancelled cells back to todo, then resume">${icon("reset")} Retry ${failedCells}</button>` : ""}
+      <button class="btn sm" data-plan="more" aria-haspopup="menu" title="Cancel, add a target, new run, usage, runner log …">${icon("more")} More</button>
     </div>
-    <div class="sched-b">
+    <p class="sched-meta muted small"><span class="mono" title="Plan CSV">${esc(p.csv)}</span> · ${esc(p.mode)} × ${esc(p.concurrency)} · on failure: ${esc(p.on_failure)} · ${esc(runnerTitle(s))}</p>
+    <div class="sched-b dock-${esc(orderPrefs().dock)}${orderPrefs().folded ? " order-folded" : ""}">
       <section class="sched-grid">
         <h4>Targets × steps <span class="muted small">(click a cell: log, retry, skip)</span></h4>
         <div class="grid-scroll"><table class="tbl plan-grid"><thead><tr><th>Target</th><th>Code / wd</th>${steps.map((st) => `<th title="${esc(st)}"><span class="mono">${esc(st.replace(/^avica_/, ""))}</span></th>`).join("")}</tr></thead><tbody>
-          ${rows.map((r) => `<tr><td class="mono"><b>${esc(r.target)}</b></td><td class="mono small muted">${esc([r.code, r.workdir].filter(Boolean).join(" / ") || "—")}</td>${steps.map((st) => {
+          ${rows.map((r) => `<tr><td class="mono"><b>${esc(r.target)}</b>${waitingBy.has(r.key) ? ` <span class="badge tone-warn wait-chip" title="${esc(waitingBy.get(r.key).reason)}">${icon("hourglass")}waiting</span>` : ""}</td><td class="mono small muted">${esc([r.code, r.workdir].filter(Boolean).join(" / ") || "—")}</td>${steps.map((st) => {
             const v = r.cells[st] || "skip";
             const meta = CELL[v] || { label: v, tone: "muted", icon: "info", mark: "?" };
             const u = unitsByCell.get(`${r.key}\u0000${st}`);
-            const tip = [meta.label, u?.started && `started ${u.started}`, u?.finished && `finished ${u.finished}`, u?.error].filter(Boolean).join("\n");
-            return `<td class="cell c-${esc(v)}" data-cell="${esc(r.key)}" data-step="${esc(st)}" title="${esc(tip)}">${v === "running" ? icon("sync", "spin") : esc(meta.mark)}</td>`;
+            const nn = notesAt(ctx, project, { target: r.target, step: st });
+            const tip = [meta.label, u?.started && `started ${u.started}`, u?.finished && `finished ${u.finished}`, u?.error, ...nn.map((n) => `✎ ${n.text.slice(0, 80)}`)].filter(Boolean).join("\n");
+            return `<td class="cell c-${esc(v)}${nn.length ? " has-note" : ""}" data-cell="${esc(r.key)}" data-step="${esc(st)}" title="${esc(tip)}">${v === "running" ? icon("sync", "spin") : esc(meta.mark)}</td>`;
           }).join("")}</tr>`).join("")}
         </tbody></table></div>
       </section>
@@ -208,13 +260,14 @@ export function renderSchedule(box, ctx, project) {
 
 function unitRow(project, u, status) {
   const meta = CELL[status === "done" ? "done" : status] || CELL[u.status] || CELL.todo;
-  return `<tr class="c-${esc(u.status || status)}"><td class="mono"><b>${esc(u.target || "*")}</b>${u.code ? `<div class="muted small">${esc(u.code)}${u.workdir ? ` / ${esc(u.workdir)}` : ""}</div>` : ""}</td>
-    <td class="mono small">${esc((u.steps || [u.step]).join(", "))}</td>
-    <td><span class="badge tone-${meta.tone}">${icon(meta.icon, u.status === "running" ? "spin" : "")}${esc(u.status || meta.label)}</span></td>
-    <td class="small">${esc(u.started ? u.started.replace("T", " ") : eta(u.eta_start))}</td>
-    <td class="tabular small">${esc(u.finished && u.started ? short((new Date(u.finished) - new Date(u.started)) / 1000) : u.status === "running" && u.started ? short((Date.now() - new Date(u.started)) / 1000) : u.estimate ? `~${short(u.estimate)}` : "—")}</td>
-    <td class="small mono">${u.pid ? `${esc(u.pid)}@${esc(u.host || "")}` : ""}</td>
-    <td>${logButtons(project, u.log, { label: "log" })}${u.error ? ` <span class="muted small" title="${esc(u.error)}">${esc(String(u.error).slice(0, 60))}</span>` : ""}</td></tr>`;
+  const time = u.finished && u.started ? short((new Date(u.finished) - new Date(u.started)) / 1000)
+    : u.status === "running" && u.started ? short((Date.now() - new Date(u.started)) / 1000) : u.estimate ? `~${short(u.estimate)}` : "";
+  const tip = [u.code && `${u.code}${u.workdir ? ` / ${u.workdir}` : ""}`, u.started ? `started ${u.started.replace("T", " ")}` : u.eta_start && `starts ${eta(u.eta_start)}`,
+    u.pid && `pid ${u.pid}@${u.host || ""}`, u.error].filter(Boolean).join("\n");
+  return `<tr class="c-${esc(u.status || status)}" title="${esc(tip)}"><td><span class="mono"><b>${esc(u.target || "*")}</b></span> <span class="mono small muted">${esc((u.steps || [u.step]).join(", "))}</span>${u.error ? `<div class="fail-t small ellip">${esc(String(u.error).slice(0, 80))}</div>` : ""}</td>
+    <td class="ord-st">${icon(meta.icon, u.status === "running" ? "spin" : "")}</td>
+    <td class="tabular small">${esc(time)}</td>
+    <td class="ord-a">${logButtons(project, u.log)}${usageButton(project, u)}</td></tr>`;
 }
 
 function orderList(s, project) {
@@ -224,13 +277,19 @@ function orderList(s, project) {
   const failed = ended.filter((u) => u.status !== "done");
   const done = ended.filter((u) => u.status === "done");
   const queued = (s.queue || []).filter((q) => !running.some((u) => (u.rows || [u.row]).includes(q.row) && (u.steps || []).includes(q.step)));
-  const head = "<thead><tr><th>Target</th><th>Step</th><th>Status</th><th>Start</th><th>Time</th><th>Process</th><th></th></tr></thead>";
-  const sec = (title, n, body, open = true) => `<details class="sched-sec" ${open ? "open" : ""}><summary><b>${title}</b> <span class="muted small">${n}</span></summary>${n ? `<table class="tbl small">${head}<tbody>${body}</tbody></table>` : '<p class="muted small">none</p>'}</details>`;
-  return `<h4>Execution order</h4>
+  const prefs = orderPrefs();
+  const sec = (title, n, body, open = true) => (n ? `<details class="sched-sec" ${open ? "open" : ""}><summary><b>${title}</b> <span class="muted small">${n}</span></summary><table class="tbl small ord"><tbody>${body}</tbody></table></details>` : "");
+  const tally = [["running", running.length], ["queued", queued.length], ["failed", failed.length], ["done", done.length]]
+    .filter(([, n]) => n).map(([k, n]) => `<span class="pc pc-${k === "queued" ? "todo" : k}">${n} ${k}</span>`).join("");
+  return `<div class="ord-h"><h4>Execution order</h4><span class="ord-tally">${tally}</span><span class="grow"></span>
+      <button class="icon-btn xs" data-plan="order-dock" title="${prefs.dock === "side" ? "Dock at the bottom" : "Dock at the side"}" aria-label="Move the execution order">${icon(prefs.dock === "side" ? "columns" : "sidebar")}</button>
+      <button class="icon-btn xs" data-plan="order-fold" title="${prefs.folded ? "Show" : "Hide"} the list" aria-label="Fold the execution order">${icon(prefs.folded ? "unfold" : "fold")}</button></div>
+    <div class="ord-b">
     ${sec("Running", running.length, running.map((u) => unitRow(project, u, "running")).join(""))}
-    ${sec("Queued", queued.length, queued.slice(0, 300).map((q) => unitRow(project, { ...q, steps: [q.step], status: "todo" }, "todo")).join(""))}
+    ${sec("Queued", queued.length, queued.slice(0, 300).map((q) => unitRow(project, { ...q, steps: [q.step], status: "todo" }, "todo")).join(""), queued.length < 30)}
     ${sec("Failed / stopped", failed.length, failed.slice(0, 200).map((u) => unitRow(project, u, u.status)).join(""))}
-    ${sec("Done", done.length, done.slice(0, 200).map((u) => unitRow(project, u, "done")).join(""), done.length < 20)}`;
+    ${sec("Done", done.length, done.slice(0, 200).map((u) => unitRow(project, u, "done")).join(""), false)}
+    ${units.length || queued.length ? "" : '<p class="muted small">Nothing has run yet.</p>'}</div>`;
 }
 
 /** Click handlers for the Schedule view and the canvas toolbar's plan buttons. */
@@ -241,7 +300,22 @@ export async function planAct(ctx, project, action, el, opts = {}) {
     if (action === "new") return openRunDialog(ctx, project, opts);
     if (action === "dry") return openRunDialog(ctx, project, { ...opts, dry: true });
     if (action === "refresh") return loadPlan(ctx, project);
+    if (action === "usage") return (await loadUsage()).openUsageTable(ctx, project, s);
     if (action === "schedule") return null;
+    if (action === "more") return moreMenu(ctx, project, el);
+    if (action === "order-dock" || action === "order-fold") {
+      const prefs = orderPrefs();
+      if (action === "order-dock") prefs.dock = prefs.dock === "side" ? "bottom" : "side";
+      else prefs.folded = !prefs.folded;
+      saveOrderPrefs(prefs);
+      const body = el?.closest(".sched-b");
+      if (body) {
+        body.className = `sched-b dock-${prefs.dock}${prefs.folded ? " order-folded" : ""}`;
+        const list = body.querySelector(".sched-list");
+        if (list && s) list.innerHTML = orderList(s, project);
+      }
+      return null;
+    }
     if (!id) return null;
     if (action === "add-row") return openAddRowDialog(ctx, project);
     if (action === "cancel") {
@@ -277,9 +351,11 @@ export function cellMenu(ctx, project, anchor) {
   ctx.menu(anchor, [
     { label: u?.log ? "Open log" : "No log yet", icon: "logs", disabled: !u?.log, run: () => openLog(ctx, project, u.log) },
     { label: "Follow in Log Stream", icon: "terminal", disabled: !u?.log, run: () => dockLog(ctx, project, u.log) },
+    { label: "Resource usage", icon: "graph", disabled: !u?.usage_file, run: () => loadUsage().then((m) => m.openUsage(ctx, project, u, () => unitById(project, u.id) || u)) },
     { label: "Retry (todo)", icon: "reset", disabled: !can || v === "todo", run: () => set("todo") },
     { label: "Skip", icon: "minus", disabled: !can || v === "skip", run: () => set("skip") },
     ...(u?.argv ? [{ label: "Copy command", icon: "copy", run: () => navigator.clipboard?.writeText(u.argv.join(" ")) }] : []),
+    { label: "Notes…", icon: "file", run: () => ctx.openNotes(project, { target: row?.target, step, project_code: row?.code || undefined, workdir: row?.workdir || undefined }) },
   ]);
 }
 
@@ -303,10 +379,11 @@ function addRowWhen(status) {
 /** "Add target": one new row (target, files, code, workdir) appended to the
  * loaded plan's CSV, without rebuilding it. A running plan picks it up on its
  * next pass; a paused, finished, interrupted or cancelled one after Resume. */
-export function openAddRowDialog(ctx, project) {
+export async function openAddRowDialog(ctx, project) {
   const s = planOf(project);
   const p = s?.plan;
   if (!p) return;
+  const { mountStepPicker } = await loadPicker();
   const steps = s.table?.steps || [];
   const rows = s.table?.rows || [];
   ctx.modal(`
@@ -320,18 +397,20 @@ export function openAddRowDialog(ctx, project) {
       </div>
       <label class="field"><span>FITS file names <span class="muted small">(comma or one per line)</span></span><textarea class="input mono" id="ar-files" rows="2" placeholder="a.idifits&#10;b.idifits"></textarea></label>
       <fieldset><legend>Steps <span class="muted small">(marked todo)</span></legend>
-        <div class="run-steps">${steps.map((st) => `<label class="check"><input type="checkbox" data-step="${esc(st)}" checked> <span class="mono">${esc(st)}</span></label>`).join("") || '<p class="muted small">This plan CSV has no step columns.</p>'}</div>
+        <div id="ar-steps">${steps.length ? "" : '<p class="muted small">This plan CSV has no step columns.</p>'}</div>
       </fieldset>
       <div id="ar-err" class="bad small"></div>
     </div>
     <footer class="modal-f row gap right"><button class="btn primary" id="ar-go" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine as alfrd serve'"}>${icon("plus")} Add</button></footer>`,
     (root, close) => {
       const go = $("#ar-go", root);
-      const boxes = $$("input[data-step]", root);
       const canWrite = !go.disabled;
-      const sync = () => { go.disabled = !canWrite || !boxes.some((c) => c.checked); };
-      boxes.forEach((c) => c.addEventListener("change", sync));
-      sync();
+      const sync = (ids) => {
+        go.disabled = !canWrite || !ids.length;
+        if (canWrite) go.title = ids.length ? "" : "Select at least one step";
+      };
+      const picker = steps.length ? mountStepPicker($("#ar-steps", root), { steps, defs: defsOf(ctx, project), onChange: sync }) : null;
+      if (!picker) sync([]);
       go.addEventListener("click", async () => {
         const target = $("#ar-target", root).value.trim();
         const code = $("#ar-code", root).value.trim();
@@ -342,7 +421,7 @@ export function openAddRowDialog(ctx, project) {
           err.textContent = `${target}${code ? `@${code}` : ""} is already a row in this plan`;
           return;
         }
-        const chosen = boxes.filter((c) => c.checked).map((c) => c.dataset.step);
+        const chosen = picker ? picker.selected() : [];
         if (!chosen.length) { err.textContent = "select at least one step"; return; }
         try {
           await server.planAddRow(project, p.id, {
@@ -386,6 +465,8 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
     return;
   }
   const steps = info.steps.map((s) => s.id);
+  let mountStepPicker;
+  try { ({ mountStepPicker } = await loadPicker()); } catch (error) { ctx.toast(`Run: ${error.message}`, "fail"); return; }
   const sel = selectionRows(ctx, project, info);
   const hasCsv = info.plan_csv_exists && info.table?.rows?.length;
   const st = info.settings;
@@ -405,7 +486,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
         </div>
       </fieldset>
       <fieldset><legend>Steps <span class="muted small">(marked todo in the new plan)</span></legend>
-        <div class="run-steps">${steps.map((s) => `<label class="check"><input type="checkbox" data-step="${esc(s)}" ${!only || only.includes(s) ? "checked" : ""}> <span class="mono">${esc(s)}</span></label>`).join("")}</div>
+        <div id="run-steps"></div>
       </fieldset>
       <div class="row gap wrap">
         <label class="field"><span>Mode</span><select class="input" id="run-mode">${["step", "target", "batch"].map((m) => `<option ${st.mode === m ? "selected" : ""} ${m !== "step" && !info.settings[`${m}_entrypoint`] ? "disabled" : ""}>${m}</option>`).join("")}</select></label>
@@ -416,9 +497,23 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       <div id="run-preview" class="run-preview"></div>
     </div>
     <footer class="modal-f row gap right"><button class="btn" id="run-dry">${icon("list")} Preview commands</button>${dry ? "" : `<button class="btn primary" id="run-go" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("play")} Start</button>`}</footer>`, (root, close) => {
+    const go = $("#run-go", root);
+    const canStart = go && !go.disabled;
+    const picker = mountStepPicker($("#run-steps", root), {
+      steps, defs: defsOf(ctx, project), selected: only, remember: only ? null : `runsteps:${project}`,
+      onChange: (ids) => {
+        if (!canStart) return;
+        const needSteps = ($("input[name=src]:checked", root)?.value || "sel") === "sel";
+        go.disabled = needSteps && !ids.length;
+        go.title = go.disabled ? "Select at least one step" : "";
+      },
+    });
+    $$("input[name=src]", root).forEach((r) => r.addEventListener("change", () => {
+      if (canStart) go.disabled = r.value === "sel" && r.checked && !picker.selected().length;
+    }));
     const payload = () => {
       const src = $("input[name=src]:checked", root)?.value || "sel";
-      const chosen = $$("input[data-step]", root).filter((c) => c.checked).map((c) => c.dataset.step);
+      const chosen = picker.selected();
       const out = { mode: $("#run-mode", root).value, concurrency: Number($("#run-conc", root).value) || 1, on_failure: $("#run-fail", root).value };
       if (src === "sel") {
         out.rows = $$("input[data-i]", root).filter((c) => c.checked).map((c) => {
@@ -435,8 +530,10 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       try {
         const body = payload();
         if (body.rows && !body.rows.length) throw new Error("select at least one target");
+        if (body.rows && !body.steps.length) throw new Error("select at least one step");
         const r = await server.planPreview(project, body);
         box.innerHTML = `<h5>${r.units.length} command(s), in order ${r.errors.length ? `<span class="badge tone-fail">${r.errors.length} problem(s)</span>` : '<span class="badge tone-ok">ready</span>'}</h5>
+          ${r.conflicts?.text ? `<p class="muted small" title="${esc(r.conflicts.serialize_on?.length ? `Rows run one at a time when they share: ${r.conflicts.serialize_on.join(r.conflicts.serialize_match === "all" ? " and " : " or ")}` : "No execution.serialize_on (only the work dir lock)")}">${icon("list")} ${esc(r.conflicts.text)}</p>` : ""}
           ${r.missing_step_columns?.length ? `<p class="muted small">Not in the plan CSV (not run): ${esc(r.missing_step_columns.join(", "))}</p>` : ""}
           <ol class="cmd-list">${r.units.slice(0, 200).map((u) => `<li class="${u.error ? "bad" : ""}"><b class="mono">${esc(u.target || "*")}</b> · <span class="mono small">${esc(u.steps.join(", "))}</span><pre class="code">${esc(u.error || u.argv.join(" "))}</pre></li>`).join("")}</ol>
           ${r.units.length > 200 ? `<p class="muted small">+${r.units.length - 200} more</p>` : ""}`;
@@ -455,7 +552,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
     $$("[data-all]", root).forEach((b) => b.addEventListener("click", () => $$("input[data-i]", root).forEach((c) => {
       if (!c.closest("tr").hidden) c.checked = b.dataset.all === "1";
     })));
-    $("#run-go", root)?.addEventListener("click", async () => {
+    go?.addEventListener("click", async () => {
       const r = await showPreview();
       if (!r) return;
       if (r.errors.length && !window.confirm(`${r.errors.length} problem(s) — those cells will fail. Start anyway?`)) return;

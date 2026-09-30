@@ -14,6 +14,7 @@ async function getJson(path, init) {
     const message = body?.error?.message || `${response.status} ${response.statusText}`;
     const error = new Error(message);
     error.status = response.status;
+    error.body = body;
     throw error;
   }
   return body;
@@ -174,8 +175,46 @@ export const server = {
     return response.text();
   },
 
-  saveManifest(project, text) {
-    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/manifest`, { text });
+  /** extra: {base_hash | base_text, force}: 409 (error.body: current_text, diff) when the file changed on disk. */
+  saveManifest(project, text, extra = {}) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/manifest`, { text, ...extra });
+  },
+  // Template-driven views (alfrd.layout_generic); `entity` is an entity-path query string
+  projectView(project, entity, view = "metadata") {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/view?${new URLSearchParams({ entity, view })}`);
+  },
+  viewFileUrl(project, entity, panel, path) {
+    return `${API}/studio/projects/${encodeURIComponent(project)}/view/file?${new URLSearchParams({ entity, panel, path })}`;
+  },
+  // Shared notes (alfrd.notes.jsonl)
+  notes(project) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/notes`);
+  },
+  noteCreate(project, payload) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/notes`, payload);
+  },
+  noteChange(project, id, payload) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/notes/${encodeURIComponent(id)}`, payload);
+  },
+  // Full-text search (alfrd.search)
+  search(projects, q, limit = 50) {
+    return getJson(`/studio/search?${new URLSearchParams({ projects: projects.join(","), q, limit })}`);
+  },
+  searchContext(project, path, line, around = 30) {
+    return getJson(`/studio/search/context?${new URLSearchParams({ project, path, line, around })}`);
+  },
+  // Version history of tracked files (alfrd.yaml …; alfrd.history)
+  history(project, file = "alfrd.yaml") {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/history?${new URLSearchParams({ file })}`);
+  },
+  historyVersion(project, version, file = "alfrd.yaml") {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/history/${encodeURIComponent(version)}?${new URLSearchParams({ file })}`);
+  },
+  historyDiff(project, a, b = "current", file = "alfrd.yaml") {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/history/diff?${new URLSearchParams({ file, a, b })}`);
+  },
+  historyRestore(project, version, file = "alfrd.yaml", extra = {}) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/history/${encodeURIComponent(version)}/restore?${new URLSearchParams({ file })}`, extra);
   },
 
   avicaConfig(project, changes) {

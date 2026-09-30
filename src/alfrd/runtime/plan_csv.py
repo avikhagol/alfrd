@@ -250,6 +250,46 @@ def join_files(value: str | Sequence[str] | None) -> str:
     return ",".join(names)
 
 
+def file_names(value: str | Sequence[str] | None, base: str | Path | None = None) -> set[str]:
+    """File names of a row as a set for conflict checks.
+
+    Split like :func:`join_files`, ``./a`` and ``a`` made equal, and resolved to
+    an absolute path when the file exists below ``base`` (or as given).
+    """
+    out: set[str] = set()
+    for name in join_files(value).split(","):
+        if not name:
+            continue
+        norm = os.path.normpath(name)
+        path = Path(norm).expanduser()
+        candidate = path if path.is_absolute() else (Path(base) / path if base else path)
+        try:
+            out.add(str(candidate.resolve()) if candidate.exists() else norm)
+        except OSError:
+            out.add(norm)
+    return out
+
+
+def conflict_keys(row: PlanRow, names: Sequence[str], table: PlanTable, base: str | Path | None = None) -> dict[str, set[str]]:
+    """The values a row holds while it runs, per ``serialize_on`` name.
+
+    ``target`` = the key column, ``files`` = the file column (a set of names),
+    any other name = that plan CSV column (case-insensitive). Empty values hold nothing.
+    """
+    out: dict[str, set[str]] = {}
+    for name in names:
+        if name == "target":
+            values = {row.target} if row.target else set()
+        elif name == "files" or name.lower() == table.files_column.lower():
+            values = file_names(row.files, base)
+        else:
+            column = _find(table.header, name) or name
+            value = str(row.values.get(column, "")).strip()
+            values = {value} if value else set()
+        out[name] = values
+    return out
+
+
 def _with_columns(header: Sequence[str], columns: Sequence[str], steps: Sequence[str]) -> list[str]:
     """``header`` plus any of ``columns`` it lacks, inserted before the first step column."""
     out = list(header)
@@ -329,6 +369,6 @@ def create(path: str | Path, rows: Sequence[Mapping[str, str]], steps: Sequence[
 
 __all__ = [
     "BLOCKED", "CANCELLED", "DONE", "FAILED", "INTERRUPTED", "RUNNING", "STATES", "STOP_VALUES", "TODO",
-    "DuplicateRowError", "PlanRow", "PlanTable", "add_row", "atomic_write", "check_target", "create", "dump",
-    "join_files", "locked", "normalize", "parse", "read", "row_key", "update",
+    "DuplicateRowError", "PlanRow", "PlanTable", "add_row", "atomic_write", "check_target", "conflict_keys", "create",
+    "dump", "file_names", "join_files", "locked", "normalize", "parse", "read", "row_key", "update",
 ]

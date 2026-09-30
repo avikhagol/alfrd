@@ -15,6 +15,7 @@
 
 import { esc, icon, bytes, when, loadUi, saveUi } from "../utils/dom.js";
 import { groupLabel } from "../data/defs.js";
+import { notesAt } from "../data/notes.js";
 
 const MAX_INLINE = 400000;
 const MAX_TAILS = 3;
@@ -221,6 +222,11 @@ export async function openFileFull(ctx, project, rel) {
   const c = await load(ctx, project, rel);
   c.nextAt = 0;
   openFull(ctx, rel.split("/").pop(), c.text, rel, { project, rel, c });
+  const n = notesAt(ctx, project, { file: rel });
+  if (n.length) {
+    const h = document.querySelector("#modal-host .modal-h .grow");
+    h?.insertAdjacentHTML("beforebegin", `<button class="btn sm" data-notes="${esc(JSON.stringify({ file: rel }))}" data-notes-project="${esc(project)}" title="${esc(n.map((x) => `${x.anchor.line ? `line ${x.anchor.line}: ` : ""}${x.text.slice(0, 80)}`).join("\n"))}">✎ ${n.length} note(s)</button>`);
+  }
 }
 
 // ---------------------------------------------------------------------------

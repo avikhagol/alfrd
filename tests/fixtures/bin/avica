@@ -12,6 +12,8 @@ when a step fails (AVICA prints the result and returns).
   FAKE_AVICA_EXIT    exit code to return after the last step (default 0)
   FAKE_AVICA_TICK    print a line every 0.5 s while a step works
   FAKE_AVICA_HOLD    path: before each step, wait while this file exists
+  FAKE_AVICA_BURN    seconds of busy CPU per step (resource usage tests)
+  FAKE_AVICA_MEM     MB to allocate (and touch) while a step burns
 """
 import csv
 import os
@@ -71,6 +73,15 @@ def main(argv):
             start = datetime.now()
             print(f">  Processing: {step} ({target})", flush=True)
             hold()
+            if os.environ.get("FAKE_AVICA_BURN"):
+                block = bytearray(int(float(os.environ.get("FAKE_AVICA_MEM", "0")) * 1024 * 1024))
+                for i in range(0, len(block), 4096):
+                    block[i] = 1
+                until = time.time() + float(os.environ["FAKE_AVICA_BURN"])
+                n = 0
+                while time.time() < until:
+                    n += 1
+                del block
             if os.environ.get("FAKE_AVICA_TICK"):  # print while working, so logs grow
                 waited = 0.0
                 while waited < pause:

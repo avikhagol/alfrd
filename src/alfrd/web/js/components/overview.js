@@ -1,6 +1,7 @@
 // VIEW 1 — Project Overview: grouped spreadsheet grid + target detail drawer.
 
 import { $, on, esc, icon, hms, short, when, copyText, loadUi, saveUi } from "../utils/dom.js";
+import { notesAt, noteMark } from "../data/notes.js";
 import { avicaIndex, codeChips, detachCode, openAttachPicker, targetCodes } from "./attach.js";
 import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
@@ -39,6 +40,15 @@ function helpers(ctx) {
     codes: (t) => targetCodes(ctx, t).map((c) => c.code),
     text: (t) => targetText({ ...t, notes: ctx.state.notes[t.id] }),
   };
+}
+
+/** Overview filtered to one project code (command palette). */
+export function showCode(ctx, code) {
+  ui.code = code;
+  ui.page = 0;
+  remember();
+  ctx.goTo("overview");
+  ctx.update();
 }
 
 /** Targets after header project scope + local filters (used by CSV export too). */
@@ -376,7 +386,7 @@ function renderGrid(el, ctx) {
       const statusLabel = r.status === "running" ? `Stage ${(r.running?.index ?? 0) + 1}` : null;
       return `<tr data-target="${esc(t.id)}" class="${sel ? "sel" : ""}" tabindex="0" aria-selected="${sel}">
         <td class="fz fz0"><input type="checkbox" data-check="${esc(t.id)}" ${ui.checked.has(t.id) ? "checked" : ""} aria-label="Select ${esc(t.name)}"></td>
-        <td class="fz fz1 tname">${sel ? '<i class="sel-dot"></i>' : ""}${esc(t.name)}</td>
+        <td class="fz fz1 tname">${sel ? '<i class="sel-dot"></i>' : ""}${esc(t.name)}${noteMark(t.project, { target: t.name }, notesAt(ctx, t.project, { target: t.name }).length)}</td>
         ${cols.map((c) => {
           if (c.id === "project") return `<td><span class="alfrd-chip">${esc(ctx.projectName(t.project))}</span></td>`;
           if (c.id === "codes") return `<td class="codes">${codeChips(ctx, t)}</td>`;
