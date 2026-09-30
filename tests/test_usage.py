@@ -86,8 +86,17 @@ def test_shim_keeps_sampling_after_the_runner_dies(project, monkeypatch):
     time.sleep(1.0)
     assert len(usage_file.read_text().splitlines()) > before, "the shim samples on its own"
     exit_file = project / unit["exit_file"]
-    assert _wait(lambda: exit_file.exists(), timeout=20)
-    assert json.loads(exit_file.read_text())["usage"]["cpu_s"] >= 2.0
+    # The shim writes the exit file twice: the exit code first, then again with
+    # the usage summary (which can take a moment), so wait for the second write.
+    assert _wait(lambda: "usage" in _read_exit(exit_file), timeout=20), _read_exit(exit_file)
+    assert _read_exit(exit_file)["usage"]["cpu_s"] >= 2.0
+
+
+def _read_exit(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
 
 
 def test_sampler_off_and_dir_size(tmp_path):
