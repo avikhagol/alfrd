@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/avikhagol/alfrd/schemas/template_views.v1.json",
+  "title": "ALFRD template hierarchy and views",
+  "description": "`hierarchy` and `views` of a Studio template or alfrd.yaml (alfrd.layout_generic).",
+  "type": "object",
+  "properties": {
+    "hierarchy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["level", "dir"],
+        "properties": {
+          "level": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$", "not": {"enum": ["project", "step", "file", "line"]}},
+          "dir": {"$ref": "#/$defs/patterns"},
+          "targets_from": {"$ref": "#/$defs/patterns"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "views": {
+      "type": "object",
+      "properties": {
+        "vars": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"$ref": "#/$defs/from"}]}},
+        "metadata": {"type": "array", "items": {"$ref": "#/$defs/panel"}}
+      },
+      "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/panel"}}
+    }
+  },
+  "$defs": {
+    "from": {"type": "object", "required": ["from"], "properties": {"from": {"type": "string", "pattern": "^avica\\.[a-z_]+$"}, "prefix": {"type": "string"}}, "additionalProperties": false},
+    "patterns": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}, {"$ref": "#/$defs/from"}]},
+    "panel": {
+      "type": "object",
+      "required": ["panel"],
+      "properties": {
+        "panel": {"enum": ["file_status", "files", "json_fields", "csv_table", "text", "image", "avica_config", "avica_inputs"]},
+        "title": {"type": "string"},
+        "scope": {"type": "string"},
+        "source": {"type": "string"},
+        "base": {"type": "string", "description": "Folder pattern the steps' metadata files live in (from_steps); default {meta_dir}."},
+        "files": {"anyOf": [{"const": "from_steps"}, {"type": "array", "items": {"type": "object", "required": ["path"],
+          "properties": {"step": {"type": "string"}, "path": {"type": "string"}, "label": {"type": "string"},
+                         "expect": {"type": "object", "properties": {"json_key": {"type": "string"}, "require": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false}},
+          "additionalProperties": false}}]},
+        "fields": {"type": "array", "items": {"type": "string"}},
+        "columns": {"type": "array", "items": {"type": "string"}},
+        "limit": {"type": "integer", "minimum": 1}
+      },
+      "allOf": [
+        {"if": {"properties": {"panel": {"const": "file_status"}}}, "then": {"required": ["files"]}},
+        {"if": {"properties": {"panel": {"enum": ["files", "json_fields", "csv_table", "text", "image"]}}}, "then": {"required": ["source"]}},
+        {"if": {"properties": {"panel": {"const": "json_fields"}}}, "then": {"required": ["fields"]}}
+      ],
+      "additionalProperties": false
+    }
+  }
+}

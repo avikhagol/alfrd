@@ -1,0 +1,585 @@
+{
+ "entity": {
+  "target": "0742+103"
+ },
+ "errors": [],
+ "levels": [
+  "project_code",
+  "workdir",
+  "band"
+ ],
+ "nodes": [
+  {
+   "children": [
+    {
+     "children": [],
+     "level": "workdir",
+     "path": "reductions/BV019/wd",
+     "targets": [
+      "1309+555"
+     ],
+     "value": "wd"
+    },
+    {
+     "children": [],
+     "level": "workdir",
+     "path": "reductions/BV019/wd_1",
+     "targets": [
+      "1309+555"
+     ],
+     "value": "wd_1"
+    }
+   ],
+   "level": "project_code",
+   "path": "reductions/BV019",
+   "targets": [
+    "1309+555"
+   ],
+   "value": "BV019"
+  },
+  {
+   "children": [
+    {
+     "children": [
+      {
+       "children": [],
+       "level": "band",
+       "path": "reductions/RDV41/wd/wd_S",
+       "targets": [],
+       "value": "S"
+      },
+      {
+       "children": [],
+       "level": "band",
+       "path": "reductions/RDV41/wd/wd_X_0742+103",
+       "targets": [
+        "0742+103"
+       ],
+       "value": "X"
+      }
+     ],
+     "level": "workdir",
+     "path": "reductions/RDV41/wd",
+     "targets": [
+      "0742+103"
+     ],
+     "value": "wd"
+    }
+   ],
+   "level": "project_code",
+   "path": "reductions/RDV41",
+   "targets": [
+    "0742+103"
+   ],
+   "value": "RDV41"
+  }
+ ],
+ "panels": [
+  {
+   "index": 0,
+   "instances": [
+    {
+     "counts": {
+      "invalid": 0,
+      "missing": 4,
+      "ok": 7
+     },
+     "entries": [
+      {
+       "files": [
+        {
+         "name": "fitsfiles_used.avica",
+         "note": null,
+         "rel": "reductions/RDV41/wd/avica.meta/fitsfiles_used.avica",
+         "status": "ok"
+        }
+       ],
+       "label": "FITS files used",
+       "pattern": "{meta_dir}/fitsfiles_used.avica",
+       "require": [
+        "filepath"
+       ],
+       "status": "ok",
+       "step": "preprocess_fitsidi"
+      },
+      {
+       "files": [],
+       "label": "listobs (scans)",
+       "pattern": "{meta_dir}/listobs.json",
+       "require": [
+        "listobs"
+       ],
+       "status": "missing",
+       "step": "preprocess_fitsidi"
+      },
+      {
+       "files": [
+        {
+         "name": "listobs_fits.out",
+         "note": null,
+         "rel": "reductions/RDV41/wd/avica.meta/listobs_fits.out",
+         "status": "ok"
+        }
+       ],
+       "label": "listobs (FITS)",
+       "pattern": "{meta_dir}/listobs_fits.out",
+       "require": [],
+       "status": "ok",
+       "step": "preprocess_fitsidi"
+      },
+      {
+       "files": [],
+       "label": "Work dirs and input templates",
+       "pattern": "{meta_dir}/available_wd_ifolder.avica",
+       "require": [
+        "input_folder",
+        "fitsfiles"
+       ],
+       "status": "missing",
+       "step": "fits_to_ms"
+      },
+      {
+       "files": [],
+       "label": "MS metadata (bands, spws)",
+       "pattern": "{meta_dir}/msmeta_sources.avica",
+       "require": [
+        "bands_dict"
+       ],
+       "status": "missing",
+       "step": "avica_avg"
+      },
+      {
+       "files": [
+        {
+         "band": "X",
+         "name": "msmeta_sources_X_0742+103.avica",
+         "note": null,
+         "rel": "reductions/RDV41/wd/avica.meta/msmeta_sources_X_0742+103.avica",
+         "status": "ok"
+        }
+       ],
+       "label": "MS metadata per band",
+       "pattern": "{meta_dir}/msmeta_sources_{band}_{target}.avica",
+       "require": [
+        "bands_dict"
+       ],
+       "status": "ok",
+       "step": "avicameta_ms"
+      },
+      {
+       "files": [],
+       "label": "Calibrator roles from the MS",
+       "pattern": "{meta_dir}/sources_ms_{band}_{target}.avica",
+       "require": [],
+       "status": "missing",
+       "step": "avicameta_ms"
+      },
+      {
+       "files": [
+        {
+         "band": "X",
+         "name": "sources_X_0742+103.avica",
+         "note": null,
+         "rel": "reductions/RDV41/wd/avica.meta/sources_X_0742+103.avica",
+         "status": "ok"
+        }
+       ],
+       "label": "SNR-rated sources",
+       "pattern": "{meta_dir}/sources_{band}_{target}.avica",
+       "require": [
+        "NAME"
+       ],
+       "status": "ok",
+       "step": "avica_snr"
+      },
+      {
+       "files": [
+        {
+         "band": "X",
+         "name": "refants_X_0742+103.avica",
+         "note": null,
+         "rel": "reductions/RDV41/wd/avica.meta/refants_X_0742+103.avica",
+         "status": "ok"
+        }
+       ],
+       "label": "Reference antennas",
+       "pattern": "{meta_dir}/refants_{band}_{target}.avica",
+       "require": [
+        "refant"
+       ],
+       "status": "ok",
+       "step": "avica_snr"
+      },
+      {
+       "files": [
+        {
+         "band": "X",
+         "name": "snrating_X_0742+103.out",
+         "note": null,
+         "rel": "reductions/RDV41/wd/avica.meta/snrating_X_0742+103.out",
+         "status": "ok"
+        }
+       ],
+       "label": "SNR rating table",
+       "pattern": "{meta_dir}/snrating_{band}_{target}.out",
+       "require": [],
+       "status": "ok",
+       "step": "avica_snr"
+      },
+      {
+       "files": [
+        {
+         "band": "X",
+         "name": "sources_snr_X_0742+103.avica",
+         "note": null,
+         "rel": "reductions/RDV41/wd/avica.meta/sources_snr_X_0742+103.avica",
+         "status": "ok"
+        }
+       ],
+       "label": "Calibrator roles after SNR rating",
+       "pattern": "{meta_dir}/sources_snr_{band}_{target}.avica",
+       "require": [],
+       "status": "ok",
+       "step": "avica_fill_input"
+      }
+     ],
+     "path": "reductions/RDV41/wd",
+     "where": {
+      "project_code": "RDV41",
+      "workdir": "wd"
+     }
+    }
+   ],
+   "panel": "file_status",
+   "scope": "workdir",
+   "title": "Metadata health"
+  },
+  {
+   "index": 1,
+   "instances": [
+    {
+     "files": [
+      {
+       "data": {
+        "filepath": [
+         "/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/raw/VLBA_VSN004681_file21.uvfits",
+         "/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/raw/VLBA_VSN004681_file23.uvfits"
+        ]
+       },
+       "format": "json",
+       "label": "FITS files used",
+       "name": "fitsfiles_used.avica",
+       "rel": "reductions/RDV41/wd/avica.meta/fitsfiles_used.avica",
+       "size": 226,
+       "step": "preprocess_fitsidi"
+      },
+      {
+       "format": "text",
+       "label": "listobs (FITS)",
+       "name": "listobs_fits.out",
+       "rel": "reductions/RDV41/wd/avica.meta/listobs_fits.out",
+       "size": 1598,
+       "step": "preprocess_fitsidi",
+       "text": "+-------------------------+-------------------------+-------+----------+------------------------------+------+-----------+\n| start_time              | end_time                | nrows | source   | inttime                      | scan | source_id |\n+========================================================================================================================+\n| 2003-09-17 17:59:44.302 | 2003-09-17 18:04:54.943 | 2403  | 1357+769 | [3.9320, 3.9320, ... 3.9320] | 1    | 1         |\n| 2003-09-17 18:05:02.807 | 2003-09-17 18:12:46.802 | 5023  | 1642+690 | [3.9320, 3.9320, ... 3.9320] | 2    | 2         |\n| 2003-09-17 18:12:54.666 | 2003-09-17 18:14:36.902 | 1709  | 1842+681 | [3.9320, 3.9320, ... 3.9320] | 3    | 3         |\n| 2003-09-17 18:17:45.646 | 2003-09-17 18:29:57.028 | 14155 | M81      | [3.9320, 3.9320, ... 3.9320] | 4    | 4         |\n| 2003-09-17 19:11:49.678 | 2003-09-17 19:13:39.779 | 2382  | 0955+476 | [3.9320, 3.9320, ... 3.9320] | 5    | 5         |\n| 2003-09-17 19:38:26.135 | 2003-09-17 19:38:26.135 | 9     | 0804+499 | [3.9320, 3.9320, ... 3.9320] | 6    | 6         |\n| 2003-09-17 19:56:31.411 | 2003-09-17 19:59:08.698 | 3382  | 4C39.25  | [3.9320, 3.9320, ... 3.9320] | 7    | 7         |\n| 2003-09-17 20:29:25.356 | 2003-09-17 20:39:30.908 | 18125 | 1448+762 | [3.9320, 3.9320, ... 3.9320] | 8    | 8         |\n| 2003-09-17 20:46:55.242 | 2003-09-17 21:00:09.539 | 24064 | 1745+624 | [3.9320, 3.9320, ... 3.9320] | 9    | 9         |\n+-------------------------+-------------------------+-------+----------+------------------------------+------+-----------+"
+      },
+      {
+       "band": "X",
+       "data": {
+        "bands_dict": {
+         "X": {
+          "reffreqs": [
+           8405990000.0,
+           8475990000.0,
+           8790990000.0,
+           8895990000.0
+          ],
+          "spws": [
+           0,
+           1,
+           2,
+           3
+          ]
+         }
+        },
+        "c_target": "07h45m33.059509s +10d11m12.69247s"
+       },
+       "format": "json",
+       "label": "MS metadata per band",
+       "name": "msmeta_sources_X_0742+103.avica",
+       "rel": "reductions/RDV41/wd/avica.meta/msmeta_sources_X_0742+103.avica",
+       "size": 164,
+       "step": "avicameta_ms"
+      },
+      {
+       "band": "X",
+       "data": {
+        "refant": [
+         "NL",
+         "OV",
+         "FD",
+         "LA",
+         "HN"
+        ]
+       },
+       "format": "json",
+       "label": "Reference antennas",
+       "name": "refants_X_0742+103.avica",
+       "rel": "reductions/RDV41/wd/avica.meta/refants_X_0742+103.avica",
+       "size": 42,
+       "step": "avica_snr"
+      },
+      {
+       "band": "X",
+       "format": "text",
+       "label": "SNR rating table",
+       "name": "snrating_X_0742+103.out",
+       "rel": "reductions/RDV41/wd/avica.meta/snrating_X_0742+103.out",
+       "size": 2884,
+       "step": "avica_snr",
+       "text": "+--------+----------+----------+-----------+----------+------------+---------+--------+-----------+----------+----------+--------+\n| refant | FIELD_ID | refantid | refant_D  | STD_TSYS | refant_occ | SNR     | d_norm | tsys_norm | snr_norm | occ_norm | c      |\n+================================================================================================================================+\n| NL     | 1        | 6        | 3645.5804 | 5.7235   | 200        | 65.6625 | 0.2900 | 0.7784    | 1.0000   | 1.0000   | 0.7509 |\n| OV     | 1        | 9        | 3885.8677 | 5.4568   | 169        | 59.5292 | 0.2432 | 0.7888    | 0.9066   | 0.8450   | 0.6554 |\n| FD     | 1        | 0        | 4143.8854 | 6.2143   | 143        | 65.6338 | 0.1929 | 0.7594    | 0.9996   | 0.7150   | 0.6317 |\n| LA     | 52       | 4        | 4157.8473 | 6.9127   | 120        | 56.1320 | 0.1902 | 0.7324    | 0.8549   | 0.6000   | 0.5456 |\n| HN     | 47       | 2        | 3885.8677 | 25.8332  | 117        | 42.5575 | 0.2432 | 0.0000    | 0.6481   | 0.5850   | 0.4872 |\n| PT     | 52       | 10       | 4225.1148 | 5.4454   | 80         | 42.0884 | 0.1771 | 0.7892    | 0.6410   | 0.4000   | 0.4063 |\n| KP     | 1        | 3        | 4322.3631 | 10.0591  | 41         | 47.0368 | 0.1582 | 0.6106    | 0.7163   | 0.2050   | 0.3680 |\n| MK     | 16       | 5        | 5134.4587 | 9.6535   | 8          | 42.5005 | 0.0000 | 0.6263    | 0.6473   | 0.0400   | 0.2390 |\n+--------+----------+----------+-----------+----------+------------+---------+--------+-----------+----------+----------+--------+\n\n+----------+------+---------+----------+\n| FIELD_ID | SCAN | SNR     | NAME     |\n+======================================+\n| 52       | 69   | 45.9870 | 1308+326 |\n| 44       | 53   | 45.1899 | 0727-115 |\n| 47       | 47   | 42.5575 | 1606+106 |\n| 16       | 38   | 42.2066 | 1128+385 |\n| 1        | 2    | 41.2673 | 1642+690 |\n| 23       | 30   | 34.9843 | OK290    |\n| 12       | 26   | 33.3191 | 0642+449 |\n| 36       | 54   | 30.6162 | 0919-260 |\n| 19       | 16   | 30.0384 | 0059+581 |\n| 28       | 59   | 28.8698 | 4C39.25  |\n| 11       | 23   | 28.1476 | 0552+398 |\n| 18       | 56   | 25.1787 | 0743+259 |\n| 23       | 78   | 18.9616 | OK290    |\n| 4        | 92   | 18.6663 | 0742+103 |\n| 36       | 91   | 17.5133 | 0919-260 |\n| 4        | 6    | 16.5210 | 0742+103 |\n| 26       | 61   | 16.4168 | 1739+522 |\n| 37       | 49   | 14.9151 | 1124-186 |\n| 50       | 88   | 13.4035 | NRAO512  |\n| 37       | 70   | 12.2846 | 1124-186 |\n| 24       | 51   | 9.1555  | NGC6251  |\n| 17       | 40   | 9.1435  | 0823+033 |\n| 10       | 20   | 9.0518  | 1459+480 |\n| 9        | 50   | 6.9085  | 1349-439 |\n| 10       | 94   | 6.2568  | 1459+480 |\n| 3        | 5    | 4.9772  | M81      |\n| 9        | 18   | 4.5630  | 1349-439 |\n| 9        | 87   | 4.3916  | 1349-439 |\n+----------+------+---------+----------+"
+      },
+      {
+       "band": "X",
+       "data": {
+        "FIELD_ID": [
+         52,
+         44,
+         47,
+         16,
+         1,
+         23
+        ],
+        "NAME": [
+         "1308+326",
+         "0727-115",
+         "1606+106",
+         "1128+385",
+         "1642+690",
+         "OK290"
+        ],
+        "SNR": [
+         45.986995697021484,
+         45.18985366821289,
+         42.557472229003906,
+         42.20657730102539,
+         41.26726531982422,
+         34.984344482421875
+        ]
+       },
+       "format": "json",
+       "label": "SNR-rated sources",
+       "name": "sources_X_0742+103.avica",
+       "rel": "reductions/RDV41/wd/avica.meta/sources_X_0742+103.avica",
+       "size": 242,
+       "step": "avica_snr"
+      },
+      {
+       "band": "X",
+       "data": {
+        "X": {
+         "calibrators_bandpass": [
+          "1308+326",
+          "0727-115",
+          "1606+106",
+          "1128+385",
+          "1642+690",
+          "OK290"
+         ],
+         "calibrators_dterms": null,
+         "calibrators_instrphase": [
+          "1308+326",
+          "0727-115",
+          "1606+106",
+          "1128+385",
+          "1642+690",
+          "OK290"
+         ],
+         "calibrators_phaseref": null,
+         "calibrators_rldly": null,
+         "science_target": [
+          "0742+103"
+         ]
+        }
+       },
+       "format": "json",
+       "label": "Calibrator roles after SNR rating",
+       "name": "sources_snr_X_0742+103.avica",
+       "rel": "reductions/RDV41/wd/avica.meta/sources_snr_X_0742+103.avica",
+       "size": 316,
+       "step": "avica_fill_input"
+      }
+     ],
+     "path": "reductions/RDV41/wd",
+     "where": {
+      "project_code": "RDV41",
+      "workdir": "wd"
+     }
+    }
+   ],
+   "panel": "files",
+   "scope": "workdir",
+   "title": "avica.meta"
+  },
+  {
+   "index": 2,
+   "instances": [
+    {
+     "tables": [
+      {
+       "columns": [
+        "name",
+        "success_count",
+        "failed_count",
+        "start_stamp",
+        "detail",
+        "desc",
+        "success",
+        "end_stamp"
+       ],
+       "rel": "reductions/0742+103_result.csv",
+       "rows": [
+        {
+         "desc": "",
+         "detail": "",
+         "end_stamp": "2026-05-12T14:43:44.246840",
+         "failed_count": "0",
+         "name": "preprocess_fitsidi",
+         "start_stamp": "2026-05-12T14:43:34.096091",
+         "success": "[true, true]",
+         "success_count": "2"
+        },
+        {
+         "desc": "[\"FITS to MS conversion successfull! for VLBI.ms\"]",
+         "detail": "",
+         "end_stamp": "2026-05-12T14:44:58.921128",
+         "failed_count": "0",
+         "name": "fits_to_ms",
+         "start_stamp": "2026-05-12T14:43:44.633875",
+         "success": "[true]",
+         "success_count": "1"
+        },
+        {
+         "desc": "[\"X\", \"S\"]",
+         "detail": "{\"X\": \"VLBI_X.ms\", \"S\": \"VLBI_S.ms\"}",
+         "end_stamp": "2026-05-12T14:47:14.938683",
+         "failed_count": "0",
+         "name": "avica_avg",
+         "start_stamp": "2026-05-12T14:44:59.222448",
+         "success": "[true, true]",
+         "success_count": "2"
+        },
+        {
+         "desc": "",
+         "detail": "[\"X\", \"S\"]",
+         "end_stamp": "2026-05-12T14:47:32.834673",
+         "failed_count": "0",
+         "name": "avicameta_ms",
+         "start_stamp": "2026-05-12T14:47:15.250032",
+         "success": "[true, true]",
+         "success_count": "2"
+        },
+        {
+         "desc": "{\"X\": [\"NL\", \"OV\", \"FD\", \"LA\", \"HN\"], \"S\": [\"NL\", \"OV\", \"FD\", \"HN\", \"KP\"]}",
+         "detail": "",
+         "end_stamp": "2026-05-12T14:49:17.051507",
+         "failed_count": "0",
+         "name": "avica_snr",
+         "start_stamp": "2026-05-12T14:47:33.185606",
+         "success": "[true, true]",
+         "success_count": "2"
+        },
+        {
+         "desc": "",
+         "detail": "{\"X\": \"done\", \"S\": \"done\"}",
+         "end_stamp": "2026-05-12T14:49:18.587454",
+         "failed_count": "0",
+         "name": "avica_fill_input",
+         "start_stamp": "2026-05-12T14:49:17.362592",
+         "success": "[true, true]",
+         "success_count": "2"
+        },
+        {
+         "desc": "[\"..splitted 1642+690,1128+385,0742+103,1606+106,0727-115,OK290,1308+326 for band : X (0742+103)\", \"..splitted 0742+103,1128+385,1357+769,OK290,0552+398,1308+326 for band : S (0742+103)\"]",
+         "detail": "{\"X\": \"/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_X/VLBI_X_old.ms\", \"S\": \"/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_S/VLBI_S_old.ms\"}",
+         "end_stamp": "2026-05-12T14:50:08.569436",
+         "failed_count": "0",
+         "name": "avica_split_ms",
+         "start_stamp": "2026-05-12T14:49:18.920976",
+         "success": "[true, true]",
+         "success_count": "4"
+        },
+        {
+         "desc": "[\"calibrated 0727-115,0742+103,1128+385,1308+326,1606+106,1642+690,OK290\", \"calibrated 0552+398,0742+103,1128+385,1308+326,1357+769,OK290\"]",
+         "detail": "{\"X\": \"/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_X_0742+103/0727-115_calibrated.uvf\", \"S\": \"/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reduction/RDV41/wd/wd_S_0742+103/0552+398_calibrated.uvf\"}",
+         "end_stamp": "2026-05-12T14:58:38.046698",
+         "failed_count": "0",
+         "name": "rpicard",
+         "start_stamp": "2026-05-12T14:50:08.861195",
+         "success": "[true, true]",
+         "success_count": "2"
+        }
+       ]
+      }
+     ],
+     "where": {
+      "project_code": "RDV41",
+      "target": "0742+103",
+      "workdir": "wd"
+     }
+    }
+   ],
+   "panel": "csv_table",
+   "scope": "target",
+   "title": "Result CSV"
+  },
+  {
+   "index": 3,
+   "instances": [
+    {
+     "images": [],
+     "more": 0,
+     "path": "reductions/RDV41/wd",
+     "where": {
+      "project_code": "RDV41",
+      "workdir": "wd"
+     }
+    }
+   ],
+   "panel": "image",
+   "scope": "workdir",
+   "title": "Diagnostics plots"
+  },
+  {
+   "index": 4,
+   "instances": [
+    {
+     "client": true,
+     "where": {
+      "target": "0742+103"
+     }
+    }
+   ],
+   "panel": "avica_config",
+   "scope": "target",
+   "title": "AVICA configuration"
+  },
+  {
+   "index": 5,
+   "instances": [
+    {
+     "client": true,
+     "path": "reductions/RDV41/wd",
+     "where": {
+      "project_code": "RDV41",
+      "workdir": "wd"
+     }
+    }
+   ],
+   "panel": "avica_inputs",
+   "scope": "workdir",
+   "title": "Input parameters (rPicard *.inp)"
+  }
+ ],
+ "schema": "alfrd.view/1",
+ "view": "metadata"
+}
