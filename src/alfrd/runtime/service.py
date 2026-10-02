@@ -242,14 +242,24 @@ class RuntimeService:
             session.flush()
             self._audit_entity(session, "project", project.id, "created")
             workflows = []
-            for entrypoint in document.entrypoint:
+            definitions = [(entrypoint.name, [(entrypoint.name, list(entrypoint.cmd), {})]) for entrypoint in document.entrypoint]
+            workflow_specs = document.extra.get("workflows") or []
+            first_workflow = workflow_specs[0] if isinstance(workflow_specs, list) and workflow_specs else next(iter(workflow_specs.values()), {}) if isinstance(workflow_specs, Mapping) else {}
+            if isinstance(first_workflow, Mapping) and first_workflow.get("repeat") is not None:
+                from alfrd.execution import load_execution
+
+                config = load_execution(root)
+                definitions = [(config.workflow, [(step.id, list(step.argv or []),
+                                {"iteration": step.iteration, "agent": step.entrypoint, "handoff": dict(step.handoff)})
+                                for step in config.steps])]
+            for workflow_name, step_specs in definitions:
                 workflow = WorkflowDefinition(
-                    project_id=project.id, name=entrypoint.name, version=1,
+                    project_id=project.id, name=workflow_name, version=1,
                     parameters_json={},
                     steps=[StepDefinition(
-                        key=entrypoint.name, position=0,
-                        command_json=list(entrypoint.cmd), parameters_json={},
-                    )],
+                        key=key, position=position,
+                        command_json=command, parameters_json=parameters,
+                    ) for position, (key, command, parameters) in enumerate(step_specs)],
                 )
                 session.add(workflow)
                 session.flush()

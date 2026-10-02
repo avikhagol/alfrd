@@ -22,6 +22,13 @@
         "required": ["name", "cmd"],
         "properties": {
           "name": {"type": "string", "minLength": 1},
+          "stdin_file": {"type": "string", "minLength": 1},
+          "output_file": {"type": "string", "minLength": 1},
+          "output_capture": {"enum": ["file", "stdout"]},
+          "cwd": {"type": "string", "minLength": 1},
+          "manual": {"type": "boolean"},
+          "timeout": {"type": "number", "exclusiveMinimum": 0},
+          "env": {"type": "object"},
           "cmd": {
             "type": "array",
             "minItems": 1,

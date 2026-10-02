@@ -54,6 +54,7 @@ _STATIC_IMPORT = re.compile(
 )
 #: Modules the Studio loads with ``import()`` on first use; never part of startup.
 LAZY_MODULES = {
+    "js/components/agent_dialog.js",
     "js/components/diagnostics.js", "js/components/targets_dialog.js", "js/data/targets.js",
     "js/components/step_picker.js", "js/data/step_select.js", "js/components/history.js",
     "js/components/palette.js", "js/data/fuzzy.js", "js/components/usage_view.js",
@@ -89,13 +90,14 @@ def test_startup_payload_under_165kb_compressed():
     assert total < 165 * 1024, f"{total} bytes gzip"
 
 
-def test_lazy_payload_under_56kb_compressed():
+def test_lazy_payload_under_57kb_compressed():
     # Everything else: import() modules, css/lazy.css, templates and assets.
     # 40 KB until 0.2.0.7; 0.2.0.8's on-demand features (palette, search,
     # history, notes, usage, step picker, panels) load here, not at startup.
     startup = _startup_files()
     total = sum(_gz(p) for p in _web_files() if p.resolve() not in startup)
-    assert total < 56 * 1024, f"{total} bytes gzip"
+    # Agent-loop artifact paging, copy and refresh controls add under 1 KB gzip.
+    assert total < 57 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

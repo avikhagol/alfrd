@@ -11,7 +11,7 @@ async function getJson(path, init) {
   const type = response.headers.get("content-type") || "";
   const body = type.includes("json") ? await response.json() : null;
   if (!response.ok) {
-    const message = body?.error?.message || `${response.status} ${response.statusText}`;
+    const message = body?.errors?.join("; ") || body?.error?.message || `${response.status} ${response.statusText}`;
     const error = new Error(message);
     error.status = response.status;
     error.body = body;
@@ -57,6 +57,19 @@ export const server = {
     if (Array.isArray(this.session?.projects) && key && !this.session.projects.includes(key)) this.session.projects.push(key);
     return project;
   },
+
+  projectTemplates() { return getJson("/studio/project-templates"); },
+  async createProject(payload) {
+    const project = await this.mutate("/studio/projects/create", payload);
+    if (Array.isArray(this.session.projects)) this.session.projects.push(project.identifier);
+    this.session.default_project = project.identifier;
+    return project;
+  },
+  handoffs(project, id) { return getJson(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/handoffs`); },
+  handoffArtifact(project, id, unit, artifact, offset = 0) { return getJson(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/handoffs/${encodeURIComponent(unit)}/${artifact}?${new URLSearchParams({ offset })}`); },
+  handoff(project, file) { return getJson(`/studio/projects/${encodeURIComponent(project)}/handoff?${new URLSearchParams({ file })}`); },
+  handoffSave(project, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/handoff`, payload); },
+  planResponse(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/response`, payload); },
 
   // The project's target list (alfrd.targets.csv; alfrd.targets_csv).
   targets(project) {

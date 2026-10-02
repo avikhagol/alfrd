@@ -1,3 +1,5 @@
+export const DEFAULT_ITERATIONS = 5;
+export const MAX_ITERATIONS = 100;
 // Studio definitions from alfrd.yaml (optionally on top of a template).
 //
 // Nothing about a particular pipeline is built into the Studio: step labels,
@@ -71,8 +73,22 @@ export function templateName(manifest) {
 function stepList(manifest) {
   const wfs = manifest?.workflows;
   const first = Array.isArray(wfs) ? wfs[0] : wfs && typeof wfs === "object" ? Object.values(wfs)[0] : null;
-  const steps = Array.isArray(first) ? first : first?.steps;
-  return Array.isArray(steps) ? steps : [];
+  return expandWorkflowSteps(first);
+}
+
+export function expandWorkflowSteps(workflow) {
+  const raw = Array.isArray(workflow) ? workflow : workflow?.steps || workflow?.sequence || [];
+  if (!workflow?.repeat) return Array.isArray(raw) ? raw : [];
+  const count = workflow.repeat.iterations;
+  if (!Number.isInteger(count) || count < 1 || count > MAX_ITERATIONS) throw new Error("repeat.iterations must be an integer from 1 to 100");
+  const out = [];
+  for (let iteration = 1; iteration <= count; iteration++) raw.forEach((step) => {
+    const base = stepId(step), id = `i${String(iteration).padStart(3, "0")}-${base}`;
+    const own = typeof step === "object" ? step : {};
+    out.push({ ...own, id, base_step: base, iteration, label: `${iteration}/${count} · ${own.label || base}`,
+      depends_on: out.length ? [out.at(-1).id] : [] });
+  });
+  return out;
 }
 
 export function stepId(step) {
@@ -96,7 +112,7 @@ export function studioManifest(manifest) {
     const id = resolveAlias(stepId(raw)).name;
     if (!id) return;
     const own = raw && typeof raw === "object" ? Object.fromEntries(Object.entries(raw).filter(([k]) => !["id", "key", "name"].includes(k))) : {};
-    steps[id] = { ...(tplSteps[id] || {}), ...own };
+    steps[id] = { ...(tplSteps[own.base_step || id] || {}), ...own };
   });
   const byName = new Map();
   [...(tpl.artifacts || []), ...(Array.isArray(m.artifacts) ? m.artifacts : [])].forEach((a) => { if (a && a.name) byName.set(a.name, a); });

@@ -1,0 +1,46 @@
+description: A bounded Claude Code and Codex handoff workflow.
+history:
+  files: [alfrd.yaml, task.md, next-step-claude.md, next-step-gpt.md]
+primary_key: TARGET_NAME
+entrypoint:
+  - name: claude
+    cmd: [claude, -p, --output-format, text]
+    stdin_file: "{prompt_file}"
+    output_file: "{response_file}"
+    output_capture: stdout
+    # manual: true lets you copy the prompt into chat and paste a response.
+  - name: codex
+    cmd: [codex, exec, --sandbox, workspace-write, --skip-git-repo-check, --output-last-message, "{response_file}", "-"]
+    stdin_file: "{prompt_file}"
+    output_file: "{response_file}"
+    output_capture: file
+execution:
+  cwd: .
+  mode: step
+  concurrency: 1
+  on_failure: stop_plan
+  status_from: exit_code
+  timeout: 3600
+  auto_resume: adopt
+workflows:
+  - name: agent-loop
+    repeat: {iterations: 5}
+    steps:
+      - id: claude-turn
+        entrypoint: claude
+        handoff: {input: next-step-claude.md, output: next-step-gpt.md}
+      - id: codex-turn
+        entrypoint: codex
+        handoff: {input: next-step-gpt.md, output: next-step-claude.md}
+steps:
+  claude-turn: {label: Claude, category: Agent}
+  codex-turn: {label: Codex, category: Agent}
+artifacts:
+  - {name: task, kind: text, path_pattern: task.md}
+  - {name: claude-handoff, kind: text, path_pattern: next-step-claude.md}
+  - {name: codex-handoff, kind: text, path_pattern: next-step-gpt.md}
+views:
+  metadata:
+    - {panel: text, title: Task, scope: target, source: task.md}
+    - {panel: text, title: Next step for Claude, scope: target, source: next-step-claude.md}
+    - {panel: text, title: Next step for Codex, scope: target, source: next-step-gpt.md}

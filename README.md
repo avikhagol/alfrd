@@ -396,3 +396,18 @@ The Sheets API is free. Google may still ask for billing details.
 If you use ALFRD, please link to this repository in a footnote.
 
 ALFRD was built in the SMILE project ("Search for Milli-Lenses"). SMILE is funded by the European Research Council (ERC), HORIZON ERC Grants 2021, grant agreement No. 101040021.
+
+## Project creation and agent handoffs
+
+Create a blank project with `alfrd projects create ./my-project`, or a five-cycle
+Claude Code ↔ Codex workflow with:
+
+```bash
+rtk alfrd projects create ./my-project --template agent-loop --task "Implement the widget" --iterations 5
+rtk alfrd plan run --root ./my-project --dry-run
+rtk alfrd plan run --root ./my-project
+```
+
+Studio settings → **New project** creates the same scaffold. Schedule → **More →
+Handoffs** shows and edits Markdown handoffs. [Configuration and manual chat
+turns](docs/agent-loops.md).

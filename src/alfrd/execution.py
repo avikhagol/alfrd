@@ -63,6 +63,7 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     "serialize_on": [],
     "serialize_match": "all",
     "usage_interval": 5,           # seconds between resource samples (0 = off)
+    "max_runtime": None,          # optional plan wall-clock limit, including pauses
 }
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -95,6 +96,17 @@ class StepCommand:
     entrypoint: str | None
     timeout: float | None = None
     env: Mapping[str, str] = field(default_factory=dict)
+    stdin_file: str | None = None
+    output_file: str | None = None
+    output_capture: str = "file"
+    cwd: str | None = None
+    handoff: Mapping[str, str] = field(default_factory=dict)
+    iteration: int = 0
+    iterations: int = 0
+    base_step: str = ""
+    first_turn: bool = False
+    final_turn: bool = False
+    manual: bool = False
 
 
 @dataclass
@@ -165,7 +177,8 @@ class ExecutionConfig:
             "entrypoints": {k: list(v) for k, v in self.entrypoints.items()},
             "workflow": self.workflow,
             "steps": [
-                {"id": s.id, "entrypoint": s.entrypoint, "argv": list(s.argv) if s.argv else None, "timeout": s.timeout}
+                {"id": s.id, "entrypoint": s.entrypoint, "argv": list(s.argv) if s.argv else None, "timeout": s.timeout,
+                 "handoff": dict(s.handoff), "iteration": s.iteration, "manual": s.manual}
                 for s in self.steps
             ],
             "key_column": self.key_column,
@@ -210,8 +223,9 @@ def merged_manifest(root: str | Path) -> dict[str, Any]:
     manifest, _path, _default = manifest_data(root)
     name = template_name(manifest)
     template = _load_yaml(template_path(name)) if name and template_path(name) else {}
-    entries = {**_entrypoints(template.get("entrypoint")), **_entrypoints(manifest.get("entrypoint"))}
-    merged["entrypoint"] = [{"name": k, "cmd": list(v)} for k, v in entries.items()]
+    entries = {str(e["name"]): copy.deepcopy(e) for e in template.get("entrypoint") or [] if isinstance(e, Mapping) and e.get("name")}
+    entries.update({str(e["name"]): copy.deepcopy(e) for e in manifest.get("entrypoint") or [] if isinstance(e, Mapping) and e.get("name")})
+    merged["entrypoint"] = list(entries.values())
     merged["execution"] = {**copy.deepcopy(template.get("execution") or {}), **copy.deepcopy(manifest.get("execution") or {})}
     workflows = manifest.get("workflows") or template.get("workflows")
     merged["_workflow"] = workflows[0] if isinstance(workflows, list) and workflows and isinstance(workflows[0], Mapping) else {}
@@ -235,6 +249,15 @@ def load_execution(root: str | Path) -> ExecutionConfig:
     except (TypeError, ValueError) as exc:
         raise ExecutionError("execution.concurrency must be an integer") from exc
     settings["serialize_on"] = _serialize_on(settings.get("serialize_on"))
+    if settings.get("max_runtime") is not None:
+        try:
+            import math
+
+            settings["max_runtime"] = float(settings["max_runtime"])
+            if not math.isfinite(settings["max_runtime"]) or settings["max_runtime"] <= 0:
+                raise ValueError
+        except (ValueError, TypeError) as exc:
+            raise ExecutionError("execution.max_runtime must be positive seconds") from exc
     try:
         settings["usage_interval"] = max(0.0, float(settings.get("usage_interval") or 0))
     except (TypeError, ValueError) as exc:
@@ -245,6 +268,7 @@ def load_execution(root: str | Path) -> ExecutionConfig:
     if default_entry and default_entry not in entrypoints:
         raise ExecutionError(f"workflow entrypoint {default_entry!r} is not an entrypoint in alfrd.yaml")
     steps = []
+    entries = {e["name"]: e for e in merged.get("entrypoint") or []}
     for sid in merged.get("step_order") or list((merged.get("steps") or {}).keys()):
         spec = (merged.get("steps") or {}).get(sid) or {}
         entry = spec.get("entrypoint") or default_entry
@@ -260,12 +284,50 @@ def load_execution(root: str | Path) -> ExecutionConfig:
             argv = entrypoints[entry]
         else:
             argv = None
-        timeout = spec.get("timeout", settings.get("timeout"))
+        timeout = spec.get("timeout", entries.get(entry, {}).get("timeout", settings.get("timeout")))
+        io = {**entries.get(entry, {}), **spec}
+        for key in ("stdin_file", "output_file", "cwd"):
+            if io.get(key) is not None and (not isinstance(io[key], str) or not io[key]):
+                raise ExecutionError(f"{key} must be a nonempty string")
+        if "manual" in io and not isinstance(io["manual"], bool):
+            raise ExecutionError("manual must be true or false")
+        if io.get("output_capture") == "stdout" and not io.get("output_file"):
+            raise ExecutionError("output_capture: stdout requires output_file")
+        handoff = io.get("handoff") or {}
+        if not isinstance(handoff, Mapping) or (handoff and set(handoff) != {"input", "output"}):
+            raise ExecutionError("handoff needs input and output file names")
+        if handoff:
+            from alfrd.agent_loop import project_file
+
+            for value in handoff.values():
+                if not isinstance(value, str) or not value.endswith(".md"):
+                    raise ExecutionError("handoff files must be Markdown (.md)")
+                project_file(base, value)
+        if io.get("output_capture", "file") not in ("file", "stdout"):
+            raise ExecutionError("output_capture must be file or stdout")
         steps.append(StepCommand(
             id=sid, argv=argv, entrypoint=entry,
             timeout=float(timeout) if timeout not in (None, "", 0) else None,
-            env={str(k): str(v) for k, v in (spec.get("env") or {}).items()},
+            env={str(k): str(v) for k, v in {**(entries.get(entry, {}).get("env") or {}), **(spec.get("env") or {})}.items()},
+            stdin_file=io.get("stdin_file"), output_file=io.get("output_file"),
+            output_capture=io.get("output_capture", "file"), cwd=io.get("cwd"), handoff=dict(handoff),
+            iteration=int(spec.get("iteration") or 0), iterations=int(spec.get("iterations") or 0),
+            base_step=spec.get("base_step", sid),
+            first_turn=sid == (merged.get("step_order") or [None])[0],
+            final_turn=sid == (merged.get("step_order") or [None])[-1],
+            manual=bool(io.get("manual", False)),
         ))
+    if workflow.get("repeat") is not None:
+        if settings["mode"] != "step" or settings["concurrency"] != 1:
+            raise ExecutionError("repeated workflows require mode: step and concurrency: 1")
+        if settings["on_failure"] != "stop_plan" or settings["status_from"] != "exit_code":
+            raise ExecutionError("repeated workflows require on_failure: stop_plan and status_from: exit_code")
+        if not all(s.handoff and s.stdin_file and s.output_file for s in steps):
+            raise ExecutionError("repeated agent steps need handoff, stdin_file and output_file")
+        if not all(s.stdin_file == "{prompt_file}" and s.output_file == "{response_file}" for s in steps):
+            raise ExecutionError("repeated steps must use {prompt_file} and {response_file} snapshots")
+        if any(s.cwd for s in steps):
+            raise ExecutionError("agent loops use execution.cwd for the shared workspace")
     aliases = (merged.get("project_settings") or {}).get("field_aliases") or {}
     return ExecutionConfig(
         root=base, settings=settings, entrypoints=entrypoints,

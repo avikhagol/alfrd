@@ -2,7 +2,7 @@
 // normalization and per-target rollups. Pure functions, no DOM access.
 
 import { resolveAlias, AliasLog } from "../utils/csv_parser.js";
-import { studioManifest, applyFieldAliases } from "./defs.js";
+import { studioManifest, applyFieldAliases, expandWorkflowSteps } from "./defs.js";
 
 // Step labels, stages, categories, descriptions, icons, metadata and logs are
 // read from alfrd.yaml (and its `template:`), see data/defs.js. Nothing about a
@@ -101,7 +101,7 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
     : null;
 
   const addWorkflow = (wfName, def) => {
-    const rawSteps = Array.isArray(def) ? def : Array.isArray(def?.steps) ? def.steps : def?.sequence || [];
+    const rawSteps = expandWorkflowSteps(def);
     if (!Array.isArray(rawSteps) || !rawSteps.length) {
       errors.push(`Workflow "${wfName}" declares no steps.`);
       return;

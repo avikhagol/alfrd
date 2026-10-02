@@ -88,6 +88,39 @@ def connect_project_api():
     return jsonify(project), 201
 
 
+@studio_api.post("/studio/projects/create")
+def create_project_api():
+    from alfrd.project_creation import create_project
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(ValueError("project creation needs a runtime-backed server"), 400)
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
+        return _json_error(ValueError("path is required"), 400)
+    try:
+        project, _ = create_project(service, payload["path"], name=payload.get("name"),
+                                    template=payload.get("template", "basic"), task=payload.get("task", ""),
+                                    iterations=payload.get("iterations", 5))
+    except FileExistsError as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError, TypeError) as error:
+        return _json_error(error, 400)
+    scope = current_app.config.get("STUDIO_PROJECTS")
+    if isinstance(scope, list) and project.identifier not in scope:
+        scope.append(project.identifier)
+    current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
+    return jsonify(name=project.name, identifier=project.identifier, root=project.root_path), 201
+
+
+@studio_api.get("/studio/project-templates")
+def project_templates():
+    import yaml
+
+    return jsonify(templates=[{"name": path.stem, "description": (yaml.safe_load(path.read_text()) or {}).get("description", "")}
+                              for path in sorted((web_root() / "assets" / "templates").glob("*.yaml"))])
+
+
 # ---------------------------------------------------------------------------
 # AVICA tree (read-only; confined to the connected project's root directory)
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ import statistics
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -433,6 +435,11 @@ def values_for(cfg: ExecutionConfig, unit: UnitSpec, plan: Mapping[str, Any], cs
         "from_step": unit.steps[0] if unit.steps else "",
         "step": unit.steps[0] if len(unit.steps) == 1 else "",
     }
+    if unit.mode == "step" and unit.steps:
+        step = cfg.step(unit.steps[0])
+        archive = cfg.root / PLANS_DIR / str(plan.get("id") or "preview") / "handoffs" / str(plan.get("unit_id") or unit.steps[0])
+        base.update(prompt_file=str(archive / "prompt.md"), response_file=str(archive / "response.md"),
+                    iteration=step.iteration, iterations=step.iterations)
     if unit.mode == "batch":
         base["targets"] = ",".join(r.target for r in unit.rows)
         return base
@@ -662,11 +669,19 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
     if status_from:
         settings["status_from"] = status_from
     table = table_for(cfg, path)
+    loop = next((s for s in cfg.steps if s.iterations), None)
+    if loop:
+        if settings["mode"] != "step" or settings["concurrency"] != 1 or settings["on_failure"] != "stop_plan" or settings["status_from"] != "exit_code":
+            raise ExecutionError("agent loops require step mode, concurrency 1, stop_plan and exit_code status")
+        if len(table.rows) != 1 or table.steps != cfg.step_ids or any(table.rows[0].cell(s) == "skip" for s in table.steps):
+            raise ExecutionError("agent loops need one task row and every repeated step selected")
     if not table.steps:
         raise ExecutionError(f"{path.name} has no step columns ({', '.join(cfg.step_ids)})")
     if retry_failed:
         reset_failed(cfg, path)
     plan_id = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid() % 10000:04d}"
+    if loop:
+        plan_id += "-" + uuid.uuid4().hex[:8]
     folder = PlanDir(cfg.root, plan_id)
     try:
         rel = str(path.resolve().relative_to(cfg.root))
@@ -690,9 +705,11 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
         "serialize_on": list(settings.get("serialize_on") or []),
         "serialize_match": settings.get("serialize_match") or "all",
         "usage_interval": settings.get("usage_interval", 5),
+        "max_runtime": settings.get("max_runtime"),
         "status": "running",
         "runner": {},
         "history": [{"at": now_iso(), "event": "created"}],
+        **({"loop": {"iterations": loop.iterations, "definition": cfg.to_dict(), "manifest_sha256": hashlib.sha256((cfg.root / "alfrd.yaml").read_bytes()).hexdigest()}} if loop else {}),
     })
     folder.set_control("run")
     return folder
@@ -710,6 +727,8 @@ def add_row(cfg: ExecutionConfig, path: Path, *, target: str, files: str = "", c
     Raises ``pc.DuplicateRowError`` for a duplicate (target, code) and
     ``FileNotFoundError`` for a missing CSV unless ``create``.
     """
+    if any(s.iterations for s in cfg.steps):
+        raise ExecutionError("an agent loop has one task row; create another project for another task")
     lock = cfg.root / ".alfrd" / "locks" / f"{Path(path).name}.lock"
     return pc.add_row(path, lock, list(steps or cfg.step_ids), target=target, files=files, code=code,
                       workdir=workdir, selected=selected, create=create, **_columns(cfg))
@@ -898,6 +917,25 @@ class Runner:
                 except OSError:
                     self.log("another runner holds this plan; exiting")
                     return 3
+            if self.plan.get("loop"):
+                workspace = self.cfg.cwd
+                guard = workspace / ".alfrd-agent-loop.lock"
+                with open(guard, "a+") as workspace_lock:
+                    if fcntl is not None:
+                        while True:
+                            try:
+                                fcntl.flock(workspace_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                break
+                            except OSError:
+                                if any(u.get("status") == "running" and pid_alive(u.get("pid"), u.get("proc_start"), u.get("host")) for u in self.folder.units()):
+                                    time.sleep(0.1)
+                                    continue
+                                self.save_plan(status="interrupted", error="another agent loop owns this workspace")
+                                return 3
+                    # Commands retain this descriptor after runner death. An adopted
+                    # runner waits for them to finish before taking the workspace lock.
+                    self.workspace_fd = workspace_lock.fileno() if fcntl is not None else None
+                    return self._run()
             return self._run()
 
     def _run(self) -> int:
@@ -930,6 +968,14 @@ class Runner:
                 break
             action = self.folder.control()
             self.poll()
+            deadline = self.plan.get("max_runtime")
+            created = _parse_stamp(self.plan.get("created"))
+            if deadline and created and (datetime.now() - created).total_seconds() >= deadline:
+                self.stop_new = True
+                self.save_plan(error="total runtime limit reached")
+                for live in self.live.values():
+                    if not live.killed_at:
+                        self.kill(live, "total runtime limit reached")
             if action == "cancel":
                 self.cancel_all()
                 final = "cancelled"
@@ -941,7 +987,7 @@ class Runner:
             else:
                 started = self.schedule()
                 if not self.live and not started:
-                    final = "finished"
+                    final = "failed" if self.stop_new else "finished"
                     break
             time.sleep(POLL)
         counts = self.counts()
@@ -971,6 +1017,16 @@ class Runner:
         return keys
 
     def schedule(self) -> int:
+        if self.plan.get("loop"):
+            if hashlib.sha256((self.folder.root / "alfrd.yaml").read_bytes()).hexdigest() != self.plan["loop"]["manifest_sha256"]:
+                self.stop_new = True
+                self.save_plan(error="agent workflow changed; restore its manifest before resuming")
+                return 0
+            table = self.table()
+            if len(table.rows) != 1 or any(table.rows[0].cell(s) == "skip" for s in table.steps):
+                self.stop_new = True
+                self.save_plan(error="agent loops require one task and all turns; restore the plan CSV")
+                return 0
         mode = self.plan["mode"]
         limit = int(self.plan.get("concurrency") or 1)
         if len(self.live) >= limit:
@@ -1040,8 +1096,18 @@ class Runner:
         }
         cells_rows = spec.rows
         try:
-            argv, env, timeout = command_for(self.cfg, spec, self.plan, self.csv_file)
-        except ExecutionError as exc:
+            step = self.cfg.step(spec.steps[0]) if spec.mode == "step" else None
+            values = values_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
+            if step and step.handoff:
+                from alfrd.agent_loop import prepare
+
+                archive = self.folder.path / "handoffs" / unit["id"]
+                unit["handoff"] = prepare(self.folder.root, archive, step, self.folder.id, unit["id"])
+                unit.update(iteration=step.iteration, agent=step.entrypoint or step.base_step, manual=step.manual)
+            argv, env, timeout = command_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
+            if step and step.manual:
+                argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
+        except (ExecutionError, OSError, ValueError) as exc:
             unit.update(status="failed", error=str(exc), finished=now_iso())
             self.folder.save_unit(unit)
             self.log(f"{unit['id']}: cannot start: {exc}")
@@ -1053,6 +1119,9 @@ class Runner:
         exit_path = self.folder.logs_dir / f"{unit['id']}.exit"
         self.folder.logs_dir.mkdir(parents=True, exist_ok=True)
         cwd = self.cfg.cwd
+        if step and step.cwd:
+            cwd = Path(render([step.cwd], values)[0]).expanduser()
+            cwd = cwd if cwd.is_absolute() else self.folder.root / cwd
         unit.update(argv=argv, cwd=str(cwd), log=str(log_path.relative_to(self.folder.root)),
                     exit_file=str(exit_path.relative_to(self.folder.root)), timeout=timeout,
                     usage_file=str(exit_path.with_suffix(".usage.jsonl").relative_to(self.folder.root)))
@@ -1076,16 +1145,32 @@ class Runner:
             log.write(f"# cwd {cwd}\n$ {' '.join(argv)}\n")
             log.flush()
             try:
+                shim_args = []
+                if step and step.stdin_file:
+                    stdin_path = Path(render([step.stdin_file], values)[0])
+                    stdin_path = stdin_path if stdin_path.is_absolute() else self.folder.root / stdin_path
+                    shim_args += ["--stdin-file", str(stdin_path)]
+                if step and step.output_file:
+                    output_path = Path(render([step.output_file], values)[0])
+                    output_path = output_path if output_path.is_absolute() else self.folder.root / output_path
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    if output_path.exists():
+                        raise ExecutionError("response file already exists; refusing to reuse a stale response")
+                    if step.output_capture == "stdout" and not step.manual:
+                        shim_args += ["--stdout-file", str(output_path)]
+                workspace_fd = getattr(self, "workspace_fd", None)
                 process = subprocess.Popen(
-                    [sys.executable, "-m", "alfrd.runtime.shim", "--exit-file", str(exit_path), "--", *argv],
+                    [sys.executable, "-m", "alfrd.runtime.shim", "--exit-file", str(exit_path), *shim_args, "--", *argv],
                     cwd=str(cwd), env=process_env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                     start_new_session=True,
+                    pass_fds=(workspace_fd,) if workspace_fd is not None else (),
                 )
-            except OSError as exc:
+            except (OSError, ExecutionError) as exc:
                 unit.update(status="failed", error=str(exc), finished=now_iso())
                 self.folder.save_unit(unit)
                 first = spec.steps[0]
                 self.set_cells({(r.key, first): pc.FAILED for r in cells_rows})
+                self.after_failure(spec.rows, first)
                 self.after_failure(spec.rows, first)
                 return 0
         unit.update(pid=process.pid, pgid=process.pid, proc_start=proc_start(process.pid))
@@ -1235,6 +1320,15 @@ class Runner:
         fills: dict[tuple[str, str], str] = {}
         failed_step = None
         interrupted = exit_code is None and reason is None
+        if unit.get("handoff") and exit_code == 0 and reason is None:
+            try:
+                from alfrd.agent_loop import publish
+
+                unit["artifact"] = publish(self.folder.root, unit["handoff"], plan_id=self.folder.id,
+                                           unit_id=unit["id"], iteration=unit["iteration"], agent=unit["agent"])
+                self.event(f"handoff published: {unit['id']} → {unit['artifact']['path']}")
+            except (OSError, ValueError) as exc:
+                reason = f"invalid handoff: {exc}"
         results_all: dict[str, Any] = {}
         for key in unit.get("rows") or [unit["row"]]:
             row = self.table().row(key)
@@ -1397,7 +1491,10 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
     beat = _parse_stamp(runner.get("heartbeat"))
     runner.update(alive=alive, heartbeat_age=(datetime.now() - beat).total_seconds() if beat else None)
     durations = step_durations(base)
+    from alfrd.agent_loop import status as loop_status
+
     return {
+        "loop": loop_status(plan, all_units),
         "plan": plan,
         "control": folder.control(),
         "runner": runner,

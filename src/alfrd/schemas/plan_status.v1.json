@@ -10,6 +10,20 @@
     "generated_at": {"$ref": "#/$defs/time"},
     "cursor": {"type": "string", "pattern": "^c1\\."},
     "changed": {"type": "boolean"},
+    "loop": {
+      "type": "object",
+      "required": ["iteration", "iterations", "phase"],
+      "properties": {
+        "iteration": {"type": "integer", "minimum": 0},
+        "iterations": {"type": "integer", "minimum": 1, "maximum": 100},
+        "agent": {"type": ["string", "null"]},
+        "phase": {"type": "string"},
+        "input": {"type": ["string", "null"]},
+        "output": {"type": ["string", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "artifact": {"type": ["object", "null"]}
+      }
+    },
     "project": {
       "type": "object",
       "required": ["name", "identifier"],

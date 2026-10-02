@@ -1,3 +1,4 @@
+from alfrd.agent_loop import DEFAULT_ITERATIONS, MAX_ITERATIONS
 from pathlib import Path
 import os
 import shutil
@@ -564,6 +565,30 @@ def studio(
 
 projects_cli = typer.Typer(help="Projects remembered in the runtime database (used by `alfrd serve`).")
 alfrd_cli.add_typer(projects_cli, name="projects")
+
+
+@projects_cli.command("create")
+def projects_create(
+    path: str = typer.Argument(..., help="New or existing project folder."),
+    name: Optional[str] = typer.Option(None, "--name"),
+    template: str = typer.Option("basic", "--template"),
+    task: str = typer.Option("", "--task", help="Initial agent task."),
+    task_file: Optional[str] = typer.Option(None, "--task-file", help="Read the initial task from Markdown."),
+    iterations: int = typer.Option(DEFAULT_ITERATIONS, "--iterations", min=1, max=MAX_ITERATIONS),
+    db: Optional[str] = typer.Option(None, "--db", help="Runtime SQLite database."),
+):
+    """Scaffold and register a project without starting its commands."""
+    from alfrd.project_creation import create_project
+
+    try:
+        if task_file:
+            task = Path(task_file).read_text(encoding="utf-8")
+        project, _ = create_project(_runtime_service(db), path, name=name, template=template,
+                                    task=task, iterations=iterations)
+    except (ValueError, OSError) as error:
+        print(f"error: {error}")
+        raise typer.Exit(1)
+    print(f"Created {project.name}: {project.root_path}\n{project.identifier}")
 
 
 @projects_cli.command("list")
@@ -1152,6 +1177,23 @@ def plan_run(
         print(f"  alfrd plan status -C {folder.root}      alfrd plan pause|cancel {folder.id} -C {folder.root}")
         return
     raise typer.Exit(code=scheduler.Runner(folder.root, folder.id).run())
+
+
+@plan_cli.command("response")
+def plan_response_command(
+    plan_id: str = typer.Argument(..., help="Plan awaiting a manual response."),
+    unit_id: str = typer.Argument(..., help="Waiting unit id."),
+    response_file: Path = typer.Argument(..., help="Markdown response file."),
+    root: str = _ROOT_OPT,
+):
+    """Validate and submit a manual response; rejected responses keep waiting."""
+    from alfrd.agent_loop import submit_response
+
+    try:
+        submit_response(Path(root), plan_id, unit_id, response_file.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as error:
+        _plan_fail(error)
+    print("Response submitted")
 
 
 @plan_cli.command("status")

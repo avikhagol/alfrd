@@ -24,6 +24,7 @@ Times are UTC (``…Z``); durations are seconds.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import socket
 import time
@@ -318,7 +319,13 @@ def plan_status(root: str | Path, plan: str | None = None, *, detail: str = "sum
     except Exception as exc:  # noqa: BLE001 - reported, never raised: the plan may still be readable
         error = str(exc)
     events = _events(data, units)
-    cursor = _cursor(events, _digest(data, control, runner, table, csv_path))
+    from alfrd.agent_loop import status as loop_status
+
+    loop = loop_status(data, units)
+    digest = _digest(data, control, runner, table, csv_path)
+    if loop:
+        digest = hashlib.sha1((digest + json.dumps(loop, sort_keys=True)).encode()).hexdigest()[:10]
+    cursor = _cursor(events, digest)
     head = {"schema": SCHEMA, "generated_at": _now_utc(), "cursor": cursor,
             "project": {"name": info["name"], "identifier": info["identifier"]}}
     if since is not None and since == cursor:
@@ -391,6 +398,8 @@ def plan_status(root: str | Path, plan: str | None = None, *, detail: str = "sum
         "failures": failures,
         "waiting": waiting,
     }
+    if loop:
+        doc["loop"] = loop
     if error:
         doc["error"] = error
     if since is not None:

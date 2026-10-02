@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased]
+
+#### Fixed
+
+- **Manual agent-loop responses are checked before acceptance.**
+  - Why it matters: invalid headings leave the turn waiting for correction.
+  - How to use: fix the listed errors and resubmit.
+
+#### Added
+
+- **Handoffs load summaries and paged artifacts on demand.**
+  - Why it matters: large turns stay bounded and errors remain visible.
+  - How to use: open a turn, Load more, Copy, Refresh, or Open unit log.
+- **Loop creation previews turns and Schedule shows loop progress.**
+  - Why it matters: the iteration count and pause/cancel behavior are clear.
+  - How to use: select agent-loop, set iterations, and follow the Schedule summary.
+
+## [0.2.0.9]
+
+#### Added
+
+- Project scaffolding with `alfrd projects create` and Studio settings → New project: basic and agent-loop templates, initial task, iteration count, and runtime registration. Existing files are preserved.
+- Bounded Claude Code ↔ Codex workflows using `workflows[].repeat.iterations` (1–100). Five iterations run ten turns, starting with Claude planning and ending with a Codex closing report. The existing scheduler, plan CSV, pause/resume/cancel, retry, detached shim and status API remain the execution path.
+- Entrypoint `stdin_file`, `output_file`, `output_capture`, `cwd`, environment and timeout settings. Prompts use immutable snapshots; final responses are captured separately from diagnostic logs, validated, archived, and atomically published to the configured recipient's Markdown file.
+- Loop status metadata and cursor changes through the read-only CLI/HTTP status API, a Studio iteration indicator and Handoffs dialog, Markdown history and stale-edit protection, workspace locking that survives runner death, and manual chat responses (`manual: true` on an entrypoint).
+- Runtime registration preserves repeated workflow order. Projects with no targets are selectable in Studio.
+
 ## [0.2.0.8]
 
 #### Added

@@ -1,3 +1,4 @@
+import { summarizeLoop } from "./loop_helpers.js";
 // Plans: run a plan CSV (targets × steps) with the commands in alfrd.yaml.
 //
 // The server starts a detached runner (alfrd.runtime.scheduler); this module
@@ -177,12 +178,13 @@ function moreMenu(ctx, project, anchor) {
   const act = (a) => () => planAct(ctx, project, a, anchor);
   const log = `.alfrd/plans/${p.id}/runner.log`;
   ctx.menu(anchor, [
-    canAct && { icon: "plus", label: "Add target…", hint: "append a row to this plan's CSV", run: act("add-row") },
+    canAct && !p.loop && { icon: "plus", label: "Add target…", hint: "append a row to this plan's CSV", run: act("add-row") },
+    p.loop && { icon: "file", label: "Handoffs…", run: async () => { try { const { openHandoffs } = await import("./agent_dialog.js"); await openHandoffs(ctx, project, p.id); } catch (error) { ctx.toast(error.message, "fail"); } } },
     canAct && { icon: "play", label: "New run…", run: act("new") },
     (s.units || []).some((u) => u.usage) && { icon: "graph", label: "Usage", hint: "CPU / memory per step", run: act("usage") },
     { icon: "terminal", label: "Runner log", hint: "follow in the Log Stream", run: () => { dockLog(ctx, project, log); } },
     { icon: "sync", label: "Refresh", run: act("refresh") },
-    canAct && active && { icon: "stop", label: "Cancel plan…", danger: true, run: act("cancel") },
+    canAct && active && { icon: "stop", label: "Cancel plan…", hint: "Cancel: stops the current turn now", danger: true, run: act("cancel") },
   ].filter(Boolean));
 }
 
@@ -223,7 +225,7 @@ export function renderSchedule(box, ctx, project) {
   const failedCells = (tot.failed || 0) + (tot.blocked || 0) + (tot.interrupted || 0) + (tot.cancelled || 0);
   const active = ["running", "paused", "interrupted"].includes(p.status);
   // One primary action for the plan's state; everything else in "More".
-  const primary = !canAct ? "" : p.status === "running" ? `<button class="btn sm" data-plan="pause">${icon("pause")} Pause</button>`
+  const primary = !canAct ? "" : p.status === "running" ? `<button class="btn sm" data-plan="pause" title="Pause: finishes the current turn, then stops">${icon("pause")} Pause</button>`
     : active ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Resume</button>`
       : tot.todo ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Run remaining</button>`
         : `<button class="btn sm primary" data-plan="new">${icon("play")} New run…</button>`;
@@ -240,6 +242,7 @@ export function renderSchedule(box, ctx, project) {
       <button class="btn sm" data-plan="more" aria-haspopup="menu" title="Cancel, add a target, new run, usage, runner log …">${icon("more")} More</button>
     </div>
     <p class="sched-meta muted small"><span class="mono" title="Plan CSV">${esc(p.csv)}</span> · ${esc(p.mode)} × ${esc(p.concurrency)} · on failure: ${esc(p.on_failure)} · ${esc(runnerTitle(s))}</p>
+    ${s.loop ? `<p class="sched-meta"><b>${esc(summarizeLoop(s.units || [], { iterations: s.loop.iterations, steps: steps.length / s.loop.iterations, status: p.status }))}</b></p><p class="muted small">Pause: finishes the current turn, then stops · Cancel: stops the current turn now</p>` : ""}
     <div class="sched-b dock-${esc(orderPrefs().dock)}${orderPrefs().folded ? " order-folded" : ""}">
       <section class="sched-grid">
         <h4>Targets × steps <span class="muted small">(click a cell: log, retry, skip)</span></h4>

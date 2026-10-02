@@ -12,6 +12,7 @@ atomic rename; ``X.child`` holds the command's pid for re-adoption.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -41,6 +42,8 @@ def _write_json(path: Path, data: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="alfrd.runtime.shim")
     parser.add_argument("--exit-file", required=True)
+    parser.add_argument("--stdin-file")
+    parser.add_argument("--stdout-file")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -64,7 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:  # noqa: BLE001
         pass
     try:
-        child = subprocess.Popen(command, stdin=subprocess.DEVNULL, env=env)
+        with contextlib.ExitStack() as stack:
+            stdin = stack.enter_context(open(args.stdin_file, "rb")) if args.stdin_file else subprocess.DEVNULL
+            stdout = stack.enter_context(open(args.stdout_file, "wb")) if args.stdout_file else None
+            child = subprocess.Popen(command, stdin=stdin, stdout=stdout, env=env)
     except OSError as exc:
         print(f"[alfrd] cannot start {command[0]!r}: {exc}", file=sys.stderr, flush=True)
         _write_json(exit_file, {"exit_code": 127, "error": str(exc), "finished": datetime.now().isoformat()})

@@ -141,6 +141,7 @@ export const ctx = {
   },
   projects() {
     const map = new Map();
+    if (state.mode === "server") Object.keys(state.projectNames).forEach((key) => map.set(key, { id: key, name: ctx.projectName(key), title: ctx.projectName(key), targets: [] }));
     state.targets.forEach((t) => {
       if (!map.has(t.project)) map.set(t.project, { id: t.project, name: ctx.projectName(t.project), title: t.projectTitle || state.projectTitles[t.project] || "", targets: [] });
       map.get(t.project).targets.push(t);
@@ -541,7 +542,7 @@ async function loadServer() {
       ctx.log("info", `${p.title || p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
     }
     // applyBundle drops a header project with no targets yet (e.g. only on disk, not in the runtime): restore it.
-    if (keep.project !== "all" && state.targets.some((t) => t.project === keep.project)) state.selectedProject = keep.project;
+    if (keep.project !== "all" && state.projectNames[keep.project]) state.selectedProject = keep.project;
     if (state.targets.some((t) => t.id === keep.target)) state.selectedTarget = keep.target;
     const def = server.session?.default_project;
     if (def && state.targets.some((t) => t.project === def) && (state.selectedProject === "all" || !state.targets.some((t) => t.project === state.selectedProject))) {
@@ -1076,7 +1077,7 @@ function openSettings() {
         <div><span>Saved in this browser</span><b>${bytes(storage.size())}</b></div>
       </div>
       ${serverMode ? `<section class="set-sec">
-        <div class="set-sec-h"><h3>${icon("database")} Projects</h3><span class="grow"></span><button class="btn sm" id="set-rediscover" hidden ${sess.mutations_enabled ? "" : "disabled"} title="Connect projects forgotten since the server started">${icon("sync")} Rediscover</button></div>
+        <div class="set-sec-h"><h3>${icon("database")} Projects</h3><span class="grow"></span><button class="btn sm" id="set-create" ${sess.mutations_enabled ? "" : "disabled"}>${icon("plus")} New project</button><button class="btn sm" id="set-rediscover" hidden ${sess.mutations_enabled ? "" : "disabled"} title="Connect projects forgotten since the server started">${icon("sync")} Rediscover</button></div>
         <p class="muted small">How this Studio lists each project: <b>opened</b> (selected on load), <b>shown</b> or <b>hidden</b>. Forget removes a project and its runs from the runtime database; files are never touched.</p>
         <ul class="set-projects" id="set-projects"><li class="muted small">Loading…</li></ul>
       </section>` : ""}
@@ -1100,6 +1101,18 @@ function openSettings() {
       </section>` : ""}
     </div>`, (root, close) => {
     if (state.mode === "server") drawProjects(root);
+    $("#set-create", root)?.addEventListener("click", async () => {
+      try {
+        const { openCreateProject } = await import("./components/agent_dialog.js");
+        close();
+        await openCreateProject(ctx, async (project) => {
+          state.selectedProject = project.identifier;
+          await loadServer();
+          state.selectedProject = project.identifier;
+          scheduleRender();
+        });
+      } catch (error) { ctx.toast(error.message, "fail"); }
+    });
     $("#set-quit", root)?.addEventListener("click", () => { close(); quitServer(); });
     $("#set-live", root).addEventListener("change", (e) => setLive(e.target.checked));
     $("#set-page", root).addEventListener("change", (e) => { ctx.setPrefs({ pageSize: Number(e.target.value) }); scheduleRender(); });
