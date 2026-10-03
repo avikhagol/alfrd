@@ -42,6 +42,7 @@ def execution_settings(project_name: str):
     except ExecutionError as error:
         return jsonify(error={"code": 400, "message": str(error)}, configured=False), 200
     data = cfg.to_dict()
+    data["loop"] = dict(cfg.steps[0].loop_options) if cfg.steps else {}
     data["configured"] = any(s.argv for s in cfg.steps)
     data["plan_csv_exists"] = cfg.plan_csv.exists()
     data["plan_csv_name"] = cfg.plan_csv.name
@@ -147,6 +148,194 @@ def plan_action(project_name: str, plan_id: str, action: str):
     return jsonify(plan=plan)
 
 
+MAX_ARTIFACT_BYTES = 256 * 1024
+
+
+def _handoff_folder(project_name, plan_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        raise ValueError("bad plan id")
+    folder = scheduler.PlanDir(_project_root(project_name), plan_id)
+    folder.load()
+    return folder
+
+
+def _artifact_path(folder, unit, artifact):
+    if artifact not in ("prompt", "response"):
+        raise ValueError("unknown artifact")
+    archive = (folder.path / "handoffs").resolve()
+    if not archive.is_relative_to(folder.path.resolve()):
+        raise ValueError("archive is outside the plan directory")
+    path = Path(unit["handoff"][artifact + "_file"]).resolve()
+    if not path.is_relative_to(archive):
+        raise ValueError("artifact is outside the plan archive")
+    return path
+
+
+@studio_api.get("/studio/projects/<project_name>/plans/<plan_id>/handoffs")
+def plan_handoffs(project_name: str, plan_id: str):
+    try:
+        folder = _handoff_folder(project_name, plan_id)
+        iterations = folder.load().get("loop", {}).get("iterations", "?")
+        out = []
+        for unit in folder.units():
+            if not unit.get("handoff"):
+                continue
+            item = {k: unit.get(k) for k in ("id", "agent", "iteration", "iterations", "status", "manual", "artifact", "error", "log", "model", "requested_model", "review_status", "human_review", "started", "finished", "row", "steps")}
+            from alfrd.agent_loop import turn_phase
+            item["phase"] = turn_phase(unit)
+            item["iteration_label"] = f"{unit.get('iteration')}/{unit.get('iterations') or iterations}"
+            for artifact in ("prompt", "response"):
+                path = _artifact_path(folder, unit, artifact)
+                item[artifact + "_bytes"] = path.stat().st_size if path.is_file() else 0
+            out.append(item)
+        return jsonify(handoffs=out)
+    except (ValueError, OSError, ExecutionError) as error:
+        return _json_error(error, 400)
+
+
+@studio_api.get("/studio/projects/<project_name>/plans/<plan_id>/handoffs/<unit_id>/<artifact>")
+def handoff_artifact(project_name: str, plan_id: str, unit_id: str, artifact: str):
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9+._-]+", unit_id) or unit_id in (".", ".."):
+            raise ValueError("invalid unit id")
+        if artifact not in ("prompt", "response"):
+            raise ValueError("unknown artifact")
+        folder = _handoff_folder(project_name, plan_id)
+        unit = next((u for u in folder.units() if u["id"] == unit_id and u.get("handoff")), None)
+        if unit is None:
+            return _json_error(ValueError("unknown unit"), 404)
+        offset = int(request.args.get("offset", 0))
+        limit = min(int(request.args.get("limit", MAX_ARTIFACT_BYTES)), MAX_ARTIFACT_BYTES)
+        if offset < 0 or limit < 4:
+            raise ValueError("offset must be nonnegative and limit at least 4 bytes")
+        path = _artifact_path(folder, unit, artifact)
+        if not path.is_file():
+            return _json_error(ValueError("artifact is not available"), 404)
+        total = path.stat().st_size
+        from alfrd.agent_loop import MAX_RESPONSE_BYTES
+        if total > MAX_RESPONSE_BYTES:
+            raise ValueError("handoff archive exceeds 10 MiB")
+        if offset > total:
+            raise ValueError("offset exceeds artifact size")
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read(limit)
+        # A caller resumes at offset + returned_bytes; never drop a partial character.
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            if error.end != len(data) or error.reason != "unexpected end of data":
+                raise ValueError("offset is not a UTF-8 boundary") from error
+            data = data[:error.start]
+            content = data.decode("utf-8")
+        return jsonify(content=content, offset=offset, returned_bytes=len(data),
+                       total_bytes=total, truncated=offset + len(data) < total)
+    except (ValueError, OSError, ExecutionError) as error:
+        return _json_error(error, 400)
+
+
+@studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/response")
+def plan_response(project_name: str, plan_id: str):
+    from alfrd.agent_loop import submit_response, ResponseValidationError
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
+    payload = request.get_json(silent=True) or {}
+    try:
+        submit_response(_project_root(project_name), plan_id, str(payload.get("unit") or ""), payload.get("text"))
+    except ResponseValidationError as error:
+        return jsonify(errors=error.errors), 400
+    except FileExistsError as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+    return jsonify(submitted=True)
+
+
+@studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/review")
+def plan_review(project_name: str, plan_id: str):
+    from alfrd.agent_loop import approve_response
+    from alfrd import history
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
+    payload = request.get_json(silent=True) or {}
+    try:
+        approve_response(_project_root(project_name), plan_id, str(payload.get("unit") or ""),
+                         payload.get("text"), payload.get("base_hash"))
+    except (history.Conflict, FileExistsError) as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+    _poke(project_name)
+    return jsonify(approved=True)
+
+
+@studio_api.route("/studio/projects/<project_name>/task", methods=["GET", "POST"])
+def project_task(project_name: str):
+    from alfrd import history
+    from alfrd.agent_loop import project_file
+
+    root = _project_root(project_name)
+    path = project_file(root, "task.md")
+    try:
+        with pc.locked(root / ".alfrd" / "locks" / "handoff.lock"):
+            if request.method == "POST":
+                payload = request.get_json(silent=True) or {}
+                text = payload.get("text")
+                if not isinstance(text, str) or not text.strip() or len(text.encode()) > 1024 * 1024:
+                    raise ValueError("task must be nonempty Markdown smaller than 1 MiB")
+                if not payload.get("base_hash"):
+                    raise ValueError("base_hash is required")
+                current = path.read_text(encoding="utf-8") if path.exists() else ""
+                if history.text_hash(current) != payload["base_hash"]:
+                    raise history.Conflict("task.md", current, text)
+                cfg = load_execution(root)
+                sync = payload.get("use_for_next_run", False)
+                if not isinstance(sync, bool):
+                    raise ValueError("use_for_next_run must be true or false")
+                if sync and any(p.get("status") in ("running", "paused", "interrupted") for p in scheduler.list_plans(root)):
+                    return _json_error(ValueError("Finish or cancel the current plan before replacing its initial handoff"), 409)
+                history.save(root, "task.md", text, source="studio", base_hash=payload["base_hash"] if path.exists() else None)
+                if sync and cfg.steps and cfg.steps[0].handoff:
+                    history.save(root, cfg.steps[0].handoff["input"], text, source="studio", message="New task for next run")
+                _poke(project_name)
+            text = path.read_text(encoding="utf-8") if path.exists() else ""
+            return jsonify(file="task.md", text=text, hash=history.text_hash(text))
+    except history.Conflict as error:
+        return jsonify(error={"message": str(error)}, current=error.current, hash=error.current_hash), 409
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+
+
+@studio_api.route("/studio/projects/<project_name>/handoff", methods=["GET", "POST"])
+def edit_handoff(project_name: str):
+    from alfrd import history
+    from alfrd.agent_loop import project_file
+
+    root = _project_root(project_name)
+    payload = request.get_json(silent=True) or {} if request.method == "POST" else request.args
+    rel = str(payload.get("file") or "")
+    try:
+        cfg = load_execution(root)
+        allowed = {v for step in cfg.steps for v in step.handoff.values()}
+        if rel not in allowed:
+            raise ValueError("not a workflow handoff file")
+        path = project_file(root, rel)
+        if request.method == "POST":
+            if not isinstance(payload.get("text"), str) or not payload.get("base_hash"):
+                raise ValueError("text and base_hash are required")
+            # Publication and editor saves share the handoff lock.
+            with pc.locked(root / ".alfrd" / "locks" / "handoff.lock"):
+                history.save(root, rel, payload["text"], source="studio", base_hash=payload["base_hash"])
+        text = path.read_text(encoding="utf-8")
+        return jsonify(file=rel, text=text, hash=history.text_hash(text))
+    except history.Conflict as error:
+        return jsonify(error={"message": str(error)}, current=error.current, hash=error.current_hash), 409
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+
+
 def _row_steps(payload: dict, plan_steps: list[str]) -> list[str] | None:
     """``steps`` from an add-row request: ``None`` (every step column), or a non-empty subset of the plan's steps."""
     steps = payload.get("steps")
@@ -206,6 +395,8 @@ def plan_cells(project_name: str, plan_id: str):
     """Set cells: ``{cells: [{row, step, value}]}`` with value todo | skip (retry = todo)."""
     payload = request.get_json(silent=True) or {}
     items = payload.get("cells") or []
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
     try:
         root = _project_root(project_name)
         folder = scheduler.PlanDir(root, plan_id)
@@ -216,13 +407,15 @@ def plan_cells(project_name: str, plan_id: str):
             value = str(item.get("value") or "")
             if value not in (pc.TODO, "skip", ""):
                 raise ExecutionError("a cell can be set to todo or skip")
+            if plan.get("loop") and value != pc.TODO:
+                raise ExecutionError("agent loop turns cannot be skipped")
             cells[(str(item.get("row")), str(item.get("step")))] = value or "skip"
         # A running cell is left alone; everything else may be retried or skipped.
         only_if = {k: set(pc.STATES) - {pc.RUNNING} for k in cells}
         pc.update(folder.csv_path(plan), folder.csv_lock(plan), plan.get("steps") or cfg.step_ids, cells,
                   only_if=only_if, key_column=cfg.key_column, code_column=cfg.code_column,
                   workdir_column=cfg.workdir_column, files_column=cfg.files_column)
-    except ExecutionError as error:
+    except (ExecutionError, OSError) as error:
         return _json_error(error, 400)
     _poke(project_name)
     return jsonify(ok=True)

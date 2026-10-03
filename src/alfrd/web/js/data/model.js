@@ -2,26 +2,26 @@
 // normalization and per-target rollups. Pure functions, no DOM access.
 
 import { resolveAlias, AliasLog } from "../utils/csv_parser.js";
-import { studioManifest, applyFieldAliases } from "./defs.js";
+import { studioManifest, applyFieldAliases, expandWorkflowSteps } from "./defs.js";
 
 // Step labels, stages, categories, descriptions, icons, metadata and logs are
 // read from alfrd.yaml (and its `template:`), see data/defs.js. Nothing about a
 // specific pipeline is hardcoded here.
 
 export const STEP_STATUS = {
-  completed: { label: "Completed", icon: "checkCircle", tone: "ok" },
+  completed: { label: "Done", icon: "checkCircle", tone: "ok" },
   failed: { label: "Failed", icon: "xCircle", tone: "fail" },
-  warning: { label: "Partial", icon: "alert", tone: "warn" },
+  warning: { label: "Needs attention", icon: "alert", tone: "warn" },
   running: { label: "Running", icon: "sync", tone: "run" },
   queued: { label: "Queued", icon: "hourglass", tone: "muted" },
-  pending: { label: "Pending", icon: "clock", tone: "muted" },
+  pending: { label: "Ready", icon: "clock", tone: "muted" },
   skipped: { label: "Skipped", icon: "minus", tone: "muted" },
 };
 
 export const OVERALL_STATUS = {
-  completed: { label: "Completed", icon: "checkCircle", tone: "ok" },
+  completed: { label: "Done", icon: "checkCircle", tone: "ok" },
   failed: { label: "Failed", icon: "xCircle", tone: "fail" },
-  warning: { label: "Attention", icon: "alert", tone: "warn" },
+  warning: { label: "Needs attention", icon: "alert", tone: "warn" },
   running: { label: "Running", icon: "sync", tone: "run" },
   unknown: { label: "Unknown", icon: "help", tone: "muted" },
 };
@@ -101,7 +101,7 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
     : null;
 
   const addWorkflow = (wfName, def) => {
-    const rawSteps = Array.isArray(def) ? def : Array.isArray(def?.steps) ? def.steps : def?.sequence || [];
+    const rawSteps = expandWorkflowSteps(def);
     if (!Array.isArray(rawSteps) || !rawSteps.length) {
       errors.push(`Workflow "${wfName}" declares no steps.`);
       return;
@@ -132,6 +132,7 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
         logs: obj.logs || [],
         depends,
         command: obj.command || obj.cmd || null,
+        handoff: obj.handoff || null,
       };
     });
     // Default dependency chain: each step waits on its predecessor.

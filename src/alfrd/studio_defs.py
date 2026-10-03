@@ -143,8 +143,9 @@ def studio_manifest(root: str | Path) -> dict[str, Any]:
     defs = dict(template.get("steps") or {})
     aliases = (merged.get("project_settings") or {}).get("field_aliases") or {}
     steps: dict[str, dict[str, Any]] = {}
-    order = [resolve_alias(_step_id(s), aliases) for s in _step_list(manifest)] or list(defs)
-    for raw in _step_list(manifest) or list(defs):
+    raw_steps = _step_list(manifest) or _step_list(template) or list(defs)
+    order = [resolve_alias(_step_id(s), aliases) for s in raw_steps]
+    for raw in raw_steps:
         sid = resolve_alias(_step_id(raw), aliases)
         if not sid:
             continue
@@ -155,6 +156,13 @@ def studio_manifest(root: str | Path) -> dict[str, Any]:
     merged["steps"] = steps
     merged["step_order"] = order
     merged["template"] = name
+    workflows = merged.get("workflows") or []
+    workflow = workflows[0] if isinstance(workflows, list) and workflows else next(iter(workflows.values()), {}) if isinstance(workflows, dict) else {}
+    if isinstance(workflow, dict) and (workflow.get("repeat") is not None or "roles" in workflow or any("role" in s for s in steps.values())):
+        from alfrd.agent_loop import expand_steps
+
+        merged["steps"] = expand_steps(workflow, steps)
+        merged["step_order"] = list(merged["steps"])
     return merged
 
 

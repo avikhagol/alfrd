@@ -6,15 +6,19 @@ import { STEP_STATUS } from "../data/model.js";
 import { notesAt, noteMark } from "../data/notes.js";
 import { readFiles, buildBundle } from "../data/importers.js";
 import { resultStats, attemptsOf } from "../data/results_stats.js";
+import { parseYaml } from "../utils/yaml_parser.js";
+import { scoped } from "../data/workspace.js";
 
 const saved = loadUi("results", { history: false, targetOnly: false });
-const ui = { open: new Set(), table: false, history: saved.history, targetOnly: saved.targetOnly };
+// Per project: expanded details, table/classic mode and filters.
+const ui = scoped("results", () => ({ open: new Set(), table: false, history: saved.history, targetOnly: saved.targetOnly, classic: false }));
+const viewProject = (ctx) => (ctx.activeProject ? ctx.activeProject() : ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null);
 
 function stats(ctx) {
   const t = ctx.target();
-  const scoped = ui.targetOnly && t ? [t] : ctx.scopedTargets();
-  const results = ctx.state.trees?.[t?.project || ctx.state.selectedProject]?.defs?.results || {};
-  return resultStats(scoped, ctx.steps(), { history: ui.history, rollup: (x) => ctx.rollup(x), results });
+  const rows = ui.targetOnly && t ? [t] : ctx.scopedTargets();
+  const results = ctx.state.trees?.[viewProject(ctx) || t?.project]?.defs?.results || {};
+  return resultStats(rows, ctx.steps(), { history: ui.history, rollup: (x) => ctx.rollup(x), results });
 }
 
 function radar(st) {
@@ -55,17 +59,32 @@ function stacked(parts, total) {
 
 /** Collection artifacts (e.g. rPicard diagnostics_*) of the project in view. */
 function collectionsOf(ctx) {
-  const t = ctx.target();
-  const project = t?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null);
+  const project = viewProject(ctx);
   const tree = project && ctx.state.trees?.[project];
   const list = (tree?.defs?.artifacts || []).filter((a) => a.kind === "collection");
   return { project, tree, list };
 }
 
 let diagnostics = null; // components/diagnostics.js, loaded when a collection card is opened
+let loops = null;
+let loopMounted = false;
+
+export function forgetProject(project) { loops?.then((m) => m.forgetProject(project)).catch(() => {}); }
+
+function loopProjects(ctx) {
+  return Object.entries(ctx.state.trees || {}).filter(([p, tree]) => {
+    if (ctx.state.selectedProject !== "all" && p !== ctx.state.selectedProject) return false;
+    if (tree.defs?.template === "agent-loop") return true;
+    try {
+      const workflows = parseYaml(tree.manifestText || "")?.workflows || [];
+      return Object.values(workflows).some((w) => w?.repeat && Object.values(w.steps || {}).some((s) => s?.handoff));
+    } catch { return false; }
+  }).map(([p]) => p);
+}
 
 export function mount(el, ctx) {
-  el.innerHTML = `<div class="rs" id="rs"></div><div class="rs" id="rs-coll"></div>`;
+  el.innerHTML = `<div class="rs" id="rs-loop"></div><div class="rs" id="rs"></div><div class="rs" id="rs-coll"></div>`;
+  on(el, "click", "[data-classic-results]", () => { ui.classic = !ui.classic; render(el, ctx); });
   on(el, "click", "[data-coll-open]", async (e, b) => {
     try {
       diagnostics ||= import("./diagnostics.js");
@@ -99,6 +118,22 @@ export function mount(el, ctx) {
 }
 
 export function render(el, ctx) {
+  const projects = loopProjects(ctx);
+  const loopHost = $("#rs-loop", el);
+  if (projects.length) {
+    if (!loops) {
+      loopHost.innerHTML = '<div class="card" role="status">Loading agent-loop results…</div>';
+      loops = import("./loop_results.js");
+      loops.then(() => ctx.update()).catch((error) => { loops = null; ctx.toast(error.message, "fail"); });
+    } else loops.then((mod) => {
+      if (!loopMounted) { mod.mount(loopHost, ctx); loopMounted = true; }
+      mod.render(loopHost, ctx, loopProjects(ctx));
+    }).catch(() => {});
+  } else loopHost.innerHTML = "";
+  if (!ui.classic && projects.length && (ctx.state.selectedProject !== "all" || projects.length === Object.keys(ctx.state.trees || {}).length)) {
+    $("#rs", el).innerHTML = ""; $("#rs-coll", el).innerHTML = "";
+    ctx.setFooterRight(`${projects.length} agent-loop project(s)`); return;
+  }
   const st = stats(ctx);
   st.labels = Object.fromEntries(ctx.state.workflow.steps.map((s) => [s.key, s.short || s.key]));
   const t = ctx.target();

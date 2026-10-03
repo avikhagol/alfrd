@@ -10,16 +10,28 @@ import { $, on, esc, icon, copyText, download } from "../utils/dom.js";
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { manifestToWorkflows } from "../data/model.js";
 import { studioManifest } from "../data/defs.js";
+import { configFields, setConfigField } from "../data/config_fields.js";
+import { scoped, stateOf, markDirty } from "../data/workspace.js";
 
-const ui = { project: null, text: null, dirty: false, report: null, aliases: null };
+// One draft per project: switching keeps unsaved edits; Save/Revert affect that project only.
+const SETTINGS = "settings";
+const fresh = () => ({ project: null, text: null, base: null, dirty: false, report: null, aliases: null, mode: "fields" });
+const ui = scoped(SETTINGS, fresh);
 let shown = null; // signature of what #ps currently shows (see render)
+let shownText = null;
 
 function project(ctx) {
-  return ctx.target()?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null) || Object.keys(ctx.state.trees || {})[0] || null;
+  return ctx.activeProject ? ctx.activeProject() : ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null;
 }
 
+// Only this project's own alfrd.yaml — never the previously shown project's text.
 function loadedText(ctx, p) {
-  return ctx.state.trees?.[p]?.manifestText ?? ctx.state.workflowFile.text ?? "";
+  return ctx.state.trees?.[p]?.manifestText ?? "";
+}
+
+function setDirty(p, st, on) {
+  st.dirty = on;
+  markDirty(p, SETTINGS, on);
 }
 
 function parse(text) {
@@ -81,7 +93,19 @@ function validate(ctx, text) {
 
 export function mount(el, ctx) {
   el.innerHTML = `<div class="ps" id="ps"></div>`;
-  on(el, "input", "#ps-yaml", (e) => { ui.text = e.target.value; ui.dirty = true; ui.report = null; ui.aliases = null; renderStatus(el, ctx); });
+  on(el, "input", "[data-config-field]", (e, input) => {
+    try {
+      ui.text = setConfigField(ui.text, input.dataset.configField, input.value);
+      input.setCustomValidity(""); setDirty(project(ctx), ui, true); ui.report = null;
+      shown = signature(ctx, project(ctx));
+      shownText = ui.text;
+      renderStatus(el, ctx);
+    } catch (error) { input.setCustomValidity(error.message); input.reportValidity(); }
+  });
+  on(el, "keydown", "[data-config-field]", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(el, ctx); }
+  });
+  on(el, "input", "#ps-yaml", (e) => { ui.text = e.target.value; setDirty(project(ctx), ui, true); ui.report = null; ui.aliases = null; renderStatus(el, ctx); });
   on(el, "keydown", "#ps-yaml", (e) => {
     if (e.key === "Tab") { // two-space indent instead of leaving the editor
       e.preventDefault();
@@ -100,11 +124,36 @@ export function mount(el, ctx) {
   on(el, "click", "[data-act]", async (e, b) => {
     const a = b.dataset.act;
     const p = project(ctx);
+    if (a === "mode-fields" || a === "mode-yaml") {
+      if (a === "mode-fields") {
+        try { configFields(ui.text); } catch (error) { ctx.toast(`Fix the YAML before opening fields: ${error.message}`, "fail"); return; }
+      }
+      const invalid = el.querySelector("[data-config-field]:invalid");
+      if (invalid) { invalid.reportValidity(); return; }
+      ui.mode = a === "mode-fields" ? "fields" : "yaml"; render(el, ctx);
+    }
     if (a === "validate") { ui.report = validate(ctx, ui.text); renderStatus(el, ctx); }
     if (a === "save") save(el, ctx);
-    if (a === "revert") { ui.text = loadedText(ctx, p); ui.dirty = false; ui.report = null; ui.aliases = null; render(el, ctx); }
+    if (a === "agents" || a === "task") {
+      try {
+        const dialog = await import("./agent_settings_dialog.js");
+        if (a === "task") await dialog.openTask(ctx, p);
+        else {
+          const st = stateOf(p, SETTINGS); // the dialog may close after a project switch
+          await dialog.openAgentSettings(ctx, p, st.text, async (text) => {
+            st.text = text; setDirty(p, st, true); st.report = validate(ctx, text); st.aliases = null;
+            if (project(ctx) === p) render(el, ctx);
+            ctx.toast("Agent settings applied — Save alfrd.yaml to keep them", "ok");
+          });
+        }
+      } catch (error) { ctx.toast(error.message, "fail"); }
+    }
+    if (a === "revert") { ui.text = ui.base = loadedText(ctx, p); setDirty(p, ui, false); ui.report = null; ui.aliases = null; render(el, ctx); }
     if (a === "download") download("alfrd.yaml", ui.text, "text/yaml");
-    if (a === "history") ctx.openHistory(p, { onRestored: () => { ui.dirty = false; ui.text = loadedText(ctx, p); render(el, ctx); } });
+    if (a === "history") {
+      const st = stateOf(p, SETTINGS);
+      ctx.openHistory(p, { onRestored: () => { setDirty(p, st, false); st.text = st.base = loadedText(ctx, p); if (project(ctx) === p) render(el, ctx); } });
+    }
     if (a === "copy") { const ok = await copyText(ui.text); ctx.toast(ok ? "Copied" : "Copy failed", ok ? "ok" : "fail"); }
     if (a === "alias-add") { ui.aliases.push({ from: "", to: "" }); render(el, ctx); }
     if (a === "alias-rm") { ui.aliases.splice(Number(b.dataset.i), 1); render(el, ctx); }
@@ -116,7 +165,7 @@ export function mount(el, ctx) {
       if (Object.keys(map).length) settings.field_aliases = map;
       else delete settings.field_aliases;
       ui.text = setProjectSettings(ui.text, settings);
-      ui.dirty = true;
+      setDirty(p, ui, true);
       ui.report = validate(ctx, ui.text);
       render(el, ctx);
       ctx.toast("Field aliases written into the editor — Save to keep them", "ok");
@@ -134,27 +183,30 @@ export function mount(el, ctx) {
 }
 
 async function save(el, ctx) {
+  const invalid = el.querySelector("[data-config-field]:invalid");
+  if (invalid) { invalid.reportValidity(); return; }
   const p = project(ctx);
-  const report = validate(ctx, ui.text);
-  ui.report = report;
+  const st = stateOf(p, SETTINGS); // callbacks below may finish after a project switch
+  const report = validate(ctx, st.text);
+  st.report = report;
   if (!report.ok) { renderStatus(el, ctx); ctx.toast("Not saved: fix the errors first", "fail"); return; }
+  const saved = st.text;
   const done = () => {
-    ui.dirty = false;
-    ctx.toast(`alfrd.yaml saved${ctx.state.mode === "server" ? " (a version is kept in History)" : ""}`, "ok");
+    if (st.text === saved) { setDirty(p, st, false); st.base = saved; }
+    ctx.toast(`${ctx.projectName(p)}: alfrd.yaml saved${ctx.state.mode === "server" ? " (a version is kept in History)" : ""}`, "ok");
     ctx.update();
   };
   try {
-    await ctx.saveManifest(p, ui.text);
+    await ctx.saveManifest(p, saved);
     done();
   } catch (error) {
     if (error.status !== 409) { ctx.toast(`Not saved: ${error.message}`, "fail"); return; }
     // Changed on disk since it was loaded: show the difference instead of overwriting.
-    const mine = ui.text;
     ctx.openHistory(p, {
       conflict: error.body || {},
-      proposed: mine,
-      overwrite: async () => { await ctx.saveManifest(p, mine, { force: true }); done(); },
-      loadDisk: () => { ctx.refreshProject(p).then(() => { ui.dirty = false; ui.text = loadedText(ctx, p); render(el, ctx); }); },
+      proposed: saved,
+      overwrite: async () => { await ctx.saveManifest(p, saved, { force: true }); done(); },
+      loadDisk: () => { ctx.refreshProject(p).then(() => { setDirty(p, st, false); st.text = st.base = loadedText(ctx, p); if (project(ctx) === p) render(el, ctx); }); },
     });
   }
 }
@@ -163,7 +215,9 @@ function renderStatus(el, ctx) {
   const box = $("#ps-status", el);
   if (!box) return;
   const r = ui.report;
-  box.innerHTML = !r ? `<span class="muted">${ui.dirty ? "Unsaved changes." : "Saved version loaded."}</span>`
+  const drift = ui.dirty && ui.base != null && ui.base !== loadedText(ctx, project(ctx));
+  box.innerHTML = drift ? `<span class="badge tone-warn" role="status">${icon("alert")}Project changed on disk. Review before saving.</span>`
+    : !r ? `<span class="muted">${ui.dirty ? "Unsaved changes." : "Saved version loaded."}</span>`
     : `${r.ok ? `<span class="badge tone-ok">${icon("checkCircle")}Valid</span>` : `<span class="badge tone-fail">${icon("xCircle")}${r.errors.length} error(s)</span>`}
       ${r.summary ? `<span class="muted"> template <b>${esc(r.summary.template)}</b> · ${r.summary.steps} steps in ${r.summary.stages} stages · ${r.summary.metadata} with metadata · ${r.summary.logs} with own logs · ${r.summary.ms} MS path pattern(s) · ${r.summary.aliases} field alias(es)</span>` : ""}
       ${[...r.errors.map((m) => `<li class="lvl-error">${esc(m)}</li>`), ...r.warnings.map((m) => `<li class="lvl-warn">${esc(m)}</li>`)].length ? `<ul class="msgs">${[...r.errors.map((m) => `<li class="lvl-error">${esc(m)}</li>`), ...r.warnings.map((m) => `<li class="lvl-warn">${esc(m)}</li>`)].join("")}</ul>` : ""}`;
@@ -175,7 +229,7 @@ function renderStatus(el, ctx) {
 function signature(ctx, p) {
   const tree = ctx.state.trees?.[p] || {};
   return JSON.stringify([p, tree.manifestFile, !!tree.manifestDefault, ctx.state.workflowFile.name, ctx.state.mode,
-    !!ctx.canWrite(p), ui.aliases, (ctx.state.aliases || []).length]);
+    !!ctx.canWrite(p), ui.aliases, (ctx.state.aliases || []).length, ui.mode]);
 }
 
 /** Scroll, selection and focus of the editor, to carry over a rebuild. */
@@ -195,8 +249,8 @@ export function render(el, ctx) {
   const p = project(ctx);
   if (ui.project !== p || (!ui.dirty && ui.text !== loadedText(ctx, p))) {
     ui.project = p;
-    ui.text = loadedText(ctx, p);
-    ui.dirty = false;
+    ui.text = ui.base = loadedText(ctx, p);
+    setDirty(p, ui, false);
     ui.report = null;
     ui.aliases = null;
   }
@@ -208,13 +262,14 @@ export function render(el, ctx) {
   // nothing else on the panel changed, only refresh the status line/footer.
   const existing = $("#ps-yaml", el);
   const sig = signature(ctx, p);
-  if (existing && existing.value === ui.text && sig === shown) {
+  if (sig === shown && ((existing && existing.value === ui.text) || (ui.mode === "fields" && shownText === ui.text && $("#ps-fields", el)))) {
     renderStatus(el, ctx);
     ctx.setFooterRight(ui.dirty ? "alfrd.yaml: unsaved changes" : "alfrd.yaml");
     return;
   }
   const keep = existing && shown && JSON.parse(shown)[0] === p ? editorState(existing) : null;
   shown = sig;
+  shownText = ui.text;
   const tree = ctx.state.trees?.[p] || {};
   const where = ctx.state.mode === "server"
     ? (ctx.canWrite(p) ? "Saves through alfrd serve into the project folder (old file kept as alfrd.yaml.bak)." : "alfrd serve only accepts saves from a browser on the same machine; Save downloads the file.")
@@ -222,8 +277,10 @@ export function render(el, ctx) {
   const defs = studioManifest(parse(ui.text).data || {});
   const tplSteps = Object.keys(defs.tplSteps || {});
   const found = ctx.state.aliases || [];
+  let fields;
+  try { fields = configFields(ui.text); } catch { ui.mode = "yaml"; }
   $("#ps", el).innerHTML = `
-    <div class="card"><div class="row gap wrap"><h2>Project settings</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span>${tree.manifestDefault ? `<span class="chip" title="This folder has no alfrd.yaml, so ALFRD's default one is shown. Save writes it into the folder; the local file then replaces the default.">default — not saved in the folder</span>` : ""}<span class="grow"></span>
+    <div class="card"><div class="row gap wrap"><h2>Project settings — alfrd.yaml</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span>${tree.manifestDefault ? `<span class="chip" title="This folder has no alfrd.yaml, so ALFRD's default one is shown. Save writes it into the folder; the local file then replaces the default.">default — not saved in the folder</span>` : ""}<span class="grow"></span>
       <button class="btn sm" data-act="validate">${icon("validate")} Validate</button>
       <button class="btn sm" data-act="revert">${icon("reset")} Revert</button>
       <button class="btn sm" data-act="download">${icon("download")} Download</button>
@@ -231,10 +288,24 @@ export function render(el, ctx) {
       <button class="btn sm ${ui.dirty ? "primary" : ""}" data-act="save">${icon("save")} Save alfrd.yaml</button></div>
       <p class="muted small">${esc(where)} Ctrl+S saves. After saving, the workflow, stages, metadata health, logs and field aliases are re-read from the file.</p>
       <div class="ps-status" id="ps-status"></div></div>
+    <div class="row gap wrap" role="group" aria-label="Configuration editor">
+      <button class="btn sm ${ui.mode === "fields" ? "primary" : ""}" data-act="mode-fields" aria-pressed="${ui.mode === "fields"}">${icon("list")} Settings fields</button>
+      <button class="btn sm ${ui.mode === "yaml" ? "primary" : ""}" data-act="mode-yaml" aria-pressed="${ui.mode === "yaml"}">${icon("edit")} Edit YAML file</button>
+      <span class="muted small">Both views use the same draft. Save when ready.</span>
+    </div>
     ${!ui.text ? `<div class="card empty">No alfrd.yaml loaded. Open the project folder (Import) or start <code>alfrd serve</code> in it.</div>` : `
     <div class="ps-grid">
-      <section class="card"><textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea></section>
+      <section class="card">${ui.mode === "yaml" ? `<textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea>` : `<div id="ps-fields">
+        <h4>Project basics</h4><p class="muted small">Use Edit YAML file for advanced settings. Changing a field rewrites its YAML section.</p>
+        <label class="field"><span>Project name</span><input class="input" data-config-field="name" value="${esc(fields.name)}" required></label>
+        <label class="field"><span>Description</span><textarea class="input" data-config-field="description" rows="3">${esc(fields.description)}</textarea></label>
+        ${fields.iterations != null ? `<label class="field"><span>Loop iterations</span><input class="input" type="number" min="1" max="100" step="1" data-config-field="iterations" value="${esc(fields.iterations)}" required></label>` : ""}
+        <label class="field"><span>Turn timeout (seconds)</span><input class="input" type="number" min="1" step="1" data-config-field="timeout" value="${esc(fields.timeout)}" placeholder="Default"></label>
+      </div>`}</section>
       <div>
+        <section class="card"><h4>Agents &amp; review</h4><p class="muted small">Choose models, enable human adjustments after selected turns, or edit the goal for the next run.</p>
+          <div class="row gap wrap"><button class="btn" data-act="agents">Agents &amp; review</button>${ctx.state.mode === "server" ? '<button class="btn" data-act="task">Edit task</button>' : ''}</div>
+        </section>
         <section class="card">
           <h4>${icon("arrows")} Field aliases</h4>
           <p class="muted small">Older names → names used now, applied to workflow steps, result CSV rows and folder/file names while reading (<code>project_settings.field_aliases</code>). End both sides with <code>*</code> to rewrite a prefix.</p>

@@ -5,6 +5,8 @@ __pycache__/
 Claude*/
 # C extensions
 *.so
+*.orig
+*.diff
 
 # Distribution / packaging
 .Python

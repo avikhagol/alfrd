@@ -209,10 +209,23 @@ def discover_projects(root: str | Path, depth: int = 2, max_dirs: int = 2000) ->
     return found, capped
 
 
+def is_empty_folder(root: str | Path) -> bool:
+    """True for a folder with nothing in it but dot-entries (``.alfrd/``, ``.DS_Store``)."""
+    try:
+        with os.scandir(root) as entries:
+            return not any(not entry.name.startswith(".") for entry in entries)
+    except OSError:
+        return False
+
+
 def looks_like_project(root: str | Path) -> bool:
-    """A folder worth opening with the default manifest (AVICA config, logs or reductions)."""
+    """A folder worth opening with the default manifest.
+
+    An AVICA folder (config, logs or reductions) or a completely empty folder,
+    so a new AVICA project can start from scratch with the default alfrd.yaml.
+    """
     base = Path(root)
-    return any((base / name).exists() for name in PROJECT_MARKERS)
+    return any((base / name).exists() for name in PROJECT_MARKERS) or is_empty_folder(base)
 
 
 __all__ = [
@@ -223,6 +236,7 @@ __all__ = [
     "default_manifest_text",
     "discover_projects",
     "has_manifest",
+    "is_empty_folder",
     "local_manifest",
     "looks_like_project",
     "manifest_data",

@@ -1,0 +1,79 @@
+description: A bounded Claude Code and Codex handoff workflow.
+history:
+  files: [alfrd.yaml, task.md, next-step-claude.md, next-step-codex.md]
+primary_key: TARGET_NAME
+entrypoint:
+  - name: claude
+    cmd: [claude, -p, --output-format, text]
+    stdin_file: "{prompt_file}"
+    output_file: "{response_file}"
+    output_capture: stdout
+    # manual: true lets you copy the prompt into chat and paste a response.
+  - name: codex
+    cmd: [codex, exec, --sandbox, workspace-write, --skip-git-repo-check, --output-last-message, "{response_file}", "-"]
+    stdin_file: "{prompt_file}"
+    output_file: "{response_file}"
+    output_capture: file
+execution:
+  cwd: .
+  mode: step
+  concurrency: 1
+  on_failure: stop_plan
+  status_from: exit_code
+  timeout: 3600
+  auto_resume: adopt
+workflows:
+  - name: agent-loop
+    repeat: {iterations: 5}
+    steps:
+      - id: claude-turn
+        entrypoint: claude
+        handoff: {input: next-step-claude.md, output: next-step-codex.md}
+      - id: codex-turn
+        entrypoint: codex
+        handoff: {input: next-step-codex.md, output: next-step-claude.md}
+steps:
+  claude-turn: {label: Claude, category: Agent}
+  codex-turn: {label: Codex, category: Agent}
+artifacts:
+  - {name: task, kind: text, path_pattern: task.md}
+  - {name: claude-handoff, kind: text, path_pattern: next-step-claude.md}
+  - {name: codex-handoff, kind: text, path_pattern: next-step-codex.md}
+views:
+  metadata:
+    - {panel: text, title: Task, scope: target, source: task.md}
+    - {panel: text, title: Next step for Claude, scope: target, source: next-step-claude.md}
+    - {panel: text, title: Next step for Codex, scope: target, source: next-step-codex.md}
+
+project_settings:
+  personas:
+    manager:
+      label: Product Manager (PM)
+      instructions: "You are an expert Technical Project Manager. Your primary goal is to oversee the successful delivery of software projects by bridging the gap between technical execution and business requirements.\n\nCore Responsibilities:\n\nRequirement Gathering: Translate ambiguous user ideas into structured, actionable project requirements.\nTask Breakdown: Deconstruct large goals into manageable tickets (Epics, Stories, Tasks) with clear acceptance criteria.\nCoordination: Delegate tasks to the Developer and Designer agents based on their strengths.\nQuality Assurance: Review the outputs of your team against the initial requirements. If something is missing, reject it and send it back with specific feedback.\n\nRules & Constraints:\nYour output should be strategy, documentation, timelines, and ticket definitions.\nTone: Organized, pragmatic, communicative, and authoritative. You value efficiency and alignment."
+    developer:
+      label: Senior Developer
+      instructions: "You are a Senior Full-Stack Software Engineer. Your primary goal is to architect, write, test, and optimize production-ready code based on requirements provided by the Project Manager and interfaces created by the Designer.\n\nCore Responsibilities:\nSystem Architecture: Propose scalable, secure, and maintainable tech stacks and database schemas.\nImplementation: Write clean, modular, and well-documented code.\nReview & Debugging: Identify edge cases, troubleshoot errors, and optimize performance bottlenecks.\nTechnical Pushback: Flag unrealistic technical requirements or bloated features to the PM, and suggest efficient alternatives.\nAllow parallel threads for agents to run simple parallel tasks when required.\n\nRules & Constraints:\nDo not invent requirements. If a requirement is missing, suggest to the agent with PM role.\nDo not make UX/UI decisions. Rely on the Designer's guidelines.\nWhen providing code, always include instructions on how to run, install dependencies, and test it.\n\nTone: Precise, logical, analytical, and highly technical. You value clean code and performance over quick-and-dirty hacks."
+    designer:
+      label: Product Designer (UX/UI)
+      instructions: "You are a Senior Product Designer specializing in UX and UI. Your primary goal is to create intuitive, accessible, and visually appealing user experiences based on the Project Manager's requirements.\n\nCore Responsibilities:\n\nUser Flows: Map out the step-by-step journey the user will take through the application.\n\nWireframing & UI Specifications: Provide highly detailed descriptions of layouts, color palettes, typography, spacing, and component states (hover, active, disabled).\n\nAccessibility: Ensure all designs meet WCAG standards (color contrast, screen reader compatibility).\n\nDeveloper Handoff: Translate your visual concepts into structured specifications (e.g., CSS properties, Tailwind classes, or DOM structures) that the Developer can easily implement.\n\nRules & Constraints:\n\nDo not write application logic or backend infrastructure.\n\nDefend your design decisions using established UX principles and psychological heuristics.\n\nEnsure your designs are feasible for web/mobile development.\n\nTone: Empathetic, creative, detail-oriented, and articulate. You constantly ask, \"How does this benefit the user?\""
+  agent_access:
+    bash_commands:
+      - "rtk *"
+      - "rtk git *"
+      - "git *"
+      - "uv *"
+      - "sh *"
+      - "bash *"
+      - "grep *"
+      - "ls *"
+      - python3.10
+      - rsync
+      - wget
+      - npm
+      - git apply
+      - "python3 *"
+      - "pytest *"
+      - "mkdir *"
+      - "touch *"
+      - "cp *"
+    sandbox: workspace-write

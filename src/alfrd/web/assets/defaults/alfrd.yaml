@@ -68,7 +68,7 @@ dataset_columns:
   - name: TARGET_NAME
     type: string
     required: true
-    description: Source/target name, from the result CSV name (result_<TARGET>_<CODE>_<wd>.csv or <TARGET>_result.csv).
+    description: Source/target name, from the result CSV name (result__<TARGET>__<CODE>__<wd>.csv or <TARGET>_result.csv).
   - name: PROJECT_CODE
     type: string
     required: false
@@ -80,7 +80,7 @@ dataset_columns:
 
 # Workflow stages (canvas bands). Remove to use the template's stages.
 stages:
-  - {id: preprocess, title: Loading to MeasurementSet}
+  - {id: preprocessing, title: Loading to MeasurementSet}
   - {id: average, title: Average MeasurementSet}
   - {id: automation, title: Automated Metadata and Input generation}
   - {id: calib, title: Calibration Setup & Execution}
@@ -92,7 +92,7 @@ workflows:
     # label, category, stage, description, icon, metadata and logs.
     steps:
       - id: preprocess_fitsidi
-        stage: preprocess
+        stage: preprocessing
         category: FITSIDI
         label: FITS-IDI data processing
         metadata:
@@ -100,7 +100,7 @@ workflows:
           - {file: listobs.json, label: listobs (scans), require: [listobs]}
           - {file: listobs_fits.out, label: listobs (FITS)}
       - id: fits_to_ms
-        stage: preprocess
+        stage: preprocessing
         category: MeasurementSet
         metadata:
           -  {file: available_wd_ifolder.avica, label: input_template}

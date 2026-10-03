@@ -9,20 +9,25 @@
 import { $, on, esc, icon, loadUi, saveUi } from "../utils/dom.js";
 import { avicaIndex, codeChips, detachCode, ensureServerIndex, loadView, openAttachPicker, targetCodes, clearWorkdirCache, workdirGeneration } from "./attach.js";
 import { server } from "../data/server.js";
+import { scoped } from "../data/workspace.js";
 
 const UI_FIELDS = ["open", "closed", "code", "templateFolder", "filter"];
-const ui = {
-  ...loadUi("metadata", { open: ["health", "meta", "config", "inputs"], closed: [], code: {}, templateFolder: {}, filter: "" }),
-  wd: null,
-  wdKey: null,
-  view: { key: null, html: "" }, // generic view (alfrd serve)
-  tabs: {},                       // panel key -> chosen instance
-  loading: false,
-  error: null,
-};
-ui.open = new Set(ui.open);
-ui.closed = new Set(ui.closed);
-if (ui.open.has("hdu")) ui.open.add("health");
+// Per project: template folder, selected file, expanded sections and loaded view.
+const ui = scoped("metadata", () => {
+  const s = {
+    ...loadUi("metadata", { open: ["health", "meta", "config", "inputs"], closed: [], code: {}, templateFolder: {}, filter: "" }),
+    wd: null,
+    wdKey: null,
+    view: { key: null, html: "" }, // generic view (alfrd serve)
+    tabs: {},                       // panel key -> chosen instance
+    loading: false,
+    error: null,
+  };
+  s.open = new Set(s.open);
+  s.closed = new Set(s.closed);
+  if (s.open.has("hdu")) s.open.add("health");
+  return s;
+});
 const remember = () => saveUi("metadata", ui, UI_FIELDS);
 
 let avica = null; // metadata_avica.js once loaded

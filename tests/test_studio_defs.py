@@ -259,17 +259,44 @@ def test_default_manifest_env_override_and_cwd_heuristic(tmp_path, monkeypatch):
     custom.write_text("version: 1\nname: x\n")
     monkeypatch.setenv("ALFRD_DEFAULT_MANIFEST", str(custom))
     assert default_manifest_path() == custom
-    empty = tmp_path / "empty"
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "notes.txt").write_text("not an AVICA folder\n")
+    assert not looks_like_project(other)
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    service = RuntimeService(store)
+    monkeypatch.chdir(other)
+    assert _connect_startup_project(service, None) is None  # a random cwd is not registered
+    assert _connect_startup_project(service, str(other)) is not None  # --project always uses the default
+    (other / "avica.inp").write_text("target_dir = reductions/\n")
+    assert looks_like_project(other)
+
+
+def test_empty_folder_starts_an_avica_project_from_scratch(tmp_path, monkeypatch):
+    """`alfrd serve` in a completely empty folder opens it with the default (AVICA) alfrd.yaml."""
+    from alfrd.avica_layout import scan_layout
+    from alfrd.cli import _connect_startup_project
+    from alfrd.manifest_default import is_empty_folder, looks_like_project, manifest_data
+    from alfrd.runtime import RuntimeService, RuntimeStore
+
+    monkeypatch.delenv("ALFRD_DEFAULT_MANIFEST", raising=False)
+    empty = tmp_path / "new_avica"
     empty.mkdir()
-    assert not looks_like_project(empty)
+    (empty / ".alfrd").mkdir()  # dot-entries do not count
+    assert is_empty_folder(empty) and looks_like_project(empty)
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     store.initialize()
     service = RuntimeService(store)
     monkeypatch.chdir(empty)
-    assert _connect_startup_project(service, None) is None  # a random cwd is not registered
-    assert _connect_startup_project(service, str(empty)) is not None  # --project always uses the default
-    (empty / "avica.inp").write_text("target_dir = reductions/\n")
-    assert looks_like_project(empty)
+    identifier = _connect_startup_project(service, None)
+    assert identifier is not None
+    assert service.get_project_by_identifier(identifier).name == "new_avica"
+    data, _path, is_default = manifest_data(empty)
+    assert is_default and data["template"] == "avica" and data["name"] == "new_avica"
+    layout = scan_layout(empty)  # nothing on disk yet: no reductions/, no result CSVs
+    assert layout["result_csvs"] == [] and layout["project_codes"] == []
+    assert not (empty / "alfrd.yaml").exists()  # nothing is written until Project settings → Save
 
 
 def test_rediscover_restores_forgotten_and_serve_folder(tree, tmp_path):

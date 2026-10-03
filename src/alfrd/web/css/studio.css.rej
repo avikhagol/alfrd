@@ -1,0 +1,23 @@
+--- src/alfrd/web/css/studio.css
++++ src/alfrd/web/css/studio.css
+@@ -2,6 +2,7 @@
+    Tokens follow stitch_avica_alfrd_workflow_studio/…/DESIGN.md. */
+ 
+ :root {
++  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px;
+   --bg: #F8FAFC;
+   --surface: #FFFFFF;
+   --subtle: #F1F5F9;
+@@ -811,3 +812,12 @@
+   .picker select { max-width: 120px; }
+   .loop-run { width: 100%; }
+ }
++
++/* Setup and recovery share a quiet, accessible layout. */
++.setup-card { margin: var(--s-3); padding: var(--s-5); }
++.setup-card h2 { margin: 0 0 var(--s-2); font-size: 18px; }
++.setup-list { list-style: none; padding: 0; display: grid; gap: var(--s-3); }
++.setup-list li { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
++.tab-error { margin: var(--s-3); gap: var(--s-2); }
++:where(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
++.callout[hidden] { display: none; }

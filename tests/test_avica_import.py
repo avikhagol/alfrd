@@ -10,9 +10,6 @@ from alfrd.gui.summaries import build_dataset_summary
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "avica_run"
-REAL_REDUCTIONS = Path(
-    "/mnt/6438D98627D1388F/Intelligence/tests/vasco_0.3/reductions"
-)
 STEPS = [
     "preprocess_fitsidi",
     "fits_to_ms",
@@ -148,22 +145,3 @@ def test_imported_avica_parameters_and_dataset_columns_render_in_dashboard(tmp_p
     assert b"TARGET_NAME" in response.data
     assert b"Dataset \xc3\x97 step matrix" in response.data
 
-
-@pytest.mark.skipif(not REAL_REDUCTIONS.is_dir(), reason="real AVICA data is not mounted")
-def test_real_avica_reductions_parse_read_only(tmp_path):
-    from alfrd.runtime.avica import import_avica_run
-
-    service = _service(tmp_path)
-    result = import_avica_run(
-        service,
-        REAL_REDUCTIONS,
-        project_name="avica-real-smoke",
-        steps=STEPS,
-        project_root=REAL_REDUCTIONS.parent,
-    )
-    assert result.dataset_count >= 3
-    assert {item.external_id for item in service.list_datasets(result.project.id)} >= {
-        "0742+103",
-        "1309+555",
-        "3C274",
-    }

@@ -31,6 +31,11 @@ let tailsOn = true;
 const keyOf = (project, rel) => `${project}::${rel}`;
 const dockUi = loadUi("logdock", { keys: [] });
 const docked = Array.isArray(dockUi.keys) ? dockUi.keys.filter((k) => typeof k === "string" && k.includes("::")).slice(-MAX_DOCKED) : [];
+// Docked tabs keep streaming while the panel is minimized or another project is open.
+// Paused = still receiving; the reading position stays and new lines are counted.
+const dockFollow = new Map(); // key -> {follow, unread}
+const dockOf = (key) => { if (!dockFollow.has(key)) dockFollow.set(key, { follow: true, unread: 0 }); return dockFollow.get(key); };
+let onDockChange = null;
 
 // ANSI escape sequences (SGR color/style codes, cursor moves, OSC window-title
 // codes, …): AVICA and its libraries (rich/colorama/click) write these when
@@ -283,7 +288,21 @@ async function tick(ctx, root) {
     const c = cache.get(key);
     if (c) list.forEach((pre) => { if (pre.textContent.length !== shown(c).length) paint(pre, c, null, ""); });
   });
-  const keys = [...byKey.keys()].slice(0, MAX_TAILS);
+  // Docked logs are always followed (they are few); other on-screen logs share MAX_TAILS.
+  docked.forEach((key) => {
+    const d = dockOf(key);
+    if (cache.has(key) || d.loading || (d.retryAt || 0) > now) return;
+    const { project, rel } = splitKey(key);
+    d.loading = load(ctx, project, rel)
+      .then(() => { d.error = null; onDockChange?.(key); })
+      .catch((error) => { // refused files are not retried; anything else in 10 s
+        d.error = error.message;
+        d.retryAt = error.status === 403 || error.status === 404 ? Infinity : Date.now() + 10000;
+        onDockChange?.(key);
+      })
+      .finally(() => { d.loading = null; });
+  });
+  const keys = [...docked.filter((k) => cache.has(k)), ...[...byKey.keys()].filter((k) => !docked.includes(k)).slice(0, MAX_TAILS)];
   await Promise.all(keys.map(async (key) => {
     const c = cache.get(key);
     if (!c || !c.live || now < c.nextAt || c.busy) return;
@@ -311,6 +330,13 @@ async function tick(ctx, root) {
       c.id = res.id;
       c.idle = grew ? 0 : c.idle + 1;
       c.nextAt = Date.now() + (grew ? TICK_MS : Math.min(QUIET_MAX_MS, TICK_MS * (1 + c.idle / 2)));
+      const wasDown = c.reconnecting;
+      c.reconnecting = false;
+      if (docked.includes(key) && (grew || wasDown)) {
+        const d = dockOf(key);
+        if (!d.follow && added) d.unread += (added.match(/\n/g) || []).length || 1;
+        onDockChange?.(key);
+      }
       if (grew) {
         (byKey.get(key) || []).forEach((pre) => paint(pre, c, appended, before));
         c.size = res.size;
@@ -321,6 +347,7 @@ async function tick(ctx, root) {
     } catch (error) {
       c.nextAt = Date.now() + 10000;
       if (error.status === 404 || error.status === 403) { c.live = false; byKey.get(key)?.forEach((pre) => liveMark(pre, c)); }
+      else if (!c.reconnecting) { c.reconnecting = true; if (docked.includes(key)) onDockChange?.(key); } // received output is kept
     } finally {
       c.busy = false;
     }
@@ -440,12 +467,19 @@ export function dockedLogs() {
   });
 }
 
-/** Dock a log as a Log Stream tab (keeps at most MAX_DOCKED; the oldest goes). Returns its key. */
+/**
+ * Dock a log as a Log Stream tab. At MAX_DOCKED nothing is evicted silently: the user is
+ * asked to close a tab first and null is returned. Returns the key otherwise.
+ */
 export function dockLog(ctx, project, rel) {
   const key = keyOf(project, rel);
   if (!docked.includes(key)) {
+    if (docked.length >= MAX_DOCKED) {
+      ctx.toast?.(`The Log Stream already follows ${MAX_DOCKED} logs. Close a tab before following another.`, "warn");
+      ctx.renderConsole?.();
+      return null;
+    }
     docked.push(key);
-    while (docked.length > MAX_DOCKED) docked.shift();
     saveDocked();
   }
   const c = cache.get(key);
@@ -454,13 +488,38 @@ export function dockLog(ctx, project, rel) {
   return key;
 }
 
-/** Close a Log Stream tab. */
+/** Close a Log Stream tab (never cancels the job that writes it). */
 export function undockLog(key) {
   const i = docked.indexOf(key);
   if (i >= 0) {
     docked.splice(i, 1);
+    dockFollow.delete(key);
     saveDocked();
   }
+}
+
+/** Called when a docked log grows, pauses or reconnects (the minimized strip re-renders). */
+export function onDock(fn) { onDockChange = fn; }
+
+/** Preview of a docked log: latest line, follow state, unread count, connection. */
+export function dockInfo(key) {
+  const c = cache.get(key);
+  const d = dockOf(key);
+  const text = (c?.text || "").replace(/\s+$/, "");
+  return { last: text.slice(text.lastIndexOf("\n") + 1).slice(-240), follow: d.follow, unread: d.unread, reconnecting: Boolean(c?.reconnecting), live: Boolean(c?.live && tailsOn), loaded: Boolean(c), error: c ? null : d.error || null };
+}
+
+/** Pause or resume following a docked log; resuming jumps to the tail. */
+export function setDockFollow(key, follow) {
+  const d = dockOf(key);
+  d.follow = Boolean(follow);
+  if (d.follow) d.unread = 0;
+  document.querySelectorAll(`pre[data-dock-log]`).forEach((pre) => {
+    if (pre.dataset.logKey !== key) return;
+    pre.dataset.follow = d.follow ? "1" : "0";
+    if (d.follow) pre.scrollTop = pre.scrollHeight;
+  });
+  onDockChange?.(key);
 }
 
 /** Show a docked log in `body` (the Log Stream panel), following it. */
@@ -472,7 +531,14 @@ export async function mountDock(ctx, body, key) {
     const c = await load(ctx, project, rel);
     if (!pre.isConnected) return;
     c.nextAt = 0;
-    show(pre, c, { follow: true });
+    const d = dockOf(key);
+    show(pre, c, { follow: d.follow, scrollTop: d.scrollTop || 0 });
+    // Scrolling up pauses following (output keeps arriving); back at the bottom resumes it.
+    pre.addEventListener("scroll", () => {
+      const at = atBottom(pre);
+      d.scrollTop = pre.scrollTop;
+      if (at !== d.follow) setDockFollow(key, at);
+    }, { passive: true });
   } catch (error) {
     if (pre.isConnected) {
       pre.textContent = `(${error.message})`;
@@ -482,4 +548,4 @@ export async function mountDock(ctx, body, key) {
 }
 
 // Exposed for tests.
-export const _internals = { clean, stripAnsi, takeChunk, trim, cache, openState, keyOf, docked, MAX_DOCKED };
+export const _internals = { clean, stripAnsi, takeChunk, trim, cache, openState, keyOf, docked, MAX_DOCKED, tick, dockFollow };

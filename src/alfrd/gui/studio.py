@@ -88,6 +88,40 @@ def connect_project_api():
     return jsonify(project), 201
 
 
+@studio_api.post("/studio/projects/create")
+def create_project_api():
+    from alfrd.project_creation import create_project
+    from alfrd.agent_loop import DEFAULT_ITERATIONS
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(ValueError("project creation needs a runtime-backed server"), 400)
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
+        return _json_error(ValueError("path is required"), 400)
+    try:
+        project, _ = create_project(service, payload["path"], name=payload.get("name"),
+                                    template=payload.get("template", "basic"), task=payload.get("task", ""),
+                                    iterations=payload.get("iterations", DEFAULT_ITERATIONS))
+    except FileExistsError as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError, TypeError) as error:
+        return _json_error(error, 400)
+    scope = current_app.config.get("STUDIO_PROJECTS")
+    if isinstance(scope, list) and project.identifier not in scope:
+        scope.append(project.identifier)
+    current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
+    return jsonify(name=project.name, identifier=project.identifier, root=project.root_path), 201
+
+
+@studio_api.get("/studio/project-templates")
+def project_templates():
+    import yaml
+
+    return jsonify(templates=[{"name": path.stem, "description": (yaml.safe_load(path.read_text()) or {}).get("description", "")}
+                              for path in sorted((web_root() / "assets" / "templates").glob("*.yaml"))])
+
+
 # ---------------------------------------------------------------------------
 # AVICA tree (read-only; confined to the connected project's root directory)
 
@@ -431,6 +465,84 @@ def avica_config_update(project_name: str):
     return jsonify(written=written, file=config_name, config=resolve_config(root).to_dict())
 
 
+ACTIVE_PLAN_STATUSES = ("running", "paused", "interrupted")
+REMOVAL_ACTIVE_REASON = "Stop this project's active runs before removing it."
+REMOVAL_READONLY_REASON = "Project removal is available only in a writable local Studio session."
+DELETION_SCOPE_MISSING = "Deletion scope has not been configured"
+
+
+def _project_active_jobs(row, active_run_ids=()) -> list[dict]:
+    """Plans (agent loop / plan runner) and runtime runs of one project that are still live."""
+    from alfrd.runtime import scheduler
+
+    jobs: list[dict] = []
+    if row.root_path:
+        root = Path(row.root_path).expanduser()
+        if root.is_dir():
+            for plan in scheduler.list_plans(root):
+                pid = str(plan.get("id") or "")
+                status = plan.get("status")
+                try:
+                    alive = bool(pid) and scheduler.PlanDir(root.resolve(), pid).runner_alive()
+                except Exception:  # noqa: BLE001 - a broken plan folder must not hide the others
+                    alive = False
+                if status in ACTIVE_PLAN_STATUSES or alive:
+                    jobs.append({"kind": "plan", "id": pid, "status": status, "runner_alive": alive})
+    jobs.extend({"kind": "run", "id": run_id, "status": "running", "runner_alive": None} for run_id in active_run_ids)
+    return jobs
+
+
+def _removal_preview(service, project_name: str) -> dict:
+    from alfrd.gui.security import mutations_enabled
+
+    row = service.get_project_by_selector(project_name)
+    counts = service.project_removal_counts(row.identifier or project_name)
+    active = _project_active_jobs(row, counts.pop("active_run_ids", []))
+    writable = mutations_enabled()
+    reason = None if writable else REMOVAL_READONLY_REASON
+    if writable and active:
+        reason = REMOVAL_ACTIVE_REASON
+    return {
+        "identifier": row.identifier, "name": row.name, "root_path": row.root_path,
+        "counts": counts, "active_jobs": active, "active_job_count": len(active),
+        "can_remove": reason is None, "reason": reason,
+        "mutations_enabled": writable, "delete_scope": None,
+        "delete_reason": DELETION_SCOPE_MISSING + ".",
+    }
+
+
+@studio_api.get("/studio/projects/<project_name>/removal-preview")
+def project_removal_preview(project_name: str):
+    """What Forget would remove and whether removal is allowed now (read-only)."""
+    from alfrd.runtime import RuntimeNotFound
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(RuntimeError("no runtime database"), 404)
+    try:
+        return jsonify(_removal_preview(service, project_name))
+    except RuntimeNotFound as error:
+        return _json_error(error, 404)
+
+
+@studio_api.post("/studio/projects/<project_name>/delete")
+def project_delete(project_name: str):
+    """Permanent deletion (loopback + CSRF). No deletion scope is configured, so it always refuses (409).
+
+    Nothing on disk or in the database is touched.
+    """
+    from alfrd.runtime import RuntimeNotFound
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(RuntimeError("no runtime database"), 404)
+    try:
+        service.get_project_by_selector(project_name)
+    except RuntimeNotFound as error:
+        return _json_error(error, 404)
+    return _json_error(RuntimeError(DELETION_SCOPE_MISSING), 409)
+
+
 @studio_api.post("/studio/projects/<project_name>/forget")
 def project_forget(project_name: str):
     """Remove a project from the runtime database (loopback + CSRF). Files are not touched."""
@@ -440,8 +552,13 @@ def project_forget(project_name: str):
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
     try:
+        preview = _removal_preview(service, project_name)
+        if not preview["mutations_enabled"]:
+            return _json_error(PermissionError(REMOVAL_READONLY_REASON), 403)
+        if preview["active_jobs"]:
+            return _json_error(RuntimeError(REMOVAL_ACTIVE_REASON), 409)
         row = service.get_project_by_selector(project_name)
-        counts = service.forget_project(project_name)
+        counts = service.forget_project(row.identifier or project_name)
     except RuntimeNotFound as error:
         return _json_error(error, 404)
     # Remembered for this server's lifetime so Studio settings → Rediscover can restore it.
@@ -449,12 +566,14 @@ def project_forget(project_name: str):
     root = str(Path(row.root_path).expanduser().resolve()) if row.root_path else None
     if root and not any(f["root"] == root for f in forgotten):
         forgotten.append({"root": root, "name": row.name, "identifier": row.identifier})
+    # The scope may hold the identifier or the (legacy) name: drop every alias.
+    aliases = {project_name, row.identifier, row.name} - {None, ""}
     scope = current_app.config.get("STUDIO_PROJECTS")
-    if isinstance(scope, list) and project_name in scope:
-        scope.remove(project_name)
-    if current_app.config.get("STUDIO_DEFAULT_PROJECT") == project_name:
+    if isinstance(scope, list):
+        scope[:] = [key for key in scope if key not in aliases]
+    if current_app.config.get("STUDIO_DEFAULT_PROJECT") in aliases:
         current_app.config["STUDIO_DEFAULT_PROJECT"] = None
-    return jsonify(forgotten=project_name, **counts)
+    return jsonify(forgotten=project_name, identifier=row.identifier, name=row.name, **counts)
 
 
 PROJECT_VISIBILITY = ("hidden", "shown", "opened")

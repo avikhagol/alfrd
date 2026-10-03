@@ -1,5 +1,20 @@
 # ALFRD Studio guide
 
+Results counts waiting turns by their latest attempt, keeps refreshing during manual responses and reviews, and offers **CSV results / collections** for imported results. Archived reply links open and scroll to the selected turn. Header controls wrap in narrow windows; remote browsers see why project creation is disabled.
+
+Agent-loop projects have a dedicated **Results** view backed by scheduler records,
+including turns, elapsed time (with manual/review waiting), archived replies and
+a run selector. Use **Read responses / handoffs** to expand a response, load more
+or copy it. No results CSV import is needed. Connect through `alfrd serve` to read
+these records.
+
+Create a project with **+ New project** beside the header project picker.
+In **Project settings**, use **Settings fields** for name, description, loop
+iterations and timeout, or **Edit YAML file** for advanced configuration. Both
+views share an unsaved draft. Saving validates and writes `alfrd.yaml`; field edits
+reformat only the changed YAML section. Multiple repeating workflows use the YAML
+editor for their iteration counts.
+
 The Studio is ALFRD's web UI. It is plain HTML/CSS/JS in `src/alfrd/web/`.
 
 - No internet needed. Nothing loads from other sites.

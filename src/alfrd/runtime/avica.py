@@ -191,7 +191,7 @@ def import_avica_run(
     source_root = Path(project_root).expanduser().resolve() if project_root else reductions.parent
     found = _discover_result_csvs(source_root, reductions)
     if not found:
-        raise ValueError(f"No *{_RESULT_SUFFIX} (or result_<target>_<code>_<workdir>.csv) files found in {reductions}")
+        raise ValueError(f"No result__<target>__<code>__<workdir>.csv (or *{_RESULT_SUFFIX}) files found in {reductions}")
     result_files = [path for path, _ in found]
     if len(set(steps)) != len(steps) or not steps:
         raise ValueError("steps must be a non-empty sequence of unique keys")

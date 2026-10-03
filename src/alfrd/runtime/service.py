@@ -174,6 +174,16 @@ class RuntimeService:
             session.delete(project)
             return counts
 
+    def project_removal_counts(self, selector: str) -> dict[str, Any]:
+        """Read-only preview of what :meth:`forget_project` would remove (same row selection)."""
+        project = self.get_project_by_selector(selector)
+        with self.store.session() as session:
+            workflow_ids = list(session.scalars(select(WorkflowDefinition.id).where(WorkflowDefinition.project_id == project.id)))
+            dataset_ids = list(session.scalars(select(Dataset.id).where(Dataset.project_id == project.id)))
+            runs = list(session.scalars(select(Run).where((Run.workflow_id.in_(workflow_ids)) | (Run.dataset_id.in_(dataset_ids))))) if (workflow_ids or dataset_ids) else []
+            active = [r.id for r in runs if str(r.status) == Status.RUNNING.value]
+            return {"runs": len(runs), "datasets": len(dataset_ids), "workflows": len(workflow_ids), "active_run_ids": active}
+
     def get_project_by_name(self, name: str) -> Project:
         with self.store.session() as session:
             projects = list(session.scalars(select(Project).where(Project.name == name)))
@@ -242,14 +252,24 @@ class RuntimeService:
             session.flush()
             self._audit_entity(session, "project", project.id, "created")
             workflows = []
-            for entrypoint in document.entrypoint:
+            definitions = [(entrypoint.name, [(entrypoint.name, list(entrypoint.cmd), {})]) for entrypoint in document.entrypoint]
+            workflow_specs = document.extra.get("workflows") or []
+            first_workflow = workflow_specs[0] if isinstance(workflow_specs, list) and workflow_specs else next(iter(workflow_specs.values()), {}) if isinstance(workflow_specs, Mapping) else {}
+            if isinstance(first_workflow, Mapping) and first_workflow.get("repeat") is not None:
+                from alfrd.execution import load_execution
+
+                config = load_execution(root)
+                definitions = [(config.workflow, [(step.id, list(step.argv or []),
+                                {"iteration": step.iteration, "agent": step.entrypoint, "handoff": dict(step.handoff)})
+                                for step in config.steps])]
+            for workflow_name, step_specs in definitions:
                 workflow = WorkflowDefinition(
-                    project_id=project.id, name=entrypoint.name, version=1,
+                    project_id=project.id, name=workflow_name, version=1,
                     parameters_json={},
                     steps=[StepDefinition(
-                        key=entrypoint.name, position=0,
-                        command_json=list(entrypoint.cmd), parameters_json={},
-                    )],
+                        key=key, position=position,
+                        command_json=command, parameters_json=parameters,
+                    ) for position, (key, command, parameters) in enumerate(step_specs)],
                 )
                 session.add(workflow)
                 session.flush()

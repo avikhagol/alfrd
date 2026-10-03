@@ -1,3 +1,4 @@
+from alfrd.agent_loop import DEFAULT_ITERATIONS, MAX_ITERATIONS
 from pathlib import Path
 import os
 import shutil
@@ -286,7 +287,8 @@ def _connect_startup_project(service, project: str | None) -> str | None:
         raise typer.BadParameter(f"{folder} is not a folder")
     local = manifest_file(folder) is not None
     # No local alfrd.yaml: use the default one for --project, or for a cwd that
-    # looks like an AVICA folder (avica.inp, avica.logs/, reductions/).
+    # looks like an AVICA folder (avica.inp, avica.logs/, reductions/) or is
+    # completely empty (a new AVICA project started from scratch).
     if not local and (default_manifest_path() is None or not (project or looks_like_project(folder))):
         if project:
             raise typer.BadParameter(f"No alfrd.yaml in {folder} and no default alfrd.yaml")
@@ -566,6 +568,39 @@ projects_cli = typer.Typer(help="Projects remembered in the runtime database (us
 alfrd_cli.add_typer(projects_cli, name="projects")
 
 
+@projects_cli.command("create")
+def projects_create(
+    path: str = typer.Argument(..., help="New or existing project folder."),
+    name: Optional[str] = typer.Option(None, "--name"),
+    template: str = typer.Option("basic", "--template"),
+    task: str = typer.Option("", "--task", help="Initial agent task."),
+    task_file: Optional[str] = typer.Option(None, "--task-file", help="Read the initial task from Markdown."),
+    iterations: Optional[int] = typer.Option(None, "--iterations", min=1, max=MAX_ITERATIONS),
+    db: Optional[str] = typer.Option(None, "--db", help="Runtime SQLite database."),
+):
+    """Scaffold and register a project without starting its commands."""
+    from alfrd.project_creation import create_project
+
+    try:
+        from alfrd.studio_defs import template_path
+        import yaml
+        source = template_path(template)
+        if source is None:
+            raise ValueError(f"unknown project template: {template}")
+        definition = yaml.safe_load(source.read_text())
+        looping = any(w.get("repeat") for w in definition.get("workflows", []))
+        if iterations is not None and not looping:
+            print("warning: --iterations is ignored for a template without a loop")
+        if task_file:
+            task = Path(task_file).read_text(encoding="utf-8")
+        project, _ = create_project(_runtime_service(db), path, name=name, template=template,
+                                    task=task, iterations=DEFAULT_ITERATIONS if iterations is None else iterations)
+    except (ValueError, OSError) as error:
+        print(f"error: {error}")
+        raise typer.Exit(1)
+    print(f"Created {project.name}: {project.root_path}\n{project.identifier}")
+
+
 @projects_cli.command("list")
 def projects_list(db: Optional[str] = typer.Option(None, "--db", help="Path to the runtime SQLite database.")):
     """List remembered projects and their folders."""
@@ -726,7 +761,7 @@ def manifest_default(
 
 @import_cli.command("avica-run")
 def import_avica_run_command(
-    reductions_dir: str = typer.Argument(..., help="AVICA target_dir containing *_result.csv files."),
+    reductions_dir: str = typer.Argument(..., help="AVICA target_dir containing result__<target>__<code>__<wd>.csv (or *_result.csv) files."),
     project: str = typer.Option(..., "--project", help="Runtime project name to create."),
     manifest: str = typer.Option(..., "--manifest", help="Validated ALFRD manifest attached to this import."),
     db: Optional[str] = typer.Option(None, help="Path to the runtime SQLite database."),
@@ -1152,6 +1187,23 @@ def plan_run(
         print(f"  alfrd plan status -C {folder.root}      alfrd plan pause|cancel {folder.id} -C {folder.root}")
         return
     raise typer.Exit(code=scheduler.Runner(folder.root, folder.id).run())
+
+
+@plan_cli.command("response")
+def plan_response_command(
+    plan_id: str = typer.Argument(..., help="Plan awaiting a manual response."),
+    unit_id: str = typer.Argument(..., help="Waiting unit id."),
+    response_file: Path = typer.Argument(..., help="Markdown response file."),
+    root: str = _ROOT_OPT,
+):
+    """Validate and submit a manual response; rejected responses keep waiting."""
+    from alfrd.agent_loop import submit_response
+
+    try:
+        submit_response(Path(root), plan_id, unit_id, response_file.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as error:
+        _plan_fail(error)
+    print("Response submitted")
 
 
 @plan_cli.command("status")

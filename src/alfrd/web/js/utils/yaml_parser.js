@@ -72,7 +72,7 @@ export function scalar(text) {
   if (t.startsWith('"')) {
     if (!t.endsWith('"') || t.length < 2) throw new YamlError(`unterminated string ${t}`);
     try {
-      return JSON.parse(t.replace(/\\'/g, "'"));
+      return JSON.parse(t);
     } catch {
       return t.slice(1, -1);
     }
@@ -324,10 +324,11 @@ export function parseYaml(source) {
   return new Parser(String(source ?? "")).parse();
 }
 
-function dumpScalar(value) {
+function dumpScalar(value, forceQuoted = false) {
   if (value === null || value === undefined) return "null";
   if (typeof value === "boolean" || typeof value === "number") return String(value);
   const s = String(value);
+  if (forceQuoted || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(s)) return JSON.stringify(s).replace(/[\x7f-\x9f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   if (s === "" || /^[\s]|[\s]$|[:#\[\]{},&*!|>'"%@`]|^-|^(true|false|null|~|yes|no)$/i.test(s) || /^[-+]?[\d.]+([eE][-+]?\d+)?$/.test(s)) {
     return JSON.stringify(s);
   }
@@ -359,17 +360,14 @@ export function dumpYaml(value, indent = 0) {
         const k = dumpScalar(key);
         if (Array.isArray(v) && v.length) {
           const simple = v.every((x) => x === null || typeof x !== "object");
-          if (simple && v.length <= 6 && v.join(", ").length < 60) return `${pad}${k}: [${v.map(dumpScalar).join(", ")}]\n`;
+          if (simple && v.length <= 6 && v.join(", ").length < 60) return `${pad}${k}: [${v.map((item) => dumpScalar(item)).join(", ")}]\n`;
           return `${pad}${k}:\n${dumpYaml(v, indent + 2)}`;
         }
         if (v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length) {
           return `${pad}${k}:\n${dumpYaml(v, indent + 2)}`;
         }
-        if (typeof v === "string" && v.includes("\n")) {
-          const body = v.replace(/\n$/, "").split("\n").map((l) => `${pad}  ${l}`).join("\n");
-          return `${pad}${k}: |\n${body}\n`;
-        }
-        return `${pad}${k}: ${Array.isArray(v) ? "[]" : v && typeof v === "object" ? "{}" : dumpScalar(v)}\n`;
+
+        return `${pad}${k}: ${Array.isArray(v) ? "[]" : v && typeof v === "object" ? "{}" : dumpScalar(v, key === "instructions")}\n`;
       })
       .join("");
   }
