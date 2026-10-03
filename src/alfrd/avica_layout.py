@@ -9,7 +9,9 @@ disk next to an ``alfrd.yaml``::
       avica.summary.json         optional cache of ``avica pipe config --summary``
       avica.logs/                avica__log-*.log, avica_crash_<step>.json
       <target_dir>/              from the resolved AVICA config (default ``reductions/``)
-        <TARGET>_result.csv      per-target step history
+        result__<TARGET>__<CODE>__<wd>.csv
+                                 per-target step history (one per code + work dir;
+                                 AVICA <= 0.3: <TARGET>_result.csv)
         <CODE>/wd/               AVICA project code (e.g. BV019, RDV41) work dir
           avica.meta/            JSON sidecars ``*.avica``, ``listobs.json``, ``*.out``
           input_template/        rPicard ``*.inp`` templates
@@ -55,7 +57,7 @@ SUMMARY_FILENAMES = ("avica.summary.json", "avica.summary.txt")
 CONFIG_FILENAME = "avica.inp"
 LOGS_DIRNAME = "avica.logs"
 META_DIRNAME = "avica.meta"
-RESULT_SUFFIX = "_result.csv"
+RESULT_SUFFIX = ".csv"
 PICARD_INP_FILES = ("array.inp", "observation.inp", "array_finetune.inp", "flagging.inp", "constants.inp")
 
 _MAX_TEXT = 2 * 1024 * 1024
@@ -342,8 +344,11 @@ DEFAULT_PATTERNS: dict[str, Any] = {
     "band_dir": ["wd_{band}", "wd_{band}_{target}"],
     "meta_dir": "avica.meta",
     "input_templates": ["input_template", "input_template_{n}", "wd_{band}_{target}/input_template_{band}_{target}"],
-    # Newest AVICA name first; "{target}_result.csv" is AVICA <= 0.3.
+    # Newest AVICA name first (``result__<TARGET>__<CODE>__<wd>.csv``); then the
+    # earlier single-underscore name; "{target}_result.csv" is AVICA <= 0.3.
     "result_csv": [
+        "{target_dir}/result__{target}__{project_code}__{workdirname}.csv",
+        "{target_dir}/{project_code}/{workdirname}/result__{target}__{project_code}__{workdirname}.csv",
         "{target_dir}/result_{target}_{project_code}_{workdirname}.csv",
         "{target_dir}/{project_code}/{workdirname}/result_{target}_{project_code}_{workdirname}.csv",
         "{target_dir}/{target}_result.csv",
@@ -352,10 +357,12 @@ DEFAULT_PATTERNS: dict[str, Any] = {
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 _GROUPS = {
-    "project_code": r"[^/]+",
+    # A target / project code never starts or ends with "_": the "_" / "__"
+    # separators in result CSV names belong to the pattern, not to the name.
+    "project_code": r"[^/_](?:[^/]*[^/_])?",
     "n": r"\d+",
     "band": r"[A-Z][A-Z0-9]*?",
-    "target": r"[^/]+?",
+    "target": r"[^/_](?:[^/]*?[^/_])?",
     # Base name of a work dir (wd, wd_1). layout_patterns() derives the real
     # alternatives from the ``workdir`` patterns; this is only the fallback.
     "workdirname": r"wd(?:_\d+)?",
@@ -407,8 +414,8 @@ def layout_patterns(root: str | Path) -> dict[str, list[str]]:
 
 def result_csv_artifact_patterns(artifact: Mapping[str, Any]) -> list[str]:
     """``result_csv`` artifact: ``path_pattern`` + ``fallback_patterns``, then the
-    built-in names it doesn't list (so an alfrd.yaml written for AVICA <= 0.3 still
-    finds ``result_{target}_{project_code}_{workdirname}.csv``). Discovery only."""
+    built-in names it doesn't list (so an older alfrd.yaml still finds
+    ``result__{target}__{project_code}__{workdirname}.csv``). Discovery only."""
     declared = [str(p) for p in [artifact.get("path_pattern"), *_as_list(artifact.get("fallback_patterns"))] if p and "{target}" in str(p)]
     if not declared:
         return []
@@ -571,7 +578,7 @@ def result_csvs(
     """Result CSVs matching the ``result_csv`` patterns.
 
     Each item: ``file``, ``target`` and, when the name carries them (AVICA's
-    ``result_{target}_{project_code}_{workdirname}.csv``), ``project_code`` and
+    ``result__{target}__{project_code}__{workdirname}.csv``), ``project_code`` and
     ``workdir``. Names are parsed with the patterns, never split on ``_``; a
     target containing ``_`` is resolved with the known project codes.
     """
