@@ -287,7 +287,8 @@ def _connect_startup_project(service, project: str | None) -> str | None:
         raise typer.BadParameter(f"{folder} is not a folder")
     local = manifest_file(folder) is not None
     # No local alfrd.yaml: use the default one for --project, or for a cwd that
-    # looks like an AVICA folder (avica.inp, avica.logs/, reductions/).
+    # looks like an AVICA folder (avica.inp, avica.logs/, reductions/) or is
+    # completely empty (a new AVICA project started from scratch).
     if not local and (default_manifest_path() is None or not (project or looks_like_project(folder))):
         if project:
             raise typer.BadParameter(f"No alfrd.yaml in {folder} and no default alfrd.yaml")
@@ -760,7 +761,7 @@ def manifest_default(
 
 @import_cli.command("avica-run")
 def import_avica_run_command(
-    reductions_dir: str = typer.Argument(..., help="AVICA target_dir containing *_result.csv files."),
+    reductions_dir: str = typer.Argument(..., help="AVICA target_dir containing result__<target>__<code>__<wd>.csv (or *_result.csv) files."),
     project: str = typer.Option(..., "--project", help="Runtime project name to create."),
     manifest: str = typer.Option(..., "--manifest", help="Validated ALFRD manifest attached to this import."),
     db: Optional[str] = typer.Option(None, help="Path to the runtime SQLite database."),

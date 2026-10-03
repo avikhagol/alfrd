@@ -9,6 +9,8 @@ import { avicaInterest, buildAvicaIndex, detectCodes, parseSummaryFile, parseRes
 import { studioManifest, classifyLogs, msPathPatterns, specInstances, pathRegex, defaultManifestText } from "./defs.js";
 
 const RESULT_SUFFIX = /_result\.(csv|tsv)$/i;
+// File-name-only result CSV patterns (no folders), newest AVICA name first.
+const RESULT_NAMES = ["result__{target}__{project_code}__{workdirname}.csv", "result_{target}_{project_code}_{workdirname}.csv"];
 
 function baseName(path) {
   return String(path).split(/[\\/]/).pop();
@@ -457,9 +459,10 @@ export function buildBundle(files, { source = "import", projectHint = null, root
   const seen = new Map();
   kinds.filter((f) => f.kind === "result").forEach((f) => {
     // AVICA <= 0.3 writes <target_dir>/<target>_result.csv (an empty target gives "_result.csv");
-    // newer AVICA writes result_<target>_<code>_<workdir>.csv, one file per (target, code, workdir).
+    // newer AVICA writes result__<target>__<code>__<workdir>.csv (earlier builds: single "_"),
+    // one file per (target, code, workdir).
     const info = bundle.avica?.resultCsvs?.find((r) => r.file === f.rel)
-      || parseResultFiles([f.name], { ...DEFAULT_PATTERNS, result_csv: ["result_{target}_{project_code}_{workdirname}.csv"] }, ".")[0] || {};
+      || parseResultFiles([f.name], { ...DEFAULT_PATTERNS, result_csv: RESULT_NAMES }, ".")[0] || {};
     const name = info.target || f.name.replace(RESULT_SUFFIX, "") || cfgTarget || "(untargeted)";
     const parsed = parseResultCsv(f.text, { aliases, file: f.name });
     if (parsed.error) {

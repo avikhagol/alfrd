@@ -68,7 +68,7 @@ dataset_columns:
   - name: TARGET_NAME
     type: string
     required: true
-    description: Source/target name, from the result CSV name (result_<TARGET>_<CODE>_<wd>.csv or <TARGET>_result.csv).
+    description: Source/target name, from the result CSV name (result__<TARGET>__<CODE>__<wd>.csv or <TARGET>_result.csv).
   - name: PROJECT_CODE
     type: string
     required: false

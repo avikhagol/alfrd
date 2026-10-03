@@ -4,7 +4,8 @@
 //   <root>/avica.inp, avica.summary.json   AVICA config / `avica pipe config --summary`
 //   <root>/avica.logs/                     avica__log-*.log, avica_crash_<step>.json
 //   <root>/<target_dir>/<TARGET>_result.csv   (AVICA <= 0.3)
-//   <root>/<target_dir>/[<CODE>/<wd>/]result_<TARGET>_<CODE>_<wd>.csv   (newer AVICA)
+//   <root>/<target_dir>/[<CODE>/<wd>/]result__<TARGET>__<CODE>__<wd>.csv   (newer AVICA;
+//        earlier builds wrote result_<TARGET>_<CODE>_<wd>.csv)
 //   <root>/<target_dir>/<CODE>/wd/         AVICA project code work dir (BV019, RDV41, ...)
 //        avica.meta/  input_template/  wd_<band>/  wd_<band>_<TARGET>/input_template_<band>_<TARGET>/
 
@@ -24,14 +25,19 @@ export const DEFAULT_PATTERNS = {
   band_dir: ["wd_{band}", "wd_{band}_{target}"],
   meta_dir: ["avica.meta"],
   input_templates: ["input_template", "input_template_{n}", "wd_{band}_{target}/input_template_{band}_{target}"],
-  // Newest AVICA name first; "{target}_result.csv" is AVICA <= 0.3.
+  // Newest AVICA name first (result__<TARGET>__<CODE>__<wd>.csv), then the earlier
+  // single-underscore name; "{target}_result.csv" is AVICA <= 0.3.
   result_csv: [
+    "{target_dir}/result__{target}__{project_code}__{workdirname}.csv",
+    "{target_dir}/{project_code}/{workdirname}/result__{target}__{project_code}__{workdirname}.csv",
     "{target_dir}/result_{target}_{project_code}_{workdirname}.csv",
     "{target_dir}/{project_code}/{workdirname}/result_{target}_{project_code}_{workdirname}.csv",
     "{target_dir}/{target}_result.csv",
   ],
 };
-const GROUPS = { project_code: "[^/]+", n: "\\d+", band: "[A-Z][A-Z0-9]*?", target: "[^/]+?", workdirname: "wd(?:_\\d+)?" };
+// A target / project code never starts or ends with "_": the "_" / "__" separators
+// in result CSV names belong to the pattern, not to the name (mirrors avica_layout).
+const GROUPS = { project_code: "[^/_](?:[^/]*[^/_])?", n: "\\d+", band: "[A-Z][A-Z0-9]*?", target: "[^/_](?:[^/]*?[^/_])?", workdirname: "wd(?:_\\d+)?" };
 const reEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** `{workdirname}` regex from the last segment of each `workdir` pattern (mirrors avica_layout.workdirname_regex). */

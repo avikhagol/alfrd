@@ -290,3 +290,29 @@ def test_result_csvs_parse_new_avica_names(tmp_path):
     names = {p.name for p in result_csv_path(root, "0742+103", "RDV41", "wd")}
     assert names == {"result_0742+103_RDV41_wd.csv", "0742+103_result.csv"}
     assert {p.name for p in result_csv_path(root, "0742+103", "BV019")} == {"0742+103_result.csv"}
+
+
+@pytest.mark.parametrize("default_manifest", [True, False])
+def test_result_csvs_double_underscore_names_without_local_alfrd_yaml(tmp_path, monkeypatch, default_manifest):
+    """AVICA's result__<TARGET>__<CODE>__<wd>.csv: no "_" left on the target / code / work dir.
+
+    Checked with ALFRD's default alfrd.yaml and with the built-in patterns alone.
+    """
+    if not default_manifest:
+        monkeypatch.setenv("ALFRD_DEFAULT_MANIFEST", str(tmp_path / "missing.yaml"))
+    root = tmp_path / "avica_0.3"
+    (root / "reductions" / "BV015" / "wd" / "avica.meta").mkdir(parents=True)
+    (root / "reductions" / "BW106" / "wd" / "avica.meta").mkdir(parents=True)
+    (root / "avica.inp").write_text("target_dir = reductions/\n")
+    header = "name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp\n"
+    for name in ("result__0554+580__BV015__wd.csv", "result__3C274__BW106__wd.csv",
+                 "result__J07_42__BV015__wd_1.csv", "result_1309+555_BW106_wd.csv"):
+        (root / "reductions" / name).write_text(header)
+    items = {i["file"].split("/")[-1]: i for i in scan_layout(root)["result_csvs"]}
+    got = {name: (i["target"], i.get("project_code"), i.get("workdir")) for name, i in items.items()}
+    assert got == {
+        "result__0554+580__BV015__wd.csv": ("0554+580", "BV015", "wd"),
+        "result__3C274__BW106__wd.csv": ("3C274", "BW106", "wd"),
+        "result__J07_42__BV015__wd_1.csv": ("J07_42", "BV015", "wd_1"),
+        "result_1309+555_BW106_wd.csv": ("1309+555", "BW106", "wd"),  # earlier single "_" name
+    }

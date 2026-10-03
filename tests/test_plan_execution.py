@@ -246,9 +246,10 @@ def test_runs_steps_and_trusts_the_result_csv_over_exit_code(project, monkeypatc
     assert _cells(project)["T2"] == {s: "done" for s in STEPS}
 
 
-def test_target_mode_and_new_result_names_fill_code_and_workdir(project, monkeypatch):
+@pytest.mark.parametrize("names", ["new", "single"])  # result__T__CODE__wd.csv / result_T_CODE_wd.csv
+def test_target_mode_and_new_result_names_fill_code_and_workdir(project, monkeypatch, names):
     _plan(project, targets=("T1",))
-    monkeypatch.setenv("FAKE_AVICA_NAMES", "new")
+    monkeypatch.setenv("FAKE_AVICA_NAMES", names)
     monkeypatch.setenv("FAKE_AVICA_CODE", "RDV41")
     monkeypatch.setenv("FAKE_AVICA_WD", "wd_1")
     monkeypatch.setenv("FAKE_AVICA_FAIL", "avica_avg")

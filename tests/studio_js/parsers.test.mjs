@@ -475,6 +475,28 @@ test("result CSVs: a loose result_{target}.csv pattern does not swallow code + w
 });
 
 
+test("result CSVs: result__<target>__<code>__<wd>.csv with the built-in patterns (no stray \"_\")", async () => {
+  const { parseResultFiles, DEFAULT_PATTERNS } = await import(path.join(web, "data/avica.js"));
+  const files = [
+    "reductions/result__0554+580__BV015__wd.csv",
+    "reductions/result__3C274__BW106__wd.csv",
+    "reductions/result__J07_42__BV015__wd_1.csv",
+  ];
+  const want = [
+    { file: files[0], target: "0554+580", project_code: "BV015", workdir: "wd" },
+    { file: files[1], target: "3C274", project_code: "BW106", workdir: "wd" },
+    { file: files[2], target: "J07_42", project_code: "BV015", workdir: "wd_1" },
+  ];
+  assert.deepEqual(parseResultFiles(files, DEFAULT_PATTERNS, "reductions"), want);
+  assert.deepEqual(parseResultFiles(files, DEFAULT_PATTERNS, "reductions", ["BV015", "BW106"]), want);
+  // An alfrd.yaml without a result_csv artifact, read in the browser (no layout from alfrd serve).
+  const head = "name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp\n";
+  const row = head + "fits_to_ms,1,0,2026-09-01 10:00:00,{},ok,[true],2026-09-01 11:00:00\n";
+  const bundle = buildBundle(files.map((f) => ({ path: f, name: f.split("/").pop(), size: row.length, text: row }))
+    .concat([{ path: "avica.inp", name: "avica.inp", size: 25, text: "target_dir = reductions/\n" }]), { rootName: "P" });
+  assert.deepEqual(bundle.targets.map((t) => t.name).sort(), ["0554+580", "3C274", "J07_42"]);
+});
+
 test("yaml: personality instructions round-trip exactly in mappings and sequences", () => {
   for (const instructions of ["  - a\nb", "a", "a\n\n", 'task: # "quoted"\nnext', "a\rb\tc", "backslash: \\' and \\\"", "on", "2026-10-03", "\u0085\u2028\u2029", "x".repeat(4000)]) {
     const value = { project_settings: { personas: { writer: { label: "Writer", instructions } } } };

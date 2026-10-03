@@ -6,8 +6,9 @@ when a step fails (AVICA prints the result and returns).
 
   FAKE_AVICA_SLEEP   seconds per step (default 0.2)
   FAKE_AVICA_FAIL    comma list of "step" or "target:step" that fail
-  FAKE_AVICA_NAMES   "old" (<target>_result.csv, default) or "new"
-                     (result_<target>_<code>_<wd>.csv)
+  FAKE_AVICA_NAMES   "old" (<target>_result.csv, default), "new"
+                     (result__<target>__<code>__<wd>.csv) or "single"
+                     (result_<target>_<code>_<wd>.csv, earlier AVICA builds)
   FAKE_AVICA_CODE / FAKE_AVICA_WD   code and work dir for "new" names (BV019 / wd)
   FAKE_AVICA_EXIT    exit code to return after the last step (default 0)
   FAKE_AVICA_TICK    print a line every 0.5 s while a step works
@@ -68,7 +69,10 @@ def main(argv):
     for target in targets:
         if not (opts.get("f") or opts.get("fitsfilenames")) and not opts.get("targets"):
             print("No FITS filenames supplied", file=sys.stderr)
-        csv_path = out_dir / (f"result_{target}_{code}_{wd}.csv" if names == "new" else f"{target}_result.csv")
+        csv_path = out_dir / {
+            "new": f"result__{target}__{code}__{wd}.csv",
+            "single": f"result_{target}_{code}_{wd}.csv",
+        }.get(names, f"{target}_result.csv")
         for step in steps:
             start = datetime.now()
             print(f">  Processing: {step} ({target})", flush=True)

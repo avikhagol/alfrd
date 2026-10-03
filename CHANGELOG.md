@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- AVICA: result CSVs are named `result__<TARGET>__<CODE>__<wd>.csv` by default. Earlier `result_<TARGET>_<CODE>_<wd>.csv` and `<TARGET>_result.csv` names are still read. Targets and project codes never keep a leading or trailing `_`, so an `alfrd.yaml` without a `result_csv` artifact no longer shows `_0554+580` / `_BV015_`.
+- AVICA: `alfrd serve` in a completely empty folder starts a new AVICA project with the default `alfrd.yaml` (dot-entries such as `.alfrd/` are ignored). Nothing is written until Project settings → Save.
+
 - Studio: guide new projects through setup, use plain run and step labels, link runs to results and filtered logs, keep errors visible, and avoid unchanged polling renders.
 
 - Add agent personalities, per-turn and combined roles, cycling role schedules, and Studio personality editing.
