@@ -3,8 +3,8 @@
 ``python -m alfrd.runtime.shim --exit-file X.exit -- cmd arg ...``
 
 The runner starts this in a new session (so it is the process-group leader)
-with stdout/stderr already pointing at the log file. No pipes are involved, so
-the command keeps running and logging when the runner or ``alfrd serve`` stops.
+with stdout/stderr already pointing at the log file. Claude's stream is consumed
+inside this detached shim, so logging continues if the runner or server stops.
 On exit the shim writes ``X.exit`` (JSON: exit_code, signal, finished) with an
 atomic rename; ``X.child`` holds the command's pid for re-adoption.
 """
@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exit-file", required=True)
     parser.add_argument("--stdin-file")
     parser.add_argument("--stdout-file")
+    parser.add_argument("--claude-stream", action="store_true")
+    parser.add_argument("--human-review", action="store_true")
+    parser.add_argument("--response-file")
+    parser.add_argument("--response-headings")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -69,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with contextlib.ExitStack() as stack:
             stdin = stack.enter_context(open(args.stdin_file, "rb")) if args.stdin_file else subprocess.DEVNULL
-            stdout = stack.enter_context(open(args.stdout_file, "wb")) if args.stdout_file else None
+            stdout = subprocess.PIPE if args.claude_stream else stack.enter_context(open(args.stdout_file, "wb")) if args.stdout_file else None
             child = subprocess.Popen(command, stdin=stdin, stdout=stdout, env=env)
     except OSError as exc:
         print(f"[alfrd] cannot start {command[0]!r}: {exc}", file=sys.stderr, flush=True)
@@ -77,7 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         return 127
     _write_json(exit_file.with_suffix(".child"), {"pid": child.pid, "proc_start": proc_start(child.pid)})
 
+    stopped = {"signal": None}
+
     def forward(signum, _frame):
+        stopped["signal"] = signum
         try:
             child.send_signal(signum)
         except OSError:
@@ -85,7 +93,58 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, forward)
     signal.signal(signal.SIGINT, forward)
+    stream_error = {"message": None}
+    reader = None
+    if args.claude_stream:
+        def consume():
+            from alfrd.agent_io import ClaudeStream
+
+            stream = ClaudeStream(Path(args.stdout_file), exit_file)
+            try:
+                for line in iter(child.stdout.readline, b""):
+                    stream.feed(line.decode("utf-8", errors="replace"))
+            except Exception as exc:  # preserve the command's failure and stream diagnostic
+                stream_error["message"] = str(exc)
+            finally:
+                stream_error["message"] = stream_error["message"] or stream.close()
+                child.stdout.close()
+        reader = threading.Thread(target=consume, daemon=True)
+        reader.start()
     code, rusage, usage, reaped_cpu = _wait(child, exit_file, env)
+    if reader:
+        reader.join(timeout=5)
+        if reader.is_alive():
+            stream_error["message"] = "Claude output did not close"
+        if code == 0 and stream_error["message"]:
+            code = 1
+            print(f"[alfrd] invalid Claude stream: {stream_error['message']}", flush=True)
+    if code == 0 and args.human_review:
+        from alfrd.agent_loop import sha256, validate_response, REQUIRED_HEADINGS, ResponseValidationError
+
+        response = Path(args.response_file or args.stdout_file)
+        # For file-output agents the scheduler supplies the response path too.
+        try:
+            text = response.read_text(encoding="utf-8")
+            errors = validate_response(text, json.loads(args.response_headings) if args.response_headings else REQUIRED_HEADINGS)
+            if errors:
+                raise ResponseValidationError(errors)
+            digest = sha256(text)
+            _write_json(exit_file.with_suffix(".review.json"), {"status": "pending", "hash": digest})
+            print("\n[alfrd] Awaiting human adjustment. Review the response in Studio → Handoffs.", flush=True)
+            approval = exit_file.with_suffix(".approval.json")
+            while not stopped["signal"]:
+                if approval.is_file():
+                    decision = json.loads(approval.read_text(encoding="utf-8"))
+                    if decision.get("hash") != sha256(response.read_text(encoding="utf-8")):
+                        raise ValueError("reviewed response changed after approval")
+                    print("[alfrd] Human adjustment approved.", flush=True)
+                    break
+                time.sleep(0.2)
+            if stopped["signal"]:
+                code = -stopped["signal"]
+        except (OSError, ValueError) as exc:
+            print(f"[alfrd] review failed: {exc}", flush=True)
+            code = 1
     print(f"\n[alfrd] exit code {code} after {time.time() - started:.0f} s", flush=True)
     data = {
         "exit_code": code,

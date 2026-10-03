@@ -91,6 +91,7 @@ def connect_project_api():
 @studio_api.post("/studio/projects/create")
 def create_project_api():
     from alfrd.project_creation import create_project
+    from alfrd.agent_loop import DEFAULT_ITERATIONS
 
     service = current_app.config.get("RUNTIME_SERVICE")
     if service is None:
@@ -101,7 +102,7 @@ def create_project_api():
     try:
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
-                                    iterations=payload.get("iterations", 5))
+                                    iterations=payload.get("iterations", DEFAULT_ITERATIONS))
     except FileExistsError as error:
         return _json_error(error, 409)
     except (ValueError, OSError, TypeError) as error:

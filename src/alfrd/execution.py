@@ -107,6 +107,10 @@ class StepCommand:
     first_turn: bool = False
     final_turn: bool = False
     manual: bool = False
+    human_review: bool = False
+    model: str | None = None
+    claude_stream: bool = False
+    loop_options: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -178,7 +182,8 @@ class ExecutionConfig:
             "workflow": self.workflow,
             "steps": [
                 {"id": s.id, "entrypoint": s.entrypoint, "argv": list(s.argv) if s.argv else None, "timeout": s.timeout,
-                 "handoff": dict(s.handoff), "iteration": s.iteration, "manual": s.manual}
+                 "handoff": dict(s.handoff), "iteration": s.iteration, "manual": s.manual,
+                 "human_review": s.human_review, "model": s.model}
                 for s in self.steps
             ],
             "key_column": self.key_column,
@@ -238,6 +243,29 @@ def merged_manifest(root: str | Path) -> dict[str, Any]:
 def load_execution(root: str | Path) -> ExecutionConfig:
     base = Path(root).expanduser().resolve()
     merged = merged_manifest(base)
+    access = (merged.get("project_settings") or {}).get("agent_access") or {}
+    if not isinstance(access, Mapping):
+        raise ExecutionError("project_settings.agent_access must be a mapping")
+    for key in ("folders", "bash_commands"):
+        values = access.get(key, [])
+        if not isinstance(values, list) or not all(isinstance(v, str) and v.strip() for v in values):
+            raise ExecutionError(f"agent_access.{key} must be a list of nonempty strings")
+    if access.get("sandbox") not in (None, "read-only", "workspace-write"):
+        raise ExecutionError("agent_access.sandbox must be read-only or workspace-write")
+    access = dict(access)
+    access["folders"] = [str((base / Path(p).expanduser()).resolve()) for p in access.get("folders", [])]
+    loop_options = merged.get("loop") or {}
+    if not isinstance(loop_options, Mapping):
+        raise ExecutionError("loop must be a mapping")
+    if "task_row" in loop_options and (not isinstance(loop_options["task_row"], str) or not loop_options["task_row"].strip()):
+        raise ExecutionError("loop.task_row must be a nonempty string")
+    headings = loop_options.get("headings")
+    if headings is not None and (not isinstance(headings, list) or not headings or
+                                not all(isinstance(h, str) and h.strip() and "\n" not in h for h in headings)):
+        raise ExecutionError("loop.headings must be a nonempty list of heading names")
+    contract = loop_options.get("contract", {})
+    if not isinstance(contract, Mapping) or any(k not in ("first", "middle", "final") or not isinstance(v, str) for k, v in contract.items()):
+        raise ExecutionError("loop.contract accepts first, middle and final text")
     settings = {**DEFAULT_EXECUTION, **(merged.get("execution") or {})}
     for key, allowed in (("mode", MODES), ("on_failure", ON_FAILURE), ("status_from", STATUS_FROM),
                          ("launcher", LAUNCHERS), ("auto_resume", AUTO_RESUME),
@@ -269,6 +297,9 @@ def load_execution(root: str | Path) -> ExecutionConfig:
         raise ExecutionError(f"workflow entrypoint {default_entry!r} is not an entrypoint in alfrd.yaml")
     steps = []
     entries = {e["name"]: e for e in merged.get("entrypoint") or []}
+    review_default = (merged.get("project_settings") or {}).get("human_review", False)
+    if not isinstance(review_default, bool):
+        raise ExecutionError("project_settings.human_review must be true or false")
     for sid in merged.get("step_order") or list((merged.get("steps") or {}).keys()):
         spec = (merged.get("steps") or {}).get(sid) or {}
         entry = spec.get("entrypoint") or default_entry
@@ -305,6 +336,15 @@ def load_execution(root: str | Path) -> ExecutionConfig:
                 project_file(base, value)
         if io.get("output_capture", "file") not in ("file", "stdout"):
             raise ExecutionError("output_capture must be file or stdout")
+        review = io.get("human_review", review_default)
+        if not isinstance(review, bool):
+            raise ExecutionError("human_review must be true or false")
+        model = io.get("model")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise ExecutionError("model must be a nonempty string or null")
+        from alfrd.agent_io import agent_command
+
+        argv, model, claude_stream = agent_command(argv, model, stream=bool(handoff) and not io.get("manual", False), access=access) if argv else (None, model, False)
         steps.append(StepCommand(
             id=sid, argv=argv, entrypoint=entry,
             timeout=float(timeout) if timeout not in (None, "", 0) else None,
@@ -316,6 +356,7 @@ def load_execution(root: str | Path) -> ExecutionConfig:
             first_turn=sid == (merged.get("step_order") or [None])[0],
             final_turn=sid == (merged.get("step_order") or [None])[-1],
             manual=bool(io.get("manual", False)),
+            human_review=review, model=model, claude_stream=claude_stream, loop_options=dict(loop_options),
         ))
     if workflow.get("repeat") is not None:
         if settings["mode"] != "step" or settings["concurrency"] != 1:

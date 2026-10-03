@@ -42,6 +42,7 @@ def execution_settings(project_name: str):
     except ExecutionError as error:
         return jsonify(error={"code": 400, "message": str(error)}, configured=False), 200
     data = cfg.to_dict()
+    data["loop"] = dict(cfg.steps[0].loop_options) if cfg.steps else {}
     data["configured"] = any(s.argv for s in cfg.steps)
     data["plan_csv_exists"] = cfg.plan_csv.exists()
     data["plan_csv_name"] = cfg.plan_csv.name
@@ -174,13 +175,15 @@ def _artifact_path(folder, unit, artifact):
 def plan_handoffs(project_name: str, plan_id: str):
     try:
         folder = _handoff_folder(project_name, plan_id)
+        iterations = folder.load().get("loop", {}).get("iterations", "?")
         out = []
         for unit in folder.units():
             if not unit.get("handoff"):
                 continue
-            item = {k: unit.get(k) for k in ("id", "agent", "iteration", "iterations", "status", "manual", "artifact", "error", "log")}
-            item["phase"] = "awaiting_response" if unit.get("manual") and unit["status"] == "running" else unit["status"]
-            item["iteration_label"] = f"{unit.get('iteration')}/{unit.get('iterations') or folder.load().get('loop', {}).get('iterations', '?')}"
+            item = {k: unit.get(k) for k in ("id", "agent", "iteration", "iterations", "status", "manual", "artifact", "error", "log", "model", "requested_model", "review_status", "human_review")}
+            from alfrd.agent_loop import turn_phase
+            item["phase"] = turn_phase(unit)
+            item["iteration_label"] = f"{unit.get('iteration')}/{unit.get('iterations') or iterations}"
             for artifact in ("prompt", "response"):
                 path = _artifact_path(folder, unit, artifact)
                 item[artifact + "_bytes"] = path.stat().st_size if path.is_file() else 0
@@ -209,6 +212,9 @@ def handoff_artifact(project_name: str, plan_id: str, unit_id: str, artifact: st
         if not path.is_file():
             return _json_error(ValueError("artifact is not available"), 404)
         total = path.stat().st_size
+        from alfrd.agent_loop import MAX_RESPONSE_BYTES
+        if total > MAX_RESPONSE_BYTES:
+            raise ValueError("handoff archive exceeds 10 MiB")
         if offset > total:
             raise ValueError("offset exceeds artifact size")
         with path.open("rb") as stream:
@@ -244,6 +250,62 @@ def plan_response(project_name: str, plan_id: str):
     except (ValueError, OSError) as error:
         return _json_error(error, 400)
     return jsonify(submitted=True)
+
+
+@studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/review")
+def plan_review(project_name: str, plan_id: str):
+    from alfrd.agent_loop import approve_response
+    from alfrd import history
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
+    payload = request.get_json(silent=True) or {}
+    try:
+        approve_response(_project_root(project_name), plan_id, str(payload.get("unit") or ""),
+                         payload.get("text"), payload.get("base_hash"))
+    except (history.Conflict, FileExistsError) as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+    _poke(project_name)
+    return jsonify(approved=True)
+
+
+@studio_api.route("/studio/projects/<project_name>/task", methods=["GET", "POST"])
+def project_task(project_name: str):
+    from alfrd import history
+    from alfrd.agent_loop import project_file
+
+    root = _project_root(project_name)
+    path = project_file(root, "task.md")
+    try:
+        with pc.locked(root / ".alfrd" / "locks" / "handoff.lock"):
+            if request.method == "POST":
+                payload = request.get_json(silent=True) or {}
+                text = payload.get("text")
+                if not isinstance(text, str) or not text.strip() or len(text.encode()) > 1024 * 1024:
+                    raise ValueError("task must be nonempty Markdown smaller than 1 MiB")
+                if not payload.get("base_hash"):
+                    raise ValueError("base_hash is required")
+                current = path.read_text(encoding="utf-8") if path.exists() else ""
+                if history.text_hash(current) != payload["base_hash"]:
+                    raise history.Conflict("task.md", current, text)
+                cfg = load_execution(root)
+                sync = payload.get("use_for_next_run", False)
+                if not isinstance(sync, bool):
+                    raise ValueError("use_for_next_run must be true or false")
+                if sync and any(p.get("status") in ("running", "paused", "interrupted") for p in scheduler.list_plans(root)):
+                    return _json_error(ValueError("Finish or cancel the current plan before replacing its initial handoff"), 409)
+                history.save(root, "task.md", text, source="studio", base_hash=payload["base_hash"] if path.exists() else None)
+                if sync and cfg.steps and cfg.steps[0].handoff:
+                    history.save(root, cfg.steps[0].handoff["input"], text, source="studio", message="New task for next run")
+                _poke(project_name)
+            text = path.read_text(encoding="utf-8") if path.exists() else ""
+            return jsonify(file="task.md", text=text, hash=history.text_hash(text))
+    except history.Conflict as error:
+        return jsonify(error={"message": str(error)}, current=error.current, hash=error.current_hash), 409
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
 
 
 @studio_api.route("/studio/projects/<project_name>/handoff", methods=["GET", "POST"])
@@ -333,6 +395,8 @@ def plan_cells(project_name: str, plan_id: str):
     """Set cells: ``{cells: [{row, step, value}]}`` with value todo | skip (retry = todo)."""
     payload = request.get_json(silent=True) or {}
     items = payload.get("cells") or []
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
     try:
         root = _project_root(project_name)
         folder = scheduler.PlanDir(root, plan_id)
@@ -343,13 +407,15 @@ def plan_cells(project_name: str, plan_id: str):
             value = str(item.get("value") or "")
             if value not in (pc.TODO, "skip", ""):
                 raise ExecutionError("a cell can be set to todo or skip")
+            if plan.get("loop") and value != pc.TODO:
+                raise ExecutionError("agent loop turns cannot be skipped")
             cells[(str(item.get("row")), str(item.get("step")))] = value or "skip"
         # A running cell is left alone; everything else may be retried or skipped.
         only_if = {k: set(pc.STATES) - {pc.RUNNING} for k in cells}
         pc.update(folder.csv_path(plan), folder.csv_lock(plan), plan.get("steps") or cfg.step_ids, cells,
                   only_if=only_if, key_column=cfg.key_column, code_column=cfg.code_column,
                   workdir_column=cfg.workdir_column, files_column=cfg.files_column)
-    except ExecutionError as error:
+    except (ExecutionError, OSError) as error:
         return _json_error(error, 400)
     _poke(project_name)
     return jsonify(ok=True)

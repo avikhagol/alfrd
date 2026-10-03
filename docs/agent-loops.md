@@ -23,6 +23,25 @@ next task. The last Codex turn supplies a closing report.
 
 ## Configuring commands
 
+### Models and Claude activity
+
+Project settings → **Agents / human review** has a model field for each Claude
+or Codex entrypoint. Apply the form, then **Save alfrd.yaml**. Blank uses the CLI's
+default. In YAML, `model: <name-or-alias>` on an entrypoint supplies `--model` and
+replaces any model argument already in `cmd`. CLI settings and authentication
+remain the responsibility of that CLI. No model catalog is hardcoded.
+
+Schedule and Handoffs show the **reported** model when the CLI supplies it,
+otherwise the **requested** model or “not reported”. Claude's stream reports
+resolved models; Codex's normal `model:` log header is used when available.
+ALFRD cannot infer a model hidden by a custom wrapper.
+
+Claude handoff commands automatically use `--output-format stream-json
+--verbose --include-partial-messages`. The detached shim logs text, tool calls,
+and tool results; saves raw events beside the unit log as `.events.jsonl`; and
+writes only a successful final `result` into `response.md`. This also upgrades
+existing `claude -p --output-format text` projects without a manifest change.
+
 The template writes its configuration into `alfrd.yaml`; edit commands there.
 For example:
 
@@ -53,13 +72,13 @@ workflows:
     steps:
       - id: claude-turn
         entrypoint: claude
-        handoff: {input: next-step-claude.md, output: next-step-gpt.md}
+        handoff: {input: next-step-claude.md, output: next-step-codex.md}
       - id: codex-turn
         entrypoint: codex
-        handoff: {input: next-step-gpt.md, output: next-step-claude.md}
+        handoff: {input: next-step-codex.md, output: next-step-claude.md}
 ```
 
-`next-step-gpt.md` is the recipient file for Codex. Agent and file names are
+`next-step-codex.md` is the recipient file for Codex. Agent and file names are
 configuration, not runner constants. Entrypoint commands run as argv, without a
 shell. `stdin_file` supplies an opened file descriptor. `output_capture: stdout`
 captures stdout alone; `file` expects the command to write `output_file` itself.
@@ -111,6 +130,40 @@ files before interruption; review those files before retrying.
 
 ## Studio and manual chat turns
 
+### Edit the goal
+
+Use **Workflow → Edit task** or **Settings → Edit task.md**. Saving records history
+and detects stale edits. **Use this goal for the next run** also replaces the
+initial handoff (normally `next-step-claude.md`); finish or cancel an active plan
+first. Uncheck that option to save only `task.md` while a plan is active. Frozen
+prompts already launched are unaffected. For a completed plan, choose Run → New
+plan, one task row and all turns, so the cells start as `todo` again.
+
+### Human in the loop
+
+Enable **Human adjustments** in Settings → Agents / human review, then check
+the agent turns you want to review. Workflow → **Human adjustments / agents**
+exposes the same per-step checkboxes and saves them directly. Configure before
+creating a plan; changing its manifest mid-run stops it at a turn boundary.
+
+The runner waits after a successful, validated response, before publishing it
+or starting the next agent. Schedule shows `awaiting_review`; choose **Review
+response**, edit the Markdown if needed, then **Approve and continue**. The
+original is archived as `response-agent.md`, and the reviewed response becomes
+`response.md`. Stale or duplicate approvals are rejected. Review does not undo
+source edits already made by an agent. It survives runner loss, and waiting
+counts toward both the turn timeout and total runtime limit. Pause retains the
+checkpoint; approval finishes the turn, and Resume starts subsequent work.
+
+YAML defaults and overrides:
+
+```yaml
+project_settings:
+  human_review: true
+# On a workflow step (applies to each repetition):
+# human_review: false  # skip review for this step
+```
+
 Start from Workflow → Run using the scaffolded plan CSV. Schedule shows the
 iteration, agent, and phase. **More → Handoffs** shows frozen prompts/responses
 and an editor for recipient files with history and stale-save detection. Pause
@@ -133,3 +186,55 @@ handoff saves and response submissions use the existing loopback + CSRF gate.
 The filesystem scheduler state is authoritative. RuntimeService registers the
 project and ordered workflow definition; turn archives/artifact metadata live
 with scheduler units. There is no second database execution loop.
+
+## Turn contracts and responses
+
+The default headings and phase instructions remain unchanged. Override them in
+YAML when your workflow needs another response structure:
+
+```yaml
+loop:
+  headings: [Outcome, Checks, Next]
+  contract:
+    first: "Inspect the goal and plan the next task."
+    middle: "Implement and check the incoming task."
+    final: "Report the result and remaining blockers."
+  task_row: task
+```
+
+Omitted phases use the default instructions. The prompt and required headings
+are frozen together for each turn. Manual submissions and human approvals use
+those headings; invalid submissions keep waiting. Changing the manifest requires
+a new plan. The size limit remains 10 MiB.
+
+Submit a manual response from Schedule → **Submit response**, or:
+
+```bash
+rtk alfrd plan response PLAN_ID UNIT_ID response.md -C ./my-project
+```
+
+Handoffs loads 256 KiB pages. **Copy prompt** copies the complete prompt.
+Artifact **Copy** fetches and copies the complete artifact.
+**Refresh** reloads turns and prompts after checking for unsaved edits.
+Review loads the complete response before approval becomes available.
+New scaffolds use `next-step-codex.md`; existing file names remain valid.
+
+## Folders and Bash permissions
+
+Project settings → **Agents / human review** now includes folder and shell
+settings. Apply, then save the manifest. They apply to new plans:
+
+```yaml
+project_settings:
+  agent_access:
+    folders: [../reference-notes]
+    bash_commands: ["git status *", "pytest *"]
+    sandbox: workspace-write
+```
+
+Folders resolve relative to the project folder. Claude receives `--add-dir`;
+Codex receives `--add-dir`, which grants write access under workspace-write.
+Claude Bash patterns become `--allowedTools` entries for automatic approval.
+Codex uses its CLI sandbox for shell and file permissions; choose read-only or
+workspace-write. Blank keeps the existing CLI sandbox. These settings do not
+bypass CLI permission checks. Custom command wrappers keep their own arguments.

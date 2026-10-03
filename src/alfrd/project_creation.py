@@ -72,7 +72,7 @@ def create_project(service, path: str | Path, *, name: str | None = None,
         if looping:
             if cfg.plan_csv.exists():
                 raise FileExistsError(f"{cfg.plan_csv.name} already exists")
-            plan_csv.create(cfg.plan_csv, [{"target": "task"}], cfg.step_ids, cfg.step_ids,
+            plan_csv.create(cfg.plan_csv, [{"target": data.get("loop", {}).get("task_row", "task")}], cfg.step_ids, cfg.step_ids,
                             key_column=cfg.key_column, files_column=cfg.files_column,
                             code_column=cfg.code_column, workdir_column=cfg.workdir_column)
             written.append(cfg.plan_csv)

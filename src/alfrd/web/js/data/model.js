@@ -132,6 +132,7 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
         logs: obj.logs || [],
         depends,
         command: obj.command || obj.cmd || null,
+        handoff: obj.handoff || null,
       };
     });
     // Default dependency chain: each step waits on its predecessor.

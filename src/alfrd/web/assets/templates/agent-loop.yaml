@@ -1,6 +1,6 @@
 description: A bounded Claude Code and Codex handoff workflow.
 history:
-  files: [alfrd.yaml, task.md, next-step-claude.md, next-step-gpt.md]
+  files: [alfrd.yaml, task.md, next-step-claude.md, next-step-codex.md]
 primary_key: TARGET_NAME
 entrypoint:
   - name: claude
@@ -28,19 +28,19 @@ workflows:
     steps:
       - id: claude-turn
         entrypoint: claude
-        handoff: {input: next-step-claude.md, output: next-step-gpt.md}
+        handoff: {input: next-step-claude.md, output: next-step-codex.md}
       - id: codex-turn
         entrypoint: codex
-        handoff: {input: next-step-gpt.md, output: next-step-claude.md}
+        handoff: {input: next-step-codex.md, output: next-step-claude.md}
 steps:
   claude-turn: {label: Claude, category: Agent}
   codex-turn: {label: Codex, category: Agent}
 artifacts:
   - {name: task, kind: text, path_pattern: task.md}
   - {name: claude-handoff, kind: text, path_pattern: next-step-claude.md}
-  - {name: codex-handoff, kind: text, path_pattern: next-step-gpt.md}
+  - {name: codex-handoff, kind: text, path_pattern: next-step-codex.md}
 views:
   metadata:
     - {panel: text, title: Task, scope: target, source: task.md}
     - {panel: text, title: Next step for Claude, scope: target, source: next-step-claude.md}
-    - {panel: text, title: Next step for Codex, scope: target, source: next-step-gpt.md}
+    - {panel: text, title: Next step for Codex, scope: target, source: next-step-codex.md}

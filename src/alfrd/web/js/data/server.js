@@ -70,6 +70,9 @@ export const server = {
   handoff(project, file) { return getJson(`/studio/projects/${encodeURIComponent(project)}/handoff?${new URLSearchParams({ file })}`); },
   handoffSave(project, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/handoff`, payload); },
   planResponse(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/response`, payload); },
+  planReview(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/review`, payload); },
+  task(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/task`); },
+  taskSave(project, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/task`, payload); },
 
   // The project's target list (alfrd.targets.csv; alfrd.targets_csv).
   targets(project) {

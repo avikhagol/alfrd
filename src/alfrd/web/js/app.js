@@ -1023,6 +1023,7 @@ function modal(html, setup, cls = "") {
   host.hidden = false;
   const root = $(".modal", host);
   const close = () => {
+    if (!root.dispatchEvent(new Event("beforeclose", { cancelable: true }))) return;
     host.hidden = true;
     host.innerHTML = "";
     document.removeEventListener("keydown", esc_);

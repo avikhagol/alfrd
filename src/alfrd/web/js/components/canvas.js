@@ -674,6 +674,7 @@ function runGroup(ctx, project) {
   return `<div class="sim-group ${ap ? "on" : ""}">
     <button class="btn primary" data-plan="new" ${canRun ? "" : "disabled title='Only from a browser on the same machine as alfrd serve'"} title="Run steps for targets with the commands in alfrd.yaml">${icon("play")} Run…</button>
     <button class="icon-btn" data-plan="dry" title="Dry run: list the commands a run would start, in order (nothing runs)" aria-label="Dry run">${icon("list")}</button>
+    ${ctx.state.workflow.template === "agent-loop" || ctx.state.workflow.steps.some((s) => s.handoff) ? '<button class="btn sm" data-plan="task">Edit task</button><button class="btn sm" data-plan="agents">Human adjustments / agents</button>' : ''}
     ${ap ? `<button class="btn sm" data-plan="schedule" title="Plan ${esc(ap.plan.id)}">${icon(ap.plan.status === "running" ? "sync" : "pause", ap.plan.status === "running" && ap.runner?.alive ? "spin" : "")} ${esc(ap.plan.status)} ${counts.done || 0}/${total}</button>` : ""}
   </div>`;
 }

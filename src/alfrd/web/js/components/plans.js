@@ -1,4 +1,3 @@
-import { summarizeLoop } from "./loop_helpers.js";
 // Plans: run a plan CSV (targets × steps) with the commands in alfrd.yaml.
 //
 // The server starts a detached runner (alfrd.runtime.scheduler); this module
@@ -238,11 +237,13 @@ export function renderSchedule(box, ctx, project) {
       <span class="sched-counts">${counts}</span>
       <span class="grow"></span>
       ${primary}
+      ${s.loop?.phase === "awaiting_response" ? '<button class="btn sm primary" data-plan="handoffs">Submit response</button>' : ''}
+      ${s.loop?.phase === "awaiting_review" ? '<button class="btn sm primary" data-plan="handoffs">Review response</button>' : ''}
       ${canAct && failedCells ? `<button class="btn sm" data-plan="retry" title="Failed, blocked, interrupted and cancelled cells back to todo, then resume">${icon("reset")} Retry ${failedCells}</button>` : ""}
       <button class="btn sm" data-plan="more" aria-haspopup="menu" title="Cancel, add a target, new run, usage, runner log …">${icon("more")} More</button>
     </div>
     <p class="sched-meta muted small"><span class="mono" title="Plan CSV">${esc(p.csv)}</span> · ${esc(p.mode)} × ${esc(p.concurrency)} · on failure: ${esc(p.on_failure)} · ${esc(runnerTitle(s))}</p>
-    ${s.loop ? `<p class="sched-meta"><b>${esc(summarizeLoop(s.units || [], { iterations: s.loop.iterations, steps: steps.length / s.loop.iterations, status: p.status }))}</b></p><p class="muted small">Pause: finishes the current turn, then stops · Cancel: stops the current turn now</p>` : ""}
+    ${s.loop ? `<p class="sched-meta"><b>Turn ${esc(s.loop.turn)} of ${esc(s.loop.turns)} · Iteration ${esc(s.loop.iteration)}/${esc(s.loop.iterations)} · ${esc(s.loop.agent || "ready")}</b> · ${esc(s.loop.phase)} · Model: ${esc(s.loop.model || (s.loop.requested_model ? `${s.loop.requested_model} (requested)` : "not reported"))} · ${esc(loopElapsed([{ ...s.loop, status: "running" }]))}</p><p class="muted small">Pause finishes the current turn. Cancel stops it now.</p>` : ""}
     <div class="sched-b dock-${esc(orderPrefs().dock)}${orderPrefs().folded ? " order-folded" : ""}">
       <section class="sched-grid">
         <h4>Targets × steps <span class="muted small">(click a cell: log, retry, skip)</span></h4>
@@ -300,6 +301,18 @@ export async function planAct(ctx, project, action, el, opts = {}) {
   const s = planOf(project);
   const id = s?.plan?.id;
   try {
+    if (action === "task" || action === "agents") {
+      const dialog = await import("./agent_settings_dialog.js");
+      if (action === "task") return dialog.openTask(ctx, project);
+      const text = ctx.state.trees?.[project]?.manifestText || ctx.state.workflowFile.text;
+      return dialog.openAgentSettings(ctx, project, text, async (updated) => {
+        if (activePlan(project)) throw new Error("Finish or cancel the current plan before changing agent settings.");
+        await ctx.saveManifest(project, updated);
+        await ctx.refreshProject(project);
+        ctx.toast("Agent and review settings saved", "ok");
+      });
+    }
+    if (action === "handoffs") return (await import("./agent_dialog.js")).openHandoffs(ctx, project, id);
     if (action === "new") return openRunDialog(ctx, project, opts);
     if (action === "dry") return openRunDialog(ctx, project, { ...opts, dry: true });
     if (action === "refresh") return loadPlan(ctx, project);
@@ -356,7 +369,7 @@ export function cellMenu(ctx, project, anchor) {
     { label: "Follow in Log Stream", icon: "terminal", disabled: !u?.log, run: () => dockLog(ctx, project, u.log) },
     { label: "Resource usage", icon: "graph", disabled: !u?.usage_file, run: () => loadUsage().then((m) => m.openUsage(ctx, project, u, () => unitById(project, u.id) || u)) },
     { label: "Retry (todo)", icon: "reset", disabled: !can || v === "todo", run: () => set("todo") },
-    { label: "Skip", icon: "minus", disabled: !can || v === "skip", run: () => set("skip") },
+    { label: "Skip", icon: "minus", disabled: !can || Boolean(s?.plan?.loop) || v === "skip", run: () => set("skip") },
     ...(u?.argv ? [{ label: "Copy command", icon: "copy", run: () => navigator.clipboard?.writeText(u.argv.join(" ")) }] : []),
     { label: "Notes…", icon: "file", run: () => ctx.openNotes(project, { target: row?.target, step, project_code: row?.code || undefined, workdir: row?.workdir || undefined }) },
   ]);
@@ -470,7 +483,12 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
   const steps = info.steps.map((s) => s.id);
   let mountStepPicker;
   try { ({ mountStepPicker } = await loadPicker()); } catch (error) { ctx.toast(`Run: ${error.message}`, "fail"); return; }
-  const sel = selectionRows(ctx, project, info);
+  const isLoop = info.steps.every((s) => s.iteration && s.handoff?.input);
+  let sel = selectionRows(ctx, project, info), preferNew = Boolean(only || targets);
+  if (isLoop) {
+    const defaults = (await import("../data/agent_settings.js")).loopRunSelection(info);
+    sel = defaults.rows; preferNew = defaults.preferNew;
+  }
   const hasCsv = info.plan_csv_exists && info.table?.rows?.length;
   const st = info.settings;
   const current = ctx.target();
@@ -479,8 +497,8 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
     <div class="modal-b run-dlg">
       <p class="muted small">Commands come from alfrd.yaml and run on the server machine in <code>${esc(info.cwd)}</code>. They keep running when you close the Studio or stop <code>alfrd serve</code>; the Studio re-attaches when the project is loaded again.</p>
       <fieldset><legend>Targets <button class="link-btn small" id="run-import" title="Add sources and their FITS file names to the targets CSV">${icon("upload")} Import targets CSV…</button></legend>
-        ${hasCsv ? `<label class="check"><input type="radio" name="src" value="csv" ${only || targets ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
-        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !only && !targets ? "" : "checked"}> <span>New plan from these targets${hasCsv ? ` <em class="muted">(replaces ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
+        ${hasCsv ? `<label class="check"><input type="radio" name="src" value="csv" ${preferNew ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
+        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !preferNew ? "" : "checked"}> <span>New plan from these targets${hasCsv ? ` <em class="muted">(replaces ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
         <div class="run-targets" id="run-targets">
           <div class="row gap small"><button class="link-btn" data-all="1">all</button><button class="link-btn" data-all="0">none</button><input class="input sm grow" id="run-filter" placeholder="Filter targets"></div>
           <table class="tbl small"><thead><tr><th></th><th>Target</th><th>${esc(info.files_column)}</th><th>${esc(info.code_column)}</th></tr></thead><tbody>
@@ -492,9 +510,9 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
         <div id="run-steps"></div>
       </fieldset>
       <div class="row gap wrap">
-        <label class="field"><span>Mode</span><select class="input" id="run-mode">${["step", "target", "batch"].map((m) => `<option ${st.mode === m ? "selected" : ""} ${m !== "step" && !info.settings[`${m}_entrypoint`] ? "disabled" : ""}>${m}</option>`).join("")}</select></label>
-        <label class="field"><span>Targets at once</span><input class="input" id="run-conc" type="number" min="1" max="64" value="${esc(st.concurrency)}"></label>
-        <label class="field"><span>On failure</span><select class="input" id="run-fail">${["stop_target", "continue", "stop_plan"].map((m) => `<option ${st.on_failure === m ? "selected" : ""}>${m}</option>`).join("")}</select></label>
+        <label class="field" ${isLoop ? "hidden" : ""}><span>Mode</span><select class="input" id="run-mode">${["step", "target", "batch"].map((m) => `<option ${st.mode === m ? "selected" : ""} ${m !== "step" && !info.settings[`${m}_entrypoint`] ? "disabled" : ""}>${m}</option>`).join("")}</select></label>
+        <label class="field" ${isLoop ? "hidden" : ""}><span>Targets at once</span><input class="input" id="run-conc" type="number" min="1" max="64" value="${esc(st.concurrency)}"></label>
+        <label class="field" ${isLoop ? "hidden" : ""}><span>On failure</span><select class="input" id="run-fail">${["stop_target", "continue", "stop_plan"].map((m) => `<option ${st.on_failure === m ? "selected" : ""}>${m}</option>`).join("")}</select></label>
         <label class="field"><span>Status from</span><input class="input" value="${esc(st.status_from)}" disabled title="execution.status_from in alfrd.yaml"></label>
       </div>
       <div id="run-preview" class="run-preview"></div>
@@ -503,7 +521,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
     const go = $("#run-go", root);
     const canStart = go && !go.disabled;
     const picker = mountStepPicker($("#run-steps", root), {
-      steps, defs: defsOf(ctx, project), selected: only, remember: only ? null : `runsteps:${project}`,
+      steps, defs: defsOf(ctx, project), selected: isLoop ? steps : only, remember: isLoop || only ? null : `runsteps:${project}`,
       onChange: (ids) => {
         if (!canStart) return;
         const needSteps = ($("input[name=src]:checked", root)?.value || "sel") === "sel";
@@ -517,8 +535,9 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
     const payload = () => {
       const src = $("input[name=src]:checked", root)?.value || "sel";
       const chosen = picker.selected();
-      const out = { mode: $("#run-mode", root).value, concurrency: Number($("#run-conc", root).value) || 1, on_failure: $("#run-fail", root).value };
+      const out = isLoop ? {} : { mode: $("#run-mode", root).value, concurrency: Number($("#run-conc", root).value) || 1, on_failure: $("#run-fail", root).value };
       if (src === "sel") {
+        if (isLoop && chosen.length !== steps.length) throw new Error("Agent loops require all turns. Use Human adjustments to select review checkpoints.");
         out.rows = $$("input[data-i]", root).filter((c) => c.checked).map((c) => {
           const i = c.dataset.i;
           return { ...sel[i], files: $(`[data-files="${i}"]`, root).value.trim(), code: $(`[data-code="${i}"]`, root).value.trim() };
@@ -577,4 +596,11 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
     });
     if (dry) showPreview();
   }, "wide");
+}
+
+function loopElapsed(units) {
+  const current = [...units].reverse().find((u) => u.status === "running") || units.at(-1);
+  if (!current?.started) return "not started";
+  const seconds = Math.max(0, Math.floor(((current.finished ? Date.parse(current.finished) : Date.now()) - Date.parse(current.started)) / 1000));
+  return Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed` : "";
 }

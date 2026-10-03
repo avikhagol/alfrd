@@ -709,7 +709,7 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
         "status": "running",
         "runner": {},
         "history": [{"at": now_iso(), "event": "created"}],
-        **({"loop": {"iterations": loop.iterations, "definition": cfg.to_dict(), "manifest_sha256": hashlib.sha256((cfg.root / "alfrd.yaml").read_bytes()).hexdigest()}} if loop else {}),
+        **({"loop": {"iterations": loop.iterations, "definition": cfg.to_dict(), "manifest_sha256": manifest_hash(cfg.root)}} if loop else {}),
     })
     folder.set_control("run")
     return folder
@@ -922,12 +922,21 @@ class Runner:
                 guard = workspace / ".alfrd-agent-loop.lock"
                 with open(guard, "a+") as workspace_lock:
                     if fcntl is not None:
+                        cancel_started = None
                         while True:
                             try:
                                 fcntl.flock(workspace_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                                 break
                             except OSError:
                                 if any(u.get("status") == "running" and pid_alive(u.get("pid"), u.get("proc_start"), u.get("host")) for u in self.folder.units()):
+                                    created = _parse_stamp(self.plan.get("created"))
+                                    expired = self.plan.get("max_runtime") and created and (datetime.now() - created).total_seconds() >= self.plan["max_runtime"]
+                                    if self.folder.control() == "cancel" or expired:
+                                        cancel_started = cancel_started or time.time()
+                                        sig = signal.SIGKILL if time.time() - cancel_started > float(self.plan.get("kill_grace") or 30) else signal.SIGTERM
+                                        for unit in self.folder.units():
+                                            if unit.get("status") == "running" and pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host")):
+                                                self._signal(Live(unit=unit), sig)
                                     time.sleep(0.1)
                                     continue
                                 self.save_plan(status="interrupted", error="another agent loop owns this workspace")
@@ -1018,7 +1027,7 @@ class Runner:
 
     def schedule(self) -> int:
         if self.plan.get("loop"):
-            if hashlib.sha256((self.folder.root / "alfrd.yaml").read_bytes()).hexdigest() != self.plan["loop"]["manifest_sha256"]:
+            if manifest_hash(self.folder.root) != self.plan["loop"]["manifest_sha256"]:
                 self.stop_new = True
                 self.save_plan(error="agent workflow changed; restore its manifest before resuming")
                 return 0
@@ -1103,7 +1112,8 @@ class Runner:
 
                 archive = self.folder.path / "handoffs" / unit["id"]
                 unit["handoff"] = prepare(self.folder.root, archive, step, self.folder.id, unit["id"])
-                unit.update(iteration=step.iteration, agent=step.entrypoint or step.base_step, manual=step.manual)
+                unit.update(iteration=step.iteration, agent=step.entrypoint or step.base_step, manual=step.manual,
+                            human_review=step.human_review, requested_model=step.model)
             argv, env, timeout = command_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
             if step and step.manual:
                 argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
@@ -1158,6 +1168,12 @@ class Runner:
                         raise ExecutionError("response file already exists; refusing to reuse a stale response")
                     if step.output_capture == "stdout" and not step.manual:
                         shim_args += ["--stdout-file", str(output_path)]
+                    if step.claude_stream and not step.manual:
+                        if step.output_capture != "stdout":
+                            shim_args += ["--stdout-file", str(output_path)]
+                        shim_args += ["--claude-stream"]
+                    if step.human_review and step.handoff:
+                        shim_args += ["--human-review", "--response-file", str(output_path), "--response-headings", json.dumps(unit["handoff"].get("headings"))]
                 workspace_fd = getattr(self, "workspace_fd", None)
                 process = subprocess.Popen(
                     [sys.executable, "-m", "alfrd.runtime.shim", "--exit-file", str(exit_path), *shim_args, "--", *argv],
@@ -1170,7 +1186,6 @@ class Runner:
                 self.folder.save_unit(unit)
                 first = spec.steps[0]
                 self.set_cells({(r.key, first): pc.FAILED for r in cells_rows})
-                self.after_failure(spec.rows, first)
                 self.after_failure(spec.rows, first)
                 return 0
         unit.update(pid=process.pid, pgid=process.pid, proc_start=proc_start(process.pid))
@@ -1207,6 +1222,7 @@ class Runner:
 
     def poll(self) -> None:
         for unit_id, live in list(self.live.items()):
+            self.agent_metadata(live.unit)
             alive = self._alive(live)
             timeout = live.unit.get("timeout")
             if alive and timeout and not live.killed_at:
@@ -1222,6 +1238,30 @@ class Runner:
                 continue
             del self.live[unit_id]
             self.finalize(live.unit, process=live.process, reason=live.reason)
+
+    def agent_metadata(self, unit: dict[str, Any]) -> None:
+        if not unit.get("handoff"):
+            return
+        exit_path = self.folder.root / unit.get("exit_file", "-")
+        metadata = _read_json(exit_path.with_suffix(".agent.json"), {}) or {}
+        changes = {}
+        if metadata.get("model"):
+            changes.update(model=metadata["model"], models=metadata.get("models", []))
+        elif unit.get("argv") and Path(unit["argv"][0]).name == "codex" and not unit.get("model"):
+            try:
+                with open(self.folder.root / unit["log"], encoding="utf-8") as log:
+                    header = log.read(16384)
+                match = re.search(r"^model:\s*(\S+)", header, re.M)
+                if match:
+                    changes["model"] = match.group(1)
+            except OSError:
+                pass
+        review = _read_json(exit_path.with_suffix(".review.json"), {}) or {}
+        if review.get("status") == "pending":
+            changes["review_status"] = "approved" if exit_path.with_suffix(".approval.json").exists() else "pending"
+        if any(unit.get(k) != v for k, v in changes.items()):
+            unit.update(changes)
+            self.folder.save_unit(unit)
 
     def _signal(self, live: Live, sig: int) -> None:
         pgid = live.unit.get("pgid") or live.unit.get("pid")
@@ -1277,7 +1317,7 @@ class Runner:
                 self.log(f"{unit['id']}: re-adopted pid {unit.get('pid')}")
                 self.event(f"re-adopted {unit['id']}")
             else:
-                self.finalize(unit, process=None, reason=None, adopted=True)
+                self.finalize(unit, process=None, reason="cancelled" if self.folder.control() == "cancel" else None, adopted=True)
         # Cells left "running" by a runner that died before writing a unit.
         stale = {(r.key, s): pc.INTERRUPTED for r in table.rows for s in table.steps
                  if r.cell(s) == pc.RUNNING and r.key not in running_rows}
@@ -1306,6 +1346,7 @@ class Runner:
 
     def finalize(self, unit: dict[str, Any], *, process: subprocess.Popen | None, reason: str | None,
                  adopted: bool = False) -> None:
+        self.agent_metadata(unit)
         exit_data = _read_json(self.folder.root / str(unit.get("exit_file") or "-"), None)
         exit_code: int | None = None
         note = None
@@ -1568,3 +1609,12 @@ __all__ = [
     "PlanDir", "Runner", "active_plan", "add_row", "conflict_groups", "control", "create_plan", "list_plans",
     "pick_rows", "plan_status", "preview", "reconcile", "reset_failed", "resolve_csv", "spawn_runner", "step_durations", "verify_steps",
 ]
+
+
+def manifest_hash(root):
+    from alfrd.manifest_default import manifest_data
+
+    _, path, _ = manifest_data(root)
+    if path is None:
+        raise ExecutionError("project manifest is missing")
+    return hashlib.sha256(path.read_bytes()).hexdigest()

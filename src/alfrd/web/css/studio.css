@@ -785,3 +785,5 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .ord .ord-a { text-align: right; white-space: nowrap; }
 .ord .ellip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1100px) { .sched-b.dock-side { grid-template-columns: minmax(0, 1fr); } }
+
+.handoff-artifact { white-space: pre-wrap; overflow-wrap: anywhere; }

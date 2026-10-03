@@ -102,6 +102,16 @@ export function mount(el, ctx) {
     const p = project(ctx);
     if (a === "validate") { ui.report = validate(ctx, ui.text); renderStatus(el, ctx); }
     if (a === "save") save(el, ctx);
+    if (a === "agents" || a === "task") {
+      try {
+        const dialog = await import("./agent_settings_dialog.js");
+        if (a === "task") await dialog.openTask(ctx, p);
+        else await dialog.openAgentSettings(ctx, p, ui.text, async (text) => {
+          ui.text = text; ui.dirty = true; ui.report = validate(ctx, text); ui.aliases = null;
+          render(el, ctx); ctx.toast("Agent settings applied — Save alfrd.yaml to keep them", "ok");
+        });
+      } catch (error) { ctx.toast(error.message, "fail"); }
+    }
     if (a === "revert") { ui.text = loadedText(ctx, p); ui.dirty = false; ui.report = null; ui.aliases = null; render(el, ctx); }
     if (a === "download") download("alfrd.yaml", ui.text, "text/yaml");
     if (a === "history") ctx.openHistory(p, { onRestored: () => { ui.dirty = false; ui.text = loadedText(ctx, p); render(el, ctx); } });
@@ -235,6 +245,9 @@ export function render(el, ctx) {
     <div class="ps-grid">
       <section class="card"><textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea></section>
       <div>
+        <section class="card"><h4>Agents and goal</h4><p class="muted small">Choose models, enable human adjustments after selected turns, or edit the goal for the next run.</p>
+          <div class="row gap wrap"><button class="btn" data-act="agents">Agents / human review</button>${ctx.state.mode === "server" ? '<button class="btn" data-act="task">Edit task.md</button>' : ''}</div>
+        </section>
         <section class="card">
           <h4>${icon("arrows")} Field aliases</h4>
           <p class="muted small">Older names → names used now, applied to workflow steps, result CSV rows and folder/file names while reading (<code>project_settings.field_aliases</code>). End both sides with <code>*</code> to rewrite a prefix.</p>

@@ -128,12 +128,12 @@ def test_five_cycles_feed_each_handoff_and_stop(project):
 @pytest.mark.parametrize("failure", ["BAD_RESPONSE", "FAIL_AGENT"])
 def test_failed_turn_never_publishes_or_starts_next(project, monkeypatch, failure):
     monkeypatch.setenv(failure, "1")
-    old = (project / "next-step-gpt.md").read_bytes()
+    old = (project / "next-step-codex.md").read_bytes()
     folder = scheduler.create_plan(project)
     scheduler.Runner(project, folder.id).run()
     assert folder.load()["status"] == "failed"
     assert len(folder.units()) == 1
-    assert (project / "next-step-gpt.md").read_bytes() == old
+    assert (project / "next-step-codex.md").read_bytes() == old
 
 
 def test_pause_manual_response_and_resume(project):
@@ -271,7 +271,7 @@ def test_edited_outgoing_handoff_is_preserved(project):
     folder = scheduler.create_plan(project)
     scheduler.spawn_runner(folder)
     assert wait(lambda: folder.units() and folder.units()[0].get("pid"))
-    outgoing = project / "next-step-gpt.md"
+    outgoing = project / "next-step-codex.md"
     outgoing.write_text("User's revised next task")
     (project / "hold").unlink()
     assert wait(lambda: folder.load()["status"] == "failed")
@@ -284,7 +284,7 @@ def test_workspace_lock_blocks_another_loop(project, tmp_path):
 
     other = tmp_path / "other"
     other.mkdir()
-    for name in ("alfrd.yaml", "alfrd.plan.csv", "next-step-claude.md", "next-step-gpt.md"):
+    for name in ("alfrd.yaml", "alfrd.plan.csv", "next-step-claude.md", "next-step-codex.md"):
         shutil.copyfile(project / name, other / name)
     data = yaml.safe_load((other / "alfrd.yaml").read_text())
     data["execution"]["cwd"] = str(project)
@@ -442,5 +442,139 @@ def test_scaffold_uses_reversed_workflow(service, tmp_path, monkeypatch):
     monkeypatch.setattr(creation, "template_path", lambda name: source)
     root = tmp_path / "reversed"
     create_project(service, root, template="agent-loop", task="Codex starts")
-    assert (root / "next-step-gpt.md").read_text() == "Codex starts\n"
+    assert (root / "next-step-codex.md").read_text() == "Codex starts\n"
     assert (root / "next-step-claude.md").read_text() == "# Awaiting the first codex plan\n"
+
+
+def test_launch_failure_calls_after_failure_once(project, monkeypatch):
+    folder = scheduler.create_plan(project)
+    calls = []
+    original = scheduler.Runner.after_failure
+
+    def record(self, rows, step):
+        calls.append(step)
+        return original(self, rows, step)
+
+    def fail(*args, **kwargs):
+        raise OSError("launch failed")
+
+    monkeypatch.setattr(scheduler.Runner, "after_failure", record)
+    monkeypatch.setattr(scheduler.subprocess, "Popen", fail)
+    scheduler.Runner(project, folder.id).run()
+    assert calls == ["i001-claude-turn"]
+    assert folder.load()["status"] == "failed"
+
+
+def test_hidden_manifest_runs_loop(project):
+    (project / "alfrd.yaml").rename(project / ".alfrd.yaml")
+    folder = scheduler.create_plan(project)
+    scheduler.Runner(project, folder.id).run()
+    assert folder.load()["status"] == "finished"
+    assert len(folder.units()) == 10
+
+
+def test_custom_headings_and_contract_survive_manual_submission(project):
+    from alfrd.agent_loop import prepare, publish, ResponseValidationError
+
+    manifest = project / "alfrd.yaml"
+    data = yaml.safe_load(manifest.read_text())
+    data["loop"] = {"headings": ["Outcome", "Next"], "contract": {
+        "first": "Inspect the custom goal.", "middle": "Continue the custom goal.",
+        "final": "Close the custom goal."}}
+    manifest.write_text(yaml.safe_dump(data))
+    cfg = load_execution(project)
+    folder = scheduler.create_plan(project)
+    for step, wording in [(cfg.steps[0], "Inspect"), (cfg.steps[1], "Continue"), (cfg.steps[-1], "Close")]:
+        archive = folder.path / "handoffs" / step.id
+        handoff = prepare(project, archive, step, folder.id, step.id)
+        assert wording + " the custom goal." in Path(handoff["prompt_file"]).read_text()
+        assert "## Outcome; ## Next" in Path(handoff["prompt_file"]).read_text()
+    unit = {"id": cfg.steps[-1].id, "status": "running", "manual": True, "iteration": 5, "handoff": handoff}
+    folder.save_unit(unit)
+    with pytest.raises(ResponseValidationError, match="Next"):
+        submit_response(project, folder.id, unit["id"], "## Outcome\nDone")
+    assert not Path(handoff["response_file"]).exists()
+    submit_response(project, folder.id, unit["id"], "## Outcome\nDone\n## Next\nFinished")
+    publish(project, handoff, plan_id=folder.id, unit_id=unit["id"], iteration=5, agent="codex")
+
+
+def test_studio_refuses_skip_on_loop_cell(service, tmp_path, project):
+    from alfrd.gui import create_app
+    from alfrd.gui.services import RuntimeCatalogReader
+
+    app = create_app({"TESTING": True, "SECRET_KEY": "k", "RUNTIME_SERVICE": service,
+                      "CATALOG_READER": RuntimeCatalogReader(service),
+                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'skip.sqlite'}"})
+    client = app.test_client()
+    headers = {"X-CSRF-Token": client.get("/api/studio/session").get_json()["csrf_token"]}
+    folder = scheduler.create_plan(project)
+    identifier = service.list_projects()[0].identifier
+    url = f"/api/studio/projects/{identifier}/plans/{folder.id}/cells"
+    before = folder.csv_path(folder.load()).read_bytes()
+    for value in ("skip", ""):
+        response = client.post(url, json={"cells": [{"row": "task", "step": "i001-claude-turn", "value": value}]}, headers=headers)
+        assert response.status_code == 400
+        assert "cannot be skipped" in response.get_json()["error"]["message"]
+        assert folder.csv_path(folder.load()).read_bytes() == before
+
+
+def test_cli_unused_iterations_and_template_validation(tmp_path):
+    from typer.testing import CliRunner
+    from alfrd.cli import alfrd_cli
+
+    args = ["projects", "create", str(tmp_path / "basic"), "--db", str(tmp_path / "cli.sqlite")]
+    response = CliRunner().invoke(alfrd_cli, args + ["--iterations", "5"])
+    assert response.exit_code == 0
+    assert "warning: --iterations is ignored" in response.output
+    response = CliRunner().invoke(alfrd_cli, args + ["--template", "../../unknown"])
+    assert response.exit_code != 0
+    assert "unknown project template" in response.output
+
+
+def test_project_agent_folder_and_bash_settings(project):
+    from alfrd.agent_io import agent_command
+
+    manifest = project / "alfrd.yaml"
+    data = yaml.safe_load(manifest.read_text())
+    data["project_settings"] = {"agent_access": {"folders": ["../reference notes", "../other notes"],
+        "bash_commands": ["git status *", "pytest *"], "sandbox": "workspace-write"}}
+    data["entrypoint"][0]["cmd"] = ["claude", "-p"]
+    data["entrypoint"][1]["cmd"] = ["codex", "exec", "-"]
+    manifest.write_text(yaml.safe_dump(data))
+    cfg = load_execution(project)
+    claude, codex = cfg.steps[0].argv, cfg.steps[1].argv
+    expected = str((project / "../reference notes").resolve())
+    assert claude[claude.index("--add-dir") + 1] == expected
+    assert claude[claude.index("--add-dir") + 2] == str((project / "../other notes").resolve())
+    assert codex.count("--add-dir") == 2
+    assert claude[claude.index("--allowedTools") + 1] == "Bash(git status *),Bash(pytest *)"
+    assert codex[codex.index("--add-dir") + 1] == expected
+    assert codex[codex.index("--sandbox") + 1] == "workspace-write"
+    assert codex[-1] == "-"
+    assert agent_command(["custom", "run"], access={"folders": ["/tmp"]})[0] == ("custom", "run")
+
+
+def test_studio_loop_options_and_cell_errors(service, tmp_path, project, monkeypatch):
+    from alfrd.gui import create_app
+    from alfrd.gui.services import RuntimeCatalogReader
+
+    manifest = project / "alfrd.yaml"
+    data = yaml.safe_load(manifest.read_text())
+    data["loop"] = {"task_row": "custom-task"}
+    manifest.write_text(yaml.safe_dump(data))
+    folder = scheduler.create_plan(project)
+    app = create_app({"TESTING": True, "RUNTIME_SERVICE": service,
+                      "CATALOG_READER": RuntimeCatalogReader(service),
+                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'p0.sqlite'}"})
+    client = app.test_client()
+    headers = {"X-CSRF-Token": client.get("/api/studio/session").get_json()["csrf_token"]}
+    prefix = f"/api/studio/projects/{service.list_projects()[0].identifier}"
+    assert client.get(prefix + "/execution").get_json()["loop"]["task_row"] == "custom-task"
+    assert client.post(prefix + "/plans/bad!id/cells", json={}, headers=headers).status_code == 400
+    def fail_load(self):
+        raise OSError("unreadable plan")
+    monkeypatch.setattr(scheduler.PlanDir, "load", fail_load)
+    response = client.post(prefix + f"/plans/{folder.id}/cells", json={}, headers=headers)
+    assert response.status_code == 400
+    assert "unreadable plan" in response.get_json()["error"]["message"]
+    monkeypatch.undo()

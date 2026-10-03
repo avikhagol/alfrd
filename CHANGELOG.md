@@ -4,22 +4,91 @@
 
 #### Fixed
 
-- **Manual agent-loop responses are checked before acceptance.**
-  - Why it matters: invalid headings leave the turn waiting for correction.
-  - How to use: fix the listed errors and resubmit.
+- **Failed launches trigger recovery once.**
+  - Why it matters: failure actions no longer run twice.
+  - How to use: retry a failed turn normally.
+- **Loops accept either manifest filename.**
+  - Why it matters: hidden manifests no longer crash loops.
+  - How to use: keep alfrd.yaml or .alfrd.yaml.
+- **Invalid manual replies keep waiting.**
+  - Why it matters: missing headings no longer fail the plan.
+  - How to use: fix the listed headings and resubmit.
+- **Loop turns cannot be skipped.**
+  - Why it matters: every agent receives the preceding reply.
+  - How to use: retry turns, or cancel the plan.
 
 #### Added
 
-- **Handoffs load summaries and paged artifacts on demand.**
-  - Why it matters: large turns stay bounded and errors remain visible.
-  - How to use: open a turn, Load more, Copy, Refresh, or Open unit log.
-- **Loop creation previews turns and Schedule shows loop progress.**
-  - Why it matters: the iteration count and pause/cancel behavior are clear.
-  - How to use: select agent-loop, set iterations, and follow the Schedule summary.
+- **Turn headings and instructions can be customised.**
+  - Why it matters: workflows can use their own reply structure.
+  - How to use: set loop.headings and loop.contract in YAML.
+- **Project settings include folder and shell permissions.**
+  - Why it matters: agents can access your chosen working folders.
+  - How to use: open Agents / human review, apply, then save.
+- **Manual replies can be submitted from the command line.**
+  - Why it matters: chat replies work without Studio.
+  - How to use: run alfrd plan response with your Markdown file.
+- **Handoffs loads large replies in pages.**
+  - Why it matters: opening the dialog stays quick.
+  - How to use: expand a turn, then Load more or Copy.
+- **Handoffs protects unsaved edits.**
+  - Why it matters: switching files or refreshing preserves your choice.
+  - How to use: save edits, or confirm discarding them.
+- **Schedule shows turns, models and elapsed time.**
+  - Why it matters: progress and waiting states are easier to follow.
+  - How to use: follow Turn N of M; submit waiting replies.
+
+#### Changed
+
+- **New scaffolds follow the workflow's handoff filenames.**
+  - Why it matters: reversed workflows receive the right initial task.
+  - How to use: create a project; Codex uses next-step-codex.md.
+- **Loop creation previews the number of turns.**
+  - Why it matters: iteration counts show their actual workload.
+  - How to use: select agent-loop and adjust Iterations.
+- **Loop Run hides settings that cannot apply.**
+  - Why it matters: rejected options no longer distract users.
+  - How to use: run the loop with its fixed settings.
+- **Creation warns about unused iteration options.**
+  - Why it matters: non-loop templates no longer silently ignore them.
+  - How to use: choose a known template with --template.
+- **Shared limits preserve the 10 MiB reply allowance.**
+  - Why it matters: submission and publication use matching limits.
+  - How to use: keep replies below 10 MiB.
+- **Studio's loaded-on-demand size allowance is 62 KiB compressed.**
+  - Why it matters: paging and settings fit the measured allowance.
+  - How to use: startup loading remains unchanged.
+
+#### Next
+
+- Send reviewed replies back for another attempt.
+- Retry replies with missing headings automatically.
+- Use live status events instead of polling.
+- Compare edited replies against the original agent reply.
+- Save activity metadata less often.
+- Make tool-result clipping configurable.
+- Show estimated remaining time for agent turns.
+- Support multiple task rows and workflows.
+- Share the supported-agent list with Studio.
 
 ## [0.2.0.9]
 
 #### Added
+
+- **Human adjustments:** enable human review in Project settings → Agents / human review. Workflow exposes the same checkboxes for choosing which agent turns need review. The next agent waits until you approve or adjust the response; the original response is kept.
+- **Agent models:** choose a Claude or Codex model in Project settings. Schedule and Handoffs distinguish the requested model from the model reported by the CLI.
+- **Task editor:** edit `task.md` from Settings or Workflow. Save can also seed the first agent's handoff for a new run, with conflict protection and history.
+
+#### Fixed
+
+- **Claude activity logs:** tool calls, tool results, and streamed text now appear in the unit log. Raw events are archived separately; only the successful final response becomes the Markdown handoff.
+
+#### Changed
+
+- Review waiting survives runner loss and supports cancellation and runtime limits. Review applies to the handoff, not to code changes already made by the agent.
+- The on-demand Studio payload cap is 60 KiB gzip to include the agent and task dialogs. The startup cap stays at 165 KiB.
+
+#### Added (project creation and execution)
 
 - Project scaffolding with `alfrd projects create` and Studio settings → New project: basic and agent-loop templates, initial task, iteration count, and runtime registration. Existing files are preserved.
 - Bounded Claude Code ↔ Codex workflows using `workflows[].repeat.iterations` (1–100). Five iterations run ten turns, starting with Claude planning and ending with a Codex closing report. The existing scheduler, plan CSV, pause/resume/cancel, retry, detached shim and status API remain the execution path.
