@@ -49,3 +49,17 @@ test("refresh guard detects only unsaved recipient edits", () => {
   assert.equal(hasDirtyHandoff({ text: "saved" }, "saved"), false);
   assert.equal(hasDirtyHandoff({ text: "saved" }, "draft"), true);
 });
+
+
+import { expandWorkflowSteps } from "../../src/alfrd/web/js/data/defs.js";
+test("workflow expansion resolves roles by turn without changing labels", () => {
+  const workflow = { repeat: { iterations: 2 }, roles: ["manager", "developer", "reviewer", "developer"], steps: [{ id: "claude", label: "Claude" }, { id: "codex" }] };
+  const steps = expandWorkflowSteps(workflow);
+  assert.deepEqual(steps.map((s) => s.roles), [["manager"], ["developer"], ["reviewer"], ["developer"]]);
+  assert.deepEqual(steps.map((s) => s.turn), [1, 2, 3, 4]);
+  assert.equal(steps[0].label, "1/2 · Claude");
+  workflow.roles = [["manager", "reviewer"], null];
+  assert.deepEqual(expandWorkflowSteps(workflow).map((s) => s.roles), [["manager", "reviewer"], [], ["manager", "reviewer"], []]);
+  delete workflow.roles; workflow.steps[0].role = "manager";
+  assert.deepEqual(expandWorkflowSteps(workflow).map((s) => s.roles), [["manager"], [], ["manager"], []]);
+});

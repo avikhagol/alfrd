@@ -578,3 +578,151 @@ def test_studio_loop_options_and_cell_errors(service, tmp_path, project, monkeyp
     assert response.status_code == 400
     assert "unreadable plan" in response.get_json()["error"]["message"]
     monkeypatch.undo()
+
+
+PERSONAS = {
+    "manager": {"label": "Manager", "instructions": "Plan the work."},
+    "developer": {"label": "Developer", "instructions": "Implement the plan."},
+    "reviewer": {"label": "Reviewer", "instructions": "Review correctness."},
+}
+
+
+def set_personas(root, roles, personas=PERSONAS):
+    data = yaml.safe_load((root / "alfrd.yaml").read_text())
+    data.setdefault("project_settings", {})["personas"] = personas
+    data["workflows"][0]["repeat"]["iterations"] = 2
+    data["workflows"][0]["roles"] = roles
+    (root / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    return data
+
+
+def test_persona_turn_prompts(project):
+    from alfrd.agent_loop import prepare, status
+    set_personas(project, ["manager", "developer", "reviewer", "developer"])
+    config = load_execution(project)
+    assert [s.roles[0]["label"] for s in config.steps] == ["Manager", "Developer", "Reviewer", "Developer"]
+    assert config.steps[0].next_roles == ("Developer",)
+    assert config.steps[1].next_roles == ("Reviewer",)
+    assert config.steps[-1].next_roles == ()
+    assert config.step_ids == ["i001-claude-turn", "i001-codex-turn", "i002-claude-turn", "i002-codex-turn"]
+    for i, step in enumerate(config.steps):
+        (project / step.handoff["input"]).write_text("Task\n")
+        record = prepare(project, project / "archive" / str(i), step, "plan", "unit")
+        prompt = Path(record["prompt_file"]).read_text()
+        role = step.roles[0]
+        assert f" role={role['label']}." in prompt
+        assert role["instructions"] in prompt
+        assert record["roles"] == [role["label"]]
+        if i < 3:
+            assert f"Next turn: {config.steps[i + 1].entrypoint} as {step.next_roles[0]}." in prompt
+        else:
+            assert "Next turn:" not in prompt
+    assert config.to_dict()["steps"][0]["roles"][0]["label"] == "Manager"
+    assert status({"loop": {"iterations": 2}, "steps": config.step_ids},
+                  [{"status": "running", "handoff": {"roles": ["Manager"]}}])["roles"] == ["Manager"]
+
+
+@pytest.mark.parametrize("schedule, expected", [
+    (["manager", "developer"], [["manager"], ["developer"], ["manager"], ["developer"]]),
+    ([["manager", "reviewer"], None], [["manager", "reviewer"], [], ["manager", "reviewer"], []]),
+])
+def test_persona_cycles(project, schedule, expected):
+    set_personas(project, schedule)
+    assert [[r["key"] for r in s.roles] for s in load_execution(project).steps] == expected
+
+
+def test_persona_step_fallback(project):
+    data = set_personas(project, [])
+    data["workflows"][0]["steps"][0]["role"] = ["manager", "reviewer"]
+    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    steps = load_execution(project).steps
+    assert [[r["key"] for r in s.roles] for s in steps] == [["manager", "reviewer"], [], ["manager", "reviewer"], []]
+    from alfrd.agent_loop import prepare
+    record = prepare(project, project / "combined", steps[0], "p", "u")
+    assert "role=Manager+Reviewer" in Path(record["prompt_file"]).read_text()
+
+
+@pytest.mark.parametrize("personas, message", [
+    ([], "personas must be a mapping"),
+    ({"Bad": PERSONAS["manager"]}, "persona key"),
+    ({"a" * 41: PERSONAS["manager"]}, "persona key"),
+    ({"manager": []}, "label and instructions"),
+    ({"manager": {"label": "Manager"}}, "label and instructions"),
+    ({"manager": {**PERSONAS["manager"], "extra": "x"}}, "label and instructions"),
+    *[({"manager": {"label": v, "instructions": ""}}, "label must") for v in ["", " ", "a" * 61, "a\nb", "a\rb", 1]],
+    *[({"manager": {"label": "Manager", "instructions": v}}, "instructions must") for v in [None, [], "a" * 4001]],
+])
+def test_invalid_personas(project, personas, message):
+    from alfrd.execution import ExecutionError
+    set_personas(project, [], personas)
+    with pytest.raises(ExecutionError, match=message):
+        load_execution(project)
+
+
+@pytest.mark.parametrize("roles, message", [
+    ("manager", "workflow.roles"), (None, "workflow.roles"),
+    ([42], "role must"), ([{"key": "manager"}], "role must"),
+    ([["manager", 1]], "role must"), (["missing"], "unknown persona"),
+])
+def test_invalid_turn_roles(project, roles, message):
+    from alfrd.execution import ExecutionError
+    set_personas(project, roles)
+    with pytest.raises(ExecutionError, match=message):
+        load_execution(project)
+
+
+def test_persona_definitions_without_assignments_preserve_prompt(project):
+    from alfrd.agent_loop import prepare
+    before = load_execution(project)
+    record = prepare(project, project / "parity", before.steps[0], "p", "u")
+    original = Path(record["prompt_file"]).read_bytes()
+    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data.setdefault("project_settings", {})["personas"] = PERSONAS
+    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    after = load_execution(project)
+    record = prepare(project, project / "parity", after.steps[0], "p", "u")
+    assert Path(record["prompt_file"]).read_bytes() == original
+    assert before.step_ids == after.step_ids
+
+
+@pytest.mark.parametrize("role", [42, ["missing"], {"key": "manager"}])
+def test_invalid_step_role_even_with_schedule(project, role):
+    from alfrd.execution import ExecutionError
+    data = set_personas(project, ["manager"])
+    data["workflows"][0]["steps"][0]["role"] = role
+    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    with pytest.raises(ExecutionError, match="role must|unknown persona"):
+        load_execution(project)
+
+
+def test_nonrepeated_turn_roles(project):
+    data = set_personas(project, ["manager", "reviewer"])
+    del data["workflows"][0]["repeat"]
+    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    config = load_execution(project)
+    assert config.step_ids == ["claude-turn", "codex-turn"]
+    assert [s.roles[0]["key"] for s in config.steps] == ["manager", "reviewer"]
+
+
+@pytest.mark.parametrize("instructions", [
+    "  - a\nb", "a", "a\n\n", 'task: # "quoted"\nnext', "a\rb\tc",
+    'backslash: \\\' and \\"', "on", "2026-10-03", "\u0085\u2028\u2029", "x" * 4000,
+])
+def test_studio_instruction_yaml_roundtrip(project, instructions):
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js unavailable")
+    data = set_personas(project, ["writer"], {"writer": {"label": "Writer", "instructions": instructions}})
+    parser = Path(__file__).parents[1] / "src/alfrd/web/js/utils/yaml_parser.js"
+    script = f"import {{dumpYaml, parseYaml}} from {json.dumps(parser.as_uri())}; " + (
+        "let input = ''; for await (const chunk of process.stdin) input += chunk; "
+        "const data = JSON.parse(input), text = dumpYaml(data); "
+        "if (JSON.stringify(parseYaml(text)) !== JSON.stringify(data)) throw Error('JS round-trip'); "
+        "process.stdout.write(text);"
+    )
+    result = subprocess.run([node, "--input-type=module", "-e", script], input=json.dumps(data), text=True, capture_output=True, check=True)
+    (project / "alfrd.yaml").write_text(result.stdout)
+    assert yaml.safe_load(result.stdout)["project_settings"]["personas"]["writer"]["instructions"] == instructions
+    assert load_execution(project).steps[0].roles[0]["instructions"] == instructions

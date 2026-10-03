@@ -18,7 +18,7 @@ const PAGE = 100;
 
 export function mount(el, ctx) {
   el.innerHTML = `<div class="lg"><div class="card lg-head" id="lg-head"></div><div id="lg-body"></div></div>`;
-  on(el, "click", "[data-scope]", (e, b) => { ui.scope = b.dataset.scope; remember(); render(el, ctx); });
+  on(el, "click", "[data-scope]", (e, b) => { ui.group = null; ui.scope = b.dataset.scope; remember(); render(el, ctx); });
   on(el, "click", "[data-by]", (e, b) => { ui.by = b.dataset.by; remember(); render(el, ctx); });
   on(el, "input", "#lg-q", (e) => { ui.q = e.target.value; remember(); renderBody(el, ctx); });
   on(el, "click", "[data-more]", (e, b) => { ui.limit[b.dataset.more] = (ui.limit[b.dataset.more] || PAGE) + PAGE; renderBody(el, ctx); });
@@ -32,6 +32,13 @@ export function mount(el, ctx) {
   }, true);
 }
 
+export function showLogs(ctx, { target = null, group = null } = {}) {
+  ui.scope = target ? "target" : "all"; ui.q = ""; ui.group = group;
+  if (target) ctx.state.selectedTarget = target;
+  if (group) ui.open.add(group);
+  ctx.navigate("logs");
+}
+
 function project(ctx) {
   return ctx.target()?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : ctx.projects()[0]?.id) || Object.keys(ctx.state.trees || {})[0];
 }
@@ -41,7 +48,7 @@ function files(ctx) {
   const t = ctx.target();
   const codes = t ? targetCodes(ctx, t).map((c) => c.code) : [];
   const q = ui.q.trim().toLowerCase();
-  return projectLogs(ctx, p).filter((f) => (ui.scope === "all" || logForTarget(ctx, f, t, codes)) && (!q || f.rel.toLowerCase().includes(q)));
+  return projectLogs(ctx, p).filter((f) => (ui.scope === "all" || logForTarget(ctx, f, t, codes)) && (!ui.group || f.groups?.includes(ui.group)) && (!q || f.rel.toLowerCase().includes(q)));
 }
 
 function groups(ctx) {
@@ -73,6 +80,7 @@ export function render(el, ctx) {
       <span class="grow"></span>
       <label class="search">${icon("search")}<input id="lg-q" type="search" placeholder="Filter file names…" value="${esc(ui.q)}"></label>
       <button class="btn sm" data-act="expand">Expand groups</button><button class="btn sm" data-act="collapse">Collapse</button></div>
+    ${ui.group ? `<p class="small">Run ${esc(ui.group.slice(5))} · <button class="link-btn" data-scope="all">Show all logs</button></p>` : ""}
     <p class="muted small">Files matching each step's <code>logs:</code> and the artifacts with <code>kind: log</code> in alfrd.yaml. A file is read when you open it (last 400 kB) and then follows the file as it grows while it is open and on screen; ${icon("expand")} opens it full screen.</p>`;
   renderBody(el, ctx);
   ctx.setFooterRight(`${all.length} log file(s) declared by alfrd.yaml`);

@@ -473,3 +473,12 @@ test("result CSVs: a loose result_{target}.csv pattern does not swallow code + w
     { file: "reductions/result__J07_42__BV019__wd_1.csv", target: "J07_42", project_code: "BV019", workdir: "wd_1" },
   ]);
 });
+
+
+test("yaml: personality instructions round-trip exactly in mappings and sequences", () => {
+  for (const instructions of ["  - a\nb", "a", "a\n\n", 'task: # "quoted"\nnext', "a\rb\tc", "backslash: \\' and \\\"", "on", "2026-10-03", "\u0085\u2028\u2029", "x".repeat(4000)]) {
+    const value = { project_settings: { personas: { writer: { label: "Writer", instructions } } } };
+    assert.deepEqual(parseYaml(dumpYaml(value)), value);
+    assert.deepEqual(parseYaml(dumpYaml([instructions])), [instructions]);
+  }
+});

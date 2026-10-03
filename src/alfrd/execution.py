@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import copy
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -110,6 +110,9 @@ class StepCommand:
     human_review: bool = False
     model: str | None = None
     claude_stream: bool = False
+    roles: tuple[Mapping[str, str], ...] = ()
+    next_roles: tuple[str, ...] = ()
+    next_agent: str = ""
     loop_options: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -183,7 +186,7 @@ class ExecutionConfig:
             "steps": [
                 {"id": s.id, "entrypoint": s.entrypoint, "argv": list(s.argv) if s.argv else None, "timeout": s.timeout,
                  "handoff": dict(s.handoff), "iteration": s.iteration, "manual": s.manual,
-                 "human_review": s.human_review, "model": s.model}
+                 "human_review": s.human_review, "model": s.model, "roles": [dict(r) for r in s.roles]}
                 for s in self.steps
             ],
             "key_column": self.key_column,
@@ -242,7 +245,35 @@ def merged_manifest(root: str | Path) -> dict[str, Any]:
 
 def load_execution(root: str | Path) -> ExecutionConfig:
     base = Path(root).expanduser().resolve()
-    merged = merged_manifest(base)
+    try:
+        merged = merged_manifest(base)
+    except ValueError as exc:
+        raise ExecutionError(str(exc)) from exc
+    project_settings = merged.get("project_settings", {})
+    if not isinstance(project_settings, Mapping):
+        raise ExecutionError("project_settings must be a mapping")
+    personas = project_settings.get("personas", {})
+    if not isinstance(personas, Mapping):
+        raise ExecutionError("project_settings.personas must be a mapping")
+    for key, persona in personas.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", key):
+            raise ExecutionError("persona key must match [a-z0-9][a-z0-9_-]{0,39}")
+        if not isinstance(persona, Mapping) or set(persona) != {"label", "instructions"}:
+            raise ExecutionError(f"persona {key!r} needs only label and instructions")
+        label = persona["label"]
+        if not isinstance(label, str) or not label.strip() or len(label) > 60 or any(c in label for c in "\r\n"):
+            raise ExecutionError(f"persona {key!r} label must be 1–60 characters on one line")
+        if not isinstance(persona["instructions"], str) or len(persona["instructions"]) > 4000:
+            raise ExecutionError(f"persona {key!r} instructions must be a string of at most 4000 characters")
+
+    def role_keys(raw):
+        keys = [raw] if isinstance(raw, str) else [] if raw is None else raw
+        if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+            raise ExecutionError("role must be a persona key, a list of keys or null")
+        for key in keys:
+            if key not in personas:
+                raise ExecutionError(f"unknown persona {key!r}")
+        return list(dict.fromkeys(keys))
     access = (merged.get("project_settings") or {}).get("agent_access") or {}
     if not isinstance(access, Mapping):
         raise ExecutionError("project_settings.agent_access must be a mapping")
@@ -292,6 +323,15 @@ def load_execution(root: str | Path) -> ExecutionConfig:
         raise ExecutionError("execution.usage_interval must be a number of seconds") from exc
     entrypoints = _entrypoints(merged.get("entrypoint"))
     workflow = merged.get("_workflow") or {}
+    schedule = workflow.get("roles", [])
+    if not isinstance(schedule, list):
+        raise ExecutionError("workflow.roles must be a list of turn roles")
+    for role in schedule:
+        role_keys(role)
+    raw_steps = workflow.get("steps", [])
+    for spec in raw_steps.values() if isinstance(raw_steps, Mapping) else raw_steps:
+        if isinstance(spec, Mapping):
+            role_keys(spec.get("role"))
     default_entry = workflow.get("entrypoint") or settings.get("step_entrypoint")
     if default_entry and default_entry not in entrypoints:
         raise ExecutionError(f"workflow entrypoint {default_entry!r} is not an entrypoint in alfrd.yaml")
@@ -356,8 +396,12 @@ def load_execution(root: str | Path) -> ExecutionConfig:
             first_turn=sid == (merged.get("step_order") or [None])[0],
             final_turn=sid == (merged.get("step_order") or [None])[-1],
             manual=bool(io.get("manual", False)),
+            roles=tuple({"key": key, **personas[key]} for key in role_keys(spec.get("roles", spec.get("role")))),
             human_review=review, model=model, claude_stream=claude_stream, loop_options=dict(loop_options),
         ))
+    steps = [replace(step, next_roles=tuple(r["label"] for r in steps[i + 1].roles),
+                     next_agent=steps[i + 1].entrypoint or steps[i + 1].base_step)
+             if i + 1 < len(steps) else step for i, step in enumerate(steps)]
     if workflow.get("repeat") is not None:
         if settings["mode"] != "step" or settings["concurrency"] != 1:
             raise ExecutionError("repeated workflows require mode: step and concurrency: 1")

@@ -238,3 +238,49 @@ Claude Bash patterns become `--allowedTools` entries for automatic approval.
 Codex uses its CLI sandbox for shell and file permissions; choose read-only or
 workspace-write. Blank keeps the existing CLI sandbox. These settings do not
 bypass CLI permission checks. Custom command wrappers keep their own arguments.
+
+
+## Agent personalities
+
+Define named personas under `project_settings.personas`. Each key uses 1–40
+lowercase letters, digits, underscores or hyphens, starting with a letter or
+digit. Each persona has a one-line `label` (1–60 characters) and `instructions`
+(a string of at most 4000 characters; empty is allowed).
+
+```yaml
+project_settings:
+  personas:
+    manager: {label: Manager, instructions: "Plan the work and acceptance checks."}
+    developer: {label: Developer, instructions: "Implement the plan and run checks."}
+    reviewer: {label: Reviewer, instructions: "Review the patch for correctness."}
+workflows:
+  - name: agent-loop
+    repeat: {iterations: 2}
+    roles: [manager, developer, reviewer, developer]
+    steps:
+      - id: claude-turn
+        entrypoint: claude
+        handoff: {input: next-step-claude.md, output: next-step-codex.md}
+      - id: codex-turn
+        entrypoint: codex
+        handoff: {input: next-step-codex.md, output: next-step-claude.md}
+```
+
+Keep the template's entrypoints and execution settings. The four turns above
+are Claude as Manager, Codex as Developer, Claude as Reviewer, and Codex as
+Developer. Roles belong to turns, so the same agent can hold different roles.
+A role entry can also be a list, such as `[manager, reviewer]`, for combined
+roles, or `null` for a turn without a role. A shorter `roles` list cycles in run
+order. Without a nonempty workflow `roles` list, each step's optional `role`
+(key or list of keys) applies in every iteration. Unknown keys fail validation.
+
+Assigned labels and instructions appear in the turn prompt, with the next
+agent and its role labels. Turns without roles keep their original prompts and
+step identifiers. Persona edits stop an active loop at the next turn boundary,
+because the manifest changed; use the edited configuration for a new plan.
+
+In Studio, open **Agents and human review**. Under **Personalities**, add, edit
+or remove keys, labels and instructions. **Turn roles** has a checkbox per
+personality for each turn, allowing several roles together. Apply settings to
+save the definitions and assignments. Studio saves the shortest repeating
+role cycle and clears obsolete per-step role overrides.

@@ -1,0 +1,73 @@
+--- src/alfrd/web/js/components/agent_dialog.js
++++ src/alfrd/web/js/components/agent_dialog.js
+@@ -10,13 +10,16 @@
+   const { templates } = await server.projectTemplates();
+   ctx.modal(`<header class="modal-h"><h2>New project</h2><button class="btn" data-close>Close</button></header>
+     <form id="create-project"><div class="modal-b">
+-    <label class="field"><span>Folder</span><input class="input" name="path" required placeholder="/path/to/project"></label>
++    <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
+     <label class="field"><span>Name</span><input class="input" name="name" placeholder="Folder name"></label>
+     <label class="field"><span>Template</span><select class="input" name="template">${templates.map((t) => `<option value="${esc(t.name)}" ${t.name === "basic" ? "selected" : ""}>${esc(t.name)} — ${esc(t.description)}</option>`).join("")}</select></label>
+     <label class="field" data-loop-field><span>Initial task (for agent workflows)</span><textarea class="input" name="task" rows="5"></textarea></label>
+     <label class="field" data-loop-field><span>Iterations</span><input class="input" name="iterations" type="number" min="1" max="${MAX_ITERATIONS}" value="${DEFAULT_ITERATIONS}"></label>
+-    <p id="loop-preview" data-loop-field class="muted small"></p><p class="muted small">One iteration runs every workflow step once. Creation saves the project; start execution from Workflow → Run.</p>
+-    <p id="create-error" role="alert"></p></div><footer class="modal-f"><button class="btn primary" type="submit">Create project</button></footer></form>`, (root, close) => {
++    <p id="loop-preview" data-loop-field class="muted small"></p><p class="muted small">One iteration runs every workflow step once. Creation saves the project; start a run in Workflow.</p>
++    <p id="create-error" class="callout fail" role="alert" hidden></p></div><footer class="modal-f"><button class="btn primary" type="submit">Create project</button></footer></form>`, (root, close) => {
++    let browser;
++    root.querySelector("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder(root.querySelector("#create-folders"), root.querySelector('[name="path"]')); };
++    root.addEventListener("beforeclose", () => browser?.destroy());
+     const template = root.querySelector('[name="template"]');
+     const iterations = root.querySelector('[name="iterations"]');
+     let previewGeneration = 0;
+@@ -47,9 +50,9 @@
+         if (payload.iterations !== undefined) payload.iterations = Number(payload.iterations);
+         const project = await server.createProject(payload);
+         close();
+-        await onCreated(project);
+-        ctx.toast("Project created", "ok");
+-      } catch (error) { root.querySelector("#create-error").textContent = error.message; }
++        await onCreated(project, payload.template);
++        ctx.toast(payload.template === "agent-loop" ? "Project created · start a run in Workflow" : "Project created · follow Get started on Overview", "ok");
++      } catch (error) { const alert = root.querySelector("#create-error"); alert.hidden = false; alert.textContent = error.message; }
+       finally { button.disabled = false; }
+     });
+   });
+@@ -195,8 +198,8 @@
+   const turns = turnRoleRows(data).map((turn) => ({ ...turn, rows: turn.keys.map((key) => personas.findIndex((p) => p.key === key)).filter((i) => i >= 0) }));
+   const access = data.project_settings?.agent_access || {};
+   const enabled = Boolean(data.project_settings?.human_review) || reviews.some((r) => r.enabled);
+-  ctx.modal(`<header class="modal-h"><h2>Agents and human review</h2><button class="btn" data-close>Close</button></header>
+-    <form><div class="modal-b"><p class="muted small">Changes apply to new plans. Blank models use CLI defaults. Schedule and Handoffs show reported models once available.</p>
++  ctx.modal(`<header class="modal-h"><h2>Agents &amp; review</h2><button class="btn" data-close>Close</button></header>
++    <form><div class="modal-b"><p class="muted small">Changes apply to new runs. Blank models use CLI defaults. Runs and handoffs show reported models.</p>
+     ${agents.map((a, i) => `<fieldset><legend>${esc(a.name)}</legend><label class="field"><span>Model name or alias</span><input class="input" data-model="${i}" value="${esc(a.model)}" placeholder="CLI default"></label><label><input type="checkbox" data-manual="${i}" ${a.manual ? "checked" : ""}> Run this agent through chat</label></fieldset>`).join("") || "No Claude or Codex CLI entrypoints configured."}
+     <h3>Personalities</h3>
+     <div id="personas"></div><button class="btn" type="button" id="persona-add">Add personality</button>
+@@ -206,7 +209,7 @@
+     <p class="muted small">Agents can read these folders. Claude gets tool access; Codex adds writable folders under workspace-write. Relative paths start at the project folder.</p>
+     <label class="field"><span>Claude Bash commands to approve (one pattern per line)</span><textarea class="input" id="agent-bash" rows="3" placeholder="git status *">${esc((access.bash_commands || []).join("\n"))}</textarea></label>
+     <label class="field"><span>Codex shell and file permissions</span><select class="input" id="agent-sandbox"><option value="">Keep CLI settings</option><option value="read-only" ${access.sandbox === "read-only" ? "selected" : ""}>Read only</option><option value="workspace-write" ${access.sandbox === "workspace-write" ? "selected" : ""}>Write in workspace and added folders</option></select></label>
+-    <h3>Human in the loop</h3><label><input type="checkbox" id="review-enabled" ${enabled ? "checked" : ""}> Enable human adjustments</label>
++    <h3>Human in the loop</h3><label><input type="checkbox" id="review-enabled" ${enabled ? "checked" : ""}> Enable review</label>
+     <p class="muted small">The next agent waits for approval. This reviews the handoff; it does not undo code changes already made.</p>
+     ${reviews.map((r, i) => `<label class="field"><span><input type="checkbox" data-review="${i}" ${r.enabled ? "checked" : ""} ${enabled ? "" : "disabled"}> Review after ${esc(r.id)} (every iteration)</span></label>`).join("")}
+     <p role="alert" id="agent-settings-error"></p></div><footer class="modal-f"><button class="btn primary" type="submit">Apply settings</button></footer></form>`, (root, close) => {
+@@ -267,14 +270,14 @@
+ 
+ export async function openTask(ctx, project) {
+   let loaded = await server.task(project);
+-  ctx.modal(`<header class="modal-h"><h2>Task / goal</h2><button class="btn" data-close>Close</button></header><div class="modal-b">
++  ctx.modal(`<header class="modal-h"><h2>Task</h2><button class="btn" data-close>Close</button></header><div class="modal-b">
+     <p>Edit task.md. Include the goal, constraints, and how to know it is done.</p><textarea class="input" id="task-text" rows="16" aria-label="task.md">${esc(loaded.text)}</textarea>
+     <label><input type="checkbox" id="task-seed" checked> Use this goal for the next run (replace the initial handoff)</label>
+-    <p class="muted small">Finish or cancel the current plan before replacing its initial handoff. Saving task.md alone does not change an active turn.</p><p id="task-message" role="status"></p>
++    <p class="muted small">Finish or cancel the current run before replacing its initial handoff. Saving task.md alone does not change an active turn.</p><p id="task-message" role="status"></p>
+     </div><footer class="modal-f"><button class="btn primary" id="task-save" ${server.session?.mutations_enabled ? "" : "disabled"}>Save task</button></footer>`, (root) => {
+     root.querySelector("#task-save").addEventListener("click", async (event) => {
+       event.target.disabled = true;
+-      try { loaded = await server.taskSave(project, { text: root.querySelector("#task-text").value, base_hash: loaded.hash, use_for_next_run: root.querySelector("#task-seed").checked }); root.querySelector("#task-message").textContent = "Saved. Start a new plan to run this goal."; }
++      try { loaded = await server.taskSave(project, { text: root.querySelector("#task-text").value, base_hash: loaded.hash, use_for_next_run: root.querySelector("#task-seed").checked }); root.querySelector("#task-message").textContent = "Saved. Start a new run for this task."; }
+       catch (error) { root.querySelector("#task-message").textContent = error.status === 409 ? `Not saved: ${error.message}. Reopen Task to reload if the file changed.` : error.message; }
+       finally { event.target.disabled = false; }
+     });

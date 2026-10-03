@@ -31,6 +31,31 @@ def configure(project, *, review=False):
     return data
 
 
+def test_handoff_results_expose_turn_timestamps(project, service, tmp_path):
+    from alfrd.agent_loop import prepare
+    from alfrd.gui import create_app
+    from alfrd.gui.services import RuntimeCatalogReader
+
+    folder = scheduler.create_plan(project)
+    step = load_execution(project).steps[0]
+    handoff = prepare(project, folder.path / "handoffs" / "result-turn", step, folder.id, "result-turn")
+    folder.save_unit({"id": "result-turn", "handoff": handoff, "status": "done",
+                      "iteration": 1, "agent": "claude", "started": "2026-10-03T10:00:00Z",
+                      "finished": "2026-10-03T10:00:30Z", "row": "task", "steps": ["i001-claude-turn"]})
+    app = create_app({"TESTING": True, "SECRET_KEY": "k", "RUNTIME_SERVICE": service,
+                      "CATALOG_READER": RuntimeCatalogReader(service),
+                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'results.sqlite'}"})
+    identifier = service.list_projects()[0].identifier
+    response = app.test_client().get(f"/api/studio/projects/{identifier}/plans/{folder.id}/handoffs")
+    assert response.status_code == 200
+    turn = response.get_json()["handoffs"][0]
+    assert turn["started"] == "2026-10-03T10:00:00Z"
+    assert turn["finished"] == "2026-10-03T10:00:30Z"
+    assert turn["phase"] == "done"
+    assert turn["row"] == "task"
+    assert turn["steps"] == ["i001-claude-turn"]
+
+
 def test_model_arguments_and_stream_preserve_other_flags():
     argv, model, streaming = agent_command(["claude", "-p", "--model", "old", "--add-dir", "/repo", "--output-format", "text"], "new", True)
     assert argv.count("--model") == 1 and model == "new"

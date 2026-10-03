@@ -158,7 +158,7 @@ def studio_manifest(root: str | Path) -> dict[str, Any]:
     merged["template"] = name
     workflows = merged.get("workflows") or []
     workflow = workflows[0] if isinstance(workflows, list) and workflows else next(iter(workflows.values()), {}) if isinstance(workflows, dict) else {}
-    if isinstance(workflow, dict) and workflow.get("repeat") is not None:
+    if isinstance(workflow, dict) and (workflow.get("repeat") is not None or "roles" in workflow or any("role" in s for s in steps.values())):
         from alfrd.agent_loop import expand_steps
 
         merged["steps"] = expand_steps(workflow, steps)

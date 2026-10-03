@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- Studio: guide new projects through setup, use plain run and step labels, link runs to results and filtered logs, keep errors visible, and avoid unchanged polling renders.
+
+- Add agent personalities, per-turn and combined roles, cycling role schedules, and Studio personality editing.
+
+#### Studio: easier agent-loop work
+Results counts waiting turns by their latest attempt, keeps refreshing during manual responses and reviews, and offers **CSV results / collections** for imported results. Archived reply links open and scroll to the selected turn. Header controls wrap in narrow windows; remote browsers see why project creation is disabled.
+
+- **Create projects from the header.** Click **+ New project** beside the project picker.
+- **See loop results without importing CSVs.** Results shows completed turns, waiting reviews, elapsed time and archived replies. Choose a run or open **Read responses / handoffs**.
+- **Choose fields or YAML.** Project settings opens with name, description, loop iterations and timeout fields. Click the edit icon for **Edit YAML file**. Both views keep the same draft; **Save alfrd.yaml** writes it.
+- **Keep advanced settings.** Field edits preserve other configuration keys. YAML sections touched by a field are reformatted; comments outside those sections stay in place.
+- **Results loads on demand.** The measured lazy assets fit a 64 KiB compressed allowance; the startup allowance stays 165 KiB.
+
 #### Fixed
 
 - **Failed launches trigger recovery once.**

@@ -78,14 +78,20 @@ function stepList(manifest) {
 
 export function expandWorkflowSteps(workflow) {
   const raw = Array.isArray(workflow) ? workflow : workflow?.steps || workflow?.sequence || [];
-  if (!workflow?.repeat) return Array.isArray(raw) ? raw : [];
+  const schedule = workflow?.roles || [];
+  if (!Array.isArray(schedule)) throw new Error("workflow.roles must be a list of turn roles");
+  const roles = (step, turn) => {
+    const value = schedule.length ? schedule[turn % schedule.length] : step?.role;
+    return typeof value === "string" ? [value] : value ?? [];
+  };
+  if (!workflow?.repeat) return Array.isArray(raw) ? raw.map((step, i) => ({ ...(typeof step === "object" ? step : { id: step }), turn: i + 1, roles: roles(step, i) })) : [];
   const count = workflow.repeat.iterations;
   if (!Number.isInteger(count) || count < 1 || count > MAX_ITERATIONS) throw new Error("repeat.iterations must be an integer from 1 to 100");
   const out = [];
   for (let iteration = 1; iteration <= count; iteration++) raw.forEach((step) => {
     const base = stepId(step), id = `i${String(iteration).padStart(3, "0")}-${base}`;
     const own = typeof step === "object" ? step : {};
-    out.push({ ...own, id, base_step: base, iteration, label: `${iteration}/${count} · ${own.label || base}`,
+    out.push({ ...own, id, turn: out.length + 1, roles: roles(own, out.length), base_step: base, iteration, label: `${iteration}/${count} · ${own.label || base}`,
       depends_on: out.length ? [out.at(-1).id] : [] });
   });
   return out;
@@ -235,7 +241,7 @@ export function classifyLogs(entries, defs, ctx) {
 export function groupLabel(group, defs) {
   const [kind, id] = String(group).split(/:(.+)/);
   if (kind === "step") return defs?.steps?.[id]?.label ? `${id} — ${defs.steps[id].label}` : id;
-  if (kind === "plan") return `Scheduled run ${id}`;
+  if (kind === "plan") return `Run ${id}`;
   const a = (defs?.artifacts || []).find((x) => x.name === id);
   return a?.description || id;
 }
@@ -328,4 +334,95 @@ export function msPathsByTarget(paths) {
   });
   Object.values(out).forEach((l) => l.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.band).localeCompare(String(b.band))));
   return out;
+}
+
+export function personaRows(data) {
+  return Object.entries(data.project_settings?.personas || {}).map(([key, value]) => ({ key, ...value }));
+}
+
+export function turnRoleRows(data) {
+  const wf = firstWorkflow(data);
+  const raw = wf?.steps || [];
+  const steps = Array.isArray(raw) ? raw : Object.entries(raw).map(([id, value]) => ({ id, ...value }));
+  const count = wf?.repeat?.iterations || 1, schedule = wf?.roles || [], rows = [];
+  for (let iteration = 1; iteration <= count; iteration++) for (const step of steps) {
+    const own = typeof step === "object" ? step : { id: step };
+    const value = schedule.length ? schedule[rows.length % schedule.length] : own.role;
+    rows.push({ turn: rows.length + 1, iteration, iterations: count, agent: own.entrypoint || wf?.entrypoint || own.id,
+      keys: typeof value === "string" ? [value] : [...(value || [])] });
+  }
+  return rows;
+}
+
+export function applyPersonaSettings(data, personas, turnRoles) {
+  const result = structuredClone(data), values = {}, keys = new Set();
+  for (const row of personas) {
+    if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(row.key) || keys.has(row.key)) throw new Error("Persona keys must be unique: 1–40 lowercase letters, digits, underscores or hyphens.");
+    if (typeof row.label !== "string" || !row.label.trim() || row.label.length > 60 || /[\r\n]/.test(row.label)) throw new Error("Persona labels must be 1–60 characters on one line.");
+    if (typeof row.instructions !== "string" || row.instructions.length > 4000) throw new Error("Persona instructions must be at most 4000 characters.");
+    keys.add(row.key); values[row.key] = { label: row.label, instructions: row.instructions };
+  }
+  if (personas.length) result.project_settings = { ...(result.project_settings || {}), personas: values };
+  else if (result.project_settings) delete result.project_settings.personas;
+  const wf = firstWorkflow(result);
+  if (!wf) return result;
+  const roles = turnRoles.map((row) => {
+    const selected = [...new Set(row.keys)].filter((key) => keys.has(key)).sort();
+    return selected.length > 1 ? selected : selected[0] || null;
+  });
+  delete wf.roles;
+  // A finite run may end partway through a repeating cycle.
+  for (let size = 1; roles.some((role) => role !== null) && size <= roles.length; size++) {
+    if (roles.every((role, i) => JSON.stringify(role) === JSON.stringify(roles[i % size]))) {
+      wf.roles = roles.slice(0, size); break;
+    }
+  }
+  const steps = Array.isArray(wf.steps) ? wf.steps : Object.values(wf.steps || {});
+  for (const step of steps) if (step && typeof step === "object") delete step.role;
+  return result;
+}
+
+export function firstWorkflow(data) {
+  return Array.isArray(data.workflows) ? data.workflows[0] : Object.values(data.workflows || {})[0];
+}
+
+export function agentRows(data) {
+  return (data.entrypoint || []).filter((e) => ["claude", "codex"].includes(String(e.cmd?.[0] || "").split("/").pop())).map((e) => {
+    const args = e.cmd || [], index = args.findIndex((a) => a === "--model" || a === "-m");
+    return { name: e.name, model: e.model || (index >= 0 ? args[index + 1] : args.find((a) => a.startsWith("--model="))?.slice(8)) || "", manual: Boolean(e.manual) };
+  });
+}
+
+export function reviewRows(data) {
+  const wf = firstWorkflow(data);
+  const steps = Array.isArray(wf?.steps) ? wf.steps : Object.entries(wf?.steps || {}).map(([id, value]) => ({ id, ...(typeof value === "object" ? value : {}) }));
+  return steps.filter((s) => typeof s === "object" && s.handoff).map((s) => ({ id: s.id || s.key, enabled: s.human_review ?? data.project_settings?.human_review ?? false }));
+}
+
+export function applyAgentSettings(data, agents, reviewEnabled, reviews) {
+  const result = structuredClone(data);
+  for (const row of agents) {
+    const previous = agentRows(data).find((a) => a.name === row.name);
+    if (row.model.trim() === previous.model && Boolean(row.manual) === previous.manual) continue;
+    const entry = result.entrypoint.find((e) => e.name === row.name);
+    let skip = false;
+    entry.cmd = entry.cmd.filter((arg) => {
+      if (skip) { skip = false; return false; }
+      if (arg === "--model" || arg === "-m") { skip = true; return false; }
+      return !arg.startsWith("--model=");
+    });
+    if (row.model.trim()) entry.model = row.model.trim();
+    else delete entry.model;
+    entry.manual = row.manual;
+  }
+  const reviewChanged = reviewEnabled !== (Boolean(data.project_settings?.human_review) || reviewRows(data).some((r) => r.enabled));
+  if (reviewChanged)
+    result.project_settings = { ...(result.project_settings || {}), human_review: reviewEnabled };
+  const wf = firstWorkflow(result);
+  for (const row of reviews) {
+    const step = Array.isArray(wf.steps) ? wf.steps.find((s) => (s.id || s.key) === row.id) : wf.steps[row.id];
+    if (step && typeof step === "object" && (reviewChanged || (reviewEnabled && row.enabled) !== Boolean(reviewRows(result).find((r) => r.id === row.id)?.enabled)))
+      step.human_review = reviewEnabled && row.enabled;
+  }
+  return result;
 }

@@ -180,7 +180,7 @@ def plan_handoffs(project_name: str, plan_id: str):
         for unit in folder.units():
             if not unit.get("handoff"):
                 continue
-            item = {k: unit.get(k) for k in ("id", "agent", "iteration", "iterations", "status", "manual", "artifact", "error", "log", "model", "requested_model", "review_status", "human_review")}
+            item = {k: unit.get(k) for k in ("id", "agent", "iteration", "iterations", "status", "manual", "artifact", "error", "log", "model", "requested_model", "review_status", "human_review", "started", "finished", "row", "steps")}
             from alfrd.agent_loop import turn_phase
             item["phase"] = turn_phase(unit)
             item["iteration_label"] = f"{unit.get('iteration')}/{unit.get('iterations') or iterations}"

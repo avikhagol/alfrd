@@ -37,10 +37,18 @@ def validate_response(text: str, required=REQUIRED_HEADINGS) -> list[str]:
     return [f"Missing heading: ## {h}" for h in required if h.lower() not in headings]
 
 
+def resolve_roles(schedule, turn, spec):
+    roles = schedule[turn % len(schedule)] if schedule else spec.get("role")
+    return [roles] if isinstance(roles, str) else [] if roles is None else roles
+
+
 def expand_steps(workflow: Mapping[str, Any], steps: Mapping[str, Any]) -> dict[str, Any]:
     repeat = workflow.get("repeat")
+    schedule = workflow.get("roles", [])
+    if not isinstance(schedule, list):
+        raise ValueError("workflow.roles must be a list of turn roles")
     if repeat is None:
-        return dict(steps)
+        return {key: {**raw, "turn": i + 1, "roles": resolve_roles(schedule, i, raw)} for i, (key, raw) in enumerate(steps.items())}
     if not isinstance(repeat, Mapping):
         raise ValueError("workflow.repeat must contain iterations")
     count = repeat.get("iterations")
@@ -52,6 +60,7 @@ def expand_steps(workflow: Mapping[str, Any], steps: Mapping[str, Any]) -> dict[
     for iteration in range(1, count + 1):
         for key, raw in steps.items():
             spec = copy.deepcopy(raw)
+            spec.update(turn=len(out) + 1, roles=resolve_roles(schedule, len(out), spec))
             spec.update(iteration=iteration, iterations=count, base_step=key)
             spec["label"] = f"{iteration}/{count} · {spec.get('label') or key}"
             out[f"i{iteration:03d}-{key}"] = spec
@@ -90,14 +99,21 @@ def prepare(root: Path, archive: Path, step, plan_id: str, unit_id: str) -> dict
     final = step.iteration == step.iterations and step.final_turn
     options = getattr(step, "loop_options", {})
     required = options.get("headings", REQUIRED_HEADINGS)
+    roles = getattr(step, "roles", ())
+    role_header = " role=" + "+".join(r["label"] for r in roles) if roles else ""
     contract = (
         f"\n\n---\nALFRD turn: plan={plan_id}, unit={unit_id}, "
-        f"iteration={step.iteration}/{step.iterations}, agent={recipient}.\n"
+        f"iteration={step.iteration}/{step.iterations}, agent={recipient}{role_header}.\n"
         "Your final response must use these Markdown headings exactly: "
         + "; ".join(f"## {h}" for h in required) + ". " +
         "ALFRD publishes the response; do not edit the next-step files yourself. "
         "Preserve the user's scope and repository instructions. Do not commit or push.\n"
     )
+    if roles:
+        contract += "\nYour role(s) this turn:\n" + "\n".join(
+            f"- {r['label']}:\n{r['instructions']}" for r in roles) + "\n"
+        if not step.final_turn:
+            contract += f"Next turn: {step.next_agent}" + (" as " + " + ".join(step.next_roles) if step.next_roles else "") + ".\n"
     phase = "final" if final else "first" if step.iteration == 1 and step.first_turn else "middle"
     defaults = {
         "final": "Execute the incoming task and report files changed and checks performed. This is the final turn: provide a closing report; do not invent another task.",
@@ -107,7 +123,7 @@ def prepare(root: Path, archive: Path, step, plan_id: str, unit_id: str) -> dict
     contract += options.get("contract", {}).get(phase, defaults[phase]) + "\n"
     snapshot = archive / "prompt.md"
     atomic_text(snapshot, text + contract)
-    return {"headings": list(required), "input": step.handoff["input"], "output": step.handoff["output"],
+    return {"roles": [r["label"] for r in roles], "headings": list(required), "input": step.handoff["input"], "output": step.handoff["output"],
             "prompt_file": str(snapshot), "response_file": str(archive / "response.md"),
             "input_sha256": sha256(text), "prompt_sha256": sha256(text + contract),
             "output_base_hash": sha256(destination.read_text(encoding="utf-8")) if destination.exists() else None}
@@ -158,7 +174,7 @@ def status(plan: Mapping[str, Any], units: list[dict[str, Any]]) -> dict[str, An
     step = (current.get("steps") or [None])[0]
     turn = steps.index(step) + 1 if step in steps else 0
     return {"turn": turn, "turns": len(steps), "started": current.get("started"), "finished": current.get("finished"), "iterations": definition["iterations"], "iteration": current.get("iteration", 0),
-            "agent": current.get("agent"), "phase": turn_phase(current),
+            "agent": current.get("agent"), "roles": current.get("roles", handoff.get("roles", [])), "phase": turn_phase(current),
             "model": current.get("model"), "requested_model": current.get("requested_model"),
             "input": handoff.get("input"), "output": handoff.get("output"),
             "unit": current.get("id"), "artifact": current.get("artifact")}

@@ -1,0 +1,11 @@
+--- src/alfrd/web/js/data/defs.js
++++ src/alfrd/web/js/data/defs.js
+@@ -241,7 +241,7 @@
+ export function groupLabel(group, defs) {
+   const [kind, id] = String(group).split(/:(.+)/);
+   if (kind === "step") return defs?.steps?.[id]?.label ? `${id} — ${defs.steps[id].label}` : id;
+-  if (kind === "plan") return `Scheduled run ${id}`;
++  if (kind === "plan") return `Run ${id}`;
+   const a = (defs?.artifacts || []).find((x) => x.name === id);
+   return a?.description || id;
+ }

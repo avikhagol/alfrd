@@ -58,3 +58,58 @@ test("completed loop starts a fresh task plan even without imported targets", ()
 test("loop Run selection uses the configured task row", () => {
   assert.equal(loopRunSelection({ loop: { task_row: "custom-task" } }).rows[0].target, "custom-task");
 });
+
+
+import { personaRows, turnRoleRows, applyPersonaSettings } from "../../src/alfrd/web/js/data/agent_settings.js";
+const personalities = [
+  { key: "manager", label: "Manager", instructions: "Plan." },
+  { key: "developer", label: "Developer", instructions: "Build." },
+  { key: "reviewer", label: "Reviewer", instructions: "Review." },
+];
+test("personality helpers assign four turns and preserve the input", () => {
+  const turns = turnRoleRows(manifest);
+  assert.deepEqual(turns.map((r) => r.agent), ["claude", "codex", "claude", "codex"]);
+  const keys = ["manager", "developer", "reviewer", "developer"];
+  turns.forEach((row, i) => { row.keys = [keys[i]]; });
+  const result = applyPersonaSettings(manifest, personalities, turns);
+  assert.deepEqual(personaRows(result), personalities);
+  assert.deepEqual(result.workflows[0].roles, keys);
+  assert.deepEqual(turnRoleRows(result).map((r) => r.keys), keys.map((key) => [key]));
+  assert.equal(manifest.project_settings, undefined);
+});
+test("turn role cycles support combined roles, partial cycles and deletion", () => {
+  const turns = turnRoleRows(manifest);
+  turns.forEach((row, i) => { row.keys = i % 2 ? [] : ["manager", "reviewer"]; });
+  const result = applyPersonaSettings(manifest, personalities, turns);
+  assert.deepEqual(result.workflows[0].roles, [["manager", "reviewer"], null]);
+  assert.deepEqual(applyPersonaSettings(result, personalities.slice(1), turns).workflows[0].roles, ["reviewer", null]);
+  assert.deepEqual(applyPersonaSettings(manifest, personalities, [{ keys: ["manager"] }, { keys: [] }, { keys: ["manager"] }]).workflows[0].roles, ["manager", null]);
+});
+test("step fallback is materialized and removed when editing turn roles", () => {
+  const data = structuredClone(manifest); data.workflows[0].steps[0].role = "manager";
+  const turns = turnRoleRows(data);
+  assert.deepEqual(turns.map((r) => r.keys), [["manager"], [], ["manager"], []]);
+  const result = applyPersonaSettings(data, personalities, turns);
+  assert.equal(result.workflows[0].steps[0].role, undefined);
+  assert.deepEqual(result.workflows[0].roles, ["manager", null]);
+});
+test("personality form helpers reject invalid definitions", () => {
+  for (const row of [{ ...personalities[0], key: "Bad" }, { ...personalities[0], label: "" }, { ...personalities[0], instructions: "x".repeat(4001) }])
+    assert.throws(() => applyPersonaSettings(manifest, [row], []), /Persona/);
+  assert.throws(() => applyPersonaSettings(manifest, [personalities[0], personalities[0]], []), /unique/);
+});
+
+
+test("empty personality settings and untouched agent settings preserve the manifest", () => {
+  for (const data of [manifest, { ...manifest, project_settings: { custom: "keep" } }]) {
+    const result = applyPersonaSettings(data, [], turnRoleRows(data));
+    assert.deepEqual(result, data);
+    assert.deepEqual(applyAgentSettings(result, agentRows(result), false, reviewRows(result)), data);
+  }
+});
+test("removing all assignments omits roles and removing all personalities omits personas", () => {
+  const assigned = applyPersonaSettings(manifest, personalities, [{ keys: ["manager"] }]);
+  const cleared = applyPersonaSettings(assigned, [], turnRoleRows(manifest));
+  assert.equal(Object.hasOwn(cleared.project_settings, "personas"), false);
+  assert.equal(Object.hasOwn(cleared.workflows[0], "roles"), false);
+});

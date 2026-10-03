@@ -10,9 +10,11 @@ import { $, on, esc, icon, copyText, download } from "../utils/dom.js";
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { manifestToWorkflows } from "../data/model.js";
 import { studioManifest } from "../data/defs.js";
+import { configFields, setConfigField } from "../data/config_fields.js";
 
-const ui = { project: null, text: null, dirty: false, report: null, aliases: null };
+const ui = { project: null, text: null, dirty: false, report: null, aliases: null, mode: "fields" };
 let shown = null; // signature of what #ps currently shows (see render)
+let shownText = null;
 
 function project(ctx) {
   return ctx.target()?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null) || Object.keys(ctx.state.trees || {})[0] || null;
@@ -81,6 +83,18 @@ function validate(ctx, text) {
 
 export function mount(el, ctx) {
   el.innerHTML = `<div class="ps" id="ps"></div>`;
+  on(el, "input", "[data-config-field]", (e, input) => {
+    try {
+      ui.text = setConfigField(ui.text, input.dataset.configField, input.value);
+      input.setCustomValidity(""); ui.dirty = true; ui.report = null;
+      shown = signature(ctx, project(ctx));
+      shownText = ui.text;
+      renderStatus(el, ctx);
+    } catch (error) { input.setCustomValidity(error.message); input.reportValidity(); }
+  });
+  on(el, "keydown", "[data-config-field]", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(el, ctx); }
+  });
   on(el, "input", "#ps-yaml", (e) => { ui.text = e.target.value; ui.dirty = true; ui.report = null; ui.aliases = null; renderStatus(el, ctx); });
   on(el, "keydown", "#ps-yaml", (e) => {
     if (e.key === "Tab") { // two-space indent instead of leaving the editor
@@ -100,6 +114,14 @@ export function mount(el, ctx) {
   on(el, "click", "[data-act]", async (e, b) => {
     const a = b.dataset.act;
     const p = project(ctx);
+    if (a === "mode-fields" || a === "mode-yaml") {
+      if (a === "mode-fields") {
+        try { configFields(ui.text); } catch (error) { ctx.toast(`Fix the YAML before opening fields: ${error.message}`, "fail"); return; }
+      }
+      const invalid = el.querySelector("[data-config-field]:invalid");
+      if (invalid) { invalid.reportValidity(); return; }
+      ui.mode = a === "mode-fields" ? "fields" : "yaml"; render(el, ctx);
+    }
     if (a === "validate") { ui.report = validate(ctx, ui.text); renderStatus(el, ctx); }
     if (a === "save") save(el, ctx);
     if (a === "agents" || a === "task") {
@@ -144,6 +166,8 @@ export function mount(el, ctx) {
 }
 
 async function save(el, ctx) {
+  const invalid = el.querySelector("[data-config-field]:invalid");
+  if (invalid) { invalid.reportValidity(); return; }
   const p = project(ctx);
   const report = validate(ctx, ui.text);
   ui.report = report;
@@ -185,7 +209,7 @@ function renderStatus(el, ctx) {
 function signature(ctx, p) {
   const tree = ctx.state.trees?.[p] || {};
   return JSON.stringify([p, tree.manifestFile, !!tree.manifestDefault, ctx.state.workflowFile.name, ctx.state.mode,
-    !!ctx.canWrite(p), ui.aliases, (ctx.state.aliases || []).length]);
+    !!ctx.canWrite(p), ui.aliases, (ctx.state.aliases || []).length, ui.mode]);
 }
 
 /** Scroll, selection and focus of the editor, to carry over a rebuild. */
@@ -218,13 +242,14 @@ export function render(el, ctx) {
   // nothing else on the panel changed, only refresh the status line/footer.
   const existing = $("#ps-yaml", el);
   const sig = signature(ctx, p);
-  if (existing && existing.value === ui.text && sig === shown) {
+  if (sig === shown && ((existing && existing.value === ui.text) || (ui.mode === "fields" && shownText === ui.text && $("#ps-fields", el)))) {
     renderStatus(el, ctx);
     ctx.setFooterRight(ui.dirty ? "alfrd.yaml: unsaved changes" : "alfrd.yaml");
     return;
   }
   const keep = existing && shown && JSON.parse(shown)[0] === p ? editorState(existing) : null;
   shown = sig;
+  shownText = ui.text;
   const tree = ctx.state.trees?.[p] || {};
   const where = ctx.state.mode === "server"
     ? (ctx.canWrite(p) ? "Saves through alfrd serve into the project folder (old file kept as alfrd.yaml.bak)." : "alfrd serve only accepts saves from a browser on the same machine; Save downloads the file.")
@@ -232,8 +257,10 @@ export function render(el, ctx) {
   const defs = studioManifest(parse(ui.text).data || {});
   const tplSteps = Object.keys(defs.tplSteps || {});
   const found = ctx.state.aliases || [];
+  let fields;
+  try { fields = configFields(ui.text); } catch { ui.mode = "yaml"; }
   $("#ps", el).innerHTML = `
-    <div class="card"><div class="row gap wrap"><h2>Project settings</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span>${tree.manifestDefault ? `<span class="chip" title="This folder has no alfrd.yaml, so ALFRD's default one is shown. Save writes it into the folder; the local file then replaces the default.">default — not saved in the folder</span>` : ""}<span class="grow"></span>
+    <div class="card"><div class="row gap wrap"><h2>Project settings — alfrd.yaml</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span>${tree.manifestDefault ? `<span class="chip" title="This folder has no alfrd.yaml, so ALFRD's default one is shown. Save writes it into the folder; the local file then replaces the default.">default — not saved in the folder</span>` : ""}<span class="grow"></span>
       <button class="btn sm" data-act="validate">${icon("validate")} Validate</button>
       <button class="btn sm" data-act="revert">${icon("reset")} Revert</button>
       <button class="btn sm" data-act="download">${icon("download")} Download</button>
@@ -241,12 +268,23 @@ export function render(el, ctx) {
       <button class="btn sm ${ui.dirty ? "primary" : ""}" data-act="save">${icon("save")} Save alfrd.yaml</button></div>
       <p class="muted small">${esc(where)} Ctrl+S saves. After saving, the workflow, stages, metadata health, logs and field aliases are re-read from the file.</p>
       <div class="ps-status" id="ps-status"></div></div>
+    <div class="row gap wrap" role="group" aria-label="Configuration editor">
+      <button class="btn sm ${ui.mode === "fields" ? "primary" : ""}" data-act="mode-fields" aria-pressed="${ui.mode === "fields"}">${icon("list")} Settings fields</button>
+      <button class="btn sm ${ui.mode === "yaml" ? "primary" : ""}" data-act="mode-yaml" aria-pressed="${ui.mode === "yaml"}">${icon("edit")} Edit YAML file</button>
+      <span class="muted small">Both views use the same draft. Save when ready.</span>
+    </div>
     ${!ui.text ? `<div class="card empty">No alfrd.yaml loaded. Open the project folder (Import) or start <code>alfrd serve</code> in it.</div>` : `
     <div class="ps-grid">
-      <section class="card"><textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea></section>
+      <section class="card">${ui.mode === "yaml" ? `<textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea>` : `<div id="ps-fields">
+        <h4>Project basics</h4><p class="muted small">Use Edit YAML file for advanced settings. Changing a field rewrites its YAML section.</p>
+        <label class="field"><span>Project name</span><input class="input" data-config-field="name" value="${esc(fields.name)}" required></label>
+        <label class="field"><span>Description</span><textarea class="input" data-config-field="description" rows="3">${esc(fields.description)}</textarea></label>
+        ${fields.iterations != null ? `<label class="field"><span>Loop iterations</span><input class="input" type="number" min="1" max="100" step="1" data-config-field="iterations" value="${esc(fields.iterations)}" required></label>` : ""}
+        <label class="field"><span>Turn timeout (seconds)</span><input class="input" type="number" min="1" step="1" data-config-field="timeout" value="${esc(fields.timeout)}" placeholder="Default"></label>
+      </div>`}</section>
       <div>
-        <section class="card"><h4>Agents and goal</h4><p class="muted small">Choose models, enable human adjustments after selected turns, or edit the goal for the next run.</p>
-          <div class="row gap wrap"><button class="btn" data-act="agents">Agents / human review</button>${ctx.state.mode === "server" ? '<button class="btn" data-act="task">Edit task.md</button>' : ''}</div>
+        <section class="card"><h4>Agents &amp; review</h4><p class="muted small">Choose models, enable human adjustments after selected turns, or edit the goal for the next run.</p>
+          <div class="row gap wrap"><button class="btn" data-act="agents">Agents &amp; review</button>${ctx.state.mode === "server" ? '<button class="btn" data-act="task">Edit task</button>' : ''}</div>
         </section>
         <section class="card">
           <h4>${icon("arrows")} Field aliases</h4>

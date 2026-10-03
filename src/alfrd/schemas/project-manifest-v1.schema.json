@@ -8,6 +8,20 @@
     "project_settings": {
       "type": "object",
       "properties": {
+        "personas": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]{0,39}$": {
+              "type": "object", "required": ["label", "instructions"],
+              "properties": {
+                "label": {"type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[^\\r\\n]+$"},
+                "instructions": {"type": "string", "maxLength": 4000}
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "agent_access": {
           "type": "object",
           "properties": {

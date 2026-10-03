@@ -1,0 +1,157 @@
+--- src/alfrd/web/js/app.js
++++ src/alfrd/web/js/app.js
+@@ -92,7 +92,10 @@
+   });
+ }
+ 
++const tabErrors = new Map();
+ export const ctx = {
++  showError(message, retry, view = state.view, key = null) { tabErrors.set(view, { message, retry, key }); scheduleRender(); },
++  clearError(view, key) { if (tabErrors.get(view)?.key === key) { tabErrors.delete(view); scheduleRender(); } },
+   state,
+   get VERSION() { return VERSION; },
+   /** Mutate state via fn(state) and re-render. */
+@@ -118,8 +121,16 @@
+     el.setAttribute("role", "status");
+     el.innerHTML = `${icon(tone === "fail" ? "xCircle" : tone === "ok" ? "checkCircle" : tone === "warn" ? "alert" : "info")}<span>${esc(text)}</span>`;
+     host.appendChild(el);
+-    setTimeout(() => el.classList.add("out"), 3600);
+-    setTimeout(() => el.remove(), 4000);
++    setTimeout(() => el.classList.add("out"), tone === "fail" || tone === "warn" ? 8000 : 3600);
++    setTimeout(() => el.remove(), tone === "fail" || tone === "warn" ? 8400 : 4000);
++  },
++  openRun(project) { canvas.showRun(ctx, project); },
++  openLogs(opts = {}) { logs.showLogs(ctx, opts); },
++  browseFolder(host, input) {
++    return mountFolderBrowser(host, { list: (path, opts) => server.listFolders(path, opts), start: input.value,
++      use: (path) => { input.value = path; host.hidden = true; input.focus(); },
++      connect: async (paths) => { input.value = paths[0]; host.hidden = true; input.focus(); },
++      close: () => { host.hidden = true; input.focus(); } });
+   },
+   navigate(view, params = {}) {
+     if (params.target) state.selectedTarget = params.target;
+@@ -142,6 +153,7 @@
+   projects() {
+     const map = new Map();
+     if (state.mode === "server") Object.keys(state.projectNames).forEach((key) => map.set(key, { id: key, name: ctx.projectName(key), title: ctx.projectName(key), targets: [] }));
++    Object.keys(state.trees).forEach((id) => { if (!map.has(id)) map.set(id, { id, name: ctx.projectName(id), title: ctx.projectName(id), targets: [] }); });
+     state.targets.forEach((t) => {
+       if (!map.has(t.project)) map.set(t.project, { id: t.project, name: ctx.projectName(t.project), title: t.projectTitle || state.projectTitles[t.project] || "", targets: [] });
+       map.get(t.project).targets.push(t);
+@@ -471,7 +483,7 @@
+     state.workflowFile = cached.workflowFile;
+   } else {
+     const info = manifestToWorkflows(parseYaml(tree.manifestText), tree.manifestFile || "alfrd.yaml");
+-    if (!info.workflows.length) return;
++    if (!info.workflows.length) state.workflow = defaultWorkflow();
+     applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", tree.manifestText, { quiet: true });
+   }
+   state.workflowProject = p;
+@@ -561,6 +573,7 @@
+     return { ...data, targets: state.targets };
+   } catch (error) {
+     ctx.log("error", `Server load failed: ${error.message}`, "server");
++    ctx.showError(`Could not load projects: ${error.message}`, loadServer);
+     ctx.toast(`Server load failed: ${error.message}`, "fail");
+     return null;
+   }
+@@ -1018,6 +1031,7 @@
+ // Modal + menus
+ 
+ function modal(html, setup, cls = "") {
++  const previousFocus = document.activeElement;
+   const host = $("#modal-host");
+   host.innerHTML = `<div class="modal-back" data-close></div><div class="modal ${cls}" role="dialog" aria-modal="true">${html}</div>`;
+   host.hidden = false;
+@@ -1027,8 +1041,16 @@
+     host.hidden = true;
+     host.innerHTML = "";
+     document.removeEventListener("keydown", esc_);
++    if (previousFocus?.isConnected) previousFocus.focus();
+   };
+-  const esc_ = (e) => e.key === "Escape" && close();
++  const esc_ = (e) => {
++    if (e.key === "Escape") { close(); return; }
++    if (e.key !== "Tab") return;
++    const fields = [...root.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter((el) => !el.disabled && el.getClientRects().length);
++    const first = fields[0], last = fields.at(-1);
++    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
++    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
++  };
+   document.addEventListener("keydown", esc_);
+   host.onclick = (e) => {
+     if (e.target.closest("[data-close]")) close();
+@@ -1128,12 +1150,12 @@
+ async function newProject() {
+   try {
+     const { openCreateProject } = await import("./components/agent_dialog.js");
+-    await openCreateProject(ctx, async (project) => {
++    await openCreateProject(ctx, async (project, template) => {
+       state.selectedProject = project.identifier;
+       await loadServer();
+       state.selectedProject = project.identifier;
+       state.selectedTarget = state.targets.find((t) => t.project === project.identifier)?.id || null;
+-      scheduleRender();
++      ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
+     });
+   } catch (error) { ctx.toast(error.message, "fail"); }
+ }
+@@ -1625,7 +1647,7 @@
+       <button class="btn" id="btn-rescan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")} Re-scan</button>
+       <button class="btn" id="btn-import">${icon("upload")} Import</button>
+       <button class="btn" id="btn-export">${icon("download")} Export</button>
+-      <button class="icon-btn" id="btn-settings" aria-label="Settings" title="Settings">${icon("gear")}</button>
++      <button class="icon-btn" id="btn-settings" aria-label="Studio settings" title="Studio settings">${icon("gear")}</button>
+       <button class="icon-btn" id="btn-quit" aria-label="Quit alfrd" title="Quit alfrd" hidden>${icon("power")}</button>
+     </header>
+     <nav class="rail" aria-label="Workspace">
+@@ -1690,12 +1712,17 @@
+   badge.title = live ? "alfrd: projects come from the runtime database; re-queue runs through the runtime API." : "Everything runs in this browser; no pipeline code is executed.";
+ 
+   const projects = ctx.projects();
+-  $("#pick-project").innerHTML = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === state.selectedProject ? "selected" : ""}>${esc(p.title || p.name)}</option>`).join("")}`;
++  const projectOptions = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.title || p.name)}</option>`).join("")}`;
+   const targets = ctx.scopedTargets();
+-  $("#pick-target").innerHTML = targets.length
+-    ? targets.map((t) => `<option value="${esc(t.id)}" ${t.id === state.selectedTarget ? "selected" : ""}>${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || ctx.projectName(t.project))}` : ""}</option>`).join("")
++  const targetOptions = targets.length
++    ? targets.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || ctx.projectName(t.project))}` : ""}</option>`).join("")
+     : `<option value="">No targets</option>`;
+ 
++  for (const [id, html, value] of [["pick-project", projectOptions, state.selectedProject], ["pick-target", targetOptions, state.selectedTarget]]) {
++    const select = $(`#${id}`);
++    if (select.dataset.options !== html) { select.innerHTML = html; select.dataset.options = html; }
++    select.value = value || "";
++  }
+   $$(".rail a").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));
+ 
+ }
+@@ -1706,7 +1733,7 @@
+   st.textContent = `Local Storage: ${bytes(storage.size())} / Saved`;
+   $("#foot-mode").innerHTML = state.mode === "server"
+     ? `${icon("server")} alfrd — runtime actions go through the ALFRD API`
+-    : `${icon("info")} Client-side evaluation — external runner for native CASA execution`;
++    : `${icon("info")} Browser mode · preview workflows and import results`;
+   const errors = state.consoleLines.filter((l) => l.level === "error").length;
+   const warns = state.consoleLines.filter((l) => l.level === "warn").length;
+   const info = state.consoleLines.length - errors - warns;
+@@ -1833,7 +1860,18 @@
+     const el = $(`#view-${v.id}`);
+     const active = v.id === state.view;
+     el.hidden = !active;
+-    if (active) v.mod.render(el, ctx);
++    if (active) {
++      v.mod.render(el, ctx);
++      const error = tabErrors.get(v.id);
++      el.querySelector(".tab-error")?.remove();
++      if (error) {
++        const banner = document.createElement("div"); banner.className = "callout fail tab-error"; banner.setAttribute("role", "alert");
++        banner.innerHTML = `<span class="grow">${esc(error.message)}</span><button class="btn sm" data-retry>Retry</button><button class="btn sm" data-dismiss>Dismiss</button>`;
++        banner.querySelector("[data-dismiss]").onclick = () => { tabErrors.delete(v.id); banner.remove(); };
++        banner.querySelector("[data-retry]").onclick = () => { if (!error.key) { tabErrors.delete(v.id); banner.remove(); } error.retry(); };
++        el.prepend(banner);
++      }
++    }
+   });
+   renderFooter();
+   listeners.forEach((fn) => fn(state));

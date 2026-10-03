@@ -212,6 +212,7 @@ const P = {
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
   terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
+  edit: '<path d="M12 20h9M16 3l5 5-12 12H4v-5zM14 5l5 5"/>',
   convert: '<path d="M4 7h11l-3-3M20 17H9l3 3"/>',
   shift: '<path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v5h-5"/>',
   average: '<path d="M4 8h16M4 16h16M12 4v4M12 16v4"/>',

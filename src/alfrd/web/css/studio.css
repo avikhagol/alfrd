@@ -2,6 +2,7 @@
    Tokens follow stitch_avica_alfrd_workflow_studio/…/DESIGN.md. */
 
 :root {
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px;
   --bg: #F8FAFC;
   --surface: #FFFFFF;
   --subtle: #F1F5F9;
@@ -787,3 +788,36 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 @media (max-width: 1100px) { .sched-b.dock-side { grid-template-columns: minmax(0, 1fr); } }
 
 .handoff-artifact { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Agent-loop results stay readable on narrow Studio windows. */
+.loop-result-table { overflow-x: auto; }
+#ps-fields .field { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; }
+#ps-fields .input { width: 100%; }
+
+.loop-results { min-width: 0; }
+.loop-results .loop-run { min-width: 0; max-width: 100%; }
+.loop-run select { min-width: 0; width: 100%; max-width: 100%; }
+.loop-results > .mono, .loop-results .kpis { overflow-wrap: anywhere; }
+.loop-result-table .tbl { min-width: 620px; }
+#ps-fields, .ps-grid > .card { min-width: 0; }
+#new-project-help { max-width: 230px; }
+.footbar #foot-mode { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#foot-logs { flex-shrink: 0; }
+@media (max-width: 1100px) {
+  .app { grid-template-rows: auto auto minmax(0, 1fr) var(--foot); }
+  .topbar { flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; }
+  .picker select { max-width: 150px; min-width: 0; }
+}
+@media (max-width: 720px) {
+  .app { grid-template-rows: auto auto minmax(0, 1fr) auto var(--foot); }
+  .picker select { max-width: 120px; }
+  .loop-run { width: 100%; }
+}
+
+/* Setup and recovery share a quiet, accessible layout. */
+.setup-card { margin: var(--s-3); padding: var(--s-5); }
+.setup-card h2 { margin: 0 0 var(--s-2); font-size: 18px; }
+.setup-list { list-style: none; padding: 0; display: grid; gap: var(--s-3); }
+.setup-list li { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
+.tab-error { margin: var(--s-3); gap: var(--s-2); }
+:where(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.callout[hidden] { display: none; }

@@ -1113,7 +1113,8 @@ class Runner:
                 archive = self.folder.path / "handoffs" / unit["id"]
                 unit["handoff"] = prepare(self.folder.root, archive, step, self.folder.id, unit["id"])
                 unit.update(iteration=step.iteration, agent=step.entrypoint or step.base_step, manual=step.manual,
-                            human_review=step.human_review, requested_model=step.model)
+                            human_review=step.human_review, requested_model=step.model,
+                            roles=unit["handoff"].get("roles", []))
             argv, env, timeout = command_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
             if step and step.manual:
                 argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
@@ -1244,7 +1245,7 @@ class Runner:
             return
         exit_path = self.folder.root / unit.get("exit_file", "-")
         metadata = _read_json(exit_path.with_suffix(".agent.json"), {}) or {}
-        changes = {}
+        changes = {"roles": unit["handoff"].get("roles", [])}
         if metadata.get("model"):
             changes.update(model=metadata["model"], models=metadata.get("models", []))
         elif unit.get("argv") and Path(unit["argv"][0]).name == "codex" and not unit.get("model"):

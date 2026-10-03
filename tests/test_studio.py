@@ -56,6 +56,7 @@ _STATIC_IMPORT = re.compile(
 LAZY_MODULES = {
     "js/components/agent_dialog.js",
     "js/components/agent_settings_dialog.js", "js/data/agent_settings.js",
+    "js/components/loop_results.js", "js/data/loop_results.js",
     "js/components/diagnostics.js", "js/components/targets_dialog.js", "js/data/targets.js",
     "js/components/step_picker.js", "js/data/step_select.js", "js/components/history.js",
     "js/components/palette.js", "js/data/fuzzy.js", "js/components/usage_view.js",
@@ -83,23 +84,25 @@ def _gz(path: Path) -> int:
     return len(gzip.compress(path.read_bytes(), 9))
 
 
-def test_startup_payload_under_165kb_compressed():
+def test_startup_payload_under_168kb_compressed():
     # What the Studio loads when it opens. 150 KB until 0.2.1 (~149 KB then);
     # scheduled runs added ~12 KB. Features opened on demand load with import()
     # and count under the lazy cap below instead.
     total = sum(_gz(p) for p in _startup_files())
-    assert total < 165 * 1024, f"{total} bytes gzip"
+    # Setup checklist, run→results links and error recovery add ~3 KiB.
+    # With source comments retained, measured startup is ~167.7 KiB.
+    assert total < 168 * 1024, f"{total} bytes gzip"
 
 
-def test_lazy_payload_under_62kb_compressed():
+def test_lazy_payload_under_64kb_compressed():
     # Everything else: import() modules, css/lazy.css, templates and assets.
     # 40 KB until 0.2.0.7; 0.2.0.8's on-demand features (palette, search,
     # history, notes, usage, step picker, panels) load here, not at startup.
     startup = _startup_files()
     # Agent/model/review and task editors add ~3 KiB on demand; startup cap unchanged.
     total = sum(_gz(p) for p in _web_files() if p.resolve() not in startup)
-    # Paging, access settings and loop helpers bring shipped assets to ~61 KiB.
-    assert total < 62 * 1024, f"{total} bytes gzip"
+    # Loop result cards add ~2 KiB on demand; measured total is ~63.9 KiB.
+    assert total < 64 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

@@ -11,7 +11,7 @@ import { STEP_STATUS } from "../data/model.js";
 import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
 import { logItem, logForTarget, projectLogs, zoomablePre } from "./logview.js";
-import { CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule, usageButton } from "./plans.js";
+import { RUN_STATUS, CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule, usageButton } from "./plans.js";
 
 const W = 1040;
 const GAP = 32;
@@ -30,7 +30,6 @@ const remember = () => saveUi("workflow.v2", ui, UI_FIELDS);
 
 const planRequested = new Set(); // projects whose plan state was fetched once by the Workflow view
 
-// Simulation state (browser-only).
 const sim = {
   active: false,
   paused: false,
@@ -65,13 +64,13 @@ function baseStatus(ctx, key) {
   return t?.steps?.[key]?.status || "pending";
 }
 
-/** ALFRD project shown in the Workflow view. */
+
 function wfProject(ctx) {
   const t = ctx.target();
   return t?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : Object.keys(ctx.state.trees || {})[0]);
 }
 
-/** A running / paused / interrupted plan of this project (cells overlay the imported status). */
+
 function overlay(ctx) {
   const project = wfProject(ctx);
   return activePlan(project) ? planOverlay(project, ctx.target()) : null;
@@ -86,7 +85,7 @@ function statusOf(ctx, key) {
   return baseStatus(ctx, key);
 }
 
-/** Display state: pending (ready to run) vs queued (waiting on deps). */
+
 function displayStatus(ctx, step) {
   const st = statusOf(ctx, step.key);
   if (st !== "pending") return st;
@@ -94,8 +93,6 @@ function displayStatus(ctx, step) {
   return ready ? "pending" : "queued";
 }
 
-// ---------------------------------------------------------------------------
-// Layout
 
 function computeLayout(ctx) {
   const wf = ctx.state.workflow;
@@ -130,7 +127,6 @@ function computeLayout(ctx) {
 }
 
 function edgePath(a, b) {
-  // Same band and side by side: horizontal S-curve; otherwise vertical.
   if (Math.abs(a.y - b.y) < NODE_H / 2) {
     const leftToRight = a.x < b.x;
     const x1 = leftToRight ? a.x + a.w : a.x;
@@ -158,8 +154,6 @@ function edgeClass(ctx, from, to) {
   return "e-idle";
 }
 
-// ---------------------------------------------------------------------------
-// Mount & events
 
 export function mount(el, ctx) {
   el.innerHTML = `<div class="wf">
@@ -181,7 +175,7 @@ export function mount(el, ctx) {
   let drag = null;
   canvasEl.addEventListener("pointerdown", (e) => {
     const node = e.target.closest(".node");
-    if (e.target.closest(".minimap") || e.button !== 0) return;
+    if (e.target.closest(".minimap, .setup-card") || e.button !== 0) return;
     if (node && !e.target.closest("button")) {
       const key = node.dataset.key;
       const p = ui.currentLayout.pos[key];
@@ -306,7 +300,7 @@ function ensureDraft(ctx) {
   }
 }
 
-/** Open the Workflow view on one step (command palette). */
+
 export function showStep(ctx, key) {
   select(ctx, key);
   ctx.goTo("workflow");
@@ -359,8 +353,6 @@ function applyTransform(el) {
   drawViewport(el);
 }
 
-// ---------------------------------------------------------------------------
-// Actions
 
 function act(el, ctx, name, button) {
   switch (name) {
@@ -420,7 +412,6 @@ function validate(ctx) {
       if (/threshold|min_|max_|cores|bin/.test(k) && typeof v === "number" && v < 0) errors.push(`${s.key}.${k}: must be ≥ 0`);
     });
   });
-  // Cycle detection (Kahn).
   const indeg = Object.fromEntries(wf.steps.map((s) => [s.key, s.depends.filter((d) => keys.has(d)).length]));
   const queue = Object.keys(indeg).filter((k) => !indeg[k]);
   let seen = 0;
@@ -470,8 +461,6 @@ async function applyDraft(ctx) {
   ctx.update();
 }
 
-// ---------------------------------------------------------------------------
-// Simulation (DAG scheduler, runs in the browser only)
 
 function modeledSeconds(ctx, key) {
   const t = ctx.target();
@@ -493,7 +482,6 @@ function startSim(ctx, only = null) {
     sim.statuses[s.key] = keep ? (only ? statusOf(ctx, s.key) : "completed") : "pending";
     sim.progress[s.key] = sim.statuses[s.key] === "completed" ? 1 : 0;
     sim.modeled[s.key] = modeledSeconds(ctx, s.key);
-    // 1.5–6 s of real time per step, proportional to the modeled duration.
     sim.realMs[s.key] = Math.min(6000, Math.max(1500, sim.modeled[s.key] * 20));
   });
   sim.only = only;
@@ -557,7 +545,6 @@ function tick(ctx) {
       changed = true;
     }
   });
-  // Start every ready step (parallel branches run concurrently).
   wf.forEach((s) => {
     if (sim.statuses[s.key] !== "pending") return;
     if (sim.only && s.key !== sim.only) return;
@@ -584,7 +571,6 @@ function tick(ctx) {
   else updateLive(ctx);
 }
 
-// Lightweight per-tick update (progress bars) without a full re-render.
 function updateLive(ctx) {
   const root = document.querySelector("#view-workflow");
   if (!root || root.hidden) return;
@@ -635,6 +621,12 @@ export function leave() {
   /* keep simulation running in the background */
 }
 
+export function showRun(ctx, project) {
+  ctx.state.selectedProject = project;
+  if (ctx.target()?.project !== project) ctx.state.selectedTarget = null;
+  ui.mode = "schedule"; remember(); ctx.navigate("workflow");
+}
+
 export function render(el, ctx) {
   if (sim.active && sim.targetId && sim.targetId !== ctx.state.selectedTarget) {
     resetSimulation();
@@ -654,14 +646,18 @@ export function render(el, ctx) {
   el.querySelector(".wf")?.classList.toggle("list-mode", ui.mode !== "graph");
   el.querySelector(".wf")?.classList.toggle("sched-mode", ui.mode === "schedule");
   canvasEl.hidden = ui.mode !== "graph";
-  if (ui.mode === "list") renderList(el, ctx);
+  if (!steps(ctx).length && ui.mode !== "schedule") {
+    const box = ui.mode === "list" ? list : $("#wf-world", el);
+    if (ui.mode === "graph") { box.style.transform = "none"; $("#minimap-panel", el).hidden = true; }
+    box.innerHTML = `<div class="empty setup-card"><h2>Build your workflow</h2><p>A step is one piece of work, such as running a script or asking an agent.</p><p>Add your first step in <a class="btn primary" href="#/config">Settings · alfrd.yaml</a>, then return here to run it.</p></div>`;
+  } else if (ui.mode === "list") renderList(el, ctx);
   else if (ui.mode === "schedule") renderSchedule(sched, ctx, project);
   else renderGraph(el, ctx);
   renderInspector(el, ctx);
   const ap = plans ? activePlan(project) : null;
   const right = sim.active
     ? `<span class="chip ${!isFinished() ? "tone-run" : ""}"><i class="dot"></i>${isFinished() ? "Simulation finished" : sim.paused ? "Simulation paused" : "Simulating"}</span>`
-    : ap ? `<span class="chip tone-run"><i class="dot"></i>Plan ${esc(ap.plan.status)}</span>` : plans ? '<span class="chip"><i class="dot"></i>Ready to run</span>' : '<span class="chip"><i class="dot"></i>Simulation Ready</span>';
+    : ap ? `<span class="chip tone-run"><i class="dot"></i>Run ${esc(RUN_STATUS[ap.plan.status] || ap.plan.status)}</span>` : plans ? '<span class="chip"><i class="dot"></i>Ready to run</span>' : '<span class="chip"><i class="dot"></i>Simulation Ready</span>';
   ctx.setFooterRight(`<span class="chip" id="foot-zoom">Zoom ${Math.round(ui.zoom * 100)}%</span> ${right}`);
 }
 
@@ -674,8 +670,8 @@ function runGroup(ctx, project) {
   return `<div class="sim-group ${ap ? "on" : ""}">
     <button class="btn primary" data-plan="new" ${canRun ? "" : "disabled title='Only from a browser on the same machine as alfrd serve'"} title="Run steps for targets with the commands in alfrd.yaml">${icon("play")} Run…</button>
     <button class="icon-btn" data-plan="dry" title="Dry run: list the commands a run would start, in order (nothing runs)" aria-label="Dry run">${icon("list")}</button>
-    ${ctx.state.workflow.template === "agent-loop" || ctx.state.workflow.steps.some((s) => s.handoff) ? '<button class="btn sm" data-plan="task">Edit task</button><button class="btn sm" data-plan="agents">Human adjustments / agents</button>' : ''}
-    ${ap ? `<button class="btn sm" data-plan="schedule" title="Plan ${esc(ap.plan.id)}">${icon(ap.plan.status === "running" ? "sync" : "pause", ap.plan.status === "running" && ap.runner?.alive ? "spin" : "")} ${esc(ap.plan.status)} ${counts.done || 0}/${total}</button>` : ""}
+    ${ctx.state.workflow.template === "agent-loop" || ctx.state.workflow.steps.some((s) => s.handoff) ? '<button class="btn sm" data-plan="task">Edit task</button><button class="btn sm" data-plan="agents">Agents &amp; review</button>' : ''}
+    ${ap ? `<button class="btn sm" data-plan="schedule" title="Run ${esc(ap.plan.id)}">${icon(ap.plan.status === "running" ? "sync" : "pause", ap.plan.status === "running" && ap.runner?.alive ? "spin" : "")} ${esc(RUN_STATUS[ap.plan.status] || ap.plan.status)} ${counts.done || 0}/${total}</button>` : ""}
   </div>`;
 }
 
@@ -690,8 +686,8 @@ function renderToolbar(el, ctx) {
     <div class="cfg-pill" title="${esc([...(f.errors || []), ...(f.warnings || [])].join("\n") || f.name)}">${icon("file")}<span class="mono">${esc(f.name)}</span>
       <span class="badge tone-${f.validated ? "ok" : "fail"}">${f.validated ? "Validated" : `${f.errors?.length || 0} error(s)`}</span>${f.modified ? '<span class="badge tone-warn">edited</span>' : ""}
       <button class="link-btn" data-act="replace">Replace</button><input type="file" id="wf-replace-input" accept=".yaml,.yml" hidden></div>
-    <span class="stat"><i class="dot ok"></i>${wf.steps.length} Nodes / ${wf.stages.length} Stages</span>
-    <div class="seg"><button data-act="graph" class="${ui.mode === "graph" ? "on" : ""}">${icon("graph")} Graph</button><button data-act="list" class="${ui.mode === "list" ? "on" : ""}">${icon("list")} List</button>${plans ? `<button data-act="schedule" class="${ui.mode === "schedule" ? "on" : ""}" title="Scheduled runs: targets × steps and execution order">${icon("clock")} Schedule</button>` : ""}</div>
+    <span class="stat"><i class="dot ok"></i>${wf.steps.length} Steps / ${wf.stages.length} Stages</span>
+    <div class="seg"><button data-act="graph" class="${ui.mode === "graph" ? "on" : ""}">${icon("graph")} Graph</button><button data-act="list" class="${ui.mode === "list" ? "on" : ""}">${icon("list")} List</button>${plans ? `<button data-act="schedule" class="${ui.mode === "schedule" ? "on" : ""}" title="Runs: targets × steps and run order">${icon("clock")} Runs</button>` : ""}</div>
     <button class="btn" data-act="validate">${icon("validate")} Validate configuration</button>
     ${plans && !sim.active ? runGroup(ctx, project) : `<div class="sim-group ${running ? "on" : ""}">`}${plans && !sim.active ? "" : `
       <button class="btn ${running ? "primary" : ""}" data-act="sim" title="Browser simulation only">${icon(running && !sim.paused ? "sync" : "play", running && !sim.paused ? "spin" : "")}<span id="wf-sim-label">${running ? (sim.paused ? `Paused (${pct}%)` : `Simulating (${pct}%)`) : sim.active ? "Re-run simulation" : "Simulate"}</span></button>
@@ -748,7 +744,7 @@ function nodeHtml(ctx, s, p) {
       <span class="tabular dur">${Number.isFinite(dur) ? esc(short(dur)) : "--:--"}</span>
     </div>
     ${s.alias ? `<span class="alias-tag" title="Resolved from legacy ${esc(s.alias)}">${esc(s.alias)}→</span>` : ""}
-    ${plan && !plan.row && plan.counts[s.key] && Object.keys(plan.counts[s.key]).length ? `<div class="node-plan" title="Plan ${esc(plan.plan.id)}: cells over all targets">${countsLine(plan.counts[s.key])}</div>` : ""}
+    ${plan && !plan.row && plan.counts[s.key] && Object.keys(plan.counts[s.key]).length ? `<div class="node-plan" title="Run ${esc(plan.plan.id)}: cells over all targets">${countsLine(plan.counts[s.key])}</div>` : ""}
   </div>`;
 }
 
@@ -763,7 +759,7 @@ function renderGraph(el, ctx) {
     let tone = "muted";
     if (n("failed")) { summary = `${n("failed")} Failed`; tone = "fail"; }
     else if (n("running")) { summary = `${n("running")} Running`; tone = "run"; }
-    else if (n("completed") === sts.length) { summary = "All tasks completed"; tone = "ok"; }
+    else if (n("completed") === sts.length) { summary = "All steps done"; tone = "ok"; }
     else if (n("completed") || n("warning")) { summary = `${n("completed")}/${sts.length} completed`; tone = "warn"; }
     return `<div class="banner" style="top:${y}px;width:${L.width}px"><i class="dot ${tone}"></i><b>Stage ${index + 1}: ${esc(stage.title)}</b><span class="badge tone-${tone}">${esc(summary)}</span>${n("running") && sim.active ? '<span class="grow"></span><span class="muted small">Simulation telemetry</span>' : ""}</div>`;
   }).join("");
@@ -858,7 +854,7 @@ function renderInspector(el, ctx) {
     return;
   }
   const s = stepByKey(ctx, ui.selected);
-  if (!s) { box.innerHTML = `<div class="empty">Select a node.</div>`; return; }
+  if (!s) { box.innerHTML = `<div class="empty">Select a step to see details.</div>`; return; }
   const src = ui.draft && ui.draft.key === s.key ? ui.draft : { params: s.params };
   const st = displayStatus(ctx, s);
   const meta = STEP_STATUS[st] || STEP_STATUS.pending;
@@ -885,7 +881,7 @@ function renderInspector(el, ctx) {
   const cell = po?.row?.cells?.[s.key];
   const unit = cell ? (planOf(project)?.units || []).slice().reverse().find((u) => (u.rows || [u.row]).includes(po.row.key) && (u.steps || []).includes(s.key)) : null;
   const planLine = cell && cell !== "skip"
-    ? `<div class="insp-plan small"><span class="badge tone-${CELL[cell]?.tone || "muted"}">${icon(CELL[cell]?.icon || "info", cell === "running" ? "spin" : "")}plan: ${esc(CELL[cell]?.label || cell)}</span>${unit?.log ? ` ${logButtons(project, unit.log, { label: "command log" })}` : ""}${unit ? ` ${usageButton(project, unit)}` : ""}${unit?.argv ? `<code class="trunc" title="${esc(unit.argv.join(" "))}">${esc(unit.argv.join(" "))}</code>` : ""}${unit?.error ? `<span class="muted">${esc(unit.error)}</span>` : ""}</div>`
+    ? `<div class="insp-plan small"><span class="badge tone-${CELL[cell]?.tone || "muted"}">${icon(CELL[cell]?.icon || "info", cell === "running" ? "spin" : "")}Run: ${esc(CELL[cell]?.label || cell)}</span>${unit?.log ? ` ${logButtons(project, unit.log, { label: "command log" })}` : ""}${unit ? ` ${usageButton(project, unit)}` : ""}${unit?.argv ? `<code class="trunc" title="${esc(unit.argv.join(" "))}">${esc(unit.argv.join(" "))}</code>` : ""}${unit?.error ? `<span class="muted">${esc(unit.error)}</span>` : ""}</div>`
     : "";
   box.innerHTML = `
     <header class="insp-h"><span class="node-ic">${icon(s.icon)}</span><div class="grow"><div class="row gap"><b class="mono">${esc(s.key)}</b><span class="chip caps">${esc(s.category)}</span></div><div>${esc(s.label)}</div></div><button class="icon-btn sm" data-fold="inspector" title="Fold inspector" aria-label="Fold inspector" aria-expanded="true">${icon("fold")}</button></header>

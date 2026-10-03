@@ -1,7 +1,3 @@
-// ALFRD Studio — application controller.
-//
-// Owns the single state object, persistence, the header/nav/footer shell,
-// import/export, the log console and routing between the five workspace views.
 
 import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi, resetUi } from "./utils/dom.js";
 import { stepParamsFromConfig } from "./data/avica.js";
@@ -25,9 +21,6 @@ import * as metadata from "./components/metadata.js";
 import * as results from "./components/results.js";
 import * as config from "./components/alfrd_config.js";
 
-// In server mode this is replaced during boot with the canonical Python
-// package version returned by /api/studio/session. Static exports have no
-// Python process to ask, so identify them without duplicating that version.
 export let VERSION = "standalone";
 
 const VIEWS = [
@@ -39,8 +32,6 @@ const VIEWS = [
   { id: "config", label: "Settings", icon: "project", mod: config },
 ];
 
-// ---------------------------------------------------------------------------
-// State
 
 const state = {
   mode: "browser", // "browser" | "server"
@@ -48,8 +39,6 @@ const state = {
   view: "overview",
   targets: [],
   projectTitles: {},
-  // Project key → ALFRD project name shown in the UI. In server mode the key is the
-  // long location identifier (host.path.name); the label is the alfrd.yaml `name`.
   projectNames: {},
   workflow: defaultWorkflow(),
   workflowFile: { name: "no alfrd.yaml loaded", validated: true, errors: [], warnings: [], text: null, modified: false },
@@ -80,7 +69,7 @@ const listeners = new Set();
 let renderQueued = false;
 let renderFrame = 0;
 
-/** Modules loaded with import() on first use (kept out of the startup payload). */
+
 const lazy = { targets: null, diagnostics: null, history: null, palette: null, search: null, notes: null };
 
 function scheduleRender() {
@@ -92,7 +81,10 @@ function scheduleRender() {
   });
 }
 
+const tabErrors = new Map();
 export const ctx = {
+  showError(message, retry, view = state.view, key = null) { tabErrors.set(view, { message, retry, key }); scheduleRender(); },
+  clearError(view, key) { if (tabErrors.get(view)?.key === key) { tabErrors.delete(view); scheduleRender(); } },
   state,
   get VERSION() { return VERSION; },
   /** Mutate state via fn(state) and re-render. */
@@ -118,8 +110,16 @@ export const ctx = {
     el.setAttribute("role", "status");
     el.innerHTML = `${icon(tone === "fail" ? "xCircle" : tone === "ok" ? "checkCircle" : tone === "warn" ? "alert" : "info")}<span>${esc(text)}</span>`;
     host.appendChild(el);
-    setTimeout(() => el.classList.add("out"), 3600);
-    setTimeout(() => el.remove(), 4000);
+    setTimeout(() => el.classList.add("out"), tone === "fail" || tone === "warn" ? 8000 : 3600);
+    setTimeout(() => el.remove(), tone === "fail" || tone === "warn" ? 8400 : 4000);
+  },
+  openRun(project) { canvas.showRun(ctx, project); },
+  openLogs(opts = {}) { logs.showLogs(ctx, opts); },
+  browseFolder(host, input) {
+    return mountFolderBrowser(host, { list: (path, opts) => server.listFolders(path, opts), start: input.value,
+      use: (path) => { input.value = path; host.hidden = true; input.focus(); },
+      connect: async (paths) => { input.value = paths[0]; host.hidden = true; input.focus(); },
+      close: () => { host.hidden = true; input.focus(); } });
   },
   navigate(view, params = {}) {
     if (params.target) state.selectedTarget = params.target;
@@ -142,6 +142,7 @@ export const ctx = {
   projects() {
     const map = new Map();
     if (state.mode === "server") Object.keys(state.projectNames).forEach((key) => map.set(key, { id: key, name: ctx.projectName(key), title: ctx.projectName(key), targets: [] }));
+    Object.keys(state.trees).forEach((id) => { if (!map.has(id)) map.set(id, { id, name: ctx.projectName(id), title: ctx.projectName(id), targets: [] }); });
     state.targets.forEach((t) => {
       if (!map.has(t.project)) map.set(t.project, { id: t.project, name: ctx.projectName(t.project), title: t.projectTitle || state.projectTitles[t.project] || "", targets: [] });
       map.get(t.project).targets.push(t);
@@ -161,7 +162,7 @@ export const ctx = {
     storage.set("prefs", state.prefs);
   },
   openImport,
-  /** Targets CSV "import" / "download" / "remove" (names); the dialog module loads on first use. */
+
   async openTargets(action = "import", project = null, names = []) {
     try {
       lazy.targets ||= import("./components/targets_dialog.js");
@@ -172,7 +173,7 @@ export const ctx = {
     }
   },
   applyWorkflowInfo,
-  /** Read a listed file (log) of a project: in-memory text, File handle, server, or the remembered folder. */
+
   async readFile(project, rel) {
     const tree = state.trees?.[project];
     const item = tree?.logFiles?.find((f) => f.rel === rel);
@@ -186,11 +187,7 @@ export const ctx = {
     }
     throw new Error("This file is not in the imported data: re-open the project folder (Re-scan) or import a fresh scan.json.");
   },
-  /**
-   * Read a log from byte `offset` on (null: its last 400 kB) — for live tails.
-   * → {text, offset, id, size, mtime, reset, live}; `live: false` when the file
-   * cannot be re-read (dropped files without a folder handle).
-   */
+
   async readLogRange(project, rel, offset = null, { id = null, decoder = null } = {}) {
     const tree = state.trees?.[project];
     if (tree?.provider === "server" || state.avica?.[project]?.provider === "server") {
@@ -203,18 +200,17 @@ export const ctx = {
         return { ...(await readFileRange(folder, rel, offset, { decoder })), live: true };
       } catch (error) {
         if (offset != null) throw error;
-        // Not below this folder handle: show what was imported (no live tail).
       }
     }
     if (offset != null) return { text: "", offset, reset: false, live: false };
     return { text: await ctx.readFile(project, rel), offset: null, reset: true, live: false };
   },
-  /** A live tail read more of a log: keep the listed size current (no re-render). */
+
   onLogGrew(project, rel, size, mtime) {
     const item = state.trees?.[project]?.logFiles?.find((f) => f.rel === rel);
     if (item) { item.size = size; if (mtime) item.mtime = mtime; }
   },
-  /** Read an avica.logs/ file by name (crash snapshots fall back to the parsed summary). */
+
   async readLog(project, name) {
     const index = state.avica?.[project];
     const log = index?.logs?.find((l) => l.name === name);
@@ -243,7 +239,7 @@ export const ctx = {
   },
   saveManifest,
   writeAvicaConfig,
-  /** Version history of alfrd.yaml (and other tracked files), or a save conflict (opts.conflict); loads on first use. */
+
   async openHistory(project, opts = {}) {
     try {
       lazy.history ||= import("./components/history.js");
@@ -253,7 +249,7 @@ export const ctx = {
       ctx.toast(`History: ${error.message}`, "fail");
     }
   },
-  /** Re-read one project after a write (server scan, or the remembered folder). */
+
   async refreshProject(project) {
     if (state.mode === "server" && state.trees?.[project]?.provider === "server") {
       await applyServerScan(project, await server.projectScan(project));
@@ -261,13 +257,13 @@ export const ctx = {
     }
     await rescan();
   },
-  /** Whole text of a file in a browser-opened project folder (null: no folder / no file). */
+
   async readProjectText(project, rel) {
     const folder = state.folders[project] || (await loadFolderHandle(project));
     if (!folder || !canPickDirectory() || !(await ensureReadPermission(folder))) return null;
     return readWholeFromHandle(folder, rel);
   },
-  /** Write a text file below a browser-opened project folder; false when there is none. */
+
   async writeProjectFile(project, rel, text) {
     const folder = state.folders[project] || (await loadFolderHandle(project));
     if (!folder || !canPickDirectory()) return false;
@@ -287,8 +283,6 @@ export const ctx = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// Persistence (per-browser only; see README "Where data lives")
 
 function persist() {
   if (state.source === "demo" || state.source === "server") {
@@ -344,7 +338,7 @@ function stripHandles(avica) {
   return out;
 }
 
-/** Apply `avica pipe config --summary` (or avica.inp `<step>.<param>`) values to the workflow steps. */
+
 function applyAvicaParams(index, { quiet = false } = {}) {
   if (!index) return;
   const params = stepParamsFromConfig(index, ctx.steps());
@@ -383,13 +377,10 @@ function serializeWorkflow() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Data loading
 
 function applyBundle(bundle, { replace = true, source = "imported", provider = "files", quiet = false, render = true } = {}) {
   const incoming = bundle.targets || [];
   if (replace === "project") {
-    // Re-scan: swap one ALFRD project's data, keep the others.
     const p = bundle.alfrdProject;
     state.targets = [...state.targets.filter((t) => t.project !== p), ...incoming];
     state.avica = { ...state.avica };
@@ -425,14 +416,12 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   const bp = bundle.alfrdProject || null;
   if (bp) workflowCache.delete(bp); // its alfrd.yaml was just read: build it again when shown
   if (bundle.workflowInfo && bundle.workflowInfo.workflows.length && bp && replace === "project" && state.workflowProject && bp !== activeProject()) {
-    // Another project's scan: keep showing the active one's workflow.
   } else if (bundle.workflowInfo && bundle.workflowInfo.workflows.length) {
     applyWorkflowInfo(bundle.workflowInfo, bundle.manifestFile || "alfrd.yaml", bundle.manifestText, { quiet });
     state.workflowProject = bp;
   } else if (bundle.workflowInfo) {
     state.workflowFile = { ...state.workflowFile, validated: false, errors: bundle.workflowInfo.errors, warnings: bundle.workflowInfo.warnings };
   }
-  // A project re-scan only invalidates that project's work dirs.
   clearWorkdirCache(replace === "project" ? bundle.alfrdProject : undefined);
   applyAvicaParams(bundle.avica, { quiet });
   if (!state.targets.some((t) => t.id === state.selectedTarget)) {
@@ -448,9 +437,6 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   if (render) scheduleRender();
 }
 
-// The workflow (graph, list, step columns, results) always belongs to the active
-// project: the header's project, else the selected target's, else the default one.
-// Each project's workflow (with unsaved edits) is kept while another is shown.
 const workflowCache = new Map(); // project -> {workflow, workflowFile}
 
 function activeProject() {
@@ -458,7 +444,7 @@ function activeProject() {
   return ctx.target()?.project || server.session?.default_project || Object.keys(state.trees || {})[0] || null;
 }
 
-/** Show the active project's workflow (built from its alfrd.yaml the first time). */
+
 function syncWorkflow() {
   const p = activeProject();
   if (!p || p === state.workflowProject) return;
@@ -471,7 +457,7 @@ function syncWorkflow() {
     state.workflowFile = cached.workflowFile;
   } else {
     const info = manifestToWorkflows(parseYaml(tree.manifestText), tree.manifestFile || "alfrd.yaml");
-    if (!info.workflows.length) return;
+    if (!info.workflows.length) state.workflow = defaultWorkflow();
     applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", tree.manifestText, { quiet: true });
   }
   state.workflowProject = p;
@@ -527,7 +513,6 @@ async function loadServer() {
       state.workflowFile = { name: `${ctx.projectName(wf.project)} / ${wf.name} (runtime)`, validated: true, errors: [], warnings: [], text: null, modified: false };
       state.workflowProject = null; // replaced by the active project's alfrd.yaml below
     }
-    // Each connected project's tree, read by the server exactly as alfrd.yaml describes it.
     const scans = await Promise.all(data.projects.map(async (p) => {
       try {
         return { p, scan: await server.projectScan(p.name) };
@@ -541,14 +526,12 @@ async function loadServer() {
       const bundle = await applyServerScan(p.name, scan, { runtimeRows: state.targets.filter((t) => t.project === p.name) });
       ctx.log("info", `${p.title || p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
     }
-    // applyBundle drops a header project with no targets yet (e.g. only on disk, not in the runtime): restore it.
     if (keep.project !== "all" && state.projectNames[keep.project]) state.selectedProject = keep.project;
     if (state.targets.some((t) => t.id === keep.target)) state.selectedTarget = keep.target;
     const def = server.session?.default_project;
     if (def && state.targets.some((t) => t.project === def) && (state.selectedProject === "all" || !state.targets.some((t) => t.project === state.selectedProject))) {
       state.selectedProject = def;
     }
-    // The header's project (kept across a Re-scan), or the default one: its workflow and targets.
     const inScope = ctx.scopedTargets();
     if (!inScope.some((t) => t.id === state.selectedTarget)) state.selectedTarget = inScope[0]?.id || null;
     workflowCache.clear();
@@ -561,6 +544,7 @@ async function loadServer() {
     return { ...data, targets: state.targets };
   } catch (error) {
     ctx.log("error", `Server load failed: ${error.message}`, "server");
+    ctx.showError(`Could not load projects: ${error.message}`, loadServer);
     ctx.toast(`Server load failed: ${error.message}`, "fail");
     return null;
   }
@@ -587,7 +571,7 @@ async function applyServerScan(project, scan, { runtimeRows = null, live: isLive
   return bundle;
 }
 
-/** Live refresh: don't reset the workflow canvas unless alfrd.yaml changed; never drop unsaved edits. */
+
 function keepWorkflow(project, bundle) {
   const before = state.trees?.[project]?.manifestText;
   if (!bundle.workflowInfo) return;
@@ -601,7 +585,7 @@ function keepWorkflow(project, bundle) {
   else ctx.log("info", `${ctx.projectName(project)}: alfrd.yaml changed on disk — workflow reloaded.`, "live");
 }
 
-/** Fetch the templates an alfrd.yaml refers to before it is parsed. */
+
 async function ensureTemplatesFor(text) {
   try {
     const name = templateName(parseYaml(text || ""));
@@ -642,8 +626,6 @@ function restoreSaved() {
   return state.source === "imported";
 }
 
-// ---------------------------------------------------------------------------
-// Import / export
 
 function openImport(tab = "files") {
   const serverBlock = state.mode === "server"
@@ -692,7 +674,6 @@ function openImport(tab = "files") {
       const done = await importEntries(read, { replace: replaceMode() });
       if (!done) { close(); return; }
       show(done.bundle, read);
-      // Only alfrd.yaml picked: offer the targeted folder scan for its artifacts.
       if (done.bundle.manifest && read.length === 1 && canPickDirectory()) {
         report.insertAdjacentHTML("afterbegin", `<p class="callout info">${icon("info")}<span>Workflow loaded from <code>${esc(read[0].name)}</code>. Browsers cannot open files next to a picked file, so allow read access to its folder once: <button class="btn sm" data-act="pick-folder">${icon("folder")} Read its artifacts</button></span></p>`);
       }
@@ -721,7 +702,6 @@ function openImport(tab = "files") {
     ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, () => drop.classList.remove("over")));
     drop.addEventListener("drop", async (e) => {
       e.preventDefault();
-      // Chromium: a dropped folder gives a directory handle → targeted scan.
       const items = Array.from(e.dataTransfer.items || []);
       const pending = items.length === 1 && items[0].getAsFileSystemHandle ? items[0].getAsFileSystemHandle() : null;
       const fallback = pending ? null : filesFromDrop(e.dataTransfer);
@@ -732,7 +712,7 @@ function openImport(tab = "files") {
     on(root, "click", "[data-act=demo]", () => { loadDemo(); close(); });
     on(root, "click", "[data-act=reload-server]", async () => { await loadServer(); close(); });
     const form = $("#imp-connect", root);
-    /** Connect server paths (one or many), then reload the server projects. */
+
     const connectPaths = async (paths) => {
       let ok = 0;
       for (const path of paths) {
@@ -783,7 +763,7 @@ function openImport(tab = "files") {
   });
 }
 
-/** Snapshot / scan bundle / plain entries → applyBundle. Returns null when a snapshot was restored. */
+
 async function importEntries(entries, { replace = true, folder = null } = {}) {
   const json = entries.length === 1 && /\.json$/i.test(entries[0].name) ? entries[0] : null;
   if (json && /"alfrd_studio_snapshot"/.test(json.text || "")) {
@@ -807,7 +787,7 @@ async function importEntries(entries, { replace = true, folder = null } = {}) {
   return { bundle };
 }
 
-/** Re-read the current ALFRD project: server layout (server mode) or the remembered folder. */
+
 async function rescan() {
   if (state.mode === "server") {
     state.avica = {};
@@ -836,7 +816,6 @@ async function rescan() {
   }
 }
 
-// Walk dropped directories (Chromium/Firefox/Safari support webkitGetAsEntry).
 async function filesFromDrop(dt) {
   const items = Array.from(dt.items || []);
   const entries = items.map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
@@ -923,11 +902,9 @@ function restoreSnapshot(snap) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Writes: alfrd.yaml (Project settings) and avica.inp (Workflow inspector)
 
-/** Save alfrd.yaml for a project: server (loopback), the opened folder, or a download. */
-/** SHA-256 hex of text (the base_hash of the conflict guard); null where crypto.subtle is missing. */
+
+
 async function sha256(text) {
   if (!globalThis.crypto?.subtle) return null;
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -938,7 +915,6 @@ async function saveManifest(project, text, { force = false } = {}) {
   const tree = state.trees[project] || {};
   const info = manifestToWorkflows(parseYaml(text), tree.manifestFile || "alfrd.yaml");
   if (state.mode === "server" && tree.provider === "server") {
-    // Conflict guard: the server refuses (409) when the file changed since it was loaded.
     const base = tree.manifestDefault || tree.manifestText == null ? {} : (await sha256(tree.manifestText)) ? { base_hash: await sha256(tree.manifestText) } : { base_text: tree.manifestText };
     await server.saveManifest(project, text, { ...base, ...(force ? { force: true } : {}) });
   } else if (state.folders[project] || (await loadFolderHandle(project))) {
@@ -973,7 +949,7 @@ function setKeyValues(text, changes) {
   return `${lines.join("\n")}\n`;
 }
 
-/** Write `<step>.<param> = value` lines to avica.inp and show them as the new values. */
+
 async function writeAvicaConfig(project, changes) {
   const tree = state.trees[project] || {};
   const name = tree.configName || "avica.inp";
@@ -996,7 +972,6 @@ async function writeAvicaConfig(project, changes) {
     }
     cfg.text = text;
   }
-  // Show the new values right away (the cached summary is re-resolved by `alfrd avica summary`).
   if (index) {
     Object.entries(changes).forEach(([key, value]) => {
       const dot = key.lastIndexOf(".");
@@ -1018,6 +993,7 @@ async function writeAvicaConfig(project, changes) {
 // Modal + menus
 
 function modal(html, setup, cls = "") {
+  const previousFocus = document.activeElement;
   const host = $("#modal-host");
   host.innerHTML = `<div class="modal-back" data-close></div><div class="modal ${cls}" role="dialog" aria-modal="true">${html}</div>`;
   host.hidden = false;
@@ -1027,8 +1003,16 @@ function modal(html, setup, cls = "") {
     host.hidden = true;
     host.innerHTML = "";
     document.removeEventListener("keydown", esc_);
+    if (previousFocus?.isConnected) previousFocus.focus();
   };
-  const esc_ = (e) => e.key === "Escape" && close();
+  const esc_ = (e) => {
+    if (e.key === "Escape") { close(); return; }
+    if (e.key !== "Tab") return;
+    const fields = [...root.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter((el) => !el.disabled && el.getClientRects().length);
+    const first = fields[0], last = fields.at(-1);
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+  };
   document.addEventListener("keydown", esc_);
   host.onclick = (e) => {
     if (e.target.closest("[data-close]")) close();
@@ -1070,7 +1054,7 @@ function openSettings() {
     ? (sess.live?.enabled === false ? "Off on this server (<code>alfrd serve --live-interval 0</code>)." : `The server checks every ${sess.live?.interval ?? 2} s while busy, ${sess.live?.idle ?? 5} s when idle.`)
     : "The remembered folder is checked every 5–30 s.";
   modal(`
-    <header class="modal-h"><h2>Studio settings</h2><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <header class="modal-h"><h2>Studio</h2><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b set">
       <div class="set-facts">
         <div><span>Mode</span><b>${serverMode ? `alfrd ${esc(sess.version || "")}` : "Browser only"}</b><small>${serverMode ? `runtime ${sess.runtime_enabled ? "on" : "off"} · changes ${sess.mutations_enabled ? "allowed (this machine)" : "read-only"}` : "static files, no backend"}</small></div>
@@ -1078,7 +1062,7 @@ function openSettings() {
         <div><span>Saved in this browser</span><b>${bytes(storage.size())}</b></div>
       </div>
       ${serverMode ? `<section class="set-sec">
-        <div class="set-sec-h"><h3>${icon("database")} Projects</h3><span class="grow"></span><button class="btn sm" id="set-create" ${sess.mutations_enabled ? "" : "disabled"}>${icon("plus")} New project</button><button class="btn sm" id="set-rediscover" hidden ${sess.mutations_enabled ? "" : "disabled"} title="Connect projects forgotten since the server started">${icon("sync")} Rediscover</button></div>
+        <div class="set-sec-h"><h3>${icon("database")} Projects</h3><span class="grow"></span><button class="btn sm" id="set-create" ${sess.mutations_enabled ? "" : "disabled"}>${icon("plus")} New project</button>${sess.mutations_enabled ? "" : '<span class="muted small">Project creation needs a browser on the server machine.</span>'}<button class="btn sm" id="set-rediscover" hidden ${sess.mutations_enabled ? "" : "disabled"} title="Connect projects forgotten since the server started">${icon("sync")} Rediscover</button></div>
         <p class="muted small">How this Studio lists each project: <b>opened</b> (selected on load), <b>shown</b> or <b>hidden</b>. Forget removes a project and its runs from the runtime database; files are never touched.</p>
         <ul class="set-projects" id="set-projects"><li class="muted small">Loading…</li></ul>
       </section>` : ""}
@@ -1088,7 +1072,6 @@ function openSettings() {
           <label class="check"><input type="checkbox" id="set-live" ${live.enabled ? "checked" : ""}> <span><b>Live updates</b><small>Follow the folder and open logs without Re-scan. ${liveNote} Paused while the tab is hidden.</small></span></label>
           <label class="field"><span>Rows per page</span><select id="set-page" class="input sm">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
         </div>
-        <p class="muted small">Field aliases, stages, step metadata and logs live in alfrd.yaml: <a href="#/config" data-close>Settings → Project settings</a>.</p>
       </section>
       <section class="set-sec">
         <h3>${icon("reset")} Browser data</h3>
@@ -1102,18 +1085,7 @@ function openSettings() {
       </section>` : ""}
     </div>`, (root, close) => {
     if (state.mode === "server") drawProjects(root);
-    $("#set-create", root)?.addEventListener("click", async () => {
-      try {
-        const { openCreateProject } = await import("./components/agent_dialog.js");
-        close();
-        await openCreateProject(ctx, async (project) => {
-          state.selectedProject = project.identifier;
-          await loadServer();
-          state.selectedProject = project.identifier;
-          scheduleRender();
-        });
-      } catch (error) { ctx.toast(error.message, "fail"); }
-    });
+    $("#set-create", root)?.addEventListener("click", () => { close(); newProject(); });
     $("#set-quit", root)?.addEventListener("click", () => { close(); quitServer(); });
     $("#set-live", root).addEventListener("change", (e) => setLive(e.target.checked));
     $("#set-page", root).addEventListener("change", (e) => { ctx.setPrefs({ pageSize: Number(e.target.value) }); scheduleRender(); });
@@ -1136,20 +1108,33 @@ function openSettings() {
   });
 }
 
+async function newProject() {
+  try {
+    const { openCreateProject } = await import("./components/agent_dialog.js");
+    await openCreateProject(ctx, async (project, template) => {
+      state.selectedProject = project.identifier;
+      await loadServer();
+      state.selectedProject = project.identifier;
+      state.selectedTarget = state.targets.find((t) => t.project === project.identifier)?.id || null;
+      ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
+    });
+  } catch (error) { ctx.toast(error.message, "fail"); }
+}
+
 const VIS_STATES = [
   { id: "opened", label: "Opened", icon: "play", tone: "tone-run", hint: "shown and selected when the Studio loads" },
   { id: "shown", label: "Shown", icon: "check", tone: "", hint: "listed in this Studio" },
   { id: "hidden", label: "Hidden", icon: "minus", tone: "tone-muted", hint: "remembered, not listed" },
 ];
 
-/** Opened / shown / hidden badge; a button (state menu) when this browser may change it. */
+
 function visBadge(current, key, label, canWrite) {
   const st = VIS_STATES.find((s) => s.id === current);
   if (!canWrite) return `<span class="badge ${st.tone}">${st.id}</span>`;
   return `<button type="button" class="badge vis-badge ${st.tone}" data-vis="${esc(key)}" data-label="${esc(label)}" data-current="${st.id}" title="Change: opened / shown / hidden" aria-haspopup="menu">${st.id}${icon("chevron")}</button>`;
 }
 
-/** "/very/long/path/to/project" → "/very/…/to/project" (the full path is in the tooltip). */
+
 function shortPath(path, max = 56) {
   const text = String(path || "");
   if (text.length <= max) return text;
@@ -1160,7 +1145,7 @@ function shortPath(path, max = 56) {
   return `${head}/…/${tail}`.length < text.length ? `${head}/…/${tail}` : text;
 }
 
-/** Remembered projects with visibility and Forget buttons (Studio settings, server mode). */
+
 async function drawProjects(root) {
   const table = $("#set-projects", root);
   if (!table) return;
@@ -1173,7 +1158,6 @@ async function drawProjects(root) {
   }
   let lost = [];
   try { lost = await server.rediscoverable(); } catch { /* older server */ }
-  // Scope of this server (null: --all-projects, everything is shown).
   const scope = Array.isArray(server.session?.projects) ? new Set(server.session.projects) : null;
   const visOf = (key) => (key === server.session?.default_project ? "opened" : !scope || scope.has(key) ? "shown" : "hidden");
   const canWrite = server.session?.mutations_enabled;
@@ -1279,8 +1263,6 @@ async function quitServer() {
     return;
   }
   ctx.log("info", "alfrd serve is stopping.", "server");
-  // Close the tab. Browsers only allow it for tabs opened by a script or with one
-  // history entry (e.g. the tab `alfrd serve` opened); otherwise say so.
   window.close();
   await new Promise((r) => setTimeout(r, 400));
   if (window.closed) return;
@@ -1295,25 +1277,19 @@ function openAliasRules() {
   goTo("config");
 }
 
-/**
- * Switch views without adding browser-history entries. A tab opened by
- * `alfrd serve` then keeps a single history entry, which is what lets
- * window.close() close it when the server quits.
- */
+
 function goTo(view) {
   const url = `#/${view}`;
   if (location.hash !== url) location.replace(url);
 }
 ctx.openAliasRules = openAliasRules;
 
-// Command palette (Ctrl/Cmd+K; components/palette.js loads on first use). Views
-// add items with ctx.palette.register(fn): fn(ctx, query) → [{label, detail, group, icon, run}].
 ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) this.providers.push(fn); } };
 ctx.views = VIEWS.map(({ id, label, icon: ic }) => ({ id, label, icon: ic }));
 ctx.goTo = goTo;
 ctx.rescan = () => rescan();
 ctx.setLive = (on) => setLive(on);
-/** Shared notes of a project (alfrd.notes.jsonl), filtered to `where` (an anchor); components/notes_panel.js. */
+
 ctx.openNotes = async (project, where = {}, opts = {}) => {
   try {
     lazy.notes ||= import("./components/notes_panel.js");
@@ -1337,7 +1313,7 @@ ctx.palette.register((c) => Object.keys(state.trees || {}).flatMap((p) => projec
   run: () => c.openNotes(p, {}, { focus: n.id }),
 }))));
 
-/** Full-text search over logs, CSVs, alfrd.yaml and notes (alfrd serve; components/search_view.js). */
+
 ctx.openSearch = async (query = "") => {
   if (state.mode !== "server") { ctx.toast("Full-text search needs alfrd serve", "warn"); return; }
   try {
@@ -1361,8 +1337,6 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); ctx.openPalette(); }
 });
 
-// ---------------------------------------------------------------------------
-// Live updates (see data/live.js): refresh what changed, keep the reader's place
 
 const MAX_ONLY = 150; // more changed files than this: re-read the whole project
 const pending = new Map(); // project -> {changed:Set, removed:Set, full:boolean}
@@ -1381,7 +1355,6 @@ function queueRefresh(project, { changed = [], removed = [], full = false } = {}
   const job = pending.get(project) || { changed: new Set(), removed: new Set(), full: false };
   changed.forEach((r) => job.changed.add(r));
   removed.forEach((r) => job.removed.add(r));
-  // alfrd.yaml or a root config decides what is read at all: re-read everything.
   const layout = changed.some((rel) => /^\.?alfrd\.ya?ml$/.test(rel) || /^[^/]+\.(inp|json|txt)$/.test(rel));
   job.full = job.full || full || layout || job.changed.size > MAX_ONLY;
   pending.set(project, job);
@@ -1409,7 +1382,7 @@ async function runRefresh() {
   if (touched) liveRender();
 }
 
-/** Re-read one project after a change. Returns true when something was applied. */
+
 async function refreshProject(project, job) {
   if (state.mode === "server") {
     const old = state.scans[project];
@@ -1450,7 +1423,7 @@ function liveLogs(project, logs) {
   nudgeLogs(project, logs);
 }
 
-/** The runtime database changed: refresh the target rows that come from it (debounced). */
+
 function liveRuntime() {
   clearTimeout(runtimeTimer);
   runtimeTimer = setTimeout(async () => {
@@ -1458,7 +1431,6 @@ function liveRuntime() {
       const data = await server.loadAll();
       state.serverWorkflows = data.workflows;
       const served = new Set(data.projects.map((p) => p.name));
-      // Only rows of server projects whose targets are not read from their folder.
       const fromRuntime = (p) => served.has(p) && state.targetOrigin[p] !== "tree";
       const keep = state.targets.filter((t) => !fromRuntime(t.project));
       const rows = data.targets.filter((t) => fromRuntime(t.project));
@@ -1501,7 +1473,7 @@ document.addEventListener("pointerdown", () => { pointerDown = Date.now(); }, tr
 ["pointerup", "pointercancel"].forEach((t) => document.addEventListener(t, released, true));
 window.addEventListener("blur", released);
 
-/** Stable key for an element inside the active view: id, or its child-index path. */
+
 function elementKey(el, root) {
   if (el.id) return `#${el.id}`;
   const path = [];
@@ -1524,14 +1496,9 @@ function findByKey(key, root) {
   return n;
 }
 
-/**
- * Re-render after a live update without losing the reader's place: scroll
- * positions, the focused field and its cursor. Waits while a pointer is down
- * (dragging on the canvas) — the render happens on release.
- */
+
 function liveRender() {
   if (pointerDown && Date.now() - pointerDown < 15000) { renderWaiting = true; return; }
-  // Someone is typing, or editing a multi-line text (alfrd.yaml): re-render later, not under their cursor.
   const act = document.activeElement;
   const editing = act?.tagName === "TEXTAREA" && act.closest("#main");
   if (editing || Date.now() < typingUntil) {
@@ -1605,8 +1572,6 @@ async function onLiveBadge() {
   setLive(!live.enabled);
 }
 
-// ---------------------------------------------------------------------------
-// Shell rendering
 
 function renderShell() {
   $("#app").innerHTML = `
@@ -1615,6 +1580,7 @@ function renderShell() {
       <span class="mode-badge" id="mode-badge"></span>
       <span class="vsep"></span>
       <label class="picker" title="Project">${icon("folder")}<span class="picker-l">Project:</span><select id="pick-project" aria-label="Project"></select></label>
+      <button class="btn sm" id="btn-new-project" aria-describedby="new-project-help" title="Create a project" hidden>${icon("plus")} New project</button><span id="new-project-help" class="muted small" hidden>Project creation needs a browser on the server machine.</span>
       <label class="picker" title="Target">${icon("target")}<span class="picker-l">Target:</span><select id="pick-target" aria-label="Target"></select></label>
       <span class="grow"></span>
       <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (Ctrl+K)">${icon("search")}</button>
@@ -1622,7 +1588,7 @@ function renderShell() {
       <button class="btn" id="btn-rescan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")} Re-scan</button>
       <button class="btn" id="btn-import">${icon("upload")} Import</button>
       <button class="btn" id="btn-export">${icon("download")} Export</button>
-      <button class="icon-btn" id="btn-settings" aria-label="Settings" title="Settings">${icon("gear")}</button>
+      <button class="icon-btn" id="btn-settings" aria-label="Studio settings" title="Studio settings">${icon("gear")}</button>
       <button class="icon-btn" id="btn-quit" aria-label="Quit alfrd" title="Quit alfrd" hidden>${icon("power")}</button>
     </header>
     <nav class="rail" aria-label="Workspace">
@@ -1641,6 +1607,7 @@ function renderShell() {
     <section class="console" id="console" hidden aria-label="Log stream"></section>`;
 
   $("#btn-import").addEventListener("click", () => openImport());
+  $("#btn-new-project").addEventListener("click", newProject);
   $("#btn-rescan").addEventListener("click", () => rescan());
   $("#btn-live").addEventListener("click", onLiveBadge);
   $("#btn-palette").addEventListener("click", () => ctx.openPalette());
@@ -1674,6 +1641,11 @@ function renderShell() {
 function renderHeader() {
   const badge = $("#mode-badge");
   const live = state.mode === "server";
+  const create = $("#btn-new-project");
+  create.hidden = !live;
+  create.disabled = !server.session?.mutations_enabled;
+  $("#new-project-help").hidden = !live || !create.disabled;
+  create.title = create.disabled ? "Project creation needs a browser on the server machine" : "Create a project";
   badge.className = `mode-badge ${live ? "live" : ""}`;
   const quit = $("#btn-quit");
   if (quit) quit.hidden = !(live && server.session?.can_quit);
@@ -1681,12 +1653,17 @@ function renderHeader() {
   badge.title = live ? "alfrd: projects come from the runtime database; re-queue runs through the runtime API." : "Everything runs in this browser; no pipeline code is executed.";
 
   const projects = ctx.projects();
-  $("#pick-project").innerHTML = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === state.selectedProject ? "selected" : ""}>${esc(p.title || p.name)}</option>`).join("")}`;
+  const projectOptions = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.title || p.name)}</option>`).join("")}`;
   const targets = ctx.scopedTargets();
-  $("#pick-target").innerHTML = targets.length
-    ? targets.map((t) => `<option value="${esc(t.id)}" ${t.id === state.selectedTarget ? "selected" : ""}>${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || ctx.projectName(t.project))}` : ""}</option>`).join("")
+  const targetOptions = targets.length
+    ? targets.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || ctx.projectName(t.project))}` : ""}</option>`).join("")
     : `<option value="">No targets</option>`;
 
+  for (const [id, html, value] of [["pick-project", projectOptions, state.selectedProject], ["pick-target", targetOptions, state.selectedTarget]]) {
+    const select = $(`#${id}`);
+    if (select.dataset.options !== html) { select.innerHTML = html; select.dataset.options = html; }
+    select.value = value || "";
+  }
   $$(".rail a").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));
 
 }
@@ -1697,7 +1674,7 @@ function renderFooter() {
   st.textContent = `Local Storage: ${bytes(storage.size())} / Saved`;
   $("#foot-mode").innerHTML = state.mode === "server"
     ? `${icon("server")} alfrd — runtime actions go through the ALFRD API`
-    : `${icon("info")} Client-side evaluation — external runner for native CASA execution`;
+    : `${icon("info")} Browser mode · preview workflows and import results`;
   const errors = state.consoleLines.filter((l) => l.level === "error").length;
   const warns = state.consoleLines.filter((l) => l.level === "warn").length;
   const info = state.consoleLines.length - errors - warns;
@@ -1716,7 +1693,7 @@ function consoleHeight(h) {
   return v;
 }
 
-/** Log stream panel: the Studio's own messages plus one tab per docked (followed) log file. */
+
 function renderConsole() {
   const el = $("#console");
   el.hidden = !state.consoleOpen;
@@ -1752,7 +1729,6 @@ function renderConsole() {
     pre.scrollTop = pre.scrollHeight;
   } else if (body.dataset.tab !== tab || !body.querySelector("pre[data-dock-log]")) {
     body.dataset.tab = tab;
-    // Once loaded, redraw the tab strip (live dot) — the body is kept.
     mountDock(ctx, body, tab).then(() => { if (state.consoleOpen && state.consoleTab === tab) renderConsole(); });
   }
 }
@@ -1779,7 +1755,6 @@ function bindConsole(el) {
       if (d) openFileFull(ctx, d.project, d.rel).catch((error) => ctx.toast(error.message, "warn"));
     }
   });
-  // Tabs: ←/→ move between them.
   el.addEventListener("keydown", (e) => {
     if (!e.target.matches?.("[role=tab]") || !["ArrowLeft", "ArrowRight"].includes(e.key)) return;
     const tabs = $$("[role=tab]", el);
@@ -1808,7 +1783,7 @@ function bindConsole(el) {
   });
 }
 ctx.renderConsole = () => { state.consoleOpen = true; renderConsole(); };
-/** A log was docked (logview.js): open the Log Stream on its tab. */
+
 ctx.showDock = (key) => {
   state.consoleOpen = true;
   state.consoleTab = key;
@@ -1824,7 +1799,18 @@ function renderAll() {
     const el = $(`#view-${v.id}`);
     const active = v.id === state.view;
     el.hidden = !active;
-    if (active) v.mod.render(el, ctx);
+    if (active) {
+      v.mod.render(el, ctx);
+      const error = tabErrors.get(v.id);
+      el.querySelector(".tab-error")?.remove();
+      if (error) {
+        const banner = document.createElement("div"); banner.className = "callout fail tab-error"; banner.setAttribute("role", "alert");
+        banner.innerHTML = `<span class="grow">${esc(error.message)}</span><button class="btn sm" data-retry>Retry</button><button class="btn sm" data-dismiss>Dismiss</button>`;
+        banner.querySelector("[data-dismiss]").onclick = () => { tabErrors.delete(v.id); banner.remove(); };
+        banner.querySelector("[data-retry]").onclick = () => { if (!error.key) { tabErrors.delete(v.id); banner.remove(); } error.retry(); };
+        el.prepend(banner);
+      }
+    }
   });
   renderFooter();
   listeners.forEach((fn) => fn(state));
@@ -1838,15 +1824,12 @@ function route() {
   scheduleRender();
 }
 
-// ---------------------------------------------------------------------------
-// Boot
 
 async function boot() {
   renderShell();
   bindLogs(ctx, document.body);
   consoleHeight(consoleUi.height);
   window.addEventListener("hashchange", route);
-  // In-app links (#/view) replace the history entry instead of adding one.
   document.addEventListener("click", (e) => {
     const a = e.target.closest('a[href^="#/"]');
     if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
@@ -1866,7 +1849,6 @@ async function boot() {
     state.mode = "server";
     ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();
-    // default_project is the location identifier; name it once projectNames are known.
     if (session.default_project) ctx.log("info", `Opened project ${ctx.projectName(session.default_project)}.`, "server");
     if (!data || !data.targets.length) {
       if (state.demoEnabled) await loadDemo({ quiet: true });
@@ -1876,7 +1858,6 @@ async function boot() {
     await loadDemo({ quiet: true });
   } else if (restoreSaved()) {
     ctx.log("info", `Restored ${state.targets.length} imported target(s) from this browser.`);
-    // Folder handles remembered for these projects (live updates, tails after a reload).
     if (canPickDirectory()) {
       for (const p of Object.keys(state.trees || {})) {
         const h = await loadFolderHandle(p);
@@ -1890,7 +1871,6 @@ async function boot() {
   live.start();
 }
 
-// Exposed for tests/devtools only.
 window.alfrdStudio = { ctx, loadDemo, loadServer, applyBundle, rescan, importEntries };
 
 boot().catch((error) => {

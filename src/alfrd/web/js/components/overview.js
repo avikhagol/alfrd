@@ -5,7 +5,7 @@ import { notesAt, noteMark } from "../data/notes.js";
 import { avicaIndex, codeChips, detachCode, openAttachPicker, targetCodes } from "./attach.js";
 import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
-import { openRunDialog, plansAvailable } from "./plans.js";
+import { openRunDialog, plansAvailable, planOf, loadPlan, RUN_STATUS } from "./plans.js";
 import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
 
 // Remembered in this browser until Settings → "Reset view state".
@@ -27,7 +27,7 @@ const LEADING = [
   { id: "codes", label: "Project code" },
   { id: "ms", label: "MS Storage Path" },
   { id: "status", label: "Status" },
-  { id: "stages", label: "Stages" },
+  { id: "stages", label: "Progress" },
   { id: "runtime", label: "Runtime" },
 ];
 
@@ -42,7 +42,7 @@ function helpers(ctx) {
   };
 }
 
-/** Overview filtered to one project code (command palette). */
+
 export function showCode(ctx, code) {
   ui.code = code;
   ui.page = 0;
@@ -51,7 +51,7 @@ export function showCode(ctx, code) {
   ctx.update();
 }
 
-/** Targets after header project scope + local filters (used by CSV export too). */
+
 export function visibleTargets(ctx) {
   return filterTargets(ctx.scopedTargets(), ui, helpers(ctx));
 }
@@ -88,7 +88,6 @@ function stepCell(t, step, mode) {
   return `<td class="stage-cell st-${status}" title="${esc(tip)}">${body}</td>`;
 }
 
-// Short, human tag for a failed/partial cell ("missing IF4", "SNR 4.2σ").
 function tagFor(s) {
   const n = String(s?.note || "");
   if (!n) return "";
@@ -108,7 +107,7 @@ function counters(ctx, targets) {
 }
 
 export function mount(el, ctx) {
-  el.innerHTML = `<div class="ov"><div class="card ov-head" id="ov-head"></div><div class="ov-body"><div class="card grid-card" id="ov-grid"></div><aside class="card drawer" id="ov-drawer" aria-label="Target details"></aside></div></div>`;
+  el.innerHTML = `<div class="ov"><div class="card ov-head" id="ov-head"></div><div id="ov-home"></div><div class="ov-body"><div class="card grid-card" id="ov-grid"></div><aside class="card drawer" id="ov-drawer" aria-label="Target details"></aside></div></div>`;
 
   // Typing only refreshes what depends on the filter; the head keeps its input (and focus).
   on(el, "input", "#ov-search", (e) => { ui.search = e.target.value; ui.page = 0; remember(); renderGrid(el, ctx); renderActive(el, ctx); });
@@ -166,10 +165,13 @@ export function mount(el, ctx) {
   on(el, "click", "#dr-open-workflow", () => ctx.navigate("workflow", { target: ctx.state.selectedTarget }));
   on(el, "input", "#dr-notes", (e) => ctx.setNote(ctx.state.selectedTarget, e.target.value));
   on(el, "click", "#dr-retry", () => retryStep(ctx));
-  on(el, "click", "#dr-logs", () => ctx.renderConsole());
+  on(el, "click", "[data-home-targets]", () => ctx.openTargets("import"));
+  on(el, "click", "[data-home-run]", (e, b) => openRunDialog(ctx, b.dataset.homeRun, { onStarted: () => ctx.openRun(b.dataset.homeRun) }));
+  on(el, "click", "[data-home-open]", (e, b) => ctx.openRun(b.dataset.homeOpen));
+  on(el, "click", "#dr-logs", () => ctx.openLogs({ target: ctx.state.selectedTarget }));
   on(el, "click", "#dr-bulk-run", () => {
     const picked = checkedTargets(ctx);
-    openRunDialog(ctx, picked[0].project, { targets: picked.map((t) => t.name) });
+    openRunDialog(ctx, picked[0].project, { targets: picked.map((t) => t.name), onStarted: () => ctx.openRun(picked[0].project) });
   });
   on(el, "click", "#dr-bulk-remove", async () => {
     const picked = checkedTargets(ctx);
@@ -193,7 +195,7 @@ function selectionActions(ctx) {
   if (!oneProject(picked)) return '<span class="muted small">(pick targets of one project to run or remove them)</span>';
   const project = picked[0].project;
   const out = [];
-  if (plansAvailable(ctx, project)) out.push(`<button class="link-btn" id="dr-bulk-run" title="New plan from the checked targets">${icon("play")} Run…</button>`);
+  if (plansAvailable(ctx, project)) out.push(`<button class="link-btn" id="dr-bulk-run" title="New run from the checked targets">${icon("play")} Run…</button>`);
   if (targetsFileOf(ctx, project) || ctx.canWrite(project)) {
     out.push(`<button class="link-btn danger" id="dr-bulk-remove" title="Delete their rows from the targets file (result CSVs and work dirs stay)">${icon("trash")} Remove from targets file</button>`);
   }
@@ -209,12 +211,12 @@ function oneProject(targets) {
   return new Set(targets.map((t) => t.project)).size === 1;
 }
 
-/** Declared targets file of a project, and whether any checked target is in it. */
+
 function targetsFileOf(ctx, project) {
   return ctx.state.trees?.[project]?.targetsFile || null;
 }
 
-/** Retry a step of a runtime-managed run (server). Other runs are started from a plan (Run…). */
+
 async function retryStep(ctx, id = ctx.state.selectedTarget) {
   const t = ctx.target(id);
   if (!t?.runId) return;
@@ -241,10 +243,26 @@ function pageTargets(ctx) {
 }
 
 export function render(el, ctx) {
+  renderHome(el, ctx);
   renderHead(el, ctx);
   renderGrid(el, ctx);
   renderDrawer(el, ctx);
   el.querySelector(".ov-body").classList.toggle("drawer-folded", !ui.drawer);
+}
+
+const homeAsked = new Set();
+export function renderHome(el, ctx) {
+  const project = ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : ctx.target()?.project || ctx.projects()[0]?.id;
+  const box = $("#ov-home", el);
+  if (!project) { box.innerHTML = ""; return; }
+  if (plansAvailable(ctx, project) && !homeAsked.has(project)) { homeAsked.add(project); loadPlan(ctx, project, { quiet: true }); }
+  const hasSteps = ctx.state.workflow.steps.length > 0, hasTargets = ctx.state.targets.some((t) => t.project === project);
+  const run = planOf(project)?.plan;
+  box.innerHTML = `${!hasSteps || !hasTargets || !run ? `<section class="card setup-card"><h2>Get started</h2><p>Set up ${esc(ctx.projectName(project))}, then run your workflow.</p><ol class="setup-list">
+    <li>${hasSteps ? "✓" : "①"} <a href="#/workflow">Add steps in Workflow</a> · <a href="#/config">Edit alfrd.yaml in Settings</a></li>
+    <li>${hasTargets ? "✓" : "②"} <button class="link-btn" data-home-targets>Add targets</button></li>
+    <li>${run ? "✓" : "③"} <button class="link-btn" data-home-run="${esc(project)}" ${hasSteps && hasTargets ? "" : "disabled"}>Start a run</button></li></ol></section>` : ""}
+    ${run ? `<section class="card setup-card"><div class="row gap wrap"><h2>Latest run</h2><span class="mono">Run ${esc(run.id)}</span><span>${esc(RUN_STATUS[run.status] || run.status)}</span><span class="grow"></span><button class="btn" data-home-open="${esc(project)}">Open run</button><a class="btn primary" href="#/results">View results</a></div></section>` : ""}`;
 }
 
 function renderHead(el, ctx) {
@@ -402,14 +420,14 @@ function renderGrid(el, ctx) {
   }).join("");
 
   const empty = !all.length
-    ? `<tr><td colspan="${totalCols}" class="empty">${ctx.state.targets.length ? "No targets match the current filters." : `No project loaded. ${ctx.state.mode === "server" ? "Start <code>alfrd serve</code> in the folder that holds alfrd.yaml, or " : ""}<button class="link-btn" id="ov-import">open the project folder</button>.`}</td></tr>`
+    ? `<tr><td colspan="${totalCols}" class="empty">${ctx.projects().length ? "No targets yet. Add targets to this project, or clear the filters." : `No project loaded. ${ctx.state.mode === "server" ? "Start <code>alfrd serve</code> in the folder that holds alfrd.yaml, or " : ""}<button class="link-btn" id="ov-import">open the project folder</button>.`}</td></tr>`
     : "";
 
   $("#ov-grid", el).innerHTML = `
     <div class="grid-scroll" role="region" aria-label="Targets grid" tabindex="0">
     <table class="grid ${ui.mode}">
       <thead>
-        <tr class="h1"><th class="fz fz0" colspan="2"></th><th colspan="${cols.length}" class="h1l">Target core metadata &amp; execution telemetry</th>${showStages ? `<th colspan="${steps.length}" class="h1s">Pipeline stages · ${esc(ctx.state.workflow.name)}</th>` : ""}</tr>
+        <tr class="h1"><th class="fz fz0" colspan="2"></th><th colspan="${cols.length}" class="h1l">Target details and progress</th>${showStages ? `<th colspan="${steps.length}" class="h1s">Workflow steps · ${esc(ctx.state.workflow.name)}</th>` : ""}</tr>
         <tr class="h2">
           <th class="fz fz0"><input type="checkbox" id="ov-check-all" ${allChecked ? "checked" : ""} aria-label="Select page"></th>
           <th class="fz fz1">Target Name</th>
@@ -452,7 +470,7 @@ function renderDrawer(el, ctx) {
   const steps = ctx.state.workflow.steps;
   const issue = r.failed || r.warning;
   const issueNote = issue?.state?.note;
-  const sub = [t.role, r.status === "failed" ? `Failed at Stage ${r.failed.index + 1}` : r.status === "running" ? `Running stage ${r.running.index + 1}` : OVERALL_STATUS[r.status].label].filter(Boolean).join(" — ");
+  const sub = [t.role, r.status === "failed" ? `Failed at step ${r.failed.index + 1}` : r.status === "running" ? `Running step ${r.running.index + 1}` : OVERALL_STATUS[r.status].label].filter(Boolean).join(" — ");
   const aliasCount = (ctx.state.aliases || []).filter((a) => a.sources.some((s) => String(t.source?.file || "").endsWith(s))).length;
   const codes = targetCodes(ctx, t);
   const index = avicaIndex(ctx, t.project);
@@ -469,7 +487,7 @@ function renderDrawer(el, ctx) {
     </header>
     <p class="muted dr-sub">${esc(sub)}</p>
     <button class="btn primary block" id="dr-open-workflow">Open workflow for this target ${icon("external")}</button>
-    ${issue ? `<div class="callout ${r.failed ? "fail" : "warn"}">${icon(r.failed ? "xCircle" : "alert")}<div><b>Stage ${issue.index + 1} ${r.failed ? "Failure" : "Warning"}: ${esc(issue.key)}</b><p>${esc(issueNote || "No diagnostic message recorded.")}</p>
+    ${issue ? `<div class="callout ${r.failed ? "fail" : "warn"}">${icon(r.failed ? "xCircle" : "alert")}<div><b>Step ${issue.index + 1} ${r.failed ? "Failure" : "Warning"}: ${esc(issue.key)}</b><p>${esc(issueNote || "No diagnostic message recorded.")}</p>
       ${crash?.crash?.exception ? `<details class="crash"><summary>Crash snapshot <span class="mono">${esc(crash.name)}</span></summary><pre class="code small">${esc(String(crash.crash.exception).slice(-4000))}</pre></details>` : crash ? `<button class="link-btn small" data-crash="${esc(crash.name)}">Open ${esc(crash.name)}</button>` : ""}</div></div>` : ""}
     <h4>AVICA work folder</h4>
     <div class="codes dr-codes">${codeChips(ctx, t, { editable: true })}</div>
@@ -480,7 +498,7 @@ function renderDrawer(el, ctx) {
       <dt>Measurement set</dt><dd class="mono">${(t.msPaths?.length ? t.msPaths : t.msPath ? [t.msPath] : []).map(esc).join("<br>") || "—"}</dd>
       ${t.artifacts?.length ? `<dt>Artifacts</dt><dd class="mono small">${t.artifacts.slice(0, 5).map((a) => `${esc(a.step)} · ${esc(a.band)}: ${esc(a.path)}`).join("<br>")}${t.artifacts.length > 5 ? `<br>+${t.artifacts.length - 5} more` : ""}</dd>` : ""}
     </dl>
-    <div class="row between"><h4>Execution pipeline (${r.done}/${r.total})</h4><span class="muted small tabular">Runtime: ${hms(r.runtime)}</span></div>
+    <div class="row between"><h4>Workflow progress (${r.done}/${r.total})</h4><span class="muted small tabular">Runtime: ${hms(r.runtime)}</span></div>
     <ol class="ladder">
       ${steps.map((s, i) => {
         const st = t.steps?.[s.key] || { status: "pending" };
@@ -500,7 +518,7 @@ function renderDrawer(el, ctx) {
     <div class="row gap dr-actions">
       ${ctx.state.mode === "server" && t.runId ? `<select id="dr-step" class="input" aria-label="Step to retry">${steps.map((s, i) => `<option value="${esc(s.key)}" ${(issue?.key || steps[r.next ?? 0]?.key) === s.key ? "selected" : ""}>${i + 1}. ${esc(s.key)}</option>`).join("")}</select>
       <button class="btn grow" id="dr-retry" title="Submit a retry to the ALFRD runtime">Retry step</button>` : ""}
-      <button class="icon-btn" id="dr-logs" title="Open log stream" aria-label="Open log stream">${icon("terminal")}</button>
+      <button class="icon-btn" id="dr-logs" title="View target logs" aria-label="View target logs">${icon("terminal")}</button>
     </div>
     ${t.history?.length ? `<details class="hist"><summary>Attempt history (${t.history.length})</summary><table class="tbl small"><thead><tr><th>Step</th><th>#</th><th>Status</th><th>Start</th><th>Runtime</th></tr></thead><tbody>${t.history.map((h) => `<tr class="st-${h.status}"><td class="mono">${esc(h.step)}</td><td>${h.attempt}</td><td>${esc(STEP_STATUS[h.status]?.label || h.status)}</td><td class="mono">${esc(when(h.started))}</td><td class="tabular">${esc(short(h.duration))}</td></tr>`).join("")}</tbody></table></details>` : ""}
   `;
