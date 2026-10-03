@@ -45,11 +45,17 @@ test("docked logs: tab order, de-duplication, cap and undock", () => {
   assert.equal(k1, "host.proj.a::avica.logs/run.log");
   assert.deepEqual(logview.dockedLogs().map((d) => [d.project, d.rel, d.name]), [["host.proj.a", "avica.logs/run.log", "run.log"]]);
   assert.deepEqual(shown, [k1, k1]);
+  // At the cap a followed log is never evicted silently: the user is asked to close a tab.
+  const warned = [];
+  ctx.toast = (text, tone) => warned.push([text, tone]);
   for (let i = 0; i < MAX_DOCKED + 2; i += 1) logview.dockLog(ctx, "p", `wd/l${i}.log`);
   assert.equal(logview.dockedLogs().length, MAX_DOCKED);
-  assert.equal(logview.dockedLogs()[0].rel, "wd/l2.log");
-  logview.undockLog("p::wd/l2.log");
-  assert.equal(logview.dockedLogs()[0].rel, "wd/l3.log");
+  assert.equal(logview.dockedLogs()[0].key, k1);
+  assert.equal(logview.dockLog(ctx, "p", "wd/extra.log"), null);
+  assert.ok(warned.length >= 1 && warned.every(([text, tone]) => tone === "warn" && /Close a tab/.test(text)));
+  logview.undockLog(k1);
+  assert.equal(logview.dockedLogs()[0].rel, "wd/l0.log");
+  assert.equal(logview.dockLog(ctx, "p", "wd/extra.log"), "p::wd/extra.log");
   assert.deepEqual(logview.splitKey("a.b::c::d.log"), { project: "a.b", rel: "c::d.log" });
 });
 

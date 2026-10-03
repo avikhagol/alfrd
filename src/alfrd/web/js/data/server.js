@@ -247,6 +247,10 @@ export const server = {
     if (Array.isArray(this.session?.projects)) this.session.projects = this.session.projects.filter((p) => p !== project);
     return res;
   },
+  /** What Forget / Delete would remove and whether removal is allowed now (read-only). */
+  removalPreview(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/removal-preview`); },
+  /** Permanent deletion; the server refuses (409) while no deletion scope is configured. */
+  deleteProject(project, payload = {}) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/delete`, payload); },
 
   /** Show, hide or open a remembered project here (`state`: "hidden" | "shown" | "opened"). No re-connect needed. */
   async setProjectVisibility(project, state) {

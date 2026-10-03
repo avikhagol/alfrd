@@ -5,6 +5,7 @@ import { loopResults, pollLoopResults } from "../data/loop_results.js";
 import { RUN_STATUS } from "./plans.js";
 
 const cache = new Map();
+export function forgetProject(project) { cache.delete(project); }
 let timer;
 const phases = { done: "Done", failed: "Failed", running: "Running", awaiting_response: "Waiting for a response", awaiting_review: "Waiting for review" };
 
@@ -64,7 +65,7 @@ export function render(el, ctx, projects) {
     if (!busy.some((p) => pollLoopResults(cache.get(p)?.status, cache.get(p)?.handoffs))) return;
     timer = setTimeout(async () => {
       if (ctx.state.view !== "results" || document.hidden) return;
-      await Promise.all(busy.map((p) => load(ctx, p, cache.get(p).selected || null)));
+      await Promise.all(busy.filter((p) => cache.has(p)).map((p) => load(ctx, p, cache.get(p).selected || null)));
       clearTimeout(timer); poll();
     }, 3000);
   };

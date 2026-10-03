@@ -11,6 +11,7 @@ import { STEP_STATUS } from "../data/model.js";
 import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
 import { logItem, logForTarget, projectLogs, zoomablePre } from "./logview.js";
+import { scoped } from "../data/workspace.js";
 import { RUN_STATUS, CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule, usageButton } from "./plans.js";
 
 const W = 1040;
@@ -20,12 +21,13 @@ const BANNER_H = 46;
 const STAGE_GAP = 40;
 
 const UI_FIELDS = ["zoom", "panX", "panY", "mode", "minimap", "selected", "tab", "inspector", "fitted", "layoutKey"];
-const ui = {
+// Per project: pan/zoom, selected step, inspector and an unsaved parameter draft.
+const ui = scoped("workflow", () => ({
   ...loadUi("workflow.v2", { zoom: 1, panX: 40, panY: 24, mode: "list", minimap: true, selected: null, tab: "params", inspector: true, fitted: false }),
   draft: null,
   layout: {},
   layoutKey: null,
-};
+}));
 const remember = () => saveUi("workflow.v2", ui, UI_FIELDS);
 
 const planRequested = new Set(); // projects whose plan state was fetched once by the Workflow view
@@ -65,9 +67,9 @@ function baseStatus(ctx, key) {
 }
 
 
+// The selected project only: a stale target from another project must never decide it.
 function wfProject(ctx) {
-  const t = ctx.target();
-  return t?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : Object.keys(ctx.state.trees || {})[0]);
+  return ctx.activeProject ? ctx.activeProject() : ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null;
 }
 
 
@@ -437,8 +439,7 @@ async function applyDraft(ctx) {
   if (!s) return;
   const diff = Object.fromEntries(Object.entries(ui.draft.params).filter(([k, v]) => JSON.stringify(s.params[k]) !== JSON.stringify(v)));
   if (!Object.keys(diff).length) { ui.draft = null; ctx.toast("No changes"); ctx.update(); return; }
-  const t = ctx.target();
-  const project = t?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null);
+  const project = wfProject(ctx);
   const avica = ctx.state.workflow.template === "avica" && project && ctx.state.avica?.[project];
   if (avica) {
     try {
@@ -622,7 +623,8 @@ export function leave() {
 }
 
 export function showRun(ctx, project) {
-  ctx.state.selectedProject = project;
+  if (ctx.switchProject) ctx.switchProject(project, { restoreView: false });
+  else ctx.state.selectedProject = project;
   if (ctx.target()?.project !== project) ctx.state.selectedTarget = null;
   ui.mode = "schedule"; remember(); ctx.navigate("workflow");
 }
@@ -643,6 +645,9 @@ export function render(el, ctx) {
   const sched = $("#wf-sched", el);
   list.hidden = ui.mode !== "list";
   sched.hidden = ui.mode !== "schedule";
+  // Each project remembers its own mode: never keep another project's rows in an inactive pane.
+  if (list.hidden) list.innerHTML = "";
+  if (sched.hidden) sched.innerHTML = "";
   el.querySelector(".wf")?.classList.toggle("list-mode", ui.mode !== "graph");
   el.querySelector(".wf")?.classList.toggle("sched-mode", ui.mode === "schedule");
   canvasEl.hidden = ui.mode !== "graph";
@@ -871,7 +876,7 @@ function renderInspector(el, ctx) {
     ...(t?._runLogs || []),
   ];
   const artifacts = (t?.artifacts || []).filter((a) => a.step === s.key);
-  const project = t?.project || (ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : Object.keys(ctx.state.trees || {})[0]);
+  const project = wfProject(ctx);
   const codes = t ? targetCodes(ctx, t).map((c) => c.code) : [];
   const files = projectLogs(ctx, project).filter((f) => (f.steps || []).includes(s.key) && logForTarget(ctx, f, t, codes));
   const nLogs = stepLogs.length + files.length;

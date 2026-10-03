@@ -174,6 +174,16 @@ class RuntimeService:
             session.delete(project)
             return counts
 
+    def project_removal_counts(self, selector: str) -> dict[str, Any]:
+        """Read-only preview of what :meth:`forget_project` would remove (same row selection)."""
+        project = self.get_project_by_selector(selector)
+        with self.store.session() as session:
+            workflow_ids = list(session.scalars(select(WorkflowDefinition.id).where(WorkflowDefinition.project_id == project.id)))
+            dataset_ids = list(session.scalars(select(Dataset.id).where(Dataset.project_id == project.id)))
+            runs = list(session.scalars(select(Run).where((Run.workflow_id.in_(workflow_ids)) | (Run.dataset_id.in_(dataset_ids))))) if (workflow_ids or dataset_ids) else []
+            active = [r.id for r in runs if str(r.status) == Status.RUNNING.value]
+            return {"runs": len(runs), "datasets": len(dataset_ids), "workflows": len(workflow_ids), "active_run_ids": active}
+
     def get_project_by_name(self, name: str) -> Project:
         with self.store.session() as session:
             projects = list(session.scalars(select(Project).where(Project.name == name)))

@@ -7,19 +7,21 @@ import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
 import { openRunDialog, plansAvailable, planOf, loadPlan, RUN_STATUS } from "./plans.js";
 import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
+import { scoped } from "../data/workspace.js";
 
 // Remembered in this browser until Settings → "Reset view state".
 const UI_FIELDS = ["search", "project", "status", "code", "preset", "mode", "collapsed", "hidden", "drawer", "groupBy"];
 const saved = loadUi("overview", {
   search: "", project: "all", status: "all", code: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project",
 });
-const ui = {
+// Per project workspace (All projects has its own): filters, page, checked rows, drawer.
+const ui = scoped("overview", () => ({
   ...saved,
   collapsed: new Set(saved.collapsed),
   hidden: new Set(saved.hidden),
   page: 0,
   checked: new Set(),
-};
+}));
 const remember = () => saveUi("overview", ui, UI_FIELDS);
 
 const LEADING = [
@@ -252,7 +254,8 @@ export function render(el, ctx) {
 
 const homeAsked = new Set();
 export function renderHome(el, ctx) {
-  const project = ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : ctx.target()?.project || ctx.projects()[0]?.id;
+  // Setup/run summary only for the selected project; All projects never borrows one.
+  const project = ctx.activeProject ? ctx.activeProject() : ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null;
   const box = $("#ov-home", el);
   if (!project) { box.innerHTML = ""; return; }
   if (plansAvailable(ctx, project) && !homeAsked.has(project)) { homeAsked.add(project); loadPlan(ctx, project, { quiet: true }); }
@@ -289,6 +292,7 @@ function renderHead(el, ctx) {
   renderStatusBar(el, ctx);
   renderFindView(el, ctx);
   renderActive(el, ctx);
+  head.querySelector(".ov-toolbar").hidden = !ctx.scopedTargets().length;
 }
 
 function renderTitle(el, ctx) {
@@ -447,6 +451,134 @@ function renderGrid(el, ctx) {
       <button class="btn sm" data-page="1" ${ui.page >= pages - 1 ? "disabled" : ""}>Next</button>
     </div>`;
   ctx.setFooterRight(`Showing ${all.length} of ${ctx.state.targets.length} targets across ${ctx.projects().length} projects | ${ctx.state.source === "demo" ? "Demo Data" : ctx.state.source === "server" ? "Runtime" : "Imported"}`);
+  renderRunGrids(el, ctx);
+}
+
+
+// ---- Run × step grids for projects without targets (agent loops, unknown types). ----
+// The grid module (js/data/run_grid.js) is loaded on first use; AVICA target grids never need it.
+let runGridMod = null;
+let runGridLoading = null;
+let runGridFocus = null; // {project, pos}: the run search box keeps focus across re-renders
+const runFilters = new Map(); // project -> {search, status, run}
+const runLoads = new Map(); // project -> {state: "loading"|"ok"|"error", status?, error?}
+const runLabel = (s) => RUN_STATUS[s] || s;
+
+export function forgetProject(project) {
+  runLoads.delete(project); runFilters.delete(project); homeAsked.delete(project);
+  if (runGridFocus?.project === project) runGridFocus = null;
+}
+
+/** Scoped projects with no targets: these get run grids instead of "No targets yet". */
+function targetlessProjects(ctx) {
+  const sel = ctx.state.selectedProject;
+  const ids = sel && sel !== "all" ? [sel] : ctx.projects().map((p) => p.id);
+  return ids.filter((p) => !(ctx.state.targets || []).some((t) => t.project === p));
+}
+
+function renderRunGrids(el, ctx) {
+  const projects = targetlessProjects(ctx);
+  if (!projects.length) return;
+  bindRunGrids(el, ctx);
+  const box = $("#ov-grid", el);
+  const only = !ctx.scopedTargets().length;
+  if (!runGridMod) {
+    runGridLoading ||= Promise.all([import("../data/run_grid.js"), import("../utils/dom.js")]).then(([m, dom]) => {
+      dom.loadCss?.("css/lazy.css");
+      runGridMod = m;
+      renderGrid(el, ctx);
+    }).catch((error) => { runGridLoading = null; ctx.log?.("warn", `Run grid: ${error.message}`, "overview"); });
+    if (only) box.innerHTML = `<div class="empty">Loading runs…</div>`;
+    return;
+  }
+  const html = `<div class="rg-wrap">${projects.map((project, index) => runSection(ctx, project, index)).join("")}</div>`;
+  if (only) box.innerHTML = html;
+  else box.insertAdjacentHTML("beforeend", html);
+  if (runGridFocus && (!document.activeElement || document.activeElement === document.body)) {
+    const input = [...box.querySelectorAll("[data-rg-search]")].find((x) => x.dataset.rgSearch === runGridFocus.project);
+    if (input) { input.focus(); input.setSelectionRange?.(runGridFocus.pos, runGridFocus.pos); }
+  }
+}
+
+function runStatusOf(ctx, project) {
+  if (!plansAvailable(ctx, project)) return { reason: "offline" };
+  const load = runLoads.get(project);
+  const selected = runFilters.get(project)?.run;
+  const cached = selected && selected !== "all" ? load?.status : planOf(project) || load?.status;
+  if (cached) {
+    const revision = JSON.stringify([cached.plan?.id, cached.loop, cached.units]);
+    if (!load || (load.state === "ok" && load.revision !== revision)) fetchRuns(ctx, project, cached);
+    if (load?.state === "error") return { reason: "error", error: load.error };
+    return { status: cached, handoffs: load?.status?.plan?.id === cached.plan?.id ? load?.handoffs : [] };
+  }
+  if (load?.state === "error") return { reason: "error", error: load.error };
+  if (!load) fetchRuns(ctx, project);
+  return { reason: "loading" };
+}
+
+async function fetchRuns(ctx, project, status = null) {
+  const load = { state: "loading", status };
+  runLoads.set(project, load);
+  const selected = runFilters.get(project)?.run;
+  try {
+    Object.assign(load, await runGridMod.loadRunStatus(server, project, selected === "all" ? null : selected, status));
+    load.revision = JSON.stringify([load.status.plan?.id, load.status.loop, load.status.units]);
+    load.state = "ok";
+  } catch (error) { load.state = "error"; load.error = error.message; }
+  if (runLoads.get(project) === load) ctx.update();
+}
+
+function stepLabel(ctx, project, base, id) {
+  const defs = ctx.state.trees?.[project]?.defs?.steps || {};
+  const wf = ctx.state.workflowProject === project && (ctx.state.workflow?.steps || []).find((s) => s.key === id || s.key === base);
+  return defs[id]?.label || defs[base]?.label || wf?.label || base;
+}
+
+function runGridOf(ctx, project) {
+  const got = runStatusOf(ctx, project);
+  const grid = got.status
+    ? runGridMod.buildRunGrid(got.status, { handoffs: got.handoffs, label: (base, id) => stepLabel(ctx, project, base, id) })
+    : { kind: "generic", columns: [], groups: [], empty: got.reason };
+  return { grid, error: got.error };
+}
+
+function runSection(ctx, project, index) {
+  const { grid, error } = runGridOf(ctx, project);
+  const f = runFilters.get(project) || runGridMod.FILTERS_DEFAULT;
+  const shown = runGridMod.filterRunGrid(grid, f, runLabel);
+  return runGridMod.renderRunGrid(project, ctx.projectName(project), grid, shown, f, { runLabel, error, index });
+}
+
+function bindRunGrids(el, ctx) {
+  if (el.dataset.rgBound) return;
+  el.dataset.rgBound = "1";
+  const set = (project, patch) => {
+    runFilters.set(project, { ...(runFilters.get(project) || runGridMod.FILTERS_DEFAULT), ...patch });
+    renderGrid(el, ctx);
+  };
+  on(el, "input", "[data-rg-search]", (e, input) => {
+    runGridFocus = { project: input.dataset.rgSearch, pos: input.selectionStart };
+    set(input.dataset.rgSearch, { search: input.value });
+  });
+  on(el, "focusout", "[data-rg-search]", (e) => { if (e.relatedTarget) runGridFocus = null; });
+  on(el, "change", "[data-rg-status]", (e, s) => set(s.dataset.rgStatus, { status: s.value }));
+  on(el, "change", "[data-rg-run]", (e, s) => {
+    runFilters.set(s.dataset.rgRun, { ...(runFilters.get(s.dataset.rgRun) || runGridMod.FILTERS_DEFAULT), run: s.value });
+    fetchRuns(ctx, s.dataset.rgRun); renderGrid(el, ctx);
+  });
+  on(el, "click", "[data-rg-reset]", (e, b) => { runFilters.delete(b.dataset.rgReset); runLoads.delete(b.dataset.rgReset); runGridFocus = null; renderGrid(el, ctx); });
+  on(el, "click", "[data-rg-retry]", (e, b) => { runLoads.delete(b.dataset.rgRetry); fetchRuns(ctx, b.dataset.rgRetry); });
+  on(el, "click", "[data-rg-cell]", (e, b) => openRunCell(ctx, b.dataset));
+}
+
+async function openRunCell(ctx, d) {
+  const project = d.rgCell;
+  const found = runGridMod.findCell(runGridOf(ctx, project).grid, d.rgRunId, d.rgRow, d.rgStep);
+  if (!found) return;
+  const { logButtons } = await import("./plans.js");
+  const log = found.cell.log ? logButtons(project, found.cell.log, { label: "View log" }) : "";
+  ctx.modal(`<header class="modal-h"><h2>${esc(found.column.label)} · ${esc(found.row.label)}</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <div class="modal-b">${runGridMod.cellDetail(ctx.projectName(project), found, log)}</div>`);
 }
 
 function hue(text) {

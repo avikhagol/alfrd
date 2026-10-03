@@ -30,17 +30,16 @@ document.addEventListener("click", async (e) => {
 });
 const sessionRuns = new Set();
 const execCache = new Map(); // project -> execution settings
-let pollTimer = null;
-let pollProject = null;
+const pollTimers = new Map(); // project -> timeout id
 
 export const CELL = {
   done: { label: "Done", tone: "ok", icon: "checkCircle", step: "completed", mark: "✓" },
   failed: { label: "Failed", tone: "fail", icon: "xCircle", step: "failed", mark: "✗" },
   running: { label: "Running", tone: "run", icon: "sync", step: "running", mark: "▶" },
   todo: { label: "Queued", tone: "muted", icon: "hourglass", step: "queued", mark: "·" },
-  blocked: { label: "Needs attention", tone: "warn", icon: "minus", step: "skipped", mark: "⊘" },
-  interrupted: { label: "Needs attention", tone: "warn", icon: "alert", step: "warning", mark: "!" },
-  cancelled: { label: "Skipped", tone: "muted", icon: "stop", step: "skipped", mark: "–" },
+  blocked: { label: "Blocked", tone: "warn", icon: "minus", step: "skipped", mark: "⊘" },
+  interrupted: { label: "Interrupted", tone: "warn", icon: "alert", step: "warning", mark: "!" },
+  cancelled: { label: "Cancelled", tone: "muted", icon: "stop", step: "skipped", mark: "–" },
   skip: { label: "Skipped", tone: "muted", icon: "minus", step: null, mark: "" },
 };
 export const RUN_MODE = { step: "One step at a time (all targets)", target: "One target at a time", batch: "Everything in parallel" };
@@ -98,10 +97,16 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
   cache.set(project, entry);
   try {
     const status = await server.planStatus(project, id || entry.status?.plan?.id || null);
-    if (status.plan?.status === "failed" && entry.failedRun !== status.plan.id) {
-      entry.failedRun = status.plan.id;
-      ctx.showError(`Run ${status.plan.id} failed. View logs for details or retry failed steps.`, () => loadPlan(ctx, project), "workflow");
-    }
+    const run = status.plan?.id, key = `plan:${project}`;
+    if (status.plan?.status === "failed") {
+      // Background polls never raise a banner; only a viewed failure does, with a real retry.
+      if (!quiet && entry.failedRun !== run) {
+        entry.failedRun = run;
+        ctx.showError(`Run ${run} failed. View logs for details or retry failed steps.`,
+          async () => { await server.planAction(project, run, "resume", { retry_failed: true }); await loadPlan(ctx, project); },
+          "workflow", key);
+      }
+    } else if (entry.failedRun) { entry.failedRun = null; ctx.clearError?.("workflow", key); }
     entry.status = status;
     entry.error = null;
     entry.fetched = Date.now();
@@ -118,16 +123,32 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
   return entry.status;
 }
 
+// One poll timer per project so a run keeps updating while another project is open.
 function schedulePoll(ctx, project) {
-  clearTimeout(pollTimer);
+  clearTimeout(pollTimers.get(project));
+  pollTimers.delete(project);
   const s = planOf(project);
   const busy = s?.plan && (s.plan.status === "running" || s.running?.length || s.runner?.alive);
   if (!busy) return;
-  pollProject = project;
-  pollTimer = setTimeout(() => {
-    if (document.hidden || pollProject !== project) { schedulePoll(ctx, project); return; }
+  const timer = setTimeout(() => {
+    if (document.hidden) { schedulePoll(ctx, project); return; }
     loadPlan(ctx, project, { quiet: true });
   }, 3000);
+  timer?.unref?.(); // non-browser runtimes (node tests) must not stay alive for a poll
+  pollTimers.set(project, timer);
+}
+
+export function forgetPlan(project) {
+  clearTimeout(pollTimers.get(project));
+  pollTimers.delete(project);
+  cache.delete(project);
+  execCache.delete(project);
+}
+
+// Every cached run that is still active, for the Jobs tray.
+export function activeJobs() {
+  return [...cache.entries()].map(([project, e]) => ({ project, status: e.status }))
+    .filter((j) => j.status?.plan && ["running", "paused", "interrupted"].includes(j.status.plan.status));
 }
 
 
