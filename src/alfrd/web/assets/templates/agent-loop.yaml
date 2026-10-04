@@ -4,7 +4,7 @@ history:
 primary_key: TARGET_NAME
 entrypoint:
   - name: claude
-    cmd: [claude, -p, --output-format, text]
+    cmd: [claude, -p, --permission-mode, acceptEdits, --output-format, text]
     stdin_file: "{prompt_file}"
     output_file: "{response_file}"
     output_capture: stdout
