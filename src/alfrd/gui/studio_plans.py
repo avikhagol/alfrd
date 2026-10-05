@@ -8,6 +8,7 @@ runner is spawned as a detached process and the request returns.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -22,8 +23,11 @@ from .studio import _json_error, _poke, _project_root, studio_api
 _CSV_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ +-]*\.csv$")
 
 
-def _cfg(project_name: str):
-    return load_execution(_project_root(project_name))
+def _cfg(project_name: str, target: str | None = None):
+    root = _project_root(project_name)
+    from alfrd.execution import load_task_execution
+
+    return load_task_execution(root, target)
 
 
 def _csv_path(cfg, name: str | None) -> Path:
@@ -38,8 +42,8 @@ def _csv_path(cfg, name: str | None) -> Path:
 def execution_settings(project_name: str):
     """How steps run (alfrd.yaml `entrypoint`/`execution`), plus the plan CSV if it exists."""
     try:
-        cfg = _cfg(project_name)
-    except ExecutionError as error:
+        cfg = _cfg(project_name, request.args.get("target"))
+    except (ExecutionError, ValueError, OSError) as error:
         return jsonify(error={"code": 400, "message": str(error)}, configured=False), 200
     data = cfg.to_dict()
     data["loop"] = dict(cfg.steps[0].loop_options) if cfg.steps else {}
@@ -54,6 +58,8 @@ def execution_settings(project_name: str):
 def _write_rows(cfg, path: Path, payload: dict) -> None:
     rows = payload.get("rows")
     steps = payload.get("steps") or []
+    if any(step.iterations for step in cfg.steps):
+        steps = cfg.step_ids
     if rows is None:
         return
     if not isinstance(rows, list) or not rows:
@@ -61,11 +67,34 @@ def _write_rows(cfg, path: Path, payload: dict) -> None:
     unknown = [s for s in steps if s not in cfg.step_ids]
     if unknown:
         raise ExecutionError(f"unknown step(s): {', '.join(unknown)}")
-    if path.exists() and not payload.get("overwrite"):
-        raise FileExistsError(f"{path.name} exists; confirm to replace it")
     clean = [{"target": str(r.get("target") or "").strip(), "files": str(r.get("files") or ""),
               "code": str(r.get("code") or ""), "workdir": str(r.get("workdir") or "")}
              for r in rows if isinstance(r, dict) and str(r.get("target") or "").strip()]
+    if path.exists() and (not payload.get("overwrite") or
+                          (any(step.iterations for step in cfg.steps) and path.parent == cfg.root)):
+        if any(step.iterations for step in cfg.steps):
+            if len(clean) != 1 or payload.get("target") != clean[0]["target"]:
+                raise ExecutionError("select exactly one task target when starting an agent loop")
+            item = clean[0]
+            target = item["target"]
+            if scheduler.active_plan(cfg.root, path, target):
+                raise FileExistsError(f"Task {target!r} already has an active plan")
+            from alfrd.agent_loop import validate_target
+            validate_target(target)
+            from alfrd.execution import load_task_execution
+            cfg = load_task_execution(cfg.root, target)
+            with pc.locked(cfg.root / ".alfrd" / "locks" / f"{path.name}.lock"):
+                table = scheduler.table_for(cfg, path)
+                selected = [row for row in table.rows if row.target == target]
+                if len(selected) != 1:
+                    raise ExecutionError(f"unknown task target: {target}")
+                selected[0].values.update({step: pc.TODO for step in cfg.step_ids})
+                selected[0].values[cfg.files_column] = item["files"] or "task.md"
+                pc.atomic_write(path, pc.dump(table.header, [row.values for row in table.rows]))
+            return
+        for row in clean:
+            scheduler.add_row(cfg, path, **row, selected=steps)
+        return
     pc.create(path, clean, cfg.step_ids, steps, key_column=cfg.key_column, files_column=cfg.files_column,
               code_column=cfg.code_column, workdir_column=cfg.workdir_column)
 
@@ -75,7 +104,7 @@ def plan_preview(project_name: str):
     """Commands the plan would run (dry run). With ``rows`` a temporary CSV is used."""
     payload = request.get_json(silent=True) or {}
     try:
-        cfg = _cfg(project_name)
+        cfg = _cfg(project_name, payload.get("target"))
         path = _csv_path(cfg, payload.get("csv"))
         if payload.get("rows") is not None:
             path = cfg.root / ".alfrd" / "tmp" / "preview.plan.csv"
@@ -113,16 +142,18 @@ def plan_start(project_name: str):
     """Write the plan CSV (when ``rows`` are given), create a plan and spawn its runner."""
     payload = request.get_json(silent=True) or {}
     try:
-        cfg = _cfg(project_name)
+        cfg = _cfg(project_name, payload.get("target"))
         path = _csv_path(cfg, payload.get("csv"))
-        _write_rows(cfg, path, payload)
-        folder = scheduler.create_plan(
-            cfg.root, path, mode=payload.get("mode"), concurrency=payload.get("concurrency"),
-            on_failure=payload.get("on_failure"), retry_failed=bool(payload.get("retry_failed")),
-        )
+        with pc.locked(cfg.root / ".alfrd" / "locks" / "handoff.lock"):
+            _write_rows(cfg, path, payload)
+            folder = scheduler.create_plan(
+                cfg.root, path, mode=payload.get("mode"), concurrency=payload.get("concurrency"),
+                on_failure=payload.get("on_failure"), retry_failed=bool(payload.get("retry_failed")), target=payload.get("target"),
+                start_at=payload.get("start_at") or None,
+            )
         if payload.get("start", True):
             scheduler.spawn_runner(folder)
-    except FileExistsError as error:
+    except (FileExistsError, pc.DuplicateRowError) as error:
         return _json_error(error, 409)
     except (ExecutionError, OSError, ValueError) as error:
         return _json_error(error, 400)
@@ -133,15 +164,18 @@ def plan_start(project_name: str):
 @studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/<action>")
 def plan_action(project_name: str, plan_id: str, action: str):
     payload = request.get_json(silent=True) or {}
-    if action not in ("pause", "resume", "cancel"):
+    if action not in ("pause", "resume", "cancel", "start-now"):
         return _json_error(ValueError(f"unknown action {action!r}"), 404)
     if action == "cancel" and not payload.get("confirm"):
         return _json_error(ValueError("cancel stops running commands; send confirm: true"), 400)
     if not re.match(r"^[A-Za-z0-9_-]+$", plan_id):
         return _json_error(ValueError("bad plan id"), 400)
     try:
-        plan = scheduler.control(_project_root(project_name), plan_id, action,
-                                 retry_failed=bool(payload.get("retry_failed")))
+        if action == "start-now":
+            plan = scheduler.start_now(_project_root(project_name), plan_id)
+        else:
+            plan = scheduler.control(_project_root(project_name), plan_id, action,
+                                     retry_failed=bool(payload.get("retry_failed")))
     except ExecutionError as error:
         return _json_error(error, 404)
     _poke(project_name)
@@ -180,7 +214,7 @@ def plan_handoffs(project_name: str, plan_id: str):
         for unit in folder.units():
             if not unit.get("handoff"):
                 continue
-            item = {k: unit.get(k) for k in ("id", "agent", "iteration", "iterations", "status", "manual", "artifact", "error", "log", "model", "requested_model", "review_status", "human_review", "started", "finished", "row", "steps")}
+            item = {k: unit.get(k) for k in ("id", "agent", "iteration", "iterations", "status", "manual", "artifact", "error", "log", "model", "requested_model", "review_status", "human_review", "started", "finished", "row", "target", "steps", "review_gate", "outcome", "outcome_reason", "attempt_number", "retry_of", "logical_turn_id")}
             from alfrd.agent_loop import turn_phase
             item["phase"] = turn_phase(unit)
             item["iteration_label"] = f"{unit.get('iteration')}/{unit.get('iterations') or iterations}"
@@ -271,14 +305,236 @@ def plan_review(project_name: str, plan_id: str):
     return jsonify(approved=True)
 
 
+@studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/reject")
+def plan_reject(project_name: str, plan_id: str):
+    from alfrd.agent_loop import reject_response
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
+    payload = request.get_json(silent=True) or {}
+    try:
+        reject_response(_project_root(project_name), plan_id, str(payload.get("unit") or ""), payload.get("reason") or "")
+    except FileExistsError as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+    _poke(project_name)
+    return jsonify(rejected=True)
+
+
+@studio_api.get("/studio/projects/<project_name>/plans/<plan_id>/turns")
+def plan_turns(project_name: str, plan_id: str):
+    """Each step of a plan with its effective review / human-writes / delay / model, and whether it can still change."""
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+            raise ValueError("bad plan id")
+        root = _project_root(project_name)
+        folder = scheduler.PlanDir(root, plan_id)
+        plan = folder.load()
+        runner = scheduler.Runner(root, plan_id)
+        overrides = folder.overrides()
+        units = folder.units()
+        out = []
+        for step_id in plan.get("steps") or []:
+            try:
+                step = runner.cfg.step(step_id)
+            except Exception:  # noqa: BLE001
+                continue
+            attempts = [u for u in units if step_id in (u.get("steps") or [])]
+            latest = attempts[-1] if attempts else {}
+            state = "done" if latest.get("artifact") or latest.get("status") == "done" else latest.get("status") or "pending"
+            out.append({"step": step_id, "label": step.base_step or step_id, "turn": step.turn or None, "agent": step.entrypoint,
+                        "human_review": step.human_review, "manual": step.manual, "after": step.after, "at": step.at, "model": step.model,
+                        "fallback_models": list(step.fallback_models), "state": state,
+                        "editable": [] if state == "done" else ["human_review"] if state == "running" else sorted(scheduler.OVERRIDE_KEYS),
+                        "overrides": overrides.get(step_id, {})})
+        return jsonify(turns=out)
+    except (ValueError, OSError, ExecutionError) as error:
+        return _json_error(error, 400)
+
+
+@studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/turns/<step_id>")
+def plan_turn_override(project_name: str, plan_id: str, step_id: str):
+    """Change one step of a running plan (body: any of human_review, manual, after, model; null clears)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id) or not re.fullmatch(r"[A-Za-z0-9+._-]+", step_id):
+        return _json_error(ValueError("bad plan or step id"), 400)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error(ValueError("send a JSON object of settings"), 400)
+    try:
+        current = scheduler.set_override(_project_root(project_name), plan_id, step_id, payload)
+    except (ValueError, OSError, ExecutionError) as error:
+        return _json_error(error, 400)
+    _poke(project_name)
+    return jsonify(overrides=current.get(step_id, {}))
+
+
+@studio_api.get("/studio/projects/<project_name>/tasks")
+def tasks_list(project_name: str):
+    try:
+        cfg = _cfg(project_name)
+        folder_layout = any("{target}" in v for step in cfg.steps for v in step.handoff.values())
+        plans = scheduler.list_plans(cfg.root)
+        from alfrd import workspaces
+        tasks = []
+        for row in scheduler.table_for(cfg, cfg.plan_csv).rows:
+            item = {"name": row.target, "files": row.files or "task.md"}
+            if folder_layout and cfg.loop_max:
+                try:
+                    item["iterations"] = _cfg(project_name, row.target).steps[0].iterations
+                    item["over_limit"] = item["iterations"] > cfg.loop_max
+                except (ValueError, OSError, ExecutionError) as error:
+                    item["error"] = str(error)
+                item["workspace"] = workspaces.describe(cfg.root, row.target)
+                runs = [p for p in plans if row.target in (p.get("targets") or [])]
+                item["runs"] = len(runs)
+                if runs:
+                    item["latest"] = {k: runs[0].get(k) for k in ("id", "status", "created")}
+            tasks.append(item)
+        return jsonify(folder_layout=folder_layout, tasks=tasks, max_iterations=cfg.loop_max or None,
+                       iteration_unit=cfg.loop_unit or None, workspace_mode=cfg.loop_workspace)
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+
+
+@studio_api.post("/studio/projects/<project_name>/tasks")
+def task_create(project_name: str):
+    from alfrd.project_creation import task_name, task_files
+    from alfrd import history
+    payload = request.get_json(silent=True) or {}
+    written = []
+    try:
+        cfg = _cfg(project_name)
+        name = task_name(payload.get("name"))
+        if not cfg.steps or not all(step.iterations and step.handoff and all("{target}" in v for v in step.handoff.values()) for step in cfg.steps):
+            raise ValueError("This project uses legacy root handoffs; create a folder-based agent-loop project for multiple tasks")
+        iterations = payload.get("iterations")
+        if iterations is not None:
+            cfg = load_execution(cfg.root, iterations=iterations, cap=True)
+        files = task_files(cfg.root, cfg.steps, name, payload.get("task"))
+        from alfrd.agent_loop import task_options
+        from alfrd.execution import merged_manifest
+        files[f"{name}/.alfrd-task.json"] = json.dumps(task_options(merged_manifest(cfg.root).get("_workflow") or {}, cfg.steps[0].iterations)) + "\n"
+        with pc.locked(cfg.root / ".alfrd" / "locks" / "handoff.lock"):
+            destination = cfg.root / name
+            destination.mkdir(exist_ok=False)
+            try:
+                for rel, text in files.items():
+                    path = cfg.root / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+                    written.append(path)
+                with pc.locked(cfg.root / ".alfrd" / "locks" / f"{cfg.plan_csv.name}.lock"):
+                    if cfg.plan_csv.exists():
+                        table = scheduler.table_for(cfg, cfg.plan_csv)
+                        missing = [step for step in cfg.step_ids if step not in table.header]
+                        if missing:
+                            pc.atomic_write(cfg.plan_csv, pc.dump([*table.header, *missing], [row.values for row in table.rows]))
+                scheduler.add_row(cfg, cfg.plan_csv, target=name, files="task.md", create=True)
+            except Exception:
+                for path in reversed(written):
+                    path.unlink(missing_ok=True)
+                destination.rmdir()
+                raise
+            for rel in files:
+                if history.is_tracked(cfg.root, rel):
+                    history.record(cfg.root, rel, source="studio")
+        workspace = {}
+        if cfg.loop_workspace == "worktree":
+            from alfrd import workspaces
+            try:
+                workspace = workspaces.ensure(cfg.root, name)
+            except ValueError as error:
+                workspace = {"workspace": None, "warning": str(error)}
+        _poke(project_name)
+        return jsonify(name=name, files="task.md", **workspace), 201
+    except (FileExistsError, pc.DuplicateRowError) as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+
+
+@studio_api.patch("/studio/projects/<project_name>/tasks/<old>")
+def task_rename(project_name: str, old: str):
+    from alfrd.project_creation import task_name
+    from alfrd.agent_loop import project_file
+    from alfrd import history
+    payload = request.get_json(silent=True) or {}
+    try:
+        cfg = _cfg(project_name)
+        old, name = task_name(old), task_name(payload.get("name"))
+        with pc.locked(cfg.root / ".alfrd" / "locks" / "handoff.lock"):
+            if scheduler.active_plan(cfg.root, cfg.plan_csv, old):
+                raise FileExistsError(f"Task {old!r} has an active plan; finish or cancel it before renaming")
+            source, destination = project_file(cfg.root, old), project_file(cfg.root, name)
+            if destination.exists() or destination.is_symlink():
+                raise FileExistsError(f"Task {name!r} already exists")
+            with pc.locked(cfg.root / ".alfrd" / "locks" / f"{cfg.plan_csv.name}.lock"):
+                table = scheduler.table_for(cfg, cfg.plan_csv)
+                rows = [r for r in table.rows if r.target == old]
+                if not rows or not source.is_dir():
+                    raise ValueError(f"unknown task: {old}")
+                for row in table.rows:
+                    if row.target == old:
+                        row.values[table.key_column] = name
+                    row.values[table.files_column] = ",".join(name + f[len(old):] if f.startswith(old + "/") else f
+                                                            for f in pc.join_files(row.files).split(","))
+                source.rename(destination)
+                try:
+                    pc.atomic_write(cfg.plan_csv, pc.dump(table.header, [r.values for r in table.rows]))
+                except Exception:
+                    destination.rename(source)
+                    raise
+                from alfrd import workspaces
+                workspaces.repair(cfg.root, name)  # a worktree inside the moved folder
+            from alfrd.studio_defs import manifest_file
+            import yaml
+            manifest = manifest_file(cfg.root)
+            if manifest:
+                data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+                patterns = (data.get("history") or {}).get("files", [])
+                if isinstance(patterns, str):
+                    patterns = [patterns]
+                updated = [name + pattern[len(old):] if pattern.startswith(old + "/") else pattern for pattern in patterns]
+                if updated != patterns:
+                    data["history"]["files"] = updated
+                    from alfrd.yaml_text import dump
+                    pc.atomic_write(manifest, dump(data))
+            # Only the moved files' archives: a glob on "old__*" would also match a task named "old__x".
+            for path in destination.rglob("*"):
+                sub = path.relative_to(destination).as_posix()
+                archive = history._dir(cfg.root, f"{old}/{sub}")
+                if path.is_file() and archive.is_dir():
+                    archive.rename(history._dir(cfg.root, f"{name}/{sub}"))
+            for rel in history.tracked(cfg.root):
+                if rel.startswith(name + "/"):
+                    history.record(cfg.root, rel, source="studio", message=f"Renamed task from {old}")
+        _poke(project_name)
+        return jsonify(name=name)
+    except FileExistsError as error:
+        return _json_error(error, 409)
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+
+
 @studio_api.route("/studio/projects/<project_name>/task", methods=["GET", "POST"])
-def project_task(project_name: str):
+@studio_api.route("/studio/projects/<project_name>/tasks/<target>/task", methods=["GET", "POST"])
+def project_task(project_name: str, target: str | None = None):
     from alfrd import history
     from alfrd.agent_loop import project_file
 
     root = _project_root(project_name)
-    path = project_file(root, "task.md")
     try:
+        cfg = load_execution(root)
+        from alfrd.project_creation import task_name
+        if not cfg.steps:
+            raise ValueError("This project has no task workflow")
+        target = task_name(target or cfg.steps[0].loop_options.get("task_row", "task"))
+        if not cfg.steps:
+            raise ValueError("This project has no task workflow")
+        scoped = any("{target}" in v for step in cfg.steps for v in step.handoff.values())
+        rel = f"{target}/task.md" if scoped else "task.md"
+        path = project_file(root, rel)
         with pc.locked(root / ".alfrd" / "locks" / "handoff.lock"):
             if request.method == "POST":
                 payload = request.get_json(silent=True) or {}
@@ -294,14 +550,16 @@ def project_task(project_name: str):
                 sync = payload.get("use_for_next_run", False)
                 if not isinstance(sync, bool):
                     raise ValueError("use_for_next_run must be true or false")
-                if sync and any(p.get("status") in ("running", "paused", "interrupted") for p in scheduler.list_plans(root)):
+                if sync and scheduler.active_plan(root, cfg.plan_csv, target):
                     return _json_error(ValueError("Finish or cancel the current plan before replacing its initial handoff"), 409)
-                history.save(root, "task.md", text, source="studio", base_hash=payload["base_hash"] if path.exists() else None)
+                history.save(root, rel, text, source="studio", base_hash=payload["base_hash"] if path.exists() else None)
                 if sync and cfg.steps and cfg.steps[0].handoff:
-                    history.save(root, cfg.steps[0].handoff["input"], text, source="studio", message="New task for next run")
+                    from alfrd.agent_loop import resolve_handoff
+                    incoming = resolve_handoff(root, cfg.steps[0].handoff["input"], target).relative_to(root).as_posix()
+                    history.save(root, incoming, text, source="studio", message="New task for next run")
                 _poke(project_name)
             text = path.read_text(encoding="utf-8") if path.exists() else ""
-            return jsonify(file="task.md", text=text, hash=history.text_hash(text))
+            return jsonify(file=rel, text=text, hash=history.text_hash(text))
     except history.Conflict as error:
         return jsonify(error={"message": str(error)}, current=error.current, hash=error.current_hash), 409
     except (ValueError, OSError) as error:
@@ -318,7 +576,10 @@ def edit_handoff(project_name: str):
     rel = str(payload.get("file") or "")
     try:
         cfg = load_execution(root)
-        allowed = {v for step in cfg.steps for v in step.handoff.values()}
+        from alfrd.agent_loop import resolve_handoff
+        targets = [r.target for r in scheduler.table_for(cfg, cfg.plan_csv).rows]
+        allowed = {resolve_handoff(root, v, target).relative_to(root).as_posix()
+                   for target in targets for step in cfg.steps for v in step.handoff.values()}
         if rel not in allowed:
             raise ValueError("not a workflow handoff file")
         path = project_file(root, rel)

@@ -106,15 +106,18 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
       errors.push(`Workflow "${wfName}" declares no steps.`);
       return;
     }
-    const seen = new Set();
+    const seen = new Set(), skipped = new Set();
     const steps = rawSteps.map((raw, index) => {
       const original = stepId(raw);
       if (!original) errors.push(`Workflow "${wfName}" step #${index + 1} has no id.`);
       const key = aliases.resolve(original, fileName);
       if (seen.has(key)) errors.push(`Workflow "${wfName}" repeats step "${key}".`);
       seen.add(key);
-      const obj = { ...(defs.tplSteps[key] || {}), ...(defs.steps[key] || {}), ...(raw && typeof raw === "object" ? raw : {}) };
-      const dependsRaw = obj.depends_on ?? obj.needs ?? obj.after;
+      const obj = { ...(defs.tplSteps[key] || {}), ...(defs.ownSteps?.[key] || {}), ...(defs.steps[key] || {}), ...(raw && typeof raw === "object" ? raw : {}) };
+      if (obj.skip === true) { skipped.add(key); return null; }
+      const after = obj.after;
+      const delay = typeof after === "number" || (typeof after === "string" && after.trim() !== "" && (/^\+?(\d+(\.\d+)?|(\d+d)?(\d+h)?(\d+m)?(\d+s)?)$/i.test(after.replace(/\s/g, "")) || /^(\d{4}-\d{2}-\d{2}[ T])?\d{1,2}:\d{2}(:\d{2})?$/.test(after.trim()))); // a duration or a clock time, not a step name
+      const dependsRaw = obj.depends_on ?? obj.needs ?? (delay || after == null ? undefined : after);
       const depends = dependsRaw === undefined ? null : (Array.isArray(dependsRaw) ? dependsRaw : [dependsRaw]).map((d) => aliases.resolve(d, fileName));
       return {
         key,
@@ -135,8 +138,10 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
         handoff: obj.handoff || null,
       };
     });
+    for (let i = steps.length - 1; i >= 0; i--) if (!steps[i]) steps.splice(i, 1);
     // Default dependency chain: each step waits on its predecessor.
     steps.forEach((step, i) => {
+      if (step.depends) step.depends = step.depends.filter((d) => !skipped.has(d));
       if (step.depends === null) step.depends = i ? [steps[i - 1].key] : [];
       step.depends.forEach((d) => {
         if (!seen.has(d)) errors.push(`Step "${step.key}" depends on unknown step "${d}".`);
@@ -148,11 +153,12 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
       description: (!Array.isArray(def) && def?.description) || "",
       template: defs.template,
       steps,
+      skipped: [...skipped],
       stages: assignStages(steps, stageDefs),
     });
   };
 
-  const templateSteps = Object.keys(defs.tplSteps || {});
+  const templateSteps = [...new Set([...Object.keys(defs.tplSteps || {}), ...Object.keys(defs.ownSteps || {})])];
   if (Array.isArray(manifest.workflows)) {
     manifest.workflows.forEach((wf, i) => addWorkflow(wf?.name ?? wf?.id ?? `workflow_${i + 1}`, wf));
   } else if (manifest.workflows && typeof manifest.workflows === "object") {

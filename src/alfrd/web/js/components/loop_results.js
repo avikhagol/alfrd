@@ -18,8 +18,19 @@ async function load(ctx, project, id = null) {
     const status = await server.planStatus(project, id);
     const handoffs = status.plan?.loop ? (await server.handoffs(project, status.plan.id)).handoffs : [];
     entry.status = status; entry.handoffs = handoffs;
-  } catch (error) { entry.error = error.message; }
+  } catch (error) { entry.error = id && error.status === 404 ? "This run is no longer available. Refresh run history." : error.message; }
   finally { entry.loading = false; if (before !== JSON.stringify([entry.status, entry.handoffs, entry.error])) ctx.update(); }
+  // A run chosen while another read was in flight (Overview → View results) is read next.
+  if (entry.selected && entry.selected !== id && !entry.error) load(ctx, project, entry.selected);
+}
+
+/** Show exactly this run in Results (Overview → View results); never the latest instead. */
+export function selectRun(ctx, project, id) {
+  const entry = cache.get(project) || {};
+  entry.selected = id;
+  if (entry.status?.plan?.id !== id) { entry.status = null; entry.handoffs = []; }
+  cache.set(project, entry);
+  load(ctx, project, id);
 }
 
 export function mount(el, ctx) {
@@ -51,12 +62,12 @@ export function render(el, ctx, projects) {
     const s = entry.status, p = s?.plan;
     const summary = p?.loop ? loopResults(s, entry.handoffs || []) : null;
     return `<div class="card loop-results"><div class="row gap wrap"><h2>Agent-loop results</h2><span class="chip">${esc(ctx.projectName(project))}</span><span class="grow"></span><button class="link-btn" data-classic-results>CSV results / collections</button>
-      ${p ? `<label class="field loop-run"><span>Run</span><select class="input sm mono" data-loop-plan="${esc(project)}"><option value="">Latest run</option>${(s.plans || []).map((plan) => `<option value="${esc(plan.id)}" ${entry.selected === plan.id ? "selected" : ""}>Run ${esc(plan.id)} · ${esc(RUN_STATUS[plan.status] || plan.status)}</option>`).join("")}</select></label>` : ""}
+      ${p ? `<label class="field loop-run"><span>Run</span><select class="input sm mono" data-loop-plan="${esc(project)}"><option value="">Latest run</option>${(s.plans || []).map((plan) => `<option value="${esc(plan.id)}" ${entry.selected === plan.id ? "selected" : ""}>Run ${esc(plan.id)} · ${esc(plan.start_at ? "Scheduled" : RUN_STATUS[plan.status] || plan.status)}</option>`).join("")}</select></label>` : ""}
       <button class="btn sm" data-loop-refresh="${esc(project)}" ${entry.loading ? "disabled" : ""}>${icon("sync")} Refresh</button>
       ${summary ? `<button class="btn sm" data-loop-handoffs="${esc(project)}">${icon("file")} Read responses / handoffs</button>` : ""}</div>
       ${entry.error ? `<p class="fail-t" role="alert">${esc(entry.error)} — Refresh to retry.</p>` : ""}
       ${entry.loading && !s ? '<p class="muted" role="status">Loading turn results…</p>' : !p ? '<p class="muted">No run yet. Start a run from Workflow → Run.</p>' : !summary ? '<p class="muted">No loop turns in this run. Choose another run.</p>' : `
-      <p class="muted small mono">Run ${esc(p.id)} · ${esc(RUN_STATUS[p.status] || p.status)}${entry.loading ? " · refreshing" : ""}</p>
+      <p class="muted small mono">Run ${esc(p.id)} · ${esc(p.start_at ? "Scheduled" : RUN_STATUS[p.status] || p.status)}${entry.loading ? " · refreshing" : ""}</p>
       <div class="kpis"><div><span>Done turns</span><b>${summary.done} / ${summary.total}</b></div><div><span>Archived replies</span><b>${summary.replies}</b><small>${summary.turns.length} attempts</small></div><div><span>Waiting for you</span><b>${summary.waiting}</b><small>Responses or review</small></div><div><span>Elapsed turn time</span><b>${elapsed(summary.seconds)}</b><small>Includes waiting · ${summary.failed} failed or blocked turns</small></div></div>
       <div class="loop-result-table"><table class="tbl"><thead><tr><th>Iteration</th><th>Agent / model</th><th>Status</th><th>Elapsed</th><th>Response</th></tr></thead><tbody>${summary.turns.map((h) => `<tr><td>${esc(h.iteration_label || h.iteration)}</td><td>${esc(h.agent || "—")}<div class="muted small">${esc(h.model || h.requested_model || "Default model")}</div></td><td>${esc(phases[h.phase] || h.phase || h.status)}${h.error ? `<div class="fail-t small">${esc(h.error)}</div>` : ""}</td><td>${h.seconds == null ? "—" : elapsed(h.seconds)}</td><td>${h.response_bytes ? `<button class="link-btn" data-loop-handoffs="${esc(project)}" data-loop-unit="${esc(h.id)}">Read archived reply</button><div class="mono small muted">${esc(h.artifact?.path || "Awaiting publication")}</div>` : "No reply yet"}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No turns have started.</td></tr>'}</tbody></table></div>`}</div>`;
   }).join("");

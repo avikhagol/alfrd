@@ -124,23 +124,31 @@ def resolve_alias(name: str, aliases: Mapping[str, Any]) -> str:
     return name
 
 
-def studio_manifest(root: str | Path) -> dict[str, Any]:
-    """alfrd.yaml merged with its template (steps as a ``{id: definition}`` mapping)."""
+def studio_manifest(root: str | Path, *, strict: bool = False) -> dict[str, Any]:
+    """alfrd.yaml merged with its template (steps as a ``{id: definition}`` mapping).
+
+    ``strict``: an alfrd.yaml that does not parse raises ManifestError (see manifest_data).
+    """
     from alfrd.manifest_default import manifest_data
 
-    manifest, _path, _default = manifest_data(root)  # local alfrd.yaml, else the default one
+    manifest, _path, _default = manifest_data(root, strict=strict)  # local alfrd.yaml, else the default one
     name = template_name(manifest)
     template = _load_yaml(template_path(name)) if name and template_path(name) else {}
     merged: dict[str, Any] = copy.deepcopy(template)
     for key, value in manifest.items():
-        if key in {"project_settings", "overview", "results", "step_defaults", "views"} and isinstance(value, dict):
+        if key in {"project_settings", "overview", "results", "step_defaults", "views", "quickstart"} and isinstance(value, dict):
             merged[key] = {**(merged.get(key) or {}), **value}
         elif key == "artifacts" and isinstance(value, list):
             names = {a.get("name") for a in value if isinstance(a, dict)}
             merged[key] = [a for a in merged.get("artifacts") or [] if a.get("name") not in names] + value
         else:
             merged[key] = copy.deepcopy(value)
-    defs = dict(template.get("steps") or {})
+    defs = {k: dict(v) if isinstance(v, dict) else {} for k, v in (template.get("steps") or {}).items()}
+    # alfrd.yaml's own ``steps:`` mapping overrides the template's step definitions key by key.
+    own = manifest.get("steps") if isinstance(manifest.get("steps"), dict) else {}
+    for sid, spec in own.items():
+        if isinstance(spec, dict):
+            defs[sid] = {**defs.get(sid, {}), **spec}
     aliases = (merged.get("project_settings") or {}).get("field_aliases") or {}
     steps: dict[str, dict[str, Any]] = {}
     raw_steps = _step_list(manifest) or _step_list(template) or list(defs)
@@ -153,14 +161,35 @@ def studio_manifest(root: str | Path) -> dict[str, Any]:
         if isinstance(raw, dict):
             base.update({k: v for k, v in raw.items() if k not in {"id", "key", "name"}})
         steps[sid] = base
+    # ``skip: true`` (on a workflow step or in ``steps:``) leaves a template step out of the workflow.
+    skipped = [sid for sid in order if (steps.get(sid) or {}).get("skip") is True]
+    steps = {sid: spec for sid, spec in steps.items() if sid not in skipped}
+    order = [sid for sid in order if sid not in skipped]
+    for spec in steps.values():
+        for key in ("depends_on", "needs", "after"):
+            if isinstance(spec.get(key), list):
+                spec[key] = [d for d in spec[key] if d not in skipped]
     merged["steps"] = steps
     merged["step_order"] = order
+    merged["skipped_steps"] = skipped
     merged["template"] = name
     workflows = merged.get("workflows") or []
     workflow = workflows[0] if isinstance(workflows, list) and workflows else next(iter(workflows.values()), {}) if isinstance(workflows, dict) else {}
-    if isinstance(workflow, dict) and (workflow.get("repeat") is not None or "roles" in workflow or any("role" in s for s in steps.values())):
-        from alfrd.agent_loop import expand_steps
+    from alfrd.agent_loop import expand_steps, is_sequence, sequence_passes
 
+    if isinstance(workflow, dict) and is_sequence(workflow):
+        # Sequence items name workflow steps or entrypoints; labels come from top-level ``steps``.
+        labels = {**defs, **(manifest.get("steps") if isinstance(manifest.get("steps"), dict) else {})}
+        own = {resolve_alias(_step_id(s), aliases): s for s in workflow.get("steps") or [] if isinstance(s, dict)}
+        base: dict[str, dict[str, Any]] = {}
+        for item in dict.fromkeys(i for p in sequence_passes(workflow["repeat"]) for i in p):
+            base[item] = {**(labels.get(item) if isinstance(labels.get(item), dict) else {}),
+                          **{k: v for k, v in own.get(item, {}).items() if k not in {"id", "key", "name"}}}
+        merged["_base_steps"] = base
+        merged["steps"] = expand_steps(workflow, base)
+        merged["step_order"] = list(merged["steps"])
+    elif isinstance(workflow, dict) and (workflow.get("repeat") is not None or "roles" in workflow or any("role" in s for s in steps.values())):
+        merged["_base_steps"] = steps
         merged["steps"] = expand_steps(workflow, steps)
         merged["step_order"] = list(merged["steps"])
     return merged

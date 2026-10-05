@@ -289,7 +289,55 @@ class Parser {
     return out;
   }
 
+  // A quoted scalar continued over several lines (as PyYAML writes long strings):
+  // a line break folds to a space, each blank line to "\n", `\` ends a "…" line without one.
+  multiline(text, indent) {
+    const q = text[0];
+    const closed = (t) => {
+      for (let i = 1; i < t.length; i += 1) {
+        if (q === '"' && t[i] === "\\") { i += 1; continue; }
+        if (t[i] === q) {
+          if (q === "'" && t[i + 1] === "'") { i += 1; continue; }
+          return true;
+        }
+      }
+      return false;
+    };
+    if (closed(text)) return text;
+    let out = text.trimEnd(), newlines = 0;
+    while (this.i < this.lines.length) {
+      const raw = this.lines[this.i].raw;
+      const ind = raw.length - raw.trimStart().length;
+      if (raw.trim() !== "" && ind <= indent) break;
+      this.i += 1;
+      if (raw.trim() === "") { newlines += 1; continue; }
+      const part = raw.trim();
+      if (q === '"' && out.endsWith("\\") && !newlines) out = out.slice(0, -1) + part;
+      else out += (newlines ? "\n".repeat(newlines) : " ") + part;
+      newlines = 0;
+      if (closed(out)) return q === '"' ? out.replace(/\n/g, "\\n") : out;
+    }
+    return out;  // still open: scalar() reports the unterminated string
+  }
+
+  // A plain scalar continued on more-indented lines (PyYAML wraps long values):
+  // line breaks fold to spaces, blank lines to "\n".
+  plain(text, indent) {
+    let out = text, newlines = 0, j = this.i;
+    while (j < this.lines.length) {
+      const raw = stripComment(this.lines[j].raw);
+      if (raw.trim() === "") { newlines += 1; j += 1; continue; }
+      if (raw.length - raw.trimStart().length <= indent) break;
+      out += (newlines ? "\n".repeat(newlines) : " ") + raw.trim();
+      newlines = 0;
+      this.i = j += 1;
+    }
+    return out;
+  }
+
   scalarOrBlockScalar(text, indent, lineNo) {
+    if (text[0] === "'" || text[0] === '"') text = this.multiline(text, indent);
+    else if (!/^[[{|>&*!]/.test(text)) text = this.plain(text, indent);
     const m = /^([|>])([+-]?)$/.exec(text);
     if (!m) return inlineValue(text, lineNo);
     const folded = m[1] === ">";

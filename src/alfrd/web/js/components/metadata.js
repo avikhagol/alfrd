@@ -11,11 +11,12 @@ import { avicaIndex, codeChips, detachCode, ensureServerIndex, loadView, openAtt
 import { server } from "../data/server.js";
 import { scoped } from "../data/workspace.js";
 
-const UI_FIELDS = ["open", "closed", "code", "templateFolder", "filter"];
+const UI_FIELDS = ["open", "closed", "code", "templateFolder", "filter", "details"];
 // Per project: template folder, selected file, expanded sections and loaded view.
+// `details`: open/closed file disclosures (utils/keep_view.js).
 const ui = scoped("metadata", () => {
   const s = {
-    ...loadUi("metadata", { open: ["health", "meta", "config", "inputs"], closed: [], code: {}, templateFolder: {}, filter: "" }),
+    ...loadUi("metadata", { open: ["health", "meta", "config", "inputs"], closed: [], code: {}, templateFolder: {}, filter: "", details: {} }),
     wd: null,
     wdKey: null,
     view: { key: null, html: "" }, // generic view (alfrd serve)
@@ -25,6 +26,7 @@ const ui = scoped("metadata", () => {
   };
   s.open = new Set(s.open);
   s.closed = new Set(s.closed);
+  if (!s.details || typeof s.details !== "object") s.details = {};
   if (s.open.has("hdu")) s.open.add("health");
   return s;
 });
@@ -32,8 +34,16 @@ const remember = () => saveUi("metadata", ui, UI_FIELDS);
 
 let avica = null; // metadata_avica.js once loaded
 let panels = null; // panels.js once loaded
-const loadAvica = () => import("./metadata_avica.js").then((m) => { m.useState(ui); avica = m; return m; });
-const loadPanels = () => import("./panels.js").then((m) => { panels = m; return m; });
+let kept = null; // utils/keep_view.js: loaded with either, before any panel is shown
+const loadKept = () => import("../utils/keep_view.js").then((m) => { kept = m; });
+const loadAvica = () => Promise.all([import("./metadata_avica.js"), loadKept()]).then(([m]) => { m.useState(ui); avica = m; return m; });
+const loadPanels = () => Promise.all([import("./panels.js"), loadKept()]).then(([m]) => { panels = m; return m; });
+
+/** Put a render into #md-main keeping open/closed disclosures and the reading position. */
+function show(main, html, scope) {
+  if (!kept) { main.innerHTML = html; return; }
+  if (kept.showKept(main, html, scope, ui, $("#main"))) remember();
+}
 
 const generic = (ctx, t) => ctx.state.mode === "server" && ctx.state.trees?.[t.project]?.provider === "server";
 
@@ -42,6 +52,7 @@ export function mount(el, ctx) {
   el.addEventListener("toggle", (e) => {
     const d = e.target;
     if (!(d instanceof HTMLDetailsElement)) return;
+    if (kept?.noteDetailToggle(e, ui.details)) { remember(); return; }
     if (d.dataset.pn) { d.open ? ui.closed.delete(d.dataset.pn) : ui.closed.add(d.dataset.pn); remember(); return; }
     if (!d.dataset.sec) return;
     d.open ? ui.open.add(d.dataset.sec) : ui.open.delete(d.dataset.sec);
@@ -96,7 +107,7 @@ export function render(el, ctx) {
     return;
   }
   if (generic(ctx, t)) { renderGeneric(el, ctx, t, head, main); return; }
-  if (avica) { avica.renderFolder(el, ctx, { activeCode, rerender: () => render(el, ctx) }); return; }
+  if (avica) { avica.renderFolder(el, ctx, { activeCode, rerender: () => render(el, ctx), show }); return; }
   main.innerHTML = `<div class="card empty">Loading…</div>`;
   loadAvica().then(() => render(el, ctx)).catch((error) => { main.innerHTML = `<div class="card empty">${esc(error.message)}</div>`; });
 }
@@ -115,9 +126,11 @@ function renderGeneric(el, ctx, t, head, main) {
   const [projectCode, workdir] = code ? String(code).split("/") : [];
   const entity = { project: t.project, target: t.name, project_code: projectCode, workdir };
   const gen = `${workdirGeneration(t.project)}|${Object.keys(index?.codes || {}).length}|${ui.templateFolder[t.id] || ""}`;
-  const key = `${t.id}|${JSON.stringify(entity)}|${gen}`;
+  const scope = `${t.project}|${t.id}|${JSON.stringify(entity)}|${ui.templateFolder[t.id] || ""}`;
+  const key = `${scope}|${gen}`;
   if (ui.view.key !== key) {
-    ui.view = { key, html: `<div class="card empty">Reading ${esc(t.name)}…</div>` };
+    // A live update re-reads the same context: keep the current render until the new one is ready.
+    ui.view = ui.view.scope === scope ? { ...ui.view, key } : { key, scope, html: `<div class="card empty">Reading ${esc(t.name)}…</div>` };
     Promise.all([loadView(ctx, t.project, entity), panels || loadPanels()])
       .then(async ([view, mod]) => {
         const client = (view.panels || []).some((p) => p.instances?.[0]?.client) ? (avica || await loadAvica()) : null;
@@ -131,6 +144,6 @@ function renderGeneric(el, ctx, t, head, main) {
   const attach = index && !codes.length
     ? `<div class="card"><p class="callout info small">${icon("info")}<span>No work folder is attached to <b>${esc(t.name)}</b> (nothing under <code>${esc(index.targetDir || "target_dir")}/</code> names it).</span> <button class="btn sm" data-attach>${icon("link")} Attach folder…</button></p></div>`
     : "";
-  main.innerHTML = attach + ui.view.html;
+  show(main, attach + ui.view.html, scope);
   ctx.setFooterRight(`${esc(t.name)} · views.metadata`);
 }

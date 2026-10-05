@@ -1,7 +1,4 @@
-// Resource usage of plan commands (alfrd.runtime.usage): live sparklines of one
-// command (tailing its .usage.jsonl like a log) and a per-step table across
-// targets. Loaded with import() on first use.
-
+// On-demand resource and token usage for plan commands.
 import { $, esc, icon, bytes, short, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
 
@@ -12,12 +9,10 @@ const median = (xs) => {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 };
 
-/** Parse .usage.jsonl text (bad lines skipped). */
 export function parseUsage(text) {
   return String(text || "").split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((r) => r && Number.isFinite(r.t));
 }
 
-/** Inline SVG sparkline of `key` over `rows` (t on x). */
 export function spark(rows, key, { w = 320, h = 56, cls = "" } = {}) {
   if (rows.length < 2) return `<svg class="spark ${cls}" width="${w}" height="${h}" role="img" aria-label="not enough samples yet"></svg>`;
   const t0 = rows[0].t;
@@ -35,7 +30,28 @@ function summaryHtml(u) {
     ${u.limited ? '<p class="muted small">Not Linux: wall time only.</p>' : ""}${u.cgroup_memory_peak ? `<p class="muted small">systemd-run unit memory.peak: ${bytes(u.cgroup_memory_peak)} (whole runner)</p>` : ""}`;
 }
 
-/** One command: live sparklines (cores, memory) while it runs, then its summary. */
+const tokenKeys = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "total_tokens"];
+const number = (value) => Number.isFinite(value) ? value.toLocaleString() : "—";
+const cost = (value) => Number.isFinite(value) ? `$${value.toFixed(4)}` : "—";
+
+// Missing metrics remain unknown.
+export function agentTotals(units) {
+  const sum = (values) => {
+    const known = values.filter(Number.isFinite);
+    return known.length ? known.reduce((a, b) => a + b, 0) : null;
+  };
+  return { ...Object.fromEntries(tokenKeys.map((key) => [key, sum(units.map((u) => u.agent_usage?.[key]))])),
+    total_cost_usd: sum(units.map((u) => u.total_cost_usd)) };
+}
+
+export function agentUsageHtml(units, planTotals = null) {
+  const agents = units.filter((u) => u.handoff || u.agent || Object.hasOwn(u, "agent_usage"));
+  if (!agents.length) return "";
+  const cells = (usage, totalCost) => tokenKeys.map((key) => `<td class="tabular">${esc(number(usage?.[key]))}</td>`).join("") + `<td class="tabular">${esc(cost(totalCost))}</td>`;
+  const totals = planTotals || agentTotals(agents);
+  return `<h4>Agent token usage</h4><table class="tbl small"><thead><tr><th>Turn</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache creation</th><th>Total tokens</th><th>Cost (USD)</th></tr></thead><tbody>${agents.map((u) => `<tr><td class="mono">${esc(u.id || u.agent || "Turn")}</td>${cells(u.agent_usage, u.total_cost_usd)}</tr>`).join("")}</tbody><tfoot><tr><th>${planTotals || agents.length > 1 ? "Plan" : "Turn"} total (reported)</th>${cells(totals, totals.total_cost_usd)}</tr></tfoot></table><p class="muted small">— means unavailable. Totals sum reported values only.</p>`;
+}
+
 export function openUsage(ctx, project, unit, refresh = null) {
   loadCss("css/lazy.css");
   let timer = null;
@@ -50,7 +66,7 @@ export function openUsage(ctx, project, unit, refresh = null) {
         try { rows = parseUsage(await server.projectFile(project, unit.usage_file)); } catch { /* not written yet */ }
       }
       const last = rows[rows.length - 1];
-      box.innerHTML = `${summaryHtml(u.usage)}
+      box.innerHTML = `${agentUsageHtml([u])}${summaryHtml(u.usage)}
         <h5>Cores <span class="muted small">${last ? `now ${esc(last.cores)}` : ""}</span></h5>${spark(rows, "cores", { cls: "s-cpu" })}
         <h5>Memory <span class="muted small">${last ? `now ${bytes(last.mem)}` : ""}</span></h5>${spark(rows, "mem", { cls: "s-mem" })}
         <p class="muted small">${rows.length} sample(s) · every ${esc(u.usage?.interval_s ?? "5")} s · summed over every process of the command, MPI ranks on this machine included (ranks on other nodes are not seen).</p>`;
@@ -61,7 +77,6 @@ export function openUsage(ctx, project, unit, refresh = null) {
   return close;
 }
 
-/** Per step: median / peak across the plan's finished commands. */
 export function usageTable(units) {
   const by = new Map();
   units.filter((u) => u.usage && u.status !== "running").forEach((u) => (u.steps || []).slice(0, 1).forEach((st) => {
@@ -80,7 +95,7 @@ export function openUsageTable(ctx, project, status) {
   loadCss("css/lazy.css");
   const rows = usageTable(status?.units || []);
   ctx.modal(`<header class="modal-h"><h2>${icon("graph")} Resource usage per step · <span class="mono">${esc(status?.plan?.id || "")}</span></h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b">${rows.length ? `<table class="tbl small"><thead><tr><th>Step</th><th>Commands</th><th>Median wall</th><th>Median cores</th><th>Median peak memory</th><th>Highest peak</th><th>CPU total</th></tr></thead><tbody>
+    <div class="modal-b">${agentUsageHtml(status?.units || [], status?.agent_totals)}${rows.length ? `<table class="tbl small"><thead><tr><th>Step</th><th>Commands</th><th>Median wall</th><th>Median cores</th><th>Median peak memory</th><th>Highest peak</th><th>CPU total</th></tr></thead><tbody>
       ${rows.map((r) => `<tr><td class="mono">${esc(r.step)}</td><td class="tabular">${r.n}</td><td class="tabular">${esc(short(r.wall || 0))}</td><td class="tabular">${esc(r.cores ?? "—")}</td><td class="tabular">${bytes(r.mem || 0)}</td><td class="tabular">${bytes(r.peak || 0)}</td><td class="tabular">${esc(short(r.cpu))}</td></tr>`).join("")}</tbody></table>`
       : '<p class="muted small">No finished command has a usage summary yet (plans started with ALFRD 0.2.0.8 record one).</p>'}
       <p class="muted small">Per command, summed over all its processes on this machine (MPI ranks included); open a command's usage from its row for the curves.</p></div>`, null, "wide");

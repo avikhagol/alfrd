@@ -39,3 +39,10 @@ def isolated_alfrd_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             except ValueError:
                 continue
             sys.modules.pop(name, None)
+
+
+@pytest.fixture(autouse=True)
+def no_real_web_server(monkeypatch: pytest.MonkeyPatch):
+    """`alfrd serve` in tests: the (fake) app's run() stands in for waitress, which would block."""
+    monkeypatch.setattr("alfrd.cli._serve_production",
+                        lambda app, host, port: app.run(host=host, port=port, debug=False))

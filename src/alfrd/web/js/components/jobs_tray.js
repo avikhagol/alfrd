@@ -47,7 +47,7 @@ export function openJobs(ctx) {
           <div class="muted small"><span class="mono">Run ${esc(r.run)}</span>${r.workflow ? ` · ${esc(r.workflow)}` : ""} · ${esc(r.elapsed)}</div></div>
         <span class="badge tone-${TONE[r.status] || "muted"}">${icon(r.status === "Running" ? "sync" : "hourglass")}${esc(r.status)}</span>
         <button class="btn sm" data-job-open="${esc(r.project)}">${icon("folder")} Open project</button>
-        <button class="btn sm" data-job-log="${esc(r.log)}" data-job-project="${esc(r.project)}">${icon("terminal")} View log</button></li>`).join("")
+        <button class="btn sm" data-job-log="${esc(r.log)}" data-job-project="${esc(r.project)}">${icon("log")} View log</button></li>`).join("")
       : '<li class="muted">No active runs.</li>';
   };
   ctx.modal(`<header class="modal-h"><h2>${icon("play")} Jobs</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>

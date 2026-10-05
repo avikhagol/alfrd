@@ -10,6 +10,7 @@ the same loopback + CSRF gate as the rest of the dashboard.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -102,7 +103,8 @@ def create_project_api():
     try:
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
-                                    iterations=payload.get("iterations", DEFAULT_ITERATIONS))
+                                    iterations=payload.get("iterations", DEFAULT_ITERATIONS),
+                                    sequence=payload.get("sequence"))
     except FileExistsError as error:
         return _json_error(error, 409)
     except (ValueError, OSError, TypeError) as error:
@@ -142,8 +144,10 @@ def _project_root(project_name: str) -> Path:
     return root
 
 
-def _json_error(error: Exception, status: int):
-    return jsonify(error={"code": status, "message": str(error)}), status
+def _json_error(error: Exception, status: int, **extra):
+    """``{"error": {"code", "message", **extra}}``; e.g. ``reason="permission"`` tells
+    a filesystem 403 apart from the session/CSRF 403s raised by ``require_local_csrf``."""
+    return jsonify(error={"code": status, "message": str(error), **extra}), status
 
 
 @studio_api.get("/studio/avica/<project_name>/layout")
@@ -364,7 +368,7 @@ def live_events():
             hub.unsubscribe(sub)
 
     return Response(stream(), mimetype="text/event-stream", headers={
-        "Cache-Control": "no-store", "X-Accel-Buffering": "no", "Connection": "keep-alive",
+        "Cache-Control": "no-store", "X-Accel-Buffering": "no",
     })
 
 
@@ -414,6 +418,35 @@ def project_manifest_save(project_name: str):
         return _json_error(error, 400)
     _poke(project_name)
     return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
+
+
+@studio_api.get("/studio/projects/<project_name>/quickstart")
+def project_quickstart(project_name: str):
+    """Setup forms declared under ``quickstart:`` (template or alfrd.yaml), with current values."""
+    from alfrd import quickstart
+
+    try:
+        return jsonify(forms=quickstart.forms(_project_root(project_name)))
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+
+
+@studio_api.post("/studio/projects/<project_name>/quickstart/<form_id>")
+def project_quickstart_apply(project_name: str, form_id: str):
+    """Write a setup form's changed values (loopback + CSRF). Body ``{"values": {field: value}}``."""
+    from alfrd import quickstart
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", form_id):
+        return _json_error(ValueError("bad form id"), 400)
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = quickstart.apply(_project_root(project_name), form_id, payload.get("values") or {})
+    except quickstart.QuickstartError as error:
+        return jsonify(error={"code": 400, "message": str(error)}, field_errors=error.errors), 400
+    except (ValueError, OSError) as error:
+        return _json_error(error, 400)
+    _poke(project_name)
+    return jsonify(result)
 
 
 @studio_api.post("/studio/avica/<project_name>/config")
@@ -468,7 +501,6 @@ def avica_config_update(project_name: str):
 ACTIVE_PLAN_STATUSES = ("running", "paused", "interrupted")
 REMOVAL_ACTIVE_REASON = "Stop this project's active runs before removing it."
 REMOVAL_READONLY_REASON = "Project removal is available only in a writable local Studio session."
-DELETION_SCOPE_MISSING = "Deletion scope has not been configured"
 
 
 def _project_active_jobs(row, active_run_ids=()) -> list[dict]:
@@ -502,13 +534,137 @@ def _removal_preview(service, project_name: str) -> dict:
     reason = None if writable else REMOVAL_READONLY_REASON
     if writable and active:
         reason = REMOVAL_ACTIVE_REASON
+    scope = _delete_scope(service, row)
     return {
         "identifier": row.identifier, "name": row.name, "root_path": row.root_path,
         "counts": counts, "active_jobs": active, "active_job_count": len(active),
         "can_remove": reason is None, "reason": reason,
-        "mutations_enabled": writable, "delete_scope": None,
-        "delete_reason": DELETION_SCOPE_MISSING + ".",
+        "mutations_enabled": writable, "delete_scope": scope, "delete_reason": None,
     }
+
+
+DELETE_FILE_CAP = 200_000
+ALFRD_FILES = ("alfrd.yaml", "alfrd.yaml.bak", ".alfrd.yaml", ".alfrd.yaml.bak", "alfrd.plan.csv", "alfrd.plan.csv.bak",
+               "alfrd.targets.csv", "alfrd.targets.csv.bak", "alfrd.notes.jsonl",
+               ".alfrd_project.yaml", ".alfrd_workflow.yaml", "alfrd.db")
+#: Project state inside ``.alfrd/`` (removed one by one when ``.alfrd`` also holds global state).
+ALFRD_STATE_DIRS = ("plans", "history", "locks", "tmp")
+
+
+def _alfrd_files(root: Path, database: Path | None) -> list[Path]:
+    """ALFRD's own files in a project folder: manifest, plan/targets/notes, ``.alfrd/`` and task bookkeeping.
+
+    Task files, handoffs, worktrees, results and data are never in this list.
+    """
+    found: set[Path] = set()
+
+    def add(path: Path) -> None:
+        if (path.exists() or path.is_symlink()) and path.parent.resolve().is_relative_to(root):
+            found.add(path)
+
+    for name in ALFRD_FILES:
+        add(root / name)
+    try:  # configured names (execution.plan_csv, targets.csv), when they live in the folder
+        from alfrd.execution import load_execution
+        from alfrd import targets_csv as tc
+
+        for path in (load_execution(root).plan_csv, tc.load_spec(root).csv):
+            path = Path(path)
+            if path.resolve().is_relative_to(root) and path.resolve() != root:
+                add(path)
+                add(path.with_name(path.name + ".bak"))
+    except Exception:  # noqa: BLE001 - a broken manifest still has the default names above
+        pass
+    state = root / ".alfrd"
+    if state.is_dir() and not state.is_symlink():
+        shared = root == Path.home().resolve() or (database is not None and database.is_relative_to(state))
+        if shared:
+            for name in ALFRD_STATE_DIRS:
+                add(state / name)
+        else:
+            add(state)
+    for pattern in (".alfrd-agent-loop*.lock", "*/.alfrd-task.json", "*/.alfrd-agent-loop*.lock", "runs/*/.alfrd"):
+        for path in root.glob(pattern):
+            if not path.parent.is_symlink():
+                add(path)
+    return sorted(found)
+
+
+def _delete_scope(service, row) -> dict:
+    """What Delete would remove, in both modes.
+
+    Default: ALFRD's files (``alfrd_files``) and the database entry; the folder and its
+    other files stay. ``all_files``: the whole folder, refused for a symlinked folder, a
+    top-level folder, the home folder or one containing it, the folder holding the
+    runtime database, and a folder containing another registered project.
+    """
+    import os
+
+    out = {"path": row.root_path, "exists": False, "alfrd_files": [], "files": 0, "bytes": 0, "truncated": False,
+           "git_repository": False, "allowed": True, "all_files_allowed": False, "all_files_reason": None}
+    if not row.root_path:
+        out["all_files_reason"] = "This project has no folder on record."
+        return out
+    raw = Path(row.root_path).expanduser()
+    root = raw.resolve()
+    out["path"] = str(root)
+    database = getattr(getattr(service, "store", None), "database", None)
+    database = Path(database).expanduser().resolve() if database and str(database) != ":memory:" else None
+    if not root.exists():
+        out["all_files_allowed"] = True  # already gone: deleting only forgets it
+        return out
+    if not root.is_dir():
+        out["all_files_reason"] = "The project path is not a folder."
+        return out
+    out["exists"] = True
+    out["alfrd_files"] = [str(p.relative_to(root)) + ("/" if p.is_dir() and not p.is_symlink() else "") for p in _alfrd_files(root, database)]
+    home = Path.home().resolve()
+    others = [Path(p.root_path).expanduser().resolve() for p in service.list_projects()
+              if p.root_path and p.identifier != row.identifier]
+    reason = None
+    if raw.is_symlink():
+        reason = "The project folder is a symbolic link; delete its target yourself."
+    elif len(root.parts) <= 2:
+        reason = f"{root} is a top-level folder; ALFRD will not delete it."
+    elif root == home or home.is_relative_to(root):
+        reason = "The project folder is (or contains) your home folder."
+    elif database and database.is_relative_to(root):
+        reason = "The project folder contains the runtime database."
+    elif any(o != root and o.is_relative_to(root) for o in others):
+        inner = next(o for o in others if o != root and o.is_relative_to(root))
+        reason = f"The project folder contains another project ({inner}); remove that one first."
+    out["all_files_reason"] = reason
+    out["all_files_allowed"] = reason is None
+    if reason is None:
+        out["git_repository"] = (root / ".git").exists()
+        for folder, _dirs, files in os.walk(root, followlinks=False):
+            for name in files:
+                out["files"] += 1
+                try:
+                    out["bytes"] += (Path(folder) / name).lstat().st_size
+                except OSError:
+                    pass
+            if out["files"] >= DELETE_FILE_CAP:
+                out["truncated"] = True
+                break
+    return out
+
+
+def _forget(service, project_name: str, row) -> dict:
+    """Drop a project from the runtime database and this server's scope (files untouched)."""
+    counts = service.forget_project(row.identifier or project_name)
+    forgotten = current_app.extensions.setdefault("alfrd_forgotten", [])
+    root = str(Path(row.root_path).expanduser().resolve()) if row.root_path else None
+    if root and not any(f["root"] == root for f in forgotten):
+        forgotten.append({"root": root, "name": row.name, "identifier": row.identifier})
+    # The scope may hold the identifier or the (legacy) name: drop every alias.
+    aliases = {project_name, row.identifier, row.name} - {None, ""}
+    scope = current_app.config.get("STUDIO_PROJECTS")
+    if isinstance(scope, list):
+        scope[:] = [key for key in scope if key not in aliases]
+    if current_app.config.get("STUDIO_DEFAULT_PROJECT") in aliases:
+        current_app.config["STUDIO_DEFAULT_PROJECT"] = None
+    return counts
 
 
 @studio_api.get("/studio/projects/<project_name>/removal-preview")
@@ -527,20 +683,77 @@ def project_removal_preview(project_name: str):
 
 @studio_api.post("/studio/projects/<project_name>/delete")
 def project_delete(project_name: str):
-    """Permanent deletion (loopback + CSRF). No deletion scope is configured, so it always refuses (409).
+    """Delete a project (loopback + CSRF): ALFRD's files and the database entry.
 
-    Nothing on disk or in the database is touched.
+    Body ``{"confirm": "<project name>", "all_files": false}``: the exact project name,
+    typed by the person. ``all_files: true`` deletes the whole project folder instead
+    (refused for folders ``_delete_scope`` marks unsafe). Refused while runs are active.
     """
+    import shutil
+
     from alfrd.runtime import RuntimeNotFound
 
     service = current_app.config.get("RUNTIME_SERVICE")
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
     try:
-        service.get_project_by_selector(project_name)
+        preview = _removal_preview(service, project_name)
+        row = service.get_project_by_selector(project_name)
     except RuntimeNotFound as error:
         return _json_error(error, 404)
-    return _json_error(RuntimeError(DELETION_SCOPE_MISSING), 409)
+    if not preview["mutations_enabled"]:
+        return _json_error(PermissionError(REMOVAL_READONLY_REASON), 403)
+    if preview["active_jobs"]:
+        return _json_error(RuntimeError(REMOVAL_ACTIVE_REASON), 409)
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirm") != row.name:
+        return _json_error(ValueError("Type the project name exactly to confirm deletion."), 400)
+    all_files = payload.get("all_files") is True
+    scope = _delete_scope(service, row)
+    if all_files and not scope["all_files_allowed"]:
+        return _json_error(PermissionError(scope["all_files_reason"]), 409)
+    root = Path(scope["path"]) if scope["path"] else None
+    errors: list[str] = []
+    removed: list[str] = []
+    if root is not None and root.exists():
+        onerror = lambda _f, path, exc: errors.append(f"{path}: {exc[1]}")  # noqa: E731
+        if all_files:
+            from alfrd import workspaces
+
+            repository = workspaces.repository(root.parent) if root.parent.exists() else None
+            shutil.rmtree(root, onerror=onerror)
+            removed = ["."]
+            if repository and repository.exists():
+                subprocess.run(["git", "-C", str(repository), "worktree", "prune"], capture_output=True, timeout=60, check=False)
+        else:
+            for rel in scope["alfrd_files"]:
+                path = root / rel.rstrip("/")
+                try:
+                    if path.is_dir() and not path.is_symlink():
+                        shutil.rmtree(path, onerror=onerror)
+                    else:
+                        path.unlink()
+                    removed.append(rel)
+                except OSError as exc:
+                    errors.append(f"{path}: {exc}")
+            # Runtime run folders (runs/<id>) that held only ALFRD state are now empty.
+            runs = root / "runs"
+            if runs.is_dir() and not runs.is_symlink():
+                for folder in [*runs.iterdir(), runs]:
+                    if folder.is_dir() and not folder.is_symlink():
+                        try:
+                            folder.rmdir()  # only when empty
+                        except OSError:
+                            pass
+    if errors:
+        return _json_error(OSError(f"Could not delete everything ({len(errors)} errors), first: {errors[0]}"), 500)
+    counts = _forget(service, project_name, row)
+    # A deleted project cannot be rediscovered.
+    forgotten = current_app.extensions.get("alfrd_forgotten", [])
+    forgotten[:] = [f for f in forgotten if f["root"] != scope["path"]]
+    return jsonify(deleted=project_name, identifier=row.identifier, name=row.name, path=scope["path"],
+                   all_files=all_files, removed=removed, files=scope["files"] if all_files else len(removed),
+                   bytes=scope["bytes"] if all_files else None, **counts)
 
 
 @studio_api.post("/studio/projects/<project_name>/forget")
@@ -558,21 +771,9 @@ def project_forget(project_name: str):
         if preview["active_jobs"]:
             return _json_error(RuntimeError(REMOVAL_ACTIVE_REASON), 409)
         row = service.get_project_by_selector(project_name)
-        counts = service.forget_project(row.identifier or project_name)
+        counts = _forget(service, project_name, row)
     except RuntimeNotFound as error:
         return _json_error(error, 404)
-    # Remembered for this server's lifetime so Studio settings → Rediscover can restore it.
-    forgotten = current_app.extensions.setdefault("alfrd_forgotten", [])
-    root = str(Path(row.root_path).expanduser().resolve()) if row.root_path else None
-    if root and not any(f["root"] == root for f in forgotten):
-        forgotten.append({"root": root, "name": row.name, "identifier": row.identifier})
-    # The scope may hold the identifier or the (legacy) name: drop every alias.
-    aliases = {project_name, row.identifier, row.name} - {None, ""}
-    scope = current_app.config.get("STUDIO_PROJECTS")
-    if isinstance(scope, list):
-        scope[:] = [key for key in scope if key not in aliases]
-    if current_app.config.get("STUDIO_DEFAULT_PROJECT") in aliases:
-        current_app.config["STUDIO_DEFAULT_PROJECT"] = None
     return jsonify(forgotten=project_name, identifier=row.identifier, name=row.name, **counts)
 
 
@@ -718,8 +919,9 @@ def _manifest_name(folder: Path, manifest: Path) -> str | None:
 def fs_list():
     """Sub-folders of ``path`` on the server (``?path=&hidden=1``), marking ALFRD projects.
 
-    ``{path, parent, home, start, entries: [{name, path, is_project, manifest_name?, is_ms}], truncated}``.
+    ``{path, parent, home, start, writable, entries: [{name, path, is_project, manifest_name?, is_ms}], truncated}``.
     Files are never listed; ``*.ms`` folders are listed but not meant to be opened.
+    ``writable`` is a hint for New folder (``os.access``); mkdir may still fail.
     """
     import os
 
@@ -776,8 +978,66 @@ def fs_list():
     return jsonify(
         path=str(folder), parent=parent, home=str(Path.home()), start=str(_fs_default_path().resolve()),
         is_project=here is not None, manifest_name=_manifest_name(folder, here) if here else None,
-        entries=entries, truncated=truncated,
+        writable=os.access(folder, os.W_OK), entries=entries, truncated=truncated,
     )
+
+
+def _fs_child_name(name) -> str:
+    """One new folder name: a single path component, kept exactly as typed."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name is required")
+    if name in {".", ".."} or any(c in name for c in ("/", "\\", "\0")):
+        raise ValueError(f"{name!r} is not a single folder name")
+    if Path(name).name != name or len(Path(name).parts) != 1:
+        raise ValueError(f"{name!r} is not a single folder name")
+    return name
+
+
+@studio_api.post("/studio/fs/mkdir")
+def fs_mkdir():
+    """Create one folder ``{parent, name}`` on the server (Browse → New folder; loopback + CSRF).
+
+    201 ``{path, name, parent}``. 400 bad payload or name, 404 parent missing or
+    not a folder, 409 a file or folder of that name exists, 403 filesystem
+    permission (``error.reason == "permission"``); session/CSRF/mutation-policy
+    403s come from ``require_local_csrf`` and carry no ``reason``.
+    Missing ancestors are never created.
+    """
+    import errno
+
+    from alfrd.gui.security import require_local_csrf
+
+    require_local_csrf()
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error(ValueError("expected a JSON object {parent, name}"), 400)
+    raw = payload.get("parent")
+    if not isinstance(raw, str) or not raw.strip():
+        return _json_error(ValueError("parent is required"), 400)
+    try:
+        name = _fs_child_name(payload.get("name"))
+        folder = Path(raw).expanduser().resolve()
+    except ValueError as error:
+        return _json_error(error, 400)
+    except (OSError, RuntimeError) as error:
+        return _json_error(ValueError(f"Bad path {raw!r}: {error}"), 400)
+    if not folder.is_dir():
+        return _json_error(FileNotFoundError(f"{folder} does not exist or is not a folder"), 404)
+    target = folder / name
+    try:
+        target.mkdir()
+    except FileExistsError:
+        kind = "folder" if target.is_dir() else "file"
+        return _json_error(FileExistsError(f"A {kind} named {name!r} already exists in {folder}"), 409)
+    except PermissionError:
+        return _json_error(PermissionError(f"Permission denied: cannot create a folder in {folder}"), 403, reason="permission")
+    except (FileNotFoundError, NotADirectoryError):
+        return _json_error(FileNotFoundError(f"{folder} does not exist or is not a folder"), 404)
+    except OSError as error:
+        if error.errno == errno.EROFS:  # read-only file system: same answer as a permission error
+            return _json_error(PermissionError(f"Read-only file system: cannot create a folder in {folder}"), 403, reason="permission")
+        return _json_error(OSError(f"Cannot create {target}: {error.strerror or error}"), 400)
+    return jsonify(path=str(target), name=name, parent=str(folder)), 201
 
 
 @studio_api.post("/studio/quit")

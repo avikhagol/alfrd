@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 globalThis.document = { hidden: false, addEventListener() {} };
 const { server } = await import("../../src/alfrd/web/js/data/server.js");
-const { loadPlan, renderSchedule, planAct, RUN_MODE, RUN_FAILURE, CELL, RUN_STATUS } = await import("../../src/alfrd/web/js/components/plans.js");
+const { loadPlan, activePlan, openRunDialog, renderSchedule, planAct, RUN_MODE, RUN_FAILURE, CELL, RUN_STATUS } = await import("../../src/alfrd/web/js/components/plans.js");
 const { STEP_STATUS } = await import("../../src/alfrd/web/js/data/model.js");
 const { renderHome } = await import("../../src/alfrd/web/js/components/overview.js");
 const { showRun } = await import("../../src/alfrd/web/js/components/canvas.js");
@@ -40,7 +40,7 @@ test("a finished run offers results and logs for that run", async () => {
   try { await loadPlan(ctx, "finished-test"); } finally { server.planStatus = old; }
   renderSchedule(box, ctx, "finished-test");
   assert.match(box.innerHTML, /href="#\/results">View results/);
-  assert.match(box.innerHTML, /data-plan="logs">View logs/);
+  assert.match(box.innerHTML, /data-plan="logs"><svg [^>]*>.*<\/svg> View logs/);
   let filter;
   ctx.openLogs = (opts) => filter = opts;
   await planAct(ctx, "finished-test", "logs");
@@ -121,4 +121,36 @@ test("Overview uses the shared label for every run status", async () => {
       assert.ok(box.innerHTML.includes(`<span>${label}</span>`), `${status}: ${label}`);
     }
   } finally { server.planStatus = old; }
+});
+
+
+test("active runs are scoped to the requested task across run history", async () => {
+  const ctx = context("task-scope"), old = server.planStatus;
+  server.planStatus = async () => ({
+    plan: { id: "idle", status: "finished", targets: ["fix-login"] },
+    plans: [{ id: "busy", status: "running", targets: ["task"] }],
+    table: { rows: [{ target: "fix-login" }] },
+  });
+  try {
+    await loadPlan(ctx, "task-scope");
+    assert.equal(activePlan("task-scope", "task").plan.id, "busy");
+    assert.equal(activePlan("task-scope", "fix-login"), null);
+  } finally { server.planStatus = old; }
+});
+
+
+test("Run fetches execution settings for the selected task before rendering", async () => {
+  const ctx = context("iterations-test"), old = server.executionInfo;
+  let requested, html;
+  ctx.toast = () => {};
+  ctx.modal = (value) => { html = value; };
+  server.executionInfo = async (project, target) => {
+    requested = { project, target };
+    return { configured: false, error: "test response" };
+  };
+  try {
+    await openRunDialog(ctx, "iterations-test", { target: "fix-login" });
+    assert.deepEqual(requested, { project: "iterations-test", target: "fix-login" });
+    assert.match(html, /test response/);
+  } finally { server.executionInfo = old; }
 });

@@ -77,7 +77,7 @@ function loopProjects(ctx) {
     if (tree.defs?.template === "agent-loop") return true;
     try {
       const workflows = parseYaml(tree.manifestText || "")?.workflows || [];
-      return Object.values(workflows).some((w) => w?.repeat && Object.values(w.steps || {}).some((s) => s?.handoff));
+      return Object.values(workflows).some((w) => w?.repeat && (w.repeat.sequence || Object.values(w.steps || {}).some((s) => s?.handoff)));
     } catch { return false; }
   }).map(([p]) => p);
 }
@@ -166,7 +166,7 @@ export function render(el, ctx) {
         <div><span>Failed items</span><b class="tabular ${st.failedItems ? "fail-t" : ""}">${st.failedItems}</b><small>${H ? "failed or partial attempts" : "targets whose latest attempt failed"}</small></div>
       </div></div>
     <div class="rs-grid">
-      <div class="card"><div class="row between"><h4>Step duration radar${one ? ` — <span class="mono">${esc(t.name)}</span>` : ""}</h4><span class="muted small">mean of ${H ? "all completed attempts" : "latest completed runs"} · √ scale</span></div>${radar(st)}</div>
+      <div class="card"><div class="row between"><h4>Step duration radar${one ? ` — <span class="mono">${esc(t.name)}</span>` : ""}</h4><span class="muted small" title="Each spoke is a step; its point is the average duration of ${H ? "every completed attempt of that step" : "the latest completed run of that step, per target"}. Distance from the centre grows with the square root of the time, so short steps stay visible next to long ones (half way out = a quarter of the longest step).">mean of ${H ? "all completed attempts" : "latest completed runs"} · √ scale</span></div>${radar(st)}</div>
       <div class="card">
         <h4>Calibration progress <span class="muted small">(unique targets · ${H ? "any" : "latest"} ${calStep} run)</span></h4>
         ${stacked([

@@ -9,11 +9,11 @@ or copy it. No results CSV import is needed. Connect through `alfrd serve` to re
 these records.
 
 Create a project with **+ New project** beside the header project picker.
-In **Project settings**, use **Settings fields** for name, description, loop
-iterations and timeout, or **Edit YAML file** for advanced configuration. Both
-views share an unsaved draft. Saving validates and writes `alfrd.yaml`; field edits
-reformat only the changed YAML section. Multiple repeating workflows use the YAML
-editor for their iteration counts.
+In **Project settings**, use **All settings** to edit every key in `alfrd.yaml` as a
+form (checkboxes, choices, numbers, lists; known keys that are not set show their
+defaults, and ↺ removes a key so its default applies), or **Edit YAML file** for raw
+text. Both views share an unsaved draft. Saving validates and writes `alfrd.yaml`; field edits
+reformat only the changed YAML section.
 
 The Studio is ALFRD's web UI. It is plain HTML/CSS/JS in `src/alfrd/web/`.
 
@@ -59,6 +59,8 @@ Server writes need a browser on the same machine (loopback) plus a CSRF token.
 - **No `alfrd.yaml`?** An AVICA folder (`avica.inp`, `avica.logs/`, `reductions/`) opens with the built-in default manifest (`name` = folder name; `ALFRD_DEFAULT_MANIFEST=/file.yaml` picks another). Project settings shows *default — not saved*; **Save** writes a local `alfrd.yaml`. Discovery only counts local files.
 - **Connect more:** Import → ALFRD server → **Browse…** lists the server's folders (not your laptop's — right for an SSH tunnel). Projects get a badge with their name. **Connect**, **Connect all projects here**, **Connect this folder** (no `alfrd.yaml`: uses the default; a parent's `alfrd.yaml` is never used), or **Use this folder** to fill the path. Keys: ↑/↓ move, Enter opens, Backspace goes up, Esc closes. Loopback browser only (CSRF-checked); hidden otherwise.
 - **Forget / Rediscover:** ⚙ Settings → Known projects. *Forget* removes a project from the list (files stay). **↻ Rediscover** brings back the serve folder, the projects found under it, and anything forgotten since the server started.
+- **Delete permanently:** the Remove dialog, after you type the project name exactly, deletes ALFRD's files — `alfrd.yaml` (and `.bak`), the plan, targets and notes files, `.alfrd/` (plans, history, locks), task bookkeeping (`<task>/.alfrd-task.json`) and runtime-run state (`runs/<id>/.alfrd`) — and forgets the project. Your task files, handoffs, worktrees, results and data stay. Tick **Delete all files and folders** (off by default) to delete the whole project folder instead; that is refused for a symlinked folder, a top-level folder, your home folder (or one containing it), the folder holding the runtime database, or a folder containing another registered project, and the dialog shows the size and warns about a git repository first. Both are refused while runs are active.
+- **Setup wizard:** a template can declare a setup wizard (`quickstart:` in alfrd.yaml). Overview → Get started → *Open the setup wizard* opens it as a dialog: the AVICA template fills in `avica.inp`, the agent-loop template the agents' commands, models, sequence and review in `alfrd.yaml`. Path fields have a Browse… button for server folders.
 - `--all-projects` shows every project ever connected.
 
 ---
@@ -110,13 +112,27 @@ Nothing about a pipeline is built into the Studio.
 | step `label`, `category`, `stage`, `description`, `icon` | How a step looks |
 | step `metadata:` | Metadata health checks |
 | step `logs:` | Step logs (Workflow → Logs, Logs view) |
+| step `skip: true` | Leaves a template step out: not shown, not in new plan CSVs, never run; the steps around it are chained |
 | `step_defaults.logs` | Logs added to every step |
 | artifacts with `kind: log` | Extra groups in the Logs view |
 | `overview.ms_path` | Overview "MS Storage Path" column |
 | `project_settings.field_aliases` | Old names → new names |
 
 The AVICA template: `src/alfrd/web/assets/templates/avica.yaml`.
-Your `alfrd.yaml` overrides any key in it.
+Your `alfrd.yaml` overrides any key in it, including single step definitions under `steps:`.
+
+To drop a step you don't use, set `skip: true` in either place:
+
+```yaml
+steps:
+  phaseshift: {skip: true}        # the project's own step definitions
+workflows:
+  - name: avica
+    steps: [preprocess_fitsidi, fits_to_ms, {id: phaseshift, skip: true}, avica_avg]
+```
+
+A `depends_on` (or `after: <step>`) naming a skipped step is ignored. On a step, `after:` with a number or
+duration (`+1h`, `90m`) is a start delay, not a dependency. Plan CSVs made before the change keep their column; mark its cells `skip`.
 
 ### Example step
 
@@ -269,3 +285,34 @@ Tests:
 python -m pytest -q
 node --test tests/studio_js/*.test.mjs
 ```
+
+## Setup forms (`quickstart:`)
+
+```yaml
+quickstart:
+  setup:                                  # form id; several forms are allowed
+    type: form
+    title: Set up AVICA
+    description: Shown above the fields.
+    target: {file: avica.inp}             # a key = value file in the project folder, or alfrd.yaml
+    fields:
+      folder_for_fits: {type: path, label: Raw FITS-IDI folder, required: true, help: Folder with the FITS files.}
+      casadir: path                       # short form: just the type
+      use_local_antab: {type: toggle, default: true}
+      rpicard.mpi_cores: {type: number, min: 1, max: 64}
+      mode: {type: select, options: [auto, off]}
+      artifact_dirs: {type: list}
+```
+
+| Type | Control | Written as |
+|---|---|---|
+| `textbox` (`text`), `textarea` | text | text |
+| `number` | number (`min`, `max`) | int or float |
+| `toggle` (`checkbox`) | checkbox | `True` / `False` |
+| `path` | text + Browse… (server folders); `pick: program` checks the server's PATH instead | text; `must_exist: true` refuses missing paths, otherwise a note |
+| `select` | `options:` | the chosen option |
+| `list` | comma-separated text | a list |
+
+Other field settings: `label`, `help`, `placeholder`, `required`, `default` (shown when the file has no value).
+For a `key = value` file the field key is the key (`<step>.<param>` allowed); only changed values are written and other lines and comments stay. For `alfrd.yaml` the key is a dotted path, where a list segment is an index or an item's `name` (`entrypoint.claude.model`, `workflows.0.repeat.iterations`); an emptied optional field removes the key. Only the changed top-level sections are rewritten, the result must validate and load, or nothing is saved. A project's `quickstart:` overrides its template's forms one by one. API: `GET /api/studio/projects/<p>/quickstart`, `POST …/quickstart/<form>` with `{"values": {...}}` (loopback + CSRF).
+

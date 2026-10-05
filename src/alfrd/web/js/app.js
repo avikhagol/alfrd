@@ -1,5 +1,5 @@
 
-import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi, resetUi } from "./utils/dom.js";
+import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi } from "./utils/dom.js";
 import { stepParamsFromConfig } from "./data/avica.js";
 import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
@@ -30,7 +30,7 @@ const VIEWS = [
   { id: "workflow", label: "Workflow", icon: "workflow", mod: canvas },
   { id: "metadata", label: "Metadata", icon: "metadata", mod: metadata },
   { id: "results", label: "Results", icon: "results", mod: results },
-  { id: "logs", label: "Logs", icon: "logs", mod: logs },
+  { id: "logs", label: "Logs", icon: "log", mod: logs },
   { id: "config", label: "Settings", icon: "project", mod: config },
 ];
 
@@ -72,7 +72,7 @@ let renderQueued = false;
 let renderFrame = 0;
 
 
-const lazy = { targets: null, diagnostics: null, history: null, palette: null, search: null, notes: null, jobs: null };
+const lazy = { targets: null, diagnostics: null, history: null, palette: null, search: null, notes: null, jobs: null, settings: null };
 
 function scheduleRender() {
   if (renderQueued) return;
@@ -122,13 +122,18 @@ export const ctx = {
     setTimeout(() => el.classList.add("out"), tone === "fail" || tone === "warn" ? 8000 : 3600);
     setTimeout(() => el.remove(), tone === "fail" || tone === "warn" ? 8400 : 4000);
   },
-  openRun(project) { canvas.showRun(ctx, project); },
+  openRun(project, id = null) { canvas.showRun(ctx, project, id); },
   openLogs(opts = {}) { logs.showLogs(ctx, opts); },
+  /** Pick a folder on the ALFRD server (never the viewer's machine) into `input`; Create project still decides. */
   browseFolder(host, input) {
-    return mountFolderBrowser(host, { list: (path, opts) => server.listFolders(path, opts), start: input.value,
-      use: (path) => { input.value = path; host.hidden = true; input.focus(); },
-      connect: async (paths) => { input.value = paths[0]; host.hidden = true; input.focus(); },
-      close: () => { host.hidden = true; input.focus(); } });
+    const done = (path) => {
+      b.destroy();
+      if (path != null) { input.value = path; ["input", "change"].forEach((t) => input.dispatchEvent(new Event(t, { bubbles: true }))); }
+      input.focus();
+    };
+    const b = mountFolderBrowser(host, { list: (path, opts) => server.listFolders(path, opts), start: input.value.trim(), select: true,
+      use: done, connect: async (paths) => done(paths[0]), close: () => done(null) });
+    return b;
   },
   navigate(view, params = {}) {
     if (params.target) state.selectedTarget = params.target;
@@ -700,7 +705,7 @@ function openImport(tab = "files") {
         <span class="muted">alfrd.yaml decides what is read (template, layout, step logs, metadata)</span>
       </label>
       <div class="row gap wrap">
-        <button class="btn primary" data-act="pick-folder">${icon("folder")} Open project folder…</button>
+        <button class="btn primary" data-act="pick-folder">${icon("folder")} Open project folder on this computer…</button>
         <input type="file" id="imp-folder" webkitdirectory directory multiple hidden>
         <label class="btn">${icon("file")} Select files…<input type="file" id="imp-files" multiple hidden accept=".yaml,.yml,.csv,.tsv,.inp,.meta,.json,.log,.txt"></label>
         ${state.demoEnabled ? `<button class="btn" data-act="demo">${icon("sync")} Load demo data</button>` : ""}
@@ -1102,65 +1107,12 @@ function closeMenus() {
 }
 ctx.menu = menu;
 
-function openSettings() {
-  const sess = server.session || {};
-  const serverMode = state.mode === "server";
-  const liveNote = serverMode
-    ? (sess.live?.enabled === false ? "Off on this server (<code>alfrd serve --live-interval 0</code>)." : `The server checks every ${sess.live?.interval ?? 2} s while busy, ${sess.live?.idle ?? 5} s when idle.`)
-    : "The remembered folder is checked every 5–30 s.";
-  modal(`
-    <header class="modal-h"><h2>Studio</h2><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b set">
-      <div class="set-facts">
-        <div><span>Mode</span><b>${serverMode ? `alfrd ${esc(sess.version || "")}` : "Browser only"}</b><small>${serverMode ? `runtime ${sess.runtime_enabled ? "on" : "off"} · changes ${sess.mutations_enabled ? "allowed (this machine)" : "read-only"}` : "static files, no backend"}</small></div>
-        <div><span>Data</span><b>${esc(state.source)}</b></div>
-        <div><span>Saved in this browser</span><b>${bytes(storage.size())}</b></div>
-      </div>
-      ${serverMode ? `<section class="set-sec">
-        <div class="set-sec-h"><h3>${icon("database")} Projects</h3><span class="grow"></span><button class="btn sm" id="set-create" ${sess.mutations_enabled ? "" : "disabled"}>${icon("plus")} New project</button>${sess.mutations_enabled ? "" : '<span class="muted small">Project creation needs a browser on the server machine.</span>'}<button class="btn sm" id="set-rediscover" hidden ${sess.mutations_enabled ? "" : "disabled"} title="Connect projects forgotten since the server started">${icon("sync")} Rediscover</button></div>
-        <p class="muted small">How this Studio lists each project: <b>opened</b> (selected on load), <b>shown</b> or <b>hidden</b>. Forget removes a project and its runs from the runtime database; files are never touched.</p>
-        <ul class="set-projects" id="set-projects"><li class="muted small">Loading…</li></ul>
-      </section>` : ""}
-      <section class="set-sec">
-        <h3>${icon("gear")} Preferences</h3>
-        <div class="set-prefs">
-          <label class="check"><input type="checkbox" id="set-live" ${live.enabled ? "checked" : ""}> <span><b>Live updates</b><small>Follow the folder and open logs without Re-scan. ${liveNote} Paused while the tab is hidden.</small></span></label>
-          <label class="field"><span>Rows per page</span><select id="set-page" class="input sm">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
-        </div>
-      </section>
-      <section class="set-sec">
-        <h3>${icon("reset")} Browser data</h3>
-        <p class="muted small">Filters, folded panels, zoom, selections and folder attachments are remembered in this browser.</p>
-        <div class="row gap wrap"><button class="btn sm" id="set-reset-ui">${icon("reset")} Reset view state</button><button class="btn sm danger" id="set-clear" title="Also removes imported data and notes">${icon("trash")} Clear all saved data</button></div>
-      </section>
-      ${serverMode ? `<section class="set-sec">
-        <h3>${icon("power")} Server</h3>
-        <div class="row gap wrap"><button class="btn sm danger" id="set-quit" ${sess.can_quit ? "" : "disabled"}>${icon("power")} Quit alfrd serve</button>
-          <span class="muted small">${sess.can_quit ? "Same as Ctrl+C in its terminal." : "Only from this machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>
-      </section>` : ""}
-    </div>`, (root, close) => {
-    if (state.mode === "server") drawProjects(root);
-    $("#set-create", root)?.addEventListener("click", () => { close(); newProject(); });
-    $("#set-quit", root)?.addEventListener("click", () => { close(); quitServer(); });
-    $("#set-live", root).addEventListener("change", (e) => setLive(e.target.checked));
-    $("#set-page", root).addEventListener("change", (e) => { ctx.setPrefs({ pageSize: Number(e.target.value) }); scheduleRender(); });
-    $("#set-reset-ui", root).addEventListener("click", () => {
-      resetUi();
-      ctx.toast("View state reset — reloading", "ok");
-      setTimeout(() => location.reload(), 400);
-    });
-    $("#set-clear", root).addEventListener("click", () => {
-      resetAttachments();
-      storage.clear();
-      forgetFolderHandles();
-      state.folders = {};
-      state.notes = {};
-      ctx.toast("Saved Studio data cleared", "ok");
-      close();
-      if (state.demoEnabled) loadDemo({ quiet: true });
-      else location.reload();
-    });
-  });
+// Studio settings: a lazy module (components/settings_dialog.js) driving these shell functions.
+async function openSettings() {
+  try {
+    lazy.settings ||= import("./components/settings_dialog.js");
+    (await lazy.settings).openSettings(ctx, { live, setLive, newProject, quitServer, loadServer, loadDemo, switchProject, removeWorkspace, resetAttachments, forgetFolderHandles });
+  } catch (error) { lazy.settings = null; ctx.toast(`Settings: ${error.message}`, "fail"); }
 }
 
 async function newProject() {
@@ -1172,129 +1124,6 @@ async function newProject() {
       ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
     });
   } catch (error) { ctx.toast(error.message, "fail"); }
-}
-
-const VIS_STATES = [
-  { id: "opened", label: "Opened", icon: "play", tone: "tone-run", hint: "shown and selected when the Studio loads" },
-  { id: "shown", label: "Shown", icon: "check", tone: "", hint: "listed in this Studio" },
-  { id: "hidden", label: "Hidden", icon: "minus", tone: "tone-muted", hint: "remembered, not listed" },
-];
-
-
-function visBadge(current, key, label, canWrite) {
-  const st = VIS_STATES.find((s) => s.id === current);
-  if (!canWrite) return `<span class="badge ${st.tone}">${st.id}</span>`;
-  return `<button type="button" class="badge vis-badge ${st.tone}" data-vis="${esc(key)}" data-label="${esc(label)}" data-current="${st.id}" title="Change: opened / shown / hidden" aria-haspopup="menu">${st.id}${icon("chevron")}</button>`;
-}
-
-
-function shortPath(path, max = 56) {
-  const text = String(path || "");
-  if (text.length <= max) return text;
-  const parts = text.split("/");
-  let tail = parts.pop();
-  while (parts.length > 2 && (parts.at(-1).length + tail.length + 1) < max - 12) tail = `${parts.pop()}/${tail}`;
-  const head = parts.slice(0, 2).join("/");
-  return `${head}/…/${tail}`.length < text.length ? `${head}/…/${tail}` : text;
-}
-
-
-async function drawProjects(root) {
-  const table = $("#set-projects", root);
-  if (!table) return;
-  let list = [];
-  try {
-    list = await server.listProjects();
-  } catch (error) {
-    table.innerHTML = `<li class="muted small">${esc(error.message)}</li>`;
-    return;
-  }
-  let lost = [];
-  try { lost = await server.rediscoverable(); } catch { /* older server */ }
-  const scope = Array.isArray(server.session?.projects) ? new Set(server.session.projects) : null;
-  const visOf = (key) => (key === server.session?.default_project ? "opened" : !scope || scope.has(key) ? "shown" : "hidden");
-  const canWrite = server.session?.mutations_enabled;
-  const btn = $("#set-rediscover", root);
-  if (btn) btn.hidden = !lost.length;
-  const item = ({ name, badges, path, missing, actions, muted }) => `<li class="set-proj${muted ? " muted" : ""}">
-      <div class="set-proj-t"><b class="ellip" title="${esc(name)}">${esc(name)}</b>${badges}</div>
-      <div class="set-proj-p mono small" title="${esc(path)}">${esc(shortPath(path))}${missing ? ' <span class="fail-t">(folder missing)</span>' : ""}</div>
-      <div class="set-proj-a">${actions}</div></li>`;
-  const rows = list.map((p) => {
-    const key = p.identifier || p.name;
-    const label = p.display_name || p.name;
-    return item({ name: label, path: p.root_path || "", badges: visBadge(visOf(key), key, label, canWrite),
-      actions: `<button class="icon-btn sm" data-forget="${esc(key)}" data-label="${esc(label)}" ${canWrite ? "" : "disabled"} title="${canWrite ? "Forget (runtime database only)" : "Only from a browser on the same machine"}" aria-label="Forget ${esc(label)}">${icon("trash")}</button>` });
-  });
-  const lostRows = lost.map((c) => item({
-    muted: true, name: c.name || c.root.split("/").pop(), path: c.root, missing: !c.exists,
-    badges: `<span class="badge tone-muted">${c.start ? "serve folder · forgotten" : "forgotten"}</span>${c.default_manifest ? ' <span class="badge" title="No alfrd.yaml in the folder: the default one is used">default alfrd.yaml</span>' : ""}`,
-    actions: `<button class="btn sm" data-restore="${esc(c.root)}" ${canWrite && c.exists ? "" : "disabled"}>${icon("sync")} Restore</button>`,
-  }));
-  table.innerHTML = [...rows, ...lostRows].join("") || '<li class="muted small">No projects remembered.</li>';
-  const restore = async (rootPath, b) => {
-    if (b) b.disabled = true;
-    try {
-      const res = await server.rediscover(rootPath);
-      res.restored.forEach((r) => ctx.log("info", `Project ${r.name} connected again (${r.root}${r.default_manifest ? ", default alfrd.yaml" : ""}).`, "server"));
-      res.failed.forEach((f) => ctx.log("error", `${f.root}: ${f.error}`, "server"));
-      ctx.toast(res.restored.length ? `Restored ${res.restored.map((r) => r.name).join(", ")}` : "Nothing to restore", res.failed.length ? "warn" : "ok");
-      await loadServer();
-      drawProjects(root);
-    } catch (error) {
-      if (b) b.disabled = false;
-      ctx.toast(error.message, "fail");
-    }
-  };
-  if (btn) btn.onclick = () => restore(null, btn);
-  const setVis = async (key, label, want) => {
-    try {
-      await server.setProjectVisibility(key, want);
-      ctx.log("info", `Project ${label} ${want} in the Studio (runtime database and files unchanged).`, "server");
-      if (want === "hidden") {
-        state.avica = { ...state.avica };
-        delete state.avica[key];
-        delete state.trees[key];
-        if (state.selectedProject === key) switchProject("all", { render: false });
-      }
-      await loadServer();
-      if (want === "opened" && ctx.projects().some((p) => p.id === key)) switchProject(key);
-      ctx.toast(`${label}: ${want}`, "ok");
-    } catch (error) {
-      ctx.toast(error.message, "fail");
-    }
-    drawProjects(root);
-  };
-  table.onclick = async (e) => {
-    const v = e.target.closest("[data-vis]");
-    if (v) {
-      e.stopPropagation();
-      const { vis: key, label, current } = v.dataset;
-      const items = VIS_STATES.map((st) => ({
-        icon: st.icon, label: st.label, hint: st.id === current ? "current" : st.hint, disabled: st.id === current,
-        run: () => setVis(key, label, st.id),
-      }));
-      menu(v, items);
-      return;
-    }
-    const r = e.target.closest("[data-restore]");
-    if (r) { restore(r.dataset.restore, r); return; }
-    const b = e.target.closest("[data-forget]");
-    if (!b) return;
-    const name = b.dataset.forget;
-    const label = b.dataset.label || name;
-    try {
-      const { openRemoval } = await import("./components/removal_dialog.js");
-      await openRemoval(ctx, { key: name, label, root: b.closest(".set-proj")?.querySelector(".set-proj-p")?.title || "", onDone: async () => {
-        ctx.log("info", `Project ${name} forgotten (runtime database only).`, "server");
-        removeWorkspace(name);
-        await loadServer();
-        drawProjects(root);
-      } });
-    } catch (error) {
-      ctx.toast(error.message, "fail");
-    }
-  };
 }
 
 /** After removal: drop only that project's workspace, run polling and Log Stream tabs. */
@@ -1632,7 +1461,34 @@ async function onLiveBadge() {
 }
 
 
+// Desktop sidebar: 240 px or a 64 px icon rail (≥1280 px; narrower windows keep their own layout).
+// Collapsed (icon rail) by default; "shell.v2" so earlier saved "expanded" states start collapsed once.
+const shellUi = loadUi("shell.v2", { sidebarCollapsed: true });
+function setSidebar(collapsed) {
+  shellUi.sidebarCollapsed = collapsed === true;
+  $("#app").dataset.sidebar = shellUi.sidebarCollapsed ? "collapsed" : "expanded";
+  const b = $("#btn-rail");
+  if (b) {
+    const label = `${shellUi.sidebarCollapsed ? "Expand" : "Collapse"} sidebar`;
+    b.setAttribute("aria-expanded", String(!shellUi.sidebarCollapsed));
+    b.setAttribute("aria-label", label);
+    b.title = `${label} (Alt+Shift+S)`;
+  }
+  storage.set("ui:shell.v2", { sidebarCollapsed: shellUi.sidebarCollapsed }); // at once: a reload right after must keep it
+}
+document.addEventListener("keydown", (e) => {
+  if (!(e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyS") || e.isComposing) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable]") || !$("#modal-host").hidden || !matchMedia("(min-width: 1280px)").matches) return;
+  e.preventDefault();
+  setSidebar(!shellUi.sidebarCollapsed);
+});
+ctx.palette.register(() => (matchMedia("(min-width: 1280px)").matches ? [{
+  id: "sidebar", group: "action", icon: "sidebar", label: shellUi.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar", detail: "action · Alt+Shift+S",
+  run: () => setSidebar(!shellUi.sidebarCollapsed),
+}] : []));
+
 function renderShell() {
+  $("#app").dataset.sidebar = shellUi.sidebarCollapsed === true ? "collapsed" : "expanded";
   $("#app").innerHTML = `
     <header class="topbar">
       <div class="brand">${LOGO}<h1>ALFRD Studio</h1></div>
@@ -1652,7 +1508,9 @@ function renderShell() {
       <button class="icon-btn" id="btn-quit" aria-label="Quit alfrd" title="Quit alfrd" hidden>${icon("power")}</button>
     </header>
     <nav class="rail" aria-label="Workspace">
-      ${VIEWS.map((v) => `<a href="#/${v.id}" data-view="${v.id}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}
+      <div class="rail-head"><span class="rail-label">Workspace</span></div>
+      <div class="rail-links" id="rail-links">${VIEWS.map((v) => `<a href="#/${v.id}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
+      <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
     <main id="main" tabindex="-1">${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
     <footer class="footbar">
@@ -1660,7 +1518,7 @@ function renderShell() {
       <span class="vsep"></span>
       <span id="foot-mode"></span>
       <span class="vsep"></span>
-      <button class="link-btn" id="foot-logs">${icon("terminal")} <span id="foot-logcount"></span></button>
+      <button class="link-btn" id="foot-logs">${icon("log")} <span id="foot-logcount"></span></button>
       <span class="grow"></span>
       <span id="footer-right"></span>
     </footer>
@@ -1683,14 +1541,19 @@ function renderShell() {
     if (a.dataset.strip === "expand") { state.consoleTab = key; state.consoleOpen = true; renderConsole(); }
   });
 
+  $("#btn-rail").addEventListener("click", () => setSidebar(!shellUi.sidebarCollapsed));
+  setSidebar(shellUi.sidebarCollapsed);
   $("#btn-import").addEventListener("click", () => openImport());
   $("#btn-new-project").addEventListener("click", newProject);
   $("#btn-rescan").addEventListener("click", () => rescan());
   $("#btn-live").addEventListener("click", onLiveBadge);
   $("#btn-palette").addEventListener("click", () => ctx.openPalette());
   $("#btn-export").addEventListener("click", (e) => menu(e.currentTarget, [
-    { label: "Overview CSV (visible rows)", icon: "download", run: () => exportOverviewCsv(false) },
-    { label: "Stage details CSV", icon: "download", run: () => exportOverviewCsv(true) },
+    // Agent loops export run history (same exporter as the Overview), never a target-shaped file.
+    ...(overview.loopOnly(ctx) ? [] : [
+      { label: "Overview CSV (visible rows)", icon: "download", run: () => exportOverviewCsv(false) },
+      { label: "Stage details CSV", icon: "download", run: () => exportOverviewCsv(true) }]),
+    ...overview.historyItems(ctx),
     "-",
     { label: "Workflow YAML (with edits)", icon: "file", run: exportWorkflowYaml },
     { label: "Studio snapshot (JSON)", icon: "database", hint: "re-importable", run: exportSnapshot },
@@ -1740,7 +1603,10 @@ function renderHeader() {
     if (select.dataset.options !== html) { select.innerHTML = html; select.dataset.options = html; }
     select.value = value || "";
   }
-  $$(".rail a").forEach((a) => a.classList.toggle("active", a.dataset.view === state.view));
+  $$(".rail a").forEach((a) => {
+    a.classList.toggle("active", a.dataset.view === state.view);
+    if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
 
 }
 
@@ -1786,7 +1652,7 @@ function renderStrip() {
   const info = dockInfo(d.key);
   const st = info.reconnecting ? "Reconnecting…" : info.follow ? "Following" : `Paused${info.unread ? ` · New output · ${info.unread}` : ""}`;
   el.dataset.key = d.key;
-  el.innerHTML = `<b class="trunc strip-name" title="${esc(`${ctx.projectName(d.project)} · ${d.rel}`)}">${icon("terminal")} ${esc(dockLabel(d))}</b>
+  el.innerHTML = `<b class="trunc strip-name" title="${esc(`${ctx.projectName(d.project)} · ${d.rel}`)}">${icon("log")} ${esc(dockLabel(d))}</b>
     <span class="mono trunc strip-last">${esc(info.loaded ? info.last || "(no output yet)" : info.error ? `(${info.error})` : "Loading…")}</span>
     <span class="strip-st${info.reconnecting ? " warn" : ""}">${esc(st)}</span>
     <button class="btn sm" data-strip="follow" aria-pressed="${!info.follow}">${info.follow ? `${icon("pause")} Pause follow` : `${icon("play")} Resume follow`}</button>
@@ -1798,7 +1664,7 @@ onDock(() => renderStrip());
 /** Jobs · N running: every active run across projects (switching never stops them). */
 const jobStatus = new Map(); // `${project}\u0000${run}` -> label, for polite announcements
 function jobLabel(s) {
-  if (s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
+  if (s.plan.start_at || s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
   return { running: "Running", paused: "Paused", interrupted: "Interrupted" }[s.plan.status] || s.plan.status;
 }
 function renderJobs() {
@@ -1845,7 +1711,7 @@ function renderConsole() {
       <button class="btn sm" data-act="clear">Clear</button>`
     : `<span class="muted small mono trunc ctab-path" title="${esc(active.rel)}">${esc(ctx.projectName(active.project))} · ${esc(active.rel)}</span>
       <button class="btn sm" data-act="full" title="Open full screen">${icon("expand")} Full screen</button>`;
-  $(".console-h", el).innerHTML = `<b class="console-title">${icon("terminal")} Log stream</b>
+  $(".console-h", el).innerHTML = `<b class="console-title">${icon("log")} Log stream</b>
       <div class="ctabs" role="tablist" aria-label="Log stream tabs">${tabBtn("studio", "Studio")}${docks.map((d) => tabBtn(d.key, dockLabel(d), `<span class="live-dot" ${d.live ? "" : "hidden"}></span>`, `${ctx.projectName(d.project)} · ${d.rel} (following)`)).join("")}</div>
       <span class="grow"></span>${tools}
       <button class="icon-btn sm" data-act="close" aria-label="Hide log stream" title="Hide the panel (docked logs stay as tabs)">${icon("minus")}</button>`;

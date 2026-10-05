@@ -16,7 +16,7 @@ const { manifestToWorkflows, rollup } = await import(path.join(web, "data/model.
 const defsMod = await import(path.join(web, "data/defs.js"));
 const avicaTemplate = parseYaml(readFileSync(path.join(root, "src/alfrd/web/assets/templates/avica.yaml"), "utf8"));
 defsMod.registerTemplate("avica", avicaTemplate);
-const AVICA_STEPS = Object.keys(avicaTemplate.steps);
+const AVICA_STEPS = Object.keys(avicaTemplate.steps).filter((k) => avicaTemplate.steps[k]?.skip !== true); // phaseshift: skipped by default
 const { parseResultCsv, buildBundle } = await import(path.join(web, "data/importers.js"));
 const { demoBundle } = await import(path.join(web, "data/demo.js"));
 
@@ -58,7 +58,7 @@ test("template: avica defaults, alfrd.yaml overrides step fields", () => {
   assert.equal(plain.workflows[0].steps[0].label, "preprocess_fitsidi"); // no template: nothing built in
 });
 
-test("manifest: avica_0.3 example becomes the 9-step AVICA workflow", () => {
+test("manifest: avica_0.3 example becomes the AVICA workflow (phaseshift skipped)", () => {
   const info = manifestToWorkflows(parseYaml(readFileSync(path.join(root, "examples/avica_0.3/alfrd.yaml"), "utf8")));
   assert.deepEqual(info.errors, []);
   assert.deepEqual(info.workflows[0].steps.map((s) => s.key), AVICA_STEPS);

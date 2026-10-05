@@ -1,5 +1,7 @@
 // Run × step grids for projects without targets (agent loops, unknown project types).
-// Loaded lazily by the Overview. Dependency-free so node tests can import it.
+// Loaded lazily by the Overview. No DOM access, so node tests can import it.
+
+import { icon } from "../utils/dom.js";
 
 export const GRID_STATUS = {
   completed: { label: "Completed", tone: "ok", mark: "✓" },
@@ -48,9 +50,12 @@ export function buildRunGrid(status, opts = {}) {
 
   const unitIter = new Map();
   units.forEach((u) => (u.steps || []).forEach((st) => { if (u.iteration) unitIter.set(st, Number(u.iteration)); }));
+  // Sequence loops (t001-claude, …): every turn is its own column on one row.
+  const turnsOnly = loop && steps.length > 0 && steps.every((id) => /^t\d{3}-/.test(id));
   const split = (id) => {
     const m = /^i(\d+)[-_](.+)$/.exec(id);
     if (!loop) return { iteration: 0, base: id };
+    if (turnsOnly) return { iteration: 1, base: id };
     return { iteration: unitIter.get(id) ?? (m ? Number(m[1]) : 0), base: m ? m[2] : id };
   };
   const columns = [];
@@ -109,7 +114,7 @@ export function buildRunGrid(status, opts = {}) {
       });
       [...byIter.entries()].sort((a, b) => a[0] - b[0]).forEach(([it, cells]) => rows.push({
         key: `${r.key}:${it}`, row: r.key, target: name, iteration: it || null,
-        label: `${it ? `Iteration ${it}` : "Iteration —"}${multi ? ` · ${name}` : ""}`, cells,
+        label: `${turnsOnly ? "Turns" : it ? `Iteration ${it}` : "Iteration —"}${multi ? ` · ${name}` : ""}`, cells,
       }));
     } else {
       const cells = {};
@@ -217,16 +222,92 @@ function runGroup(project, name, grid, g, runLabel) {
   if (!g.rows.length) return `<div class="rg-run">${head}<p class="muted small">Step details unavailable.</p></div>`;
   const corner = grid.kind === "loop" ? "Iteration" : "Run row";
   return `<div class="rg-run">${head}
-    <div class="grid-scroll rg-scroll" role="region" aria-label="Run ${esc(g.run)} steps" tabindex="0">
+    <div class="grid-scroll rg-scroll" role="region" aria-label="Run ${esc(g.run)} by workflow steps" tabindex="0" data-scroll-key="${esc(`rg|${project}|${g.run}`)}">
     <table class="rg-table"><caption class="sr-only">${esc(name)} · run ${esc(g.run)} · ${corner.toLowerCase()} by step</caption>
       <thead><tr><th scope="col" class="rg-corner">${corner}</th>${grid.columns.map((c) => `<th scope="col" title="${esc(c.id)}">${esc(c.label)}</th>`).join("")}</tr></thead>
       <tbody>${g.rows.map((row) => `<tr><th scope="row" class="rg-rowh">${esc(row.label)}</th>${grid.columns.map((c) => {
         const cell = row.cells[c.id] || { status: "na", attempts: 0 };
         const m = GRID_STATUS[cell.status] || GRID_STATUS.pending;
         const badge = cell.attempts > 1 ? `<span class="rg-tries" aria-hidden="true">×${cell.attempts}</span>` : "";
-        return `<td><button type="button" class="rg-cell st-${esc(cell.status)} tone-${m.tone}" data-rg-cell="${esc(project)}" data-rg-run-id="${esc(g.run)}" data-rg-row="${esc(row.key)}" data-rg-step="${esc(c.id)}" aria-label="${esc(cellName(name, g.run, row, c, cell))}"><span aria-hidden="true">${m.mark}</span> ${esc(m.label)}${badge}</button></td>`;
+        return `<td><button type="button" class="rg-cell st-${esc(cell.status)} tone-${m.tone}" data-rg-cell="${esc(project)}" data-rg-run-id="${esc(g.run)}" data-rg-row="${esc(row.key)}" data-rg-step="${esc(c.id)}" data-focus-key="${esc(`rg|${project}|${g.run}|${row.key}|${c.id}`)}" aria-label="${esc(cellName(name, g.run, row, c, cell))}"><span aria-hidden="true">${m.mark}</span> ${esc(m.label)}${badge}</button></td>`;
       }).join("")}</tr>`).join("")}</tbody>
     </table></div></div>`;
+}
+
+// ---- Agent-loop run history: one summary row per plan above the chosen run's step grid. ----
+
+// Plan statuses mapped onto the grid's status filter.
+const PLAN_GRID = { finished: "completed", failed: "failed", running: "running", cancelled: "cancelled", paused: "interrupted", interrupted: "interrupted" };
+
+/** runs: [{id, status}] (plan list, newest first) → the rows the Search / Status / Run filters keep. */
+export function filterHistory(runs, filters = FILTERS_DEFAULT, runLabel = (s) => s) {
+  const f = { ...FILTERS_DEFAULT, ...filters };
+  const q = f.search.trim().toLowerCase();
+  return runs.filter((r) => (f.run === "all" || r.id === f.run) && (f.status === "all" || PLAN_GRID[r.status] === f.status)
+    && (!q || `run ${r.id} ${runLabel(r.status)} ${r.status} ${(r.targets || [r.target]).filter(Boolean).join(" ")}`.toLowerCase().includes(q)));
+}
+
+const dur = (s) => (s == null ? "—" : s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
+
+/** Empty states of a loop project's history. reason: none | offline | error | loading | nomatch. */
+export function historyEmpty(reason, project, error = "", setup = false) {
+  const p = esc(project);
+  if (reason === "none") return `<div class="rg-empty"><p><b>No runs yet.</b> ${setup ? "Set up your agents, edit task.md" : "Edit task.md, review your agents"}, then start a run in Workflow.</p><div class="row gap wrap">${setup ? `<button class="btn sm" data-home-setup="${p}">${icon("gear")} Setup wizard</button>` : ""}<button class="btn sm" data-rh-task="${p}">${icon("edit")} Edit task</button><button class="btn sm primary" data-rh-workflow="${p}">${icon("workflow")} Open Workflow</button></div></div>`;
+  if (reason === "offline") return `<div class="rg-empty"><p>Connect to the ALFRD server to open this run.</p></div>`;
+  if (reason === "error") return `<div class="callout fail rg-empty" role="alert"><span>Couldn’t load run history.${error ? ` ${esc(error)}` : ""}</span><button class="btn sm" data-rg-retry="${p}">Retry</button></div>`;
+  if (reason === "nomatch") return `<div class="rg-empty"><p>No runs match these filters.</p><button class="btn sm" data-rg-reset="${p}">Clear filters</button></div>`;
+  return `<div class="rg-empty"><p class="muted" role="status">Loading run history…</p></div>`;
+}
+
+/**
+ * HTML for one agent-loop project: toolbar, run history (Run, [ALFRD project], Status,
+ * Progress, Runtime, Open run, View results) and the step grid of the run chosen in the
+ * Run filter (the latest by default; each run keeps its own step columns).
+ * runs: [{id, status}] newest first; summary(id) → runSummary | null (not read yet).
+ * opts: {runLabel, error, index, page, size, showProject}.
+ */
+export function renderRunHistory(project, name, full, grid, runs, summary, filters = FILTERS_DEFAULT, opts = {}) {
+  const runLabel = opts.runLabel || ((s) => s);
+  const f = { ...FILTERS_DEFAULT, ...filters };
+  const p = esc(project);
+  const id = `rg-${opts.index ?? 0}`;
+  const head = `<h3 class="rg-title" id="${id}">${esc(name)} <span class="muted small">· ${runs.length} run${runs.length === 1 ? "" : "s"}</span></h3>`;
+  const wrap = (body) => `<section class="rg" data-rg-section="${p}" aria-labelledby="${id}">${head}${body}</section>`;
+  if (full.empty && full.empty !== "nomatch" && !runs.length) return wrap(historyEmpty(full.empty === "unavailable" ? "none" : full.empty, project, opts.error, opts.setup));
+  const shown = filterHistory(runs, f, runLabel);
+  const size = opts.size || 25;
+  const pages = Math.max(1, Math.ceil(shown.length / size));
+  const page = Math.min(Math.max(0, opts.page || 0), pages - 1);
+  const rows = shown.slice(page * size, page * size + size);
+  const toolbar = `<div class="rg-toolbar" role="group" aria-label="Filter runs of ${esc(name)}">
+      <label class="search"><input type="search" data-rg-search="${p}" value="${esc(f.search)}" placeholder="Search runs…" aria-label="Search runs of ${esc(name)}"></label>
+      <label class="select-wrap"><select data-rg-status="${p}" aria-label="Status filter for ${esc(name)}"><option value="all">All statuses</option>${[...new Set(Object.values(PLAN_GRID))].map((k) => `<option value="${k}" ${f.status === k ? "selected" : ""}>${esc(GRID_STATUS[k].label)}</option>`).join("")}</select></label>
+      <label class="select-wrap"><select data-rg-run="${p}" aria-label="Run filter for ${esc(name)}"><option value="all">All runs (${runs.length})</option>${runs.map((r) => `<option value="${esc(r.id)}" ${f.run === r.id ? "selected" : ""}>Run ${esc(r.id)}</option>`).join("")}</select></label>
+      <button class="btn sm" data-rg-reset="${p}" ${filtersActive(f) ? "" : "disabled"}>Clear filters</button>
+    </div>`;
+  const row = (r) => {
+    const s = summary(r.id);
+    const m = GRID_STATUS[PLAN_GRID[r.status]] || GRID_STATUS.pending;
+    const pct = s?.total_turns ? Math.round(((s.completed_turns || 0) / s.total_turns) * 100) : 0;
+    const noResults = s && !s.ran; // nothing has run: no turn records to show
+    const help = `rh-nr-${esc(project)}-${esc(r.id)}`;
+    return `<tr data-rh-row="${esc(`${project}|${r.id}`)}">
+      <th scope="row" class="rg-rowh rh-run" tabindex="0" title="Run ${esc(r.id)}"><span class="rh-label">Run <span class="mono">${esc(r.id)}</span></span></th>
+      ${opts.showProject ? `<td><span class="alfrd-chip">${esc(name)}</span></td>` : ""}
+      <td><span class="badge tone-${m.tone}">${esc(runLabel(r.status) || r.status || "—")}</span></td>
+      <td class="tabular">${s?.total_turns ? `<span class="prog" title="${s.completed_turns ?? "—"} of ${s.total_turns} turns completed"><b>${s.completed_turns ?? "—"}/${s.total_turns}</b><span class="bar tone-${m.tone}"><i style="width:${pct}%"></i></span></span><span class="sr-only"> turns</span>` : "—"}</td>
+      <td class="tabular">${dur(s?.runtime_seconds)}</td>
+      <td><button type="button" class="btn sm" data-rh-open="${p}" data-rh-run="${esc(r.id)}" data-focus-key="${esc(`rh-open|${project}|${r.id}`)}" aria-label="Open run ${esc(r.id)}">${icon("play")} Open run</button></td>
+      <td><button type="button" class="btn sm" data-rh-results="${p}" data-rh-run="${esc(r.id)}" data-focus-key="${esc(`rh-res|${project}|${r.id}`)}" aria-label="View results for run ${esc(r.id)}"${noResults ? ` disabled aria-describedby="${help}"` : ""}>${icon("results")} View results</button>${noResults ? ` <span class="muted small" id="${help}">No results yet</span>` : ""}</td></tr>`;
+  };
+  const table = rows.length ? `<div class="grid-scroll rg-scroll" role="region" aria-label="Runs of ${esc(name)}" tabindex="0" data-scroll-key="${esc(`rh|${project}`)}">
+    <table class="rg-table rh-table"><caption class="sr-only">${esc(name)} · run history, newest first</caption>
+      <thead><tr><th scope="col" class="rg-corner">Run</th>${opts.showProject ? '<th scope="col">ALFRD project</th>' : ""}<th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Runtime</th><th scope="col">Open run</th><th scope="col">View results</th></tr></thead>
+      <tbody>${rows.map(row).join("")}</tbody></table></div>
+    ${pages > 1 ? `<div class="row gap rh-pages"><span class="muted small tabular">Runs ${page * size + 1}–${page * size + rows.length} of ${shown.length}</span><span class="grow"></span><button class="btn sm" data-rh-page="${p}" data-step="-1" ${page ? "" : "disabled"}>Previous</button><button class="btn sm" data-rh-page="${p}" data-step="1" ${page < pages - 1 ? "" : "disabled"}>Next</button></div>` : ""}`
+    : historyEmpty("nomatch", project);
+  const detail = (grid.groups || []).filter((g) => g.rows.length && shown.some((r) => r.id === g.run));
+  return wrap(`${toolbar}<p class="muted small rh-window">Loop runs among the newest 20 plans per project.</p>${table}${detail.map((g) => runGroup(project, name, grid, g, runLabel)).join("")}`);
 }
 
 /** Detail dialog body. logHtml: pre-rendered View log buttons (or ""). */
@@ -244,4 +325,20 @@ export function cellDetail(projectName, found, logHtml = "", now = Date.now()) {
     ${dd("Attempts", esc(cell.attempts || 0))}
     ${cell.error ? dd("Error", `<pre class="code small">${esc(cell.error)}</pre>`) : ""}
   </dl>${logHtml ? `<div class="row gap">${logHtml}</div>` : cell.status === "na" ? "" : '<p class="muted small">No log recorded for this step yet.</p>'}`;
+}
+
+/** Tasks of an agent-loop project (own turn count and worktree) above its run history. */
+export function renderTaskStrip(project, name, got, active, runLabel = (s) => s) {
+  const tasks = got?.tasks || [];
+  if (!got?.max_iterations || !tasks.length) return "";
+  const unit = got.iteration_unit === "turns" ? "turns" : "iterations";
+  return `<div class="task-strip" role="group" aria-label="Tasks of ${esc(name)}">${tasks.map((t) => {
+    const ws = t.workspace;
+    const tip = [`${t.iterations ?? "?"} of at most ${got.max_iterations} ${unit}`, ws ? `worktree ${ws.branch}${ws.changed ? `, ${ws.changed} uncommitted changes` : ""}` : null,
+      `${t.runs || 0} run${t.runs === 1 ? "" : "s"}`, t.error].filter(Boolean).join(" · ");
+    return `<button class="task-chip${active === t.name ? " on" : ""}" data-rg-task="${esc(project)}" data-task="${esc(t.name)}" aria-pressed="${active === t.name}" title="${esc(tip)}">
+      <b>${esc(t.name)}</b><span class="muted small">${t.iterations ?? "?"}/${got.max_iterations}</span>${t.over_limit ? `<span class="badge tone-warn">over max</span>` : ""}
+      ${ws ? `<span class="mono small">${icon("split")}${esc(ws.branch || "")}${ws.changed ? ` · ${ws.changed}` : ""}</span>` : ""}
+      ${t.latest ? `<span class="small">${esc(runLabel(t.latest.status))}</span>` : `<span class="muted small">no runs</span>`}</button>`;
+  }).join("")}</div>`;
 }

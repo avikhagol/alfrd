@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentRows, reviewRows, applyAgentSettings, replaceSection, loopRunSelection } from "../../src/alfrd/web/js/data/agent_settings.js";
+import { agentRows, reviewRows, applyAgentSettings, replaceSection, loopRunSelection, nextTaskName } from "../../src/alfrd/web/js/data/agent_settings.js";
 import { parseYaml, dumpYaml } from "../../src/alfrd/web/js/utils/yaml_parser.js";
 
 const manifest = { name: "p", entrypoint: [
@@ -112,4 +112,22 @@ test("removing all assignments omits roles and removing all personalities omits 
   const cleared = applyPersonaSettings(assigned, [], turnRoleRows(manifest));
   assert.equal(Object.hasOwn(cleared.project_settings, "personas"), false);
   assert.equal(Object.hasOwn(cleared.workflows[0], "roles"), false);
+});
+
+
+test("loop selection isolates the selected task and defaults files relative to its folder", () => {
+  const info = { table: { rows: [
+    { target: "task", files: "task.md", cells: { a: "running" } },
+    { target: "fix-login", files: "", cells: { a: "todo" } },
+  ] } };
+  assert.deepEqual(loopRunSelection(info, "fix-login").rows, [{ target: "fix-login", files: "task.md", code: "", workdir: "" }]);
+  assert.equal(loopRunSelection({}, "another").rows[0].files, "task.md");
+  assert.equal(nextTaskName([]), "task");
+  assert.equal(nextTaskName([{ name: "task" }, { name: "task-2" }]), "task-3");
+});
+
+test("editing personalities preserves concise later-turn summaries", () => {
+  const rows = personalities.map((p) => ({ ...p, summary: "Brief reminder." }));
+  const result = applyPersonaSettings({ workflows: [{ steps: ["build"] }] }, rows, [{ keys: ["manager"] }]);
+  assert.equal(result.project_settings.personas.manager.summary, "Brief reminder.");
 });

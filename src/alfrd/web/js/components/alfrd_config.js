@@ -10,12 +10,11 @@ import { $, on, esc, icon, copyText, download } from "../utils/dom.js";
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { manifestToWorkflows } from "../data/model.js";
 import { studioManifest } from "../data/defs.js";
-import { configFields, setConfigField } from "../data/config_fields.js";
 import { scoped, stateOf, markDirty } from "../data/workspace.js";
 
 // One draft per project: switching keeps unsaved edits; Save/Revert affect that project only.
 const SETTINGS = "settings";
-const fresh = () => ({ project: null, text: null, base: null, dirty: false, report: null, aliases: null, mode: "fields" });
+const fresh = () => ({ project: null, text: null, base: null, dirty: false, report: null, aliases: null, mode: "form" });
 const ui = scoped(SETTINGS, fresh);
 let shown = null; // signature of what #ps currently shows (see render)
 let shownText = null;
@@ -93,16 +92,7 @@ function validate(ctx, text) {
 
 export function mount(el, ctx) {
   el.innerHTML = `<div class="ps" id="ps"></div>`;
-  on(el, "input", "[data-config-field]", (e, input) => {
-    try {
-      ui.text = setConfigField(ui.text, input.dataset.configField, input.value);
-      input.setCustomValidity(""); setDirty(project(ctx), ui, true); ui.report = null;
-      shown = signature(ctx, project(ctx));
-      shownText = ui.text;
-      renderStatus(el, ctx);
-    } catch (error) { input.setCustomValidity(error.message); input.reportValidity(); }
-  });
-  on(el, "keydown", "[data-config-field]", (e) => {
+  on(el, "keydown", "[data-yf]", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(el, ctx); }
   });
   on(el, "input", "#ps-yaml", (e) => { ui.text = e.target.value; setDirty(project(ctx), ui, true); ui.report = null; ui.aliases = null; renderStatus(el, ctx); });
@@ -124,13 +114,10 @@ export function mount(el, ctx) {
   on(el, "click", "[data-act]", async (e, b) => {
     const a = b.dataset.act;
     const p = project(ctx);
-    if (a === "mode-fields" || a === "mode-yaml") {
-      if (a === "mode-fields") {
-        try { configFields(ui.text); } catch (error) { ctx.toast(`Fix the YAML before opening fields: ${error.message}`, "fail"); return; }
-      }
-      const invalid = el.querySelector("[data-config-field]:invalid");
+    if (a === "mode-form" || a === "mode-yaml") {
+      const invalid = el.querySelector("[data-yf]:invalid");
       if (invalid) { invalid.reportValidity(); return; }
-      ui.mode = a === "mode-fields" ? "fields" : "yaml"; render(el, ctx);
+      ui.mode = a.slice(5); render(el, ctx);
     }
     if (a === "validate") { ui.report = validate(ctx, ui.text); renderStatus(el, ctx); }
     if (a === "save") save(el, ctx);
@@ -183,7 +170,7 @@ export function mount(el, ctx) {
 }
 
 async function save(el, ctx) {
-  const invalid = el.querySelector("[data-config-field]:invalid");
+  const invalid = el.querySelector("[data-yf]:invalid");
   if (invalid) { invalid.reportValidity(); return; }
   const p = project(ctx);
   const st = stateOf(p, SETTINGS); // callbacks below may finish after a project switch
@@ -255,6 +242,7 @@ export function render(el, ctx) {
     ui.aliases = null;
   }
   if (!ui.aliases) ui.aliases = aliasRows(ui.text);
+  if (ui.mode !== "yaml") ui.mode = "form";
   // A background refresh (live poll, every couple of seconds while "hot") calls
   // this same render() even when nothing here changed. Rebuilding #ps's whole
   // innerHTML would replace the <textarea> and reset its scroll position and
@@ -262,7 +250,7 @@ export function render(el, ctx) {
   // nothing else on the panel changed, only refresh the status line/footer.
   const existing = $("#ps-yaml", el);
   const sig = signature(ctx, p);
-  if (sig === shown && ((existing && existing.value === ui.text) || (ui.mode === "fields" && shownText === ui.text && $("#ps-fields", el)))) {
+  if (sig === shown && ((existing && existing.value === ui.text) || (shownText === ui.text && $("#ps-form", el)))) {
     renderStatus(el, ctx);
     ctx.setFooterRight(ui.dirty ? "alfrd.yaml: unsaved changes" : "alfrd.yaml");
     return;
@@ -277,8 +265,6 @@ export function render(el, ctx) {
   const defs = studioManifest(parse(ui.text).data || {});
   const tplSteps = Object.keys(defs.tplSteps || {});
   const found = ctx.state.aliases || [];
-  let fields;
-  try { fields = configFields(ui.text); } catch { ui.mode = "yaml"; }
   $("#ps", el).innerHTML = `
     <div class="card"><div class="row gap wrap"><h2>Project settings — alfrd.yaml</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span>${tree.manifestDefault ? `<span class="chip" title="This folder has no alfrd.yaml, so ALFRD's default one is shown. Save writes it into the folder; the local file then replaces the default.">default — not saved in the folder</span>` : ""}<span class="grow"></span>
       <button class="btn sm" data-act="validate">${icon("validate")} Validate</button>
@@ -289,19 +275,13 @@ export function render(el, ctx) {
       <p class="muted small">${esc(where)} Ctrl+S saves. After saving, the workflow, stages, metadata health, logs and field aliases are re-read from the file.</p>
       <div class="ps-status" id="ps-status"></div></div>
     <div class="row gap wrap" role="group" aria-label="Configuration editor">
-      <button class="btn sm ${ui.mode === "fields" ? "primary" : ""}" data-act="mode-fields" aria-pressed="${ui.mode === "fields"}">${icon("list")} Settings fields</button>
+      <button class="btn sm ${ui.mode === "form" ? "primary" : ""}" data-act="mode-form" aria-pressed="${ui.mode === "form"}">${icon("gear")} All settings</button>
       <button class="btn sm ${ui.mode === "yaml" ? "primary" : ""}" data-act="mode-yaml" aria-pressed="${ui.mode === "yaml"}">${icon("edit")} Edit YAML file</button>
-      <span class="muted small">Both views use the same draft. Save when ready.</span>
+      <span class="muted small">Both views edit the same draft. Save when ready.</span>
     </div>
     ${!ui.text ? `<div class="card empty">No alfrd.yaml loaded. Open the project folder (Import) or start <code>alfrd serve</code> in it.</div>` : `
     <div class="ps-grid">
-      <section class="card">${ui.mode === "yaml" ? `<textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea>` : `<div id="ps-fields">
-        <h4>Project basics</h4><p class="muted small">Use Edit YAML file for advanced settings. Changing a field rewrites its YAML section.</p>
-        <label class="field"><span>Project name</span><input class="input" data-config-field="name" value="${esc(fields.name)}" required></label>
-        <label class="field"><span>Description</span><textarea class="input" data-config-field="description" rows="3">${esc(fields.description)}</textarea></label>
-        ${fields.iterations != null ? `<label class="field"><span>Loop iterations</span><input class="input" type="number" min="1" max="100" step="1" data-config-field="iterations" value="${esc(fields.iterations)}" required></label>` : ""}
-        <label class="field"><span>Turn timeout (seconds)</span><input class="input" type="number" min="1" step="1" data-config-field="timeout" value="${esc(fields.timeout)}" placeholder="Default"></label>
-      </div>`}</section>
+      <section class="card">${ui.mode === "form" ? '<div id="ps-form-host"></div>' : `<textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea>`}</section>
       <div>
         <section class="card"><h4>Agents &amp; review</h4><p class="muted small">Choose models, enable human adjustments after selected turns, or edit the goal for the next run.</p>
           <div class="row gap wrap"><button class="btn" data-act="agents">Agents &amp; review</button>${ctx.state.mode === "server" ? '<button class="btn" data-act="task">Edit task</button>' : ''}</div>
@@ -331,4 +311,9 @@ export function render(el, ctx) {
   restoreEditor($("#ps-yaml", el), keep);
   renderStatus(el, ctx);
   ctx.setFooterRight(ui.dirty ? "alfrd.yaml: unsaved changes" : "alfrd.yaml");
+  const formHost = $("#ps-form-host", el);
+  if (formHost) import("./yaml_form.js").then((m) => m.showYamlForm(el, formHost, ui.text, {
+    setText: (text) => { ui.text = text; setDirty(p, ui, true); ui.report = ui.aliases = null; shown = signature(ctx, p); shownText = text; renderStatus(el, ctx); },
+    rebuild: () => { shown = null; render(el, ctx); },
+  })).catch((error) => { formHost.textContent = error.message; });
 }

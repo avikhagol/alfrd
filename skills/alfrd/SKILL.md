@@ -1,6 +1,6 @@
 ---
 name: alfrd
-description: Drive ALFRD (plan CSVs, targets, alfrd.yaml, AVICA runs, Studio API) from an agent with the fewest tokens. Use when a folder has alfrd.yaml / alfrd.plan.csv / .alfrd/, or the user asks to run, monitor, debug or configure ALFRD or AVICA pipeline steps.
+description: Drive ALFRD (plan CSVs, targets, alfrd.yaml, AVICA runs, agent loops, Studio API) from an agent with the fewest tokens. Use when a folder has alfrd.yaml / alfrd.plan.csv / .alfrd/, or the user asks to run, monitor, debug or configure ALFRD or AVICA pipeline steps or Claude/Codex agent loops.
 ---
 
 # ALFRD for agents
@@ -55,14 +55,20 @@ compact, versioned JSON form made for you. Prefer it over reading files.
 | Check alfrd.yaml | `alfrd manifest validate DIR/alfrd.yaml` |
 | No alfrd.yaml (AVICA tree) | `alfrd manifest default -o alfrd.yaml` (edit, then validate) |
 | Studio (web UI) | `alfrd serve --project DIR --no-browser [--port 5000]` (no `-C` here) |
+| Agent loop: run one task | `alfrd plan run -C DIR --target T` (see Agent loops) |
+| Change a turn of a running loop | `alfrd plan turn PLAN t003-codex -C DIR --review / --manual / --after +1h / --after 0 / --model M / --clear` |
+| Approve / reject a held handoff | Studio Handoffs, or `alfrd plan reject PLAN UNIT --reason "…" -C DIR` |
+| Token baseline (10 production turns) | `alfrd plan baseline -C DIR [--from PLAN/UNIT] [--count 10] [--exclude TURN=evidence] [--json]` (exit 1 = not ready) |
 
 ## Ask the user before
 
 `plan run`, `plan resume --retry-failed`, `plan cancel`, `plan new --force`,
-`targets import --replace`, `targets remove`, and edits to `alfrd.yaml` or
-`avica.inp`. Runs start real CASA/MPI jobs that can take hours.
+`plan turn`, `plan reject`, Studio *Delete permanently* (deletes ALFRD's files;
+with *Delete all files and folders* the whole project folder), setup-form saves, `targets import --replace`, `targets remove`, and
+edits to `alfrd.yaml` or `avica.inp`. Runs start real CASA/MPI jobs or agent
+turns that can take hours.
 
-Safe without asking: every `status | wait | events | log`, `--dry-run`,
+Safe without asking: every `status | wait | events | log | baseline`, `--dry-run`,
 `targets show`, `manifest validate`.
 
 ## Editing state
@@ -97,12 +103,57 @@ entrypoint:
   - {name: avica-step, cmd: [avica, pipe, run, --t, "{target}", --f, "{FILENAMES}", "{step}"]}
 ```
 
+Setup forms: `quickstart: {setup: {type: form, target: {file: avica.inp | alfrd.yaml}, fields: {KEY: {type: textbox|textarea|number|toggle|path|select|list}}}}`
+(details: `docs/studio-guide.md` → Setup forms). The AVICA template's form writes `avica.inp`; the agent-loop's writes the agents in `alfrd.yaml`.
+
+Drop a template step: `steps: {phaseshift: {skip: true}}` (or `{id: phaseshift, skip: true}` in the
+workflow list); it disappears from the workflow and new plan CSVs.
+
 Placeholders: `{target} {step} {from_step} {targets} {plan_csv} {root}` plus
 any plan CSV column (`{FILENAMES}`, `{PROJECT_CODE}`, `{WORKDIR}`). No shell:
 one argv item each; a missing value refuses the command. Path patterns also
 take `{workdir} {band} {meta_dir} {target_dir} {logs}` and `*`/`?`.
 Full template with comments: `src/alfrd/web/assets/templates/avica.yaml`.
 Non-AVICA trees: `hierarchy` + `views.metadata` (`docs/template-views.md`).
+
+## Agent loops
+
+`template: agent-loop`: agents take turns on one task, each reading the previous
+turn's handoff (`{target}/next-step-<agent>.md`) and writing the next one.
+
+```yaml
+loop:
+  workspace: worktree       # each task works in its own git worktree: {target}/workspace, branch alfrd/<task>
+workflows:
+  - name: agent-loop
+    repeat:
+      iterations: 10        # TOTAL turns (agent runs) = the project maximum per task
+      sequence: [claude, claude, codex]   # one pass, repeats; may stop mid-pass
+      # passes: 3           # instead of iterations: whole passes
+      # sequence: [[claude, codex], [claude, claude, codex]]   # custom passes; the last repeats
+    turns:                  # single turns, by number or id (t004-codex)
+      3: {human_review: true}             # hold the handoff for a person
+      t004-codex: {manual: true, after: "+1h"}   # a person writes it; start 1 h after turn 3
+entrypoint:
+  - {name: claude, cmd: [claude, -p], model: opus, fallback_models: [sonnet]}
+  - {name: gemini, cmd: [gemini], adapter: generic, model_option: --model}   # any stdin→stdout CLI
+```
+
+- Step ids are `t<NNN>-<agent>`; older projects (`repeat.iterations` + `steps`)
+  still count passes and use `i<NNN>-<step>`.
+- Tasks: `{target}/task.md` + `{target}/.alfrd-task.json` (`{"iterations": N, "version": 2}`
+  = turns, at most the project maximum). Tasks run in parallel as separate plans.
+  ALFRD never commits, merges or pushes a worktree; the user merges `alfrd/<task>`.
+  Outside git, tasks share one tree (`workspace_warning` on the plan).
+- Review is decided when a turn's command ends, so `plan turn … --review` works
+  on the running turn. Other overrides only on turns not yet started. They live
+  in `.alfrd/plans/<id>/overrides.json` (this plan only; `alfrd.yaml` unchanged).
+- Fallback: Claude gets `--fallback-model`; other agents are relaunched with the
+  next model after a runtime failure (never after an invalid or rejected response).
+- Each turn records `logical_turn_id`, `attempt_number`, `retry_of`, `outcome`
+  (`accepted failed_validation rejected abandoned failed_runtime`), `usage_source`,
+  `agent_usage.input_uncached_tokens`, and `handoff.raw_input_chars /
+  trimmed_handoff_chars / prompt_chars / sections_truncated`.
 
 ## Without a server (Python, read-only)
 
@@ -129,6 +180,9 @@ GET /api/studio/search?projects=<p>&q=WORDS&limit=20
 GET /api/studio/search/context?project=<p>&path=REL&line=N&around=20
 GET /api/studio/projects/<p>/view?entity=target=J0742%2B103              # evaluated Metadata panels
 GET /api/studio/projects/<p>/notes
+GET /api/studio/projects/<p>/tasks                                       # turns, worktree, latest run per task
+GET /api/studio/projects/<p>/plans/<id>/turns                            # per-turn settings + what can still change
+GET /api/studio/projects/<p>/quickstart                                  # template setup forms + current values
 ```
 
 Same document as the CLI. Other hosts need `ALFRD_API_TOKEN` +
@@ -142,7 +196,8 @@ loopback + a CSRF token: use the Python calls or CLI instead of POSTing.
 | `alfrd.yaml` | project manifest (steps, commands, execution, views) |
 | `alfrd.targets.csv` | target list: TARGET_NAME, FILENAMES, PROJECT_CODE (kept across plans) |
 | `alfrd.plan.csv` | one run's grid; ALFRD writes cell states back |
-| `.alfrd/plans/<id>/` | runner state, per-command logs, `<unit>.usage.jsonl` |
+| `.alfrd/plans/<id>/` | runner state, per-command logs, `<unit>.usage.jsonl`, `overrides.json` |
+| `<task>/`, `<task>/workspace/` | agent-loop task: handoffs, `task.md`, `.alfrd-task.json`; its git worktree |
 | `alfrd.notes.jsonl` | notes (append-only) |
 | `reductions/<CODE>/<wd>/` | AVICA work dirs; result CSVs `result_<target>_<code>_<wd>.csv` or `<target>_result.csv` |
 | `~/.alfrd/runtime.sqlite`, `~/.alfrd/search/` | known projects, search indexes (not in the project) |
@@ -154,6 +209,8 @@ Entity paths name things across all APIs:
 ## Debug a failed cell (minimal path)
 
 1. `alfrd plan status -C DIR --json` → take `failures[0]` (`target`, `step`, `reason`, `exit_code`).
+   Nothing failed but nothing runs? Check `waiting[]`: `kind: delay` (a step's `after`;
+   `plan turn … --after 0` runs it now) or `loop.phase: awaiting_review` (a person must approve).
 2. `alfrd plan log -C DIR --target T --step S -n 40 --json` → find the error line.
 3. Still unclear: search (`search.scan(root, "<error word> T")`) and read ±20 lines.
 4. Propose a fix; after the user agrees, `alfrd plan resume -C DIR --retry-failed`.

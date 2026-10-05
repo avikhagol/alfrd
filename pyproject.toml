@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfrd"
-version = "0.2.1.0"
+version = "0.2.1.1"
 description = "Automated Logical FRamework for Dynamic script execution (ALFRD)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,7 +30,9 @@ dependencies = [
   "pyyaml",
   "platformdirs",
   "sqlalchemy>=2.0",
-  "flask", "flask_sqlalchemy"
+  "flask",
+  "flask_sqlalchemy",
+  "waitress>=3.0",
 ]
 
 [project.optional-dependencies]

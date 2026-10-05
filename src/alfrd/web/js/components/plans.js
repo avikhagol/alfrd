@@ -1,5 +1,5 @@
 
-import { $, $$, esc, icon, short, bytes } from "../utils/dom.js";
+import { $, $$, esc, icon, short, bytes, keepScroll, storage } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { addLogSource, dockLog, openFileFull } from "./logview.js";
 import { notesAt } from "../data/notes.js";
@@ -29,7 +29,6 @@ document.addEventListener("click", async (e) => {
   try { (await loadUsage()).openUsage(usageCtx, project, u, () => unitById(project, u.id) || u); } catch (error) { usageCtx.toast(error.message, "fail"); }
 });
 const sessionRuns = new Set();
-const execCache = new Map(); // project -> execution settings
 const pollTimers = new Map(); // project -> timeout id
 
 export const CELL = {
@@ -70,7 +69,7 @@ addLogSource(planLogFiles);
 
 export function logButtons(project, rel, { label = "" } = {}) {
   if (!rel) return "";
-  return `<span class="log-btns">${label ? `<button class="link-btn small" data-log-zoom="${esc(rel)}" data-log-project="${esc(project)}" title="Open full screen, following new output">${esc(label)}</button>` : ""}<button class="icon-btn xs" data-log-dock="${esc(rel)}" data-log-project="${esc(project)}" title="Follow in the Log Stream panel (keeps running on other views)" aria-label="Follow in the Log Stream panel">${icon("terminal")}</button><button class="icon-btn xs" data-log-zoom="${esc(rel)}" data-log-project="${esc(project)}" title="Open full screen (follows; Minimize to Log Stream)" aria-label="Open full screen">${icon("expand")}</button></span>`;
+  return `<span class="log-btns">${label ? `<button class="link-btn small" data-log-zoom="${esc(rel)}" data-log-project="${esc(project)}" title="Open full screen, following new output">${esc(label)}</button>` : ""}<button class="icon-btn xs" data-log-dock="${esc(rel)}" data-log-project="${esc(project)}" title="Follow in the Log Stream panel (keeps running on other views)" aria-label="Follow in the Log Stream panel">${icon("log")}</button><button class="icon-btn xs" data-log-zoom="${esc(rel)}" data-log-project="${esc(project)}" title="Open full screen (follows; Minimize to Log Stream)" aria-label="Open full screen">${icon("expand")}</button></span>`;
 }
 
 
@@ -82,24 +81,33 @@ export function planOf(project) {
   return cache.get(project)?.status || null;
 }
 
-export function activePlan(project) {
+export function activePlan(project, target = null) {
   const s = planOf(project);
-  return s?.plan && ["running", "paused", "interrupted"].includes(s.plan.status) ? s : null;
+  const active = (p) => p && ["running", "paused", "interrupted"].includes(p.status);
+  const matches = (p) => !target || p.target === target || p.targets?.includes(target);
+  if (active(s?.plan) && (matches(s.plan) || s.table?.rows?.some((r) => r.target === target))) return s;
+  const plan = s?.plans?.find((p) => active(p) && matches(p));
+  return plan ? { plan } : null;
 }
 
 export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) {
   if (!plansAvailable(ctx, project)) return null;
   usageCtx = ctx;
   const entry = cache.get(project) || {};
+  // Explicit run selection wins over in-flight reads.
+  if (id && entry.status?.plan?.id !== id) { entry.want = id; entry.status = null; entry.error = null; }
+  cache.set(project, entry);
   if (entry.loading) return entry.status;
   const before = JSON.stringify([entry.status, entry.error]);
   entry.loading = true;
-  cache.set(project, entry);
+  const asked = entry.want || id || entry.status?.plan?.id || null;
   try {
-    const status = await server.planStatus(project, id || entry.status?.plan?.id || null);
+    const status = await server.planStatus(project, asked);
+    if (entry.want && status.plan?.id !== entry.want) throw Object.assign(new Error("stale"), { stale: asked !== entry.want, status: 404 });
+    delete entry.want;
     const run = status.plan?.id, key = `plan:${project}`;
     if (status.plan?.status === "failed") {
-      // Background polls never raise a banner; only a viewed failure does, with a real retry.
+      // Only viewed failures raise a banner.
       if (!quiet && entry.failedRun !== run) {
         entry.failedRun = run;
         ctx.showError(`Run ${run} failed. View logs for details or retry failed steps.`,
@@ -113,17 +121,21 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
     (status.reconcile || []).forEach((r) => r.action === "needs runner" && server.session?.mutations_enabled
       && server.planReconcile(project).then(() => ctx.log("info", `Run ${r.plan}: runner restarted to follow ${r.alive.length} running command(s).`, "plan")).catch(() => {}));
   } catch (error) {
-    entry.error = error.message;
-    if (!quiet) ctx.log("warn", `Plans: ${error.message}`, "plan");
+    if (!error.stale) {
+      entry.error = entry.want && error.status === 404 ? "This run is no longer available. Refresh run history." : error.message;
+      delete entry.want;
+      if (!quiet) ctx.log("warn", `Plans: ${error.message}`, "plan");
+    }
   } finally {
     entry.loading = false;
   }
+  if (entry.want) return loadPlan(ctx, project, { quiet });
   schedulePoll(ctx, project);
   if (before !== JSON.stringify([entry.status, entry.error])) ctx.update();
   return entry.status;
 }
 
-// One poll timer per project so a run keeps updating while another project is open.
+// Poll each project independently.
 function schedulePoll(ctx, project) {
   clearTimeout(pollTimers.get(project));
   pollTimers.delete(project);
@@ -142,10 +154,9 @@ export function forgetPlan(project) {
   clearTimeout(pollTimers.get(project));
   pollTimers.delete(project);
   cache.delete(project);
-  execCache.delete(project);
 }
 
-// Every cached run that is still active, for the Jobs tray.
+// Active cached runs for Jobs.
 export function activeJobs() {
   return [...cache.entries()].map(([project, e]) => ({ project, status: e.status }))
     .filter((j) => j.status?.plan && ["running", "paused", "interrupted"].includes(j.status.plan.status));
@@ -203,8 +214,8 @@ function moreMenu(ctx, project, anchor) {
     canAct && !p.loop && { icon: "plus", label: "Add target…", hint: "append a row to this run's CSV", run: act("add-row") },
     p.loop && { icon: "file", label: "Handoffs…", run: async () => { try { const { openHandoffs } = await import("./agent_dialog.js"); await openHandoffs(ctx, project, p.id); } catch (error) { ctx.toast(error.message, "fail"); } } },
     canAct && { icon: "play", label: "New run…", run: act("new") },
-    (s.units || []).some((u) => u.usage) && { icon: "graph", label: "Usage", hint: "CPU / memory per step", run: act("usage") },
-    { icon: "terminal", label: "Runner log", hint: "follow in the Log Stream", run: () => { dockLog(ctx, project, log); } },
+    (s.units || []).some((u) => u.usage || u.agent_usage || u.handoff) && { icon: "graph", label: "Usage", hint: "Tokens, cost, CPU / memory", run: act("usage") },
+    { icon: "log", label: "Runner log", hint: "follow in the Log Stream", run: () => { dockLog(ctx, project, log); } },
     { icon: "sync", label: "Refresh", run: act("refresh") },
     canAct && active && { icon: "stop", label: "Cancel run…", hint: "Cancel: stops the current turn now", danger: true, run: act("cancel") },
   ].filter(Boolean));
@@ -218,6 +229,16 @@ function saveOrderPrefs(prefs) {
   try { localStorage.setItem(ORDER_KEY, JSON.stringify(prefs)); } catch { /* private mode */ }
 }
 
+// Run order sections the user opened or closed ("project|Done" → open). A running plan
+// re-renders every few seconds; without this each refresh reset them to their defaults.
+const secOpen = new Map();
+const watched = new WeakSet();
+function rememberSections(box) {
+  if (watched.has(box) || !box.addEventListener) return;
+  watched.add(box);
+  box.addEventListener("toggle", (e) => { if (e.target.dataset?.sec) secOpen.set(e.target.dataset.sec, e.target.open); }, true);
+}
+
 
 export function renderSchedule(box, ctx, project) {
   if (!plansAvailable(ctx, project)) {
@@ -225,7 +246,7 @@ export function renderSchedule(box, ctx, project) {
     return;
   }
   const entry = cache.get(project);
-  if (!entry) { box.innerHTML = `<div class="empty">Loading runs…</div>`; loadPlan(ctx, project); return; }
+  if (!entry || entry.want) { box.innerHTML = `<div class="empty">Loading runs…</div>`; if (!entry) loadPlan(ctx, project); return; }
   const s = entry.status;
   if (!s?.plan) {
     box.innerHTML = `<div class="empty">${icon("play")}<p>No run yet for this project.</p><button class="btn primary" data-plan="new">${icon("play")} Run…</button>${entry.error ? `<div class="callout fail" role="alert">${esc(entry.error)}<button class="btn" data-plan="refresh">Retry</button><button class="btn" data-plan="dismiss-error">Dismiss</button></div>` : ""}</div>`;
@@ -249,15 +270,17 @@ export function renderSchedule(box, ctx, project) {
       : tot.todo ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Run remaining</button>`
         : `<button class="btn sm primary" data-plan="new">${icon("play")} New run…</button>`;
   const counts = ["running", "failed", "blocked", "todo"].filter((k) => tot[k]).map((k) => `<span class="pc pc-${k}" title="${esc(CELL[k]?.label || k)}">${tot[k]} ${esc(CELL[k]?.label || k)}</span>`).join("");
-  box.innerHTML = `
+  rememberSections(box);
+  keepScroll(box, () => { box.innerHTML = `
     ${entry.error ? `<div class="callout fail" role="alert"><span>${esc(entry.error)}</span><button class="btn sm" data-plan="refresh">Retry</button><button class="btn sm" data-plan="dismiss-error">Dismiss</button></div>` : ""}
     <div class="sched-h">
-      <select class="input sm" data-plan-pick aria-label="Run">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(RUN_STATUS[x.status] || x.status)}</option>`).join("")}</select>
-      <span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(RUN_STATUS[p.status] || p.status)}</span>
+      <select class="input sm" data-plan-pick aria-label="Run">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(x.start_at ? "Scheduled" : RUN_STATUS[x.status] || x.status)}</option>`).join("")}</select>
+      ${p.start_at ? "" : `<span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(RUN_STATUS[p.status] || p.status)}</span>`}
+      ${p.start_at ? `<span class="badge tone-warn" title="The runner waits until then (alfrd plan start-now runs it at once)">${icon("clock")}Scheduled · starts ${esc(p.start_at.replace("T", " ").slice(0, 16))}</span>${canAct ? `<button class="btn sm primary" data-plan="start-now">${icon("play")} Run now</button>` : ""}` : ""}
       <div class="plan-bar" title="${pct}% of planned cells done"><i style="width:${pct}%"></i></div><span class="tabular small">${tot.done || 0}/${all}</span>
       <span class="sched-counts">${counts}</span>
       <span class="grow"></span>
-      ${!active ? `<a class="btn sm primary" href="#/results">View results</a><button class="btn sm" data-plan="logs">View logs</button>` : ""}
+      ${!active ? `<a class="btn sm primary" href="#/results">View results</a><button class="btn sm" data-plan="logs">${icon("log")} View logs</button>` : ""}
       ${primary}
       ${s.loop?.phase === "awaiting_response" ? '<button class="btn sm primary" data-plan="handoffs">Submit response</button>' : ''}
       ${s.loop?.phase === "awaiting_review" ? '<button class="btn sm primary" data-plan="handoffs">Review response</button>' : ''}
@@ -265,11 +288,11 @@ export function renderSchedule(box, ctx, project) {
       <button class="btn sm" data-plan="more" aria-haspopup="menu" title="Cancel, add a target, new run, usage, runner log …">${icon("more")} More</button>
     </div>
     <p class="sched-meta muted small"><span class="mono" title="Run CSV">${esc(p.csv)}</span> · ${esc(RUN_MODE[p.mode] || p.mode)} · concurrency ${esc(p.concurrency)} · ${esc(RUN_FAILURE[p.on_failure] || p.on_failure)} · ${esc(runnerTitle(s))}</p>
-    ${s.loop ? `<p class="sched-meta"><b>Turn ${esc(s.loop.turn)} of ${esc(s.loop.turns)} · Iteration ${esc(s.loop.iteration)}/${esc(s.loop.iterations)} · ${esc(s.loop.agent || "ready")}${s.loop.roles?.length ? ` as ${esc(s.loop.roles.join(" + "))}` : ""}</b> · ${esc(RUN_PHASE[s.loop.phase] || "Queued")} · Model: ${esc(s.loop.model || (s.loop.requested_model ? `${s.loop.requested_model} (requested)` : "not reported"))} · ${esc(loopElapsed([{ ...s.loop, status: "running" }]))}</p><p class="muted small">Pause finishes the current turn. Cancel stops it now.</p>` : ""}
+    ${s.loop ? `<p class="sched-meta"><b>Turn ${esc(s.loop.turn)} of ${esc(s.loop.turns)}${s.loop.iteration_unit === "turns" ? "" : ` · Iteration ${esc(s.loop.iteration)}/${esc(s.loop.iterations)}`} · ${esc(s.loop.agent || "ready")}${s.loop.roles?.length ? ` as ${esc(s.loop.roles.join(" + "))}` : ""}</b> · ${esc(RUN_PHASE[s.loop.phase] || "Queued")} · Model: ${esc(s.loop.model || (s.loop.requested_model ? `${s.loop.requested_model} (requested)` : "not reported"))} · ${esc(loopElapsed([{ ...s.loop, status: "running" }]))}</p><p class="muted small">Pause finishes the current turn. Cancel stops it now.</p>` : ""}
     <div class="sched-b dock-${esc(orderPrefs().dock)}${orderPrefs().folded ? " order-folded" : ""}">
       <section class="sched-grid">
         <h4>Targets × steps <span class="muted small">(click a cell: log, retry, skip)</span></h4>
-        <div class="grid-scroll"><table class="tbl plan-grid"><thead><tr><th>Target</th><th>Code / wd</th>${steps.map((st) => `<th title="${esc(st)}"><span class="mono">${esc(st.replace(/^avica_/, ""))}</span></th>`).join("")}</tr></thead><tbody>
+        <div class="grid-scroll" role="region" aria-label="Targets by workflow steps" tabindex="0" data-scroll-key="${esc(`sched|${project}|${p.id}`)}"><table class="tbl plan-grid"><thead><tr><th>Target</th><th>Code / wd</th>${steps.map((st) => `<th title="${esc(st)}"><span class="mono">${esc(st.replace(/^avica_/, ""))}</span></th>`).join("")}</tr></thead><tbody>
           ${rows.map((r) => `<tr><td class="mono"><b>${esc(r.target)}</b>${waitingBy.has(r.key) ? ` <span class="badge tone-warn wait-chip" title="${esc(waitingBy.get(r.key).reason)}">${icon("hourglass")}waiting</span>` : ""}</td><td class="mono small muted">${esc([r.code, r.workdir].filter(Boolean).join(" / ") || "—")}</td>${steps.map((st) => {
             const v = r.cells[st] || "skip";
             const meta = CELL[v] || { label: v, tone: "muted", icon: "info", mark: "?" };
@@ -280,8 +303,8 @@ export function renderSchedule(box, ctx, project) {
           }).join("")}</tr>`).join("")}
         </tbody></table></div>
       </section>
-      <section class="sched-list">${orderList(s, project)}</section>
-    </div>`;
+      <section class="sched-list" data-scroll-key="${esc(`order|${project}|${p.id}`)}">${orderList(s, project)}</section>
+    </div>`; });
 }
 
 function unitRow(project, u, status) {
@@ -304,7 +327,10 @@ function orderList(s, project) {
   const done = ended.filter((u) => u.status === "done");
   const queued = (s.queue || []).filter((q) => !running.some((u) => (u.rows || [u.row]).includes(q.row) && (u.steps || []).includes(q.step)));
   const prefs = orderPrefs();
-  const sec = (title, n, body, open = true) => (n ? `<details class="sched-sec" ${open ? "open" : ""}><summary><b>${title}</b> <span class="muted small">${n}</span></summary><table class="tbl small ord"><tbody>${body}</tbody></table></details>` : "");
+  const sec = (title, n, body, open = true) => {
+    const key = `${project}|${title}`;
+    return n ? `<details class="sched-sec" data-sec="${esc(key)}" ${(secOpen.get(key) ?? open) ? "open" : ""}><summary><b>${title}</b> <span class="muted small">${n}</span></summary><table class="tbl small ord"><tbody>${body}</tbody></table></details>` : "";
+  };
   const tally = [["running", running.length], ["queued", queued.length], ["failed", failed.length], ["done", done.length]]
     .filter(([, n]) => n).map(([k, n]) => `<span class="pc pc-${k === "queued" ? "todo" : k}">${n} ${k}</span>`).join("");
   return `<div class="ord-h"><h4>Run order</h4><span class="ord-tally">${tally}</span><span class="grow"></span>
@@ -374,6 +400,23 @@ export async function planAct(ctx, project, action, el, opts = {}) {
   return loadPlan(ctx, project);
 }
 
+/** "YYYY-MM-DDTHH:MM" in local time (datetime-local inputs). */
+function localStamp(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Hold a step of a running plan until a clock time (or a delay); empty clears it. Applies to every target. */
+async function setStart(ctx, project, planId, step) {
+  const value = window.prompt(`Start ${step} at (all targets):\n02:00 = the next 02:00 · 2026-10-07 02:00 · +1h = after the previous step · empty = no wait`, "");
+  if (value === null) return;
+  try {
+    await server.planTurnSet(project, planId, step, { after: value.trim() || null });
+    ctx.toast(value.trim() ? `${step} starts at ${value.trim()}` : `${step}: start time cleared`, "ok");
+    loadPlan(ctx, project);
+  } catch (error) { ctx.toast(error.message, "fail"); }
+}
+
 export function cellMenu(ctx, project, anchor) {
   const s = planOf(project);
   const key = anchor.dataset.cell;
@@ -390,10 +433,11 @@ export function cellMenu(ctx, project, anchor) {
     } catch (error) { ctx.toast(error.message, "fail"); }
   };
   ctx.menu(anchor, [
-    { label: u?.log ? "Open log" : "No log yet", icon: "logs", disabled: !u?.log, run: () => openLog(ctx, project, u.log) },
-    { label: "Follow in Log Stream", icon: "terminal", disabled: !u?.log, run: () => dockLog(ctx, project, u.log) },
+    { label: u?.log ? "Open log" : "No log yet", icon: "log", disabled: !u?.log, run: () => openLog(ctx, project, u.log) },
+    { label: "Follow in Log Stream", icon: "log", disabled: !u?.log, run: () => dockLog(ctx, project, u.log) },
     { label: "Resource usage", icon: "graph", disabled: !u?.usage_file, run: () => loadUsage().then((m) => m.openUsage(ctx, project, u, () => unitById(project, u.id) || u)) },
     { label: "Retry (todo)", icon: "reset", disabled: !can || v === "todo", run: () => set("todo") },
+    { label: "Start step at… (all targets)", icon: "clock", disabled: !can || !["running", "paused"].includes(s?.plan?.status), run: () => setStart(ctx, project, s.plan.id, step) },
     { label: "Skip", icon: "minus", disabled: !can || Boolean(s?.plan?.loop) || v === "skip", run: () => set("skip") },
     ...(u?.argv ? [{ label: "Copy command", icon: "copy", run: () => navigator.clipboard?.writeText(u.argv.join(" ")) }] : []),
     { label: "Notes…", icon: "file", run: () => ctx.openNotes(project, { target: row?.target, step, project_code: row?.code || undefined, workdir: row?.workdir || undefined }) },
@@ -477,9 +521,8 @@ export async function openAddRowDialog(ctx, project) {
 }
 
 
-async function execInfo(project) {
-  if (!execCache.has(project)) execCache.set(project, await server.executionInfo(project));
-  return execCache.get(project);
+async function execInfo(project, target = null) {
+  return server.executionInfo(project, target);
 }
 
 function selectionRows(ctx, project, info) {
@@ -491,9 +534,10 @@ function selectionRows(ctx, project, info) {
   }));
 }
 
-export async function openRunDialog(ctx, project, { dry = false, only = null, targets = null, onStarted = null } = {}) {
+export async function openRunDialog(ctx, project, { dry = false, only = null, targets = null, target = null, onStarted = null } = {}) {
+  const selectedTarget = target || targets?.[0] || storage.get(`task:selected:${project}`, null) || ctx.target()?.name || null;
   let info;
-  try { execCache.delete(project); info = await execInfo(project); } catch (error) { ctx.toast(`Run settings: ${error.message}`, "fail"); return; }
+  try { info = await execInfo(project, selectedTarget); } catch (error) { ctx.toast(`Run settings: ${error.message}`, "fail"); return; }
   if (info.error || !info.configured) {
     ctx.modal(`<header class="modal-h"><h2>${icon("play")} Start a run</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
       <div class="modal-b"><p>${info.error ? esc(info.error.message || info.error) : "No step has a command yet."}</p>
@@ -506,8 +550,8 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
   const isLoop = info.steps.every((s) => s.iteration && s.handoff?.input);
   let sel = selectionRows(ctx, project, info), preferNew = Boolean(only || targets);
   if (isLoop) {
-    const defaults = (await import("../data/agent_settings.js")).loopRunSelection(info);
-    sel = defaults.rows; preferNew = defaults.preferNew;
+    const defaults = (await import("../data/agent_settings.js")).loopRunSelection(info, selectedTarget);
+    sel = defaults.rows; preferNew = true;
   }
   const hasCsv = info.plan_csv_exists && info.table?.rows?.length;
   const st = info.settings;
@@ -515,14 +559,14 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
   ctx.modal(`
     <header class="modal-h"><h2>${icon("play")} ${dry ? "Preview a run" : "Start a run"} · ${esc(ctx.projectName(project))}</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b run-dlg">
-      <p class="muted small">Commands come from alfrd.yaml and run on the server machine in <code>${esc(info.cwd)}</code>. They keep running when you close the Studio or stop <code>alfrd serve</code>; the Studio re-attaches when the project is loaded again.</p>
+      <p class="muted small">Commands from alfrd.yaml run in <code>${esc(info.cwd)}</code> on the server. Runs continue after Studio or <code>alfrd serve</code> closes; reopening reconnects.</p>
       <fieldset><legend>Targets <button class="link-btn small" id="run-import" title="Add sources and their FITS file names to the targets CSV">${icon("upload")} Import targets CSV…</button></legend>
-        ${hasCsv ? `<label class="check"><input type="radio" name="src" value="csv" ${preferNew ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
-        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !preferNew ? "" : "checked"}> <span>New run from these targets${hasCsv ? ` <em class="muted">(replaces ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
+        ${hasCsv && !isLoop ? `<label class="check"><input type="radio" name="src" value="csv" ${preferNew ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
+        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !preferNew ? "" : "checked"}> <span>New run from these targets${hasCsv ? ` <em class="muted">(${isLoop ? "keeps other tasks in" : "replaces"} ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
         <div class="run-targets" id="run-targets">
           <div class="row gap small"><button class="link-btn" data-all="1">all</button><button class="link-btn" data-all="0">none</button><input class="input sm grow" id="run-filter" placeholder="Filter targets"></div>
           <table class="tbl small"><thead><tr><th></th><th>Target</th><th>${esc(info.files_column)}</th><th>${esc(info.code_column)}</th></tr></thead><tbody>
-          ${sel.map((r, i) => `<tr data-name="${esc(r.target.toLowerCase())}"><td><input type="checkbox" data-i="${i}" ${(targets ? targets.includes(r.target) : !current || current.name === r.target) ? "checked" : ""}></td><td class="mono">${esc(r.target)}</td><td><input class="input sm mono" data-files="${i}" value="${esc(r.files)}" placeholder="a.idifits,b.idifits"></td><td><input class="input sm mono" data-code="${i}" value="${esc(r.code)}" size="7"></td></tr>`).join("") || '<tr><td colspan="4" class="muted">No targets in this project yet — add targets to the run CSV, or use <code>alfrd plan new --targets …</code>.</td></tr>'}
+          ${sel.map((r, i) => `<tr data-name="${esc(r.target.toLowerCase())}"><td><input type="checkbox" data-i="${i}" ${(isLoop || (targets ? targets.includes(r.target) : !current || current.name === r.target)) ? "checked" : ""}></td><td class="mono">${esc(r.target)}</td><td><input class="input sm mono" data-files="${i}" value="${esc(r.files)}" placeholder="a.idifits,b.idifits"></td><td><input class="input sm mono" data-code="${i}" value="${esc(r.code)}" size="7"></td></tr>`).join("") || '<tr><td colspan="4" class="muted">No targets in this project yet — add targets to the run CSV, or use <code>alfrd plan new --targets …</code>.</td></tr>'}
           </tbody></table>
         </div>
       </fieldset>
@@ -533,6 +577,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
         <label class="field" ${isLoop ? "hidden" : ""}><span>Mode</span><select class="input" id="run-mode">${["step", "target", "batch"].map((m) => `<option value="${m}" ${st.mode === m ? "selected" : ""} ${m !== "step" && !info.settings[`${m}_entrypoint`] ? "disabled" : ""}>${esc(RUN_MODE[m])}</option>`).join("")}</select><small class="muted">Order of work. Batch sends all selected work to one command.</small></label>
         <label class="field" ${isLoop ? "hidden" : ""}><span>Targets at once</span><input class="input" id="run-conc" type="number" min="1" max="64" value="${esc(st.concurrency)}"></label>
         <label class="field" ${isLoop ? "hidden" : ""}><span>On failure</span><select class="input" id="run-fail">${["stop_target", "continue", "stop_plan"].map((m) => `<option value="${m}" ${st.on_failure === m ? "selected" : ""}>${esc(RUN_FAILURE[m])}</option>`).join("")}</select><small class="muted">What happens after a step fails.</small></label>
+        <label class="field"><span>Start at <span class="muted">(optional)</span></span><input class="input" id="run-at" type="datetime-local" min="${esc(localStamp(new Date()))}" max="${esc(localStamp(new Date(Date.now() + 7 * 864e5)))}"><small class="muted">Empty starts now. Up to 7 days ahead; the machine must be on then.</small></label>
         <label class="field"><span>Status from</span><input class="input" value="${esc({ exit_code: "Command exit code", result_csv: "Results CSV", both: "Exit code and results CSV" }[st.status_from] || st.status_from)}" disabled title="execution.status_from in alfrd.yaml"></label>
       </div>
       <div id="run-error" class="callout fail" role="alert" hidden></div>
@@ -557,6 +602,8 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       const src = $("input[name=src]:checked", root)?.value || "sel";
       const chosen = picker.selected();
       const out = isLoop ? {} : { mode: $("#run-mode", root).value, concurrency: Number($("#run-conc", root).value) || 1, on_failure: $("#run-fail", root).value };
+      const at = $("#run-at", root)?.value;
+      if (at) out.start_at = at.replace("T", " ");
       if (src === "sel") {
         if (isLoop && chosen.length !== steps.length) throw new Error("Agent loops require all turns. Use Agents & review to select review checkpoints.");
         out.rows = $$("input[data-i]", root).filter((c) => c.checked).map((c) => {
@@ -564,6 +611,10 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
           return { ...sel[i], files: $(`[data-files="${i}"]`, root).value.trim(), code: $(`[data-code="${i}"]`, root).value.trim() };
         });
         out.steps = chosen;
+      }
+      if (isLoop) {
+        if (out.rows?.length !== 1) throw new Error("Select exactly one task for an agent loop.");
+        out.target = out.rows[0].target;
       }
       return out;
     };
@@ -600,13 +651,13 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       if (!r) return;
       if (r.errors.length && !window.confirm(`${r.errors.length} problem(s) — those cells will fail. Start anyway?`)) return;
       const body = payload();
-      if (body.rows && hasCsv) {
+      if (body.rows && hasCsv && !isLoop) {
         if (!window.confirm(`Replace ${info.plan_csv_name} (${info.table.rows.length} rows) with ${body.rows.length} target(s)?`)) return;
         body.overwrite = true;
       }
       try {
         const res = await server.planStart(project, body);
-        ctx.toast(`Run ${res.plan.id} started`, "ok");
+        ctx.toast(res.plan.start_at ? `Run ${res.plan.id} scheduled for ${res.plan.start_at.replace("T", " ")}` : `Run ${res.plan.id} started`, "ok");
         ctx.log("info", `Run ${res.plan.id} started (${res.plan.mode}, ${res.plan.csv}).`, "plan");
         close();
         onStarted?.(res.plan);

@@ -1,5 +1,7 @@
-export const DEFAULT_ITERATIONS = 5;
+export const DEFAULT_ITERATIONS = 10;
 export const MAX_ITERATIONS = 100;
+export const MAX_TURNS = 2 * MAX_ITERATIONS;
+export const DEFAULT_HANDOFF = "{target}/next-step-{agent}.md";
 // Studio definitions from alfrd.yaml (optionally on top of a template).
 //
 // Nothing about a particular pipeline is built into the Studio: step labels,
@@ -76,6 +78,52 @@ function stepList(manifest) {
   return expandWorkflowSteps(first);
 }
 
+export function isSequence(workflow) {
+  return Boolean(workflow?.repeat && typeof workflow.repeat === "object" && "sequence" in workflow.repeat);
+}
+
+/** Passes of a `repeat.sequence`: one list (repeating) or a list of lists (the last repeats). Mirrors agent_loop.sequence_passes. */
+export function sequencePasses(repeat) {
+  const seq = repeat?.sequence;
+  if (!Array.isArray(seq) || !seq.length) throw new Error("repeat.sequence must be a nonempty list of agents");
+  const passes = seq.every((item) => typeof item === "string") ? [seq] : seq;
+  const ok = (i) => typeof i === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/.test(i);
+  if (!passes.every((p) => Array.isArray(p) && p.length && p.every(ok))) throw new Error("repeat.sequence lists agent names, or lists of agent names (one list per pass)");
+  return passes;
+}
+
+/** The agent of every turn plus the one that receives the final handoff. Mirrors agent_loop.sequence_agents. */
+export function sequenceAgents(repeat) {
+  const passes = sequencePasses(repeat), at = (n) => passes[Math.min(n, passes.length - 1)];
+  if (("iterations" in repeat) === ("passes" in repeat)) throw new Error("repeat.sequence needs exactly one of iterations (total turns) or passes");
+  let total;
+  if ("passes" in repeat) {
+    if (!Number.isInteger(repeat.passes) || repeat.passes < 1 || repeat.passes > MAX_ITERATIONS) throw new Error(`repeat.passes must be an integer from 1 to ${MAX_ITERATIONS}`);
+    total = 0; for (let i = 0; i < repeat.passes; i++) total += at(i).length;
+  } else total = repeat.iterations;
+  if (!Number.isInteger(total) || total < 1 || total > MAX_TURNS) throw new Error(`repeat.iterations (total turns) must be an integer from 1 to ${MAX_TURNS}`);
+  const agents = [];
+  for (let n = 0; agents.length <= total; n++) agents.push(...at(n));
+  return agents.slice(0, total + 1);
+}
+
+/** Project maximum in its own unit: turns (sequence) or passes (legacy repeat). */
+export function workflowTurns(workflow) {
+  if (!workflow?.repeat) return 0;
+  return isSequence(workflow) ? sequenceAgents(workflow.repeat).length - 1 : workflow.repeat.iterations;
+}
+
+function turnOverride(workflow, id, turn) {
+  const turns = workflow?.turns || {};
+  return { ...(turns[turn] || {}), ...(turns[String(turn)] || {}), ...(turns[id] || {}) };
+}
+
+export function ownSteps(workflow) {
+  const raw = workflow?.steps || [];
+  const list = Array.isArray(raw) ? raw : Object.entries(raw).map(([id, value]) => ({ id, ...(typeof value === "object" ? value : {}) }));
+  return Object.fromEntries(list.filter((s) => s && typeof s === "object").map((s) => [stepId(s), s]));
+}
+
 export function expandWorkflowSteps(workflow) {
   const raw = Array.isArray(workflow) ? workflow : workflow?.steps || workflow?.sequence || [];
   const schedule = workflow?.roles || [];
@@ -85,12 +133,27 @@ export function expandWorkflowSteps(workflow) {
     return typeof value === "string" ? [value] : value ?? [];
   };
   if (!workflow?.repeat) return Array.isArray(raw) ? raw.map((step, i) => ({ ...(typeof step === "object" ? step : { id: step }), turn: i + 1, roles: roles(step, i) })) : [];
+  if (isSequence(workflow)) {
+    const agents = sequenceAgents(workflow.repeat), total = agents.length - 1, own = ownSteps(workflow);
+    const pattern = workflow.repeat.handoff ?? DEFAULT_HANDOFF;
+    const entry = (item) => String(own[item]?.entrypoint || item);
+    const out = [];
+    for (let turn = 1; turn <= total; turn++) {
+      const item = agents[turn - 1], id = `t${String(turn).padStart(3, "0")}-${item}`;
+      const { id: _i, key: _k, name: _n, handoff: _h, ...base } = own[item] || {};
+      const spec = { ...base, ...turnOverride(workflow, id, turn) };
+      out.push({ ...spec, id, entrypoint: entry(item), turn, roles: roles(spec, turn - 1), base_step: item, iteration: turn, iterations: total,
+        label: `${turn}/${total} · ${spec.label || item}`, handoff: { input: pattern.replace("{agent}", entry(item)), output: pattern.replace("{agent}", entry(agents[turn])) },
+        depends_on: out.length ? [out.at(-1).id] : [] });
+    }
+    return out;
+  }
   const count = workflow.repeat.iterations;
   if (!Number.isInteger(count) || count < 1 || count > MAX_ITERATIONS) throw new Error("repeat.iterations must be an integer from 1 to 100");
   const out = [];
   for (let iteration = 1; iteration <= count; iteration++) raw.forEach((step) => {
     const base = stepId(step), id = `i${String(iteration).padStart(3, "0")}-${base}`;
-    const own = typeof step === "object" ? step : {};
+    const own = { ...(typeof step === "object" ? step : {}), ...turnOverride(workflow, id, out.length + 1) };
     out.push({ ...own, id, turn: out.length + 1, roles: roles(own, out.length), base_step: base, iteration, label: `${iteration}/${count} · ${own.label || base}`,
       depends_on: out.length ? [out.at(-1).id] : [] });
   });
@@ -128,11 +191,13 @@ export function studioManifest(manifest) {
     stages: Array.isArray(m.stages) ? m.stages : tpl.stages || null,
     steps,
     tplSteps,
+    ownSteps: m.steps && typeof m.steps === "object" && !Array.isArray(m.steps) ? m.steps : {},
     stepOrder: list.map((x) => resolveAlias(stepId(x)).name).filter(Boolean),
     stepDefaults: { ...(tpl.step_defaults || {}), ...(m.step_defaults || {}) },
     overview: { ...(tpl.overview || {}), ...(m.overview || {}) },
     results: { ...(tpl.results || {}), ...(m.results || {}) },
     settings: { ...(tpl.project_settings || {}), ...(m.project_settings || {}) },
+    quickstart: { ...(tpl.quickstart || {}), ...(m.quickstart && typeof m.quickstart === "object" ? m.quickstart : {}) },
     targets: { ...(tpl.targets || {}), ...(m.targets && typeof m.targets === "object" ? m.targets : {}) },
     execution: { ...(tpl.execution || {}), ...(m.execution && typeof m.execution === "object" ? m.execution : {}) },
     artifacts: [...byName.values()],
@@ -336,93 +401,7 @@ export function msPathsByTarget(paths) {
   return out;
 }
 
-export function personaRows(data) {
-  return Object.entries(data.project_settings?.personas || {}).map(([key, value]) => ({ key, ...value }));
-}
-
-export function turnRoleRows(data) {
-  const wf = firstWorkflow(data);
-  const raw = wf?.steps || [];
-  const steps = Array.isArray(raw) ? raw : Object.entries(raw).map(([id, value]) => ({ id, ...value }));
-  const count = wf?.repeat?.iterations || 1, schedule = wf?.roles || [], rows = [];
-  for (let iteration = 1; iteration <= count; iteration++) for (const step of steps) {
-    const own = typeof step === "object" ? step : { id: step };
-    const value = schedule.length ? schedule[rows.length % schedule.length] : own.role;
-    rows.push({ turn: rows.length + 1, iteration, iterations: count, agent: own.entrypoint || wf?.entrypoint || own.id,
-      keys: typeof value === "string" ? [value] : [...(value || [])] });
-  }
-  return rows;
-}
-
-export function applyPersonaSettings(data, personas, turnRoles) {
-  const result = structuredClone(data), values = {}, keys = new Set();
-  for (const row of personas) {
-    if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(row.key) || keys.has(row.key)) throw new Error("Persona keys must be unique: 1–40 lowercase letters, digits, underscores or hyphens.");
-    if (typeof row.label !== "string" || !row.label.trim() || row.label.length > 60 || /[\r\n]/.test(row.label)) throw new Error("Persona labels must be 1–60 characters on one line.");
-    if (typeof row.instructions !== "string" || row.instructions.length > 4000) throw new Error("Persona instructions must be at most 4000 characters.");
-    keys.add(row.key); values[row.key] = { label: row.label, instructions: row.instructions };
-  }
-  if (personas.length) result.project_settings = { ...(result.project_settings || {}), personas: values };
-  else if (result.project_settings) delete result.project_settings.personas;
-  const wf = firstWorkflow(result);
-  if (!wf) return result;
-  const roles = turnRoles.map((row) => {
-    const selected = [...new Set(row.keys)].filter((key) => keys.has(key)).sort();
-    return selected.length > 1 ? selected : selected[0] || null;
-  });
-  delete wf.roles;
-  // A finite run may end partway through a repeating cycle.
-  for (let size = 1; roles.some((role) => role !== null) && size <= roles.length; size++) {
-    if (roles.every((role, i) => JSON.stringify(role) === JSON.stringify(roles[i % size]))) {
-      wf.roles = roles.slice(0, size); break;
-    }
-  }
-  const steps = Array.isArray(wf.steps) ? wf.steps : Object.values(wf.steps || {});
-  for (const step of steps) if (step && typeof step === "object") delete step.role;
-  return result;
-}
-
 export function firstWorkflow(data) {
   return Array.isArray(data.workflows) ? data.workflows[0] : Object.values(data.workflows || {})[0];
 }
 
-export function agentRows(data) {
-  return (data.entrypoint || []).filter((e) => ["claude", "codex"].includes(String(e.cmd?.[0] || "").split("/").pop())).map((e) => {
-    const args = e.cmd || [], index = args.findIndex((a) => a === "--model" || a === "-m");
-    return { name: e.name, model: e.model || (index >= 0 ? args[index + 1] : args.find((a) => a.startsWith("--model="))?.slice(8)) || "", manual: Boolean(e.manual) };
-  });
-}
-
-export function reviewRows(data) {
-  const wf = firstWorkflow(data);
-  const steps = Array.isArray(wf?.steps) ? wf.steps : Object.entries(wf?.steps || {}).map(([id, value]) => ({ id, ...(typeof value === "object" ? value : {}) }));
-  return steps.filter((s) => typeof s === "object" && s.handoff).map((s) => ({ id: s.id || s.key, enabled: s.human_review ?? data.project_settings?.human_review ?? false }));
-}
-
-export function applyAgentSettings(data, agents, reviewEnabled, reviews) {
-  const result = structuredClone(data);
-  for (const row of agents) {
-    const previous = agentRows(data).find((a) => a.name === row.name);
-    if (row.model.trim() === previous.model && Boolean(row.manual) === previous.manual) continue;
-    const entry = result.entrypoint.find((e) => e.name === row.name);
-    let skip = false;
-    entry.cmd = entry.cmd.filter((arg) => {
-      if (skip) { skip = false; return false; }
-      if (arg === "--model" || arg === "-m") { skip = true; return false; }
-      return !arg.startsWith("--model=");
-    });
-    if (row.model.trim()) entry.model = row.model.trim();
-    else delete entry.model;
-    entry.manual = row.manual;
-  }
-  const reviewChanged = reviewEnabled !== (Boolean(data.project_settings?.human_review) || reviewRows(data).some((r) => r.enabled));
-  if (reviewChanged)
-    result.project_settings = { ...(result.project_settings || {}), human_review: reviewEnabled };
-  const wf = firstWorkflow(result);
-  for (const row of reviews) {
-    const step = Array.isArray(wf.steps) ? wf.steps.find((s) => (s.id || s.key) === row.id) : wf.steps[row.id];
-    if (step && typeof step === "object" && (reviewChanged || (reviewEnabled && row.enabled) !== Boolean(reviewRows(result).find((r) => r.id === row.id)?.enabled)))
-      step.human_review = reviewEnabled && row.enabled;
-  }
-  return result;
-}

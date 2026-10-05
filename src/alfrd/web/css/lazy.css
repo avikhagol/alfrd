@@ -119,6 +119,7 @@
 .rm-danger h3 { color: var(--fail-text); }
 .rm-note { color: var(--text-3); }
 .rm-confirm { display: flex; flex-direction: column; gap: 6px; }
+.rm-all { display: flex; align-items: center; gap: 6px; font-weight: 500; }
 .rm-reason { margin: 0; padding: 8px 12px; border: 1px solid var(--warn-border); background: var(--warn-bg); color: var(--warn-text); border-radius: var(--r); }
 .rm-status:empty, .rm-alert:empty { display: none; }
 .rm-status, .rm-alert { margin: 0; }
@@ -127,6 +128,36 @@
 .rm-f .btn.danger:disabled, .rm-f .btn:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 600px) { .rm-dlg .rm-h, .rm-dlg .rm-b, .rm-dlg .rm-f { padding: 16px; } }
 
+/* Studio settings: header and tabs stay put, one panel scrolls */
+.modal.set-dlg { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); min-height: 0; }
+.set-dlg > .modal-h { flex: none; }
+.seg.set-tabs { display: flex; flex-wrap: wrap; gap: 8px; width: auto; margin: 0 16px 8px; flex: none; }
+.set-tabs [role=tab] { flex: 1 1 calc(50% - 8px); min-width: 0; min-height: 40px; justify-content: center; border: 1px solid transparent; }
+@media (min-width: 640px) { .set-tabs [role=tab] { flex-basis: 0; } }
+.set-tabs [role=tab].on { border-color: var(--accent-border); color: var(--accent-text); }
+.set-tabs [role=tab]:hover { background: var(--subtle); border-color: var(--border-strong); }
+.set-panels { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.set-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.set-panel[hidden] { display: none; }
+.set-proj-n { overflow-wrap: anywhere; }
+.set-proj-p:focus-visible { white-space: normal; overflow-wrap: anywhere; }
+.set-proj-a { flex-wrap: wrap; }
+
+/* Folder browser → New folder (folder_create.js) */
+.fsb-new { margin: 6px 10px; }
+.fsb-new-row { gap: 8px; }
+.fsb-new-row .input { flex: 1 1 14rem; min-width: 0; }
+.fsb-new-where .mono { overflow-wrap: anywhere; }
+.fsb .fsb-new-error { margin: 6px 0 0; }
+.fsb-created { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fsb-status { margin: 0 10px 6px; }
+.fsb-status:empty { margin: 0; }
+
+/* Task editor: unsaved draft banner directly above task.md */
+.task-draft { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; margin: 0 0 8px; }
+.task-draft[hidden], .task-draft [hidden] { display: none; }
+#task-current pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; }
+
 /* Overview run grids (projects without targets: agent loops, unknown types) */
 .rg-wrap { display: flex; flex-direction: column; gap: 16px; padding: 12px; }
 .rg { display: flex; flex-direction: column; gap: 8px; }
@@ -134,12 +165,12 @@
 .rg-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .rg-run { display: flex; flex-direction: column; gap: 4px; }
 .rg-run-h { margin: 4px 0 0; display: flex; gap: 8px; align-items: baseline; }
-.rg-scroll { overflow-x: auto; max-width: 100%; max-height: 60vh; }
-.rg-table { border-collapse: separate; border-spacing: 0; min-width: max-content; }
+.rg-scroll { overflow: auto; min-width: 0; max-width: 100%; max-height: 60vh; }
+.rg-table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; }
 .rg-table th, .rg-table td { padding: 2px 4px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
-.rg-table thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); }
-.rg-table .rg-rowh { position: sticky; left: 0; z-index: 1; background: var(--surface); font-weight: 600; }
-.rg-table .rg-corner { left: 0; z-index: 3; }
+.rg-table thead th { position: sticky; top: 0; z-index: 3; background: var(--subtle); }
+.rg-table .rg-rowh { position: sticky; left: 0; z-index: 2; background: var(--surface); font-weight: 600; max-width: 220px; white-space: normal; overflow-wrap: anywhere; box-shadow: 1px 0 0 var(--border); }
+.rg-table .rg-corner { left: 0; z-index: 4; box-shadow: 1px 0 0 var(--border); }
 .rg-cell { display: inline-flex; gap: 4px; align-items: center; width: 100%; min-width: 7.5em; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--r); background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .rg-cell:hover { border-color: var(--accent); }
 .rg-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -149,6 +180,13 @@
 .rg-cell.st-na { color: var(--text-3); border-style: dashed; background: transparent; }
 .rg-cell.st-pending { border-style: dotted; }
 .rg-tries { margin-left: auto; padding: 0 4px; border-radius: 8px; background: var(--subtle); font-size: .8em; }
+/* Agent-loop run history: two-line run labels, full label on focus */
+.rh-table td { vertical-align: middle; padding: 4px 8px; }
+.rh-table .rh-run { min-width: 180px; width: 260px; }
+.rh-label { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
+.rh-run:is(:focus, :hover) .rh-label { -webkit-line-clamp: unset; }
+.rh-run:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rh-pages { align-items: center; margin-top: 4px; }
 .rg-empty { padding: 12px 0; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .rg-detail { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; }
 .rg-detail dt { color: var(--text-3); }
@@ -157,3 +195,26 @@
 .job-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); }
 .job-row .job-main { flex: 1 1 220px; min-width: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Agent-loop tasks above the run history; per-turn settings of a running plan. */
+.task-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.task-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.task-chip.on, .task-chip:hover { border-color: var(--accent); }
+.task-chip .ic { width: 13px; height: 13px; vertical-align: -2px; }
+.turn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.turn-table th, .turn-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; }
+.turn-table input[type=text] { width: 6em; }
+.qs-inline { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
+
+/* Settings → All settings (form): alfrd.yaml keys as fields */
+.yf .yf-filter { width: 220px; max-width: 100%; }
+.yf h4.grow { margin: 0; }
+details.yf-group { border: 1px solid var(--border); border-radius: var(--r); margin: 8px 0; background: var(--surface); }
+details.yf-group > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text); }
+details.yf-group > summary > .muted:last-child { margin-left: auto; font-weight: 400; }
+details.yf-group[open] > summary { border-bottom: 1px solid var(--border); background: var(--subtle); }
+details.yf-group .yf-group { margin: 6px 0; }
+.yf-body { padding: 4px 12px 8px; }
+.yf-field .mono.muted { font-size: 11px; font-weight: 400; }
+.yf-field .check { font-weight: 500; }
+.yf-add { margin: 6px 0 2px; }
+details.yf-group > summary .icon-btn { margin-left: 4px; }

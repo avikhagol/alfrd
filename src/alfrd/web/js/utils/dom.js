@@ -166,6 +166,24 @@ export function resetUi() {
   } catch { /* ignore */ }
 }
 
+/**
+ * Run `fn` (a re-render inside `root`) keeping the offsets of `[data-scroll-key]`
+ * viewports and focus on the same `[data-focus-key]` / scroll region: a poll must not
+ * send a sideways-scrolled grid back to column one or drop the focused action.
+ */
+export function keepScroll(root, fn) {
+  if (!root?.querySelectorAll) { fn(); return; }
+  const at = (k) => root.querySelector(`[data-focus-key="${CSS.escape(k)}"],[data-scroll-key="${CSS.escape(k)}"]`);
+  const offsets = [...root.querySelectorAll("[data-scroll-key]")].map((v) => [v.dataset.scrollKey, v.scrollTop, v.scrollLeft]);
+  const a = document.activeElement;
+  const focus = root.contains(a) && (a.dataset.focusKey || a.dataset.scrollKey);
+  const own = [root.scrollTop, root.scrollLeft];
+  fn();
+  [root.scrollTop, root.scrollLeft] = own;
+  offsets.forEach(([k, t, l]) => { const v = root.querySelector(`[data-scroll-key="${CSS.escape(k)}"]`); if (v) { v.scrollTop = t; v.scrollLeft = l; } });
+  if (focus && !root.contains(document.activeElement)) at(focus)?.focus({ preventScroll: true });
+}
+
 // Inline SVG icons (stroke based, 24px viewBox). Kept tiny on purpose.
 const P = {
   overview: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/>',
@@ -209,6 +227,7 @@ const P = {
   power: '<path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/>',
   expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
   logs: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 10h8M8 14h8M8 18h5"/>',
+  log: '<path d="M4 5h16M4 10h12M4 15h16M4 20h9"/>', // every log affordance; `terminal` only for a real terminal
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
   terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',

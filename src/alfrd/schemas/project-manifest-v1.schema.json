@@ -15,7 +15,8 @@
               "type": "object", "required": ["label", "instructions"],
               "properties": {
                 "label": {"type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[^\\r\\n]+$"},
-                "instructions": {"type": "string", "maxLength": 4000}
+                "instructions": {"type": "string", "maxLength": 4000},
+                "summary": {"type": "string", "maxLength": 1000}
               },
               "additionalProperties": false
             }
@@ -34,9 +35,91 @@
       },
       "additionalProperties": true
     },
+    "quickstart": {
+      "type": "object",
+      "description": "Setup forms (Studio → Setup wizard). Each form writes its fields to target.file: a key = value file, or alfrd.yaml (dotted field keys).",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "fields"
+        ],
+        "properties": {
+          "type": {
+            "const": "form"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "textbox",
+                    "text",
+                    "textarea",
+                    "number",
+                    "toggle",
+                    "checkbox",
+                    "path",
+                    "select",
+                    "list"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "textbox",
+                        "text",
+                        "textarea",
+                        "number",
+                        "toggle",
+                        "checkbox",
+                        "path",
+                        "select",
+                        "list"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
     "loop": {
       "type": "object",
       "properties": {
+        "max_input_chars": {"type": "integer", "minimum": 1, "default": 40000},
+        "progress": {"oneOf": [{"type": "boolean"}, {"type": "string", "minLength": 1, "pattern": "^[^\\n]+$"}], "default": true, "description": "Agents keep a checklist file in their working folder and continue from it each turn (true: PROGRESS.md in a task worktree, PROGRESS-<task>.md in a shared folder; a name; false = off)."},
+        "workspace": {"enum": ["shared", "worktree"], "default": "shared"},
         "task_row": {"type": "string", "minLength": 1},
         "headings": {
           "type": "array",
@@ -89,6 +172,9 @@
           "manual": {"type": "boolean"},
           "human_review": {"type": "boolean"},
           "model": {"type": ["string", "null"], "minLength": 1},
+          "adapter": {"enum": ["claude", "codex", "generic"]},
+          "model_option": {"type": "string", "pattern": "^--?[A-Za-z0-9][A-Za-z0-9-]*$"},
+          "fallback_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
           "timeout": {"type": "number", "exclusiveMinimum": 0},
           "env": {"type": "object"},
           "cmd": {

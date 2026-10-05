@@ -22,8 +22,12 @@ const STAGE_GAP = 40;
 
 const UI_FIELDS = ["zoom", "panX", "panY", "mode", "minimap", "selected", "tab", "inspector", "fitted", "layoutKey"];
 // Per project: pan/zoom, selected step, inspector and an unsaved parameter draft.
+// The step inspector starts folded (it opens when a step is picked); "inspector.v2" applies that once to saved states.
+const foldOnce = !storage.get("ui:workflow.inspector.v2");
+storage.set("ui:workflow.inspector.v2", true);
 const ui = scoped("workflow", () => ({
-  ...loadUi("workflow.v2", { zoom: 1, panX: 40, panY: 24, mode: "list", minimap: true, selected: null, tab: "params", inspector: true, fitted: false }),
+  ...loadUi("workflow.v2", { zoom: 1, panX: 40, panY: 24, mode: "list", minimap: true, selected: null, tab: "params", inspector: false, fitted: false }),
+  ...(foldOnce ? { inspector: false } : {}),
   draft: null,
   layout: {},
   layoutKey: null,
@@ -274,25 +278,6 @@ export function mount(el, ctx) {
     ui.draft[group][key] = v;
     $("#wf-apply", el)?.removeAttribute("disabled");
   });
-  on(el, "change", "#wf-replace-input", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const { parseYaml } = await import("../utils/yaml_parser.js");
-    const { manifestToWorkflows } = await import("../data/model.js");
-    try {
-      const text = await file.text();
-      const info = manifestToWorkflows(parseYaml(text), file.name);
-      if (!info.workflows.length) throw new Error(info.errors.join("; ") || "no workflows");
-      ctx.applyWorkflowInfo(info, file.name, text);
-      ui.fitted = false;
-      ctx.persist();
-      ctx.toast(`Loaded ${file.name}`, info.errors.length ? "warn" : "ok");
-    } catch (error) {
-      ctx.toast(`${file.name}: ${error.message}`, "fail");
-      ctx.log("error", `${file.name}: ${error.message}`, "workflow");
-    }
-    e.target.value = "";
-  });
 }
 
 function ensureDraft(ctx) {
@@ -380,7 +365,6 @@ function act(el, ctx, name, button) {
       ctx.update();
       break;
     case "validate": validate(ctx); break;
-    case "replace": $("#wf-replace-input", el).click(); break;
     case "sim": toggleSim(ctx); break;
     case "sim-stop": stopSim(ctx); break;
     case "sim-step": simulateStep(ctx, ui.selected); break;
@@ -394,7 +378,7 @@ function act(el, ctx, name, button) {
         { label: "Export workflow YAML", icon: "download", run: () => document.querySelector("#btn-export").click() },
         { label: "Clear simulation", icon: "reset", run: () => { resetSimulation(); ctx.update(); } },
         ...(plansAvailable(ctx, wfProject(ctx)) ? [{ label: "Simulate in the browser (nothing runs)", icon: "play", run: () => toggleSim(ctx) }] : []),
-        { label: "Open log stream", icon: "terminal", run: () => ctx.renderConsole() },
+        { label: "Open log stream", icon: "log", run: () => ctx.renderConsole() },
       ]);
       break;
     case "fetch-logs": fetchRunLogs(ctx); break;
@@ -622,10 +606,11 @@ export function leave() {
   /* keep simulation running in the background */
 }
 
-export function showRun(ctx, project) {
+export function showRun(ctx, project, id = null) {
   if (ctx.switchProject) ctx.switchProject(project, { restoreView: false });
   else ctx.state.selectedProject = project;
   if (ctx.target()?.project !== project) ctx.state.selectedTarget = null;
+  if (id) loadPlan(ctx, project, { id }); // that run, not the newest
   ui.mode = "schedule"; remember(); ctx.navigate("workflow");
 }
 
@@ -662,7 +647,7 @@ export function render(el, ctx) {
   const ap = plans ? activePlan(project) : null;
   const right = sim.active
     ? `<span class="chip ${!isFinished() ? "tone-run" : ""}"><i class="dot"></i>${isFinished() ? "Simulation finished" : sim.paused ? "Simulation paused" : "Simulating"}</span>`
-    : ap ? `<span class="chip tone-run"><i class="dot"></i>Run ${esc(RUN_STATUS[ap.plan.status] || ap.plan.status)}</span>` : plans ? '<span class="chip"><i class="dot"></i>Ready to run</span>' : '<span class="chip"><i class="dot"></i>Simulation Ready</span>';
+    : ap ? `<span class="chip tone-run"><i class="dot"></i>Run ${esc(ap.plan.start_at ? "scheduled" : RUN_STATUS[ap.plan.status] || ap.plan.status)}</span>` : plans ? '<span class="chip"><i class="dot"></i>Ready to run</span>' : '<span class="chip"><i class="dot"></i>Simulation Ready</span>';
   ctx.setFooterRight(`<span class="chip" id="foot-zoom">Zoom ${Math.round(ui.zoom * 100)}%</span> ${right}`);
 }
 
@@ -676,7 +661,7 @@ function runGroup(ctx, project) {
     <button class="btn primary" data-plan="new" ${canRun ? "" : "disabled title='Only from a browser on the same machine as alfrd serve'"} title="Run steps for targets with the commands in alfrd.yaml">${icon("play")} Run…</button>
     <button class="icon-btn" data-plan="dry" title="Dry run: list the commands a run would start, in order (nothing runs)" aria-label="Dry run">${icon("list")}</button>
     ${ctx.state.workflow.template === "agent-loop" || ctx.state.workflow.steps.some((s) => s.handoff) ? '<button class="btn sm" data-plan="task">Edit task</button><button class="btn sm" data-plan="agents">Agents &amp; review</button>' : ''}
-    ${ap ? `<button class="btn sm" data-plan="schedule" title="Run ${esc(ap.plan.id)}">${icon(ap.plan.status === "running" ? "sync" : "pause", ap.plan.status === "running" && ap.runner?.alive ? "spin" : "")} ${esc(RUN_STATUS[ap.plan.status] || ap.plan.status)} ${counts.done || 0}/${total}</button>` : ""}
+    ${ap ? `<button class="btn sm" data-plan="schedule" title="Run ${esc(ap.plan.id)}">${icon(ap.plan.start_at ? "clock" : ap.plan.status === "running" ? "sync" : "pause", ap.plan.status === "running" && ap.runner?.alive && !ap.plan.start_at ? "spin" : "")} ${esc(ap.plan.start_at ? "Scheduled" : RUN_STATUS[ap.plan.status] || ap.plan.status)} ${counts.done || 0}/${total}</button>` : ""}
   </div>`;
 }
 
@@ -689,8 +674,7 @@ function renderToolbar(el, ctx) {
   const pct = sim.active ? overallPct(ctx) : 0;
   $("#wf-toolbar", el).innerHTML = `
     <div class="cfg-pill" title="${esc([...(f.errors || []), ...(f.warnings || [])].join("\n") || f.name)}">${icon("file")}<span class="mono">${esc(f.name)}</span>
-      <span class="badge tone-${f.validated ? "ok" : "fail"}">${f.validated ? "Validated" : `${f.errors?.length || 0} error(s)`}</span>${f.modified ? '<span class="badge tone-warn">edited</span>' : ""}
-      <button class="link-btn" data-act="replace">Replace</button><input type="file" id="wf-replace-input" accept=".yaml,.yml" hidden></div>
+      <span class="badge tone-${f.validated ? "ok" : "fail"}">${f.validated ? "Validated" : `${f.errors?.length || 0} error(s)`}</span>${f.modified ? '<span class="badge tone-warn">edited</span>' : ""}</div>
     <span class="stat"><i class="dot ok"></i>${wf.steps.length} Steps / ${wf.stages.length} Stages</span>
     <div class="seg"><button data-act="graph" class="${ui.mode === "graph" ? "on" : ""}">${icon("graph")} Graph</button><button data-act="list" class="${ui.mode === "list" ? "on" : ""}">${icon("list")} List</button>${plans ? `<button data-act="schedule" class="${ui.mode === "schedule" ? "on" : ""}" title="Runs: targets × steps and run order">${icon("clock")} Runs</button>` : ""}</div>
     <button class="btn" data-act="validate">${icon("validate")} Validate configuration</button>
