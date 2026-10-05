@@ -48,7 +48,7 @@ export function openSettings(ctx, app) {
   const panels = {
     projects: serverMode ? `
       <div class="set-sec-h"><h3>${icon("database")} Projects</h3><span class="grow"></span><button class="btn sm" id="set-create" ${canWrite ? "" : "disabled"}>${icon("plus")} New project</button>${canWrite ? "" : '<span class="muted small">Project creation needs a browser on the server machine.</span>'}<button class="btn sm" id="set-rediscover" hidden ${canWrite ? "" : "disabled"} title="Connect projects forgotten since the server started">${icon("sync")} Rediscover</button></div>
-      <p class="muted small">How this Studio lists each project: <b>opened</b> (selected on load), <b>shown</b> or <b>hidden</b>. Forget removes a project and its runs from the runtime database; files are never touched.</p>
+      <p class="muted small">How this Studio lists each project: <b>opened</b> (selected on load), <b>shown</b> or <b>hidden</b>. Remove → <b>Forget</b> drops a project and its runs from the runtime database and keeps its files; <b>Delete permanently</b> also deletes ALFRD's files (alfrd.yaml, .alfrd/, …) after you type its name, or the whole folder when you tick <i>Delete all files and folders</i>.</p>
       <div class="field"><label for="set-filter">Filter projects</label><div class="row gap"><label class="search grow">${icon("search")}<input id="set-filter" type="search" placeholder="Search name or path…"></label><button type="button" class="icon-btn" id="set-filter-clear" aria-label="Clear project filter" title="Clear project filter" hidden>${icon("close")}</button></div></div>
       <p class="muted small tabular" id="set-filter-count" role="status" aria-live="polite"></p>
       <ul class="set-projects" id="set-projects"><li class="muted small">Loading projects…</li></ul>`
@@ -224,8 +224,8 @@ async function drawProjects(ctx, app, root) {
     const label = b.dataset.label || name;
     try {
       const { openRemoval } = await import("./removal_dialog.js");
-      await openRemoval(ctx, { key: name, label, root: b.closest(".set-proj")?.querySelector(".set-proj-p")?.title || "", onDone: async () => {
-        ctx.log("info", `Project ${name} forgotten (runtime database only).`, "server");
+      await openRemoval(ctx, { key: name, label, root: b.closest(".set-proj")?.querySelector(".set-proj-p")?.title || "", onDone: async (res) => {
+        if (!res?.deleted) ctx.log("info", `Project ${name} forgotten (runtime database only).`, "server");
         app.removeWorkspace(name);
         await app.loadServer();
         redraw();

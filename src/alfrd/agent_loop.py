@@ -294,8 +294,47 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def prepare(root: Path, archive: Path, step, plan_id: str, unit_id: str, target: str = "task") -> dict[str, Any]:
-    """Snapshot at launch, never at plan creation: the preceding agent supplies it."""
+def progress_file(options: Mapping[str, Any], target: str, own_workspace: bool) -> str | None:
+    """The checklist file an agent keeps in its working folder (``loop.progress``; false = off).
+
+    Default: ``PROGRESS.md`` in a task's own worktree, ``PROGRESS-<task>.md`` when tasks share one folder.
+    """
+    value = options.get("progress", True)
+    if value is False or value is None:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip().replace("{target}", target)
+    return "PROGRESS.md" if own_workspace else f"PROGRESS-{target}.md"
+
+
+def retry_note(previous: Mapping[str, Any] | None, attempt: int, progress: str | None) -> str:
+    """What a retried turn is told about the attempt before it (its partial work is still on disk)."""
+    if not previous:
+        return ""
+    how = {"interrupted": "was interrupted", "cancelled": "was cancelled", "failed": "failed"}.get(str(previous.get("status")), "did not finish")
+    minutes = ""
+    try:
+        from datetime import datetime
+
+        spent = (datetime.fromisoformat(str(previous["finished"])) - datetime.fromisoformat(str(previous["started"]))).total_seconds()
+        minutes = f" after {max(1, round(spent / 60))} min"
+    except (KeyError, TypeError, ValueError):
+        pass
+    error = str(previous.get("error") or previous.get("outcome_reason") or "").strip().splitlines()
+    look = f"read {progress} and " if progress else ""
+    return (f"\nRETRY: this is attempt {attempt} of this turn. The previous attempt ({previous.get('id')}) {how}{minutes}"
+            + (f" ({error[0][:200]})" if error else "") + ". "
+            f"Its unfinished work may already be in the files: {look}check `git status` / `git diff` first, "
+            "keep what is correct, and continue from where it stopped instead of starting over.\n")
+
+
+def prepare(root: Path, archive: Path, step, plan_id: str, unit_id: str, target: str = "task", *,
+            progress: str | None = None, retry: str = "", timeout: float | None = None) -> dict[str, Any]:
+    """Snapshot at launch, never at plan creation: the preceding agent supplies it.
+
+    ``progress``: checklist file to keep (see progress_file); ``retry``: retry_note() text;
+    ``timeout``: the turn's time limit in seconds, told to the agent so it hands off in time.
+    """
     source = resolve_handoff(root, step.handoff["input"], target)
     destination = resolve_handoff(root, step.handoff["output"], target)
     text = source.read_text(encoding="utf-8")
@@ -329,6 +368,13 @@ def prepare(root: Path, archive: Path, step, plan_id: str, unit_id: str, target:
         "middle": "Execute the incoming task, report files changed and checks performed, then plan the next concrete task for the other agent.",
     }
     contract += options.get("contract", {}).get(phase, defaults[phase]) + "\n"
+    if progress:
+        contract += (f"\nKeep {progress} in your working folder as a checklist of the overall plan (create it if missing): "
+                     "read it first, continue from the first unchecked item, and tick items as you finish them. "
+                     "Do what fits in this turn, update the checklist, then hand off; the next turn continues from it.\n")
+    if timeout:
+        contract += f"This turn is stopped after {max(1, round(timeout / 60))} min: save progress and hand off before then.\n"
+    contract += retry
     snapshot = archive / "prompt.md"
     atomic_text(snapshot, text + contract)
     return {"roles": [r["label"] for r in roles], "headings": list(required), "target": target, "input": str(source.relative_to(root.resolve())), "output": str(destination.relative_to(root.resolve())),

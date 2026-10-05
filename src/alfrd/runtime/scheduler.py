@@ -37,7 +37,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from alfrd.execution import ExecutionConfig, ExecutionError, RenderError, load_execution, render, split_files
 
@@ -333,7 +333,8 @@ class Picked:
 def pick_rows(table: pc.PlanTable, *, mode: str, on_failure: str, limit: int, free: int,
               names: Sequence[str], match: str = "all", base: str | Path | None = None,
               running_rows: Iterable[str] = (), started_rows: Iterable[str] = (),
-              locks: Iterable[str] = ()) -> Picked:
+              locks: Iterable[str] = (),
+              hold: Callable[[pc.PlanRow, UnitSpec], dict[str, Any] | None] | None = None) -> Picked:
     """Rows to start now (CSV order, at most ``free``) and why others wait.
 
     With ``limit > 1`` a row holds its ``serialize_on`` values from its first
@@ -344,6 +345,8 @@ def pick_rows(table: pc.PlanTable, *, mode: str, on_failure: str, limit: int, fr
     (``locks``: ``code/workdir`` of live units) run one at a time as a safety net;
     a declared rule (AVICA: shared FITS files) is the whole story.
     With ``limit == 1`` nothing here changes what runs next.
+    ``hold(row, spec)`` returns a waiting entry for a row whose next step waits for a
+    time (``after:``); such a row takes no slot, so other rows go ahead meanwhile.
     """
     running = set(running_rows)
     started = set(started_rows)
@@ -400,6 +403,11 @@ def pick_rows(table: pc.PlanTable, *, mode: str, on_failure: str, limit: int, fr
             other, reason = blocked
             waiting.append({"row": row.key, "target": row.target, "code": row.code, "reason": reason,
                             "blocked_by": other.key if other is not None else lock})
+            passed.append(row)
+            continue
+        held = hold(row, spec) if hold else None
+        if held is not None:
+            waiting.append(held)
             passed.append(row)
             continue
         if len(start) >= free:
@@ -662,9 +670,12 @@ def resolve_csv(cfg: ExecutionConfig, csv_file: str | Path | None = None) -> Pat
 def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: str | None = None,
                 concurrency: int | None = None, on_failure: str | None = None,
                 status_from: str | None = None, retry_failed: bool = False, target: str | None = None,
-                treatment: str = "baseline", run_kind: str = "production", retry_of: str | None = None) -> PlanDir:
+                treatment: str = "baseline", run_kind: str = "production", retry_of: str | None = None,
+                start_at: str | None = None) -> PlanDir:
     """``retry_of`` names an earlier plan whose unaccepted turns this plan retries (lineage);
-    ``retry_failed`` without it retries the latest earlier plan on the same CSV and target."""
+    ``retry_failed`` without it retries the latest earlier plan on the same CSV and target.
+    ``start_at`` ("02:00" = the next 02:00, or "2026-10-07 02:00"): the runner waits until then."""
+    starts = start_time(start_at) if start_at else None
     for label, value in (("treatment", treatment), ("run_kind", run_kind)):
         if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,39}", value):
             raise ExecutionError(f"{label} must be a short lowercase label")
@@ -754,6 +765,7 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
         "usage_interval": settings.get("usage_interval", 5),
         "max_runtime": settings.get("max_runtime"),
         "status": "running",
+        **({"start_at": starts.isoformat(timespec="seconds")} if starts else {}),
         "treatment": treatment,
         "run_kind": run_kind,
         **workspace,
@@ -861,6 +873,28 @@ def _starting(plan: Mapping[str, Any], grace: float = 30.0) -> bool:
     return started is None or started < spawned
 
 
+def start_time(value: Any, now: datetime | None = None) -> datetime:
+    """A plan's start: "02:00" → the next 02:00, "2026-10-07 02:00" as given (≤ 7 days ahead)."""
+    from alfrd.execution import clock_time, next_clock
+
+    try:
+        return next_clock(clock_time(value), now or datetime.now())
+    except ValueError as exc:
+        raise ExecutionError(f"start at: {exc}") from exc
+
+
+def start_now(root: str | Path, plan_id: str) -> dict[str, Any]:
+    """Drop a scheduled plan's start time: its runner starts the work on its next pass."""
+    folder = PlanDir(Path(root).resolve(), plan_id)
+    with pc.locked(folder.path / "plan.lock"):
+        plan = folder.load()
+        if plan.get("start_at"):
+            plan["start_at"] = None
+            plan.setdefault("history", []).append({"at": now_iso(), "event": "start now (schedule dropped)"})
+            folder.save(plan)
+    return folder.load()
+
+
 def control(root: str | Path, plan_id: str, action: str, *, retry_failed: bool = False, spawn: bool = True) -> dict[str, Any]:
     """pause / cancel / resume a plan. Resume starts a runner when none is alive."""
     folder = PlanDir(Path(root).resolve(), plan_id)
@@ -903,7 +937,7 @@ def apply_overrides(cfg: ExecutionConfig, overrides: Mapping[str, Mapping[str, A
     from dataclasses import replace
 
     from alfrd.agent_io import adapter_for, agent_command
-    from alfrd.execution import parse_delay
+    from alfrd.execution import clock_time, is_clock, parse_delay
 
     steps = []
     for step in cfg.steps:
@@ -915,7 +949,10 @@ def apply_overrides(cfg: ExecutionConfig, overrides: Mapping[str, Mapping[str, A
             updates["manual"] = change["manual"]
         if "after" in change:
             with contextlib.suppress(ValueError):
-                updates["after"] = parse_delay(change["after"])
+                if is_clock(change["after"]):
+                    updates.update(at=clock_time(change["after"]), after=None)
+                else:
+                    updates.update(after=parse_delay(change["after"]), at=None)
         if isinstance(change.get("model"), str) and change["model"].strip() and step.argv:
             argv, model, _ = agent_command(step.argv, change["model"].strip(), adapter=adapter_for(name=step.adapter, model_option=step.model_option))
             updates.update(argv=argv, model=model or change["model"].strip())
@@ -929,7 +966,7 @@ def set_override(root: str | Path, plan_id: str, step: str, changes: Mapping[str
     Review may be switched while the turn runs (until its handoff is published);
     the other settings only for turns that have not started. ``None`` clears a setting.
     """
-    from alfrd.execution import parse_delay
+    from alfrd.execution import clock_time, is_clock, parse_delay
 
     folder = PlanDir(Path(root).resolve(), plan_id)
     plan = folder.load()
@@ -943,7 +980,7 @@ def set_override(root: str | Path, plan_id: str, step: str, changes: Mapping[str
             raise ExecutionError(f"{key} must be true or false")
     if changes.get("after") is not None:
         try:
-            parse_delay(changes["after"])
+            clock_time(changes["after"]) if is_clock(changes["after"]) else parse_delay(changes["after"])
         except ValueError as exc:
             raise ExecutionError(str(exc)) from exc
     if changes.get("model") is not None and (not isinstance(changes["model"], str) or not changes["model"].strip()):
@@ -1112,9 +1149,12 @@ class Runner:
                 final = "running"
                 break
             action = self.folder.control()
+            if action == "run" and self._waiting_to_start():
+                time.sleep(POLL)
+                continue
             self.poll()
             deadline = self.plan.get("max_runtime")
-            created = _parse_stamp(self.plan.get("created"))
+            created = _parse_stamp(self.plan.get("started_at") or self.plan.get("created"))
             if deadline and created and (datetime.now() - created).total_seconds() >= deadline:
                 self.stop_new = True
                 self.save_plan(error="total runtime limit reached")
@@ -1140,6 +1180,26 @@ class Runner:
         self.event(f"runner stopped: {final} ({', '.join(f'{k} {v}' for k, v in counts.items() if v)})")
         self.log(f"stopped: {final}")
         return 0
+
+    def _waiting_to_start(self) -> bool:
+        """A scheduled plan (``start_at``) waits, listed as waiting, until its time or "start now"."""
+        if not self.plan.get("start_at") and self.plan.get("started_at"):
+            return False
+        start = _parse_stamp(self.folder.load().get("start_at"))  # cleared by start_now()
+        if start is not None and datetime.now() < start:
+            waiting = [{"kind": "start", "until": start.isoformat(timespec="seconds"),
+                        "reason": f"scheduled: starts {start:%Y-%m-%d %H:%M}"}]
+            if self.plan.get("waiting") != waiting:
+                self.save_plan(waiting=waiting)
+            return True
+        if self.plan.get("start_at") or not self.plan.get("started_at"):
+            # Not scheduled: the plan started when it was created (the runtime limit and a first
+            # step's delay count from there, also for a runner that re-adopts it).
+            self.save_plan(started_at=now_iso() if start is not None else self.plan.get("created") or now_iso(),
+                           start_at=None, waiting=[])
+            if start is not None:
+                self.event("scheduled start reached")
+        return False
 
     def counts(self) -> dict[str, int]:
         try:
@@ -1187,28 +1247,35 @@ class Runner:
             steps = [s for s in table.steps if any(r.cell(s) == pc.TODO for r in rows)]
             return self.launch(UnitSpec(rows, steps, mode), table)
         names, match = serialize_settings(self.plan, self.cfg)
+        units: list[dict[str, Any]] | None = None
+
+        def hold(row: pc.PlanRow, spec: UnitSpec) -> dict[str, Any] | None:
+            nonlocal units
+            if spec.mode != "step" or not (self.cfg.step(spec.steps[0]).after or self.cfg.step(spec.steps[0]).at):
+                return None
+            units = self.folder.units() if units is None else units
+            until = self._not_before(row, spec, table, units)
+            if until is None:
+                return None
+            return {"row": row.key, "target": row.target, "code": row.code, "kind": "delay",
+                    "step": spec.steps[0], "until": until.isoformat(timespec="seconds"),
+                    "reason": f"waiting: {spec.steps[0]} starts after {until:%Y-%m-%d %H:%M:%S}"}
+
         picked = pick_rows(
             table, mode=mode, on_failure=self.plan["on_failure"], limit=limit, free=limit - len(self.live),
             names=names, match=match, base=self.cfg.cwd, running_rows=self._busy_rows(),
-            started_rows=self.started_rows, locks={self._lock_key(l.unit) for l in self.live.values()} - {None},
+            started_rows=self.started_rows, locks={self._lock_key(l.unit) for l in self.live.values()} - {None}, hold=hold,
         )
-        if not picked.start and not self.live and picked.waiting:
+        if not picked.start and not self.live and any(w.get("kind") != "delay" for w in picked.waiting):
             # Safety net: nothing runs, yet rows wait on each other. Release the holds rather
             # than end the plan with cells still to do.
             self.log("rows wait on each other with nothing running; releasing their holds")
             self.started_rows.clear()
             picked = pick_rows(table, mode=mode, on_failure=self.plan["on_failure"], limit=limit, free=limit,
-                               names=names, match=match, base=self.cfg.cwd)
+                               names=names, match=match, base=self.cfg.cwd, hold=hold)
         started = 0
-        delayed = []
-        units = self.folder.units() if any(self.cfg.step(spec.steps[0]).after for _row, spec in picked.start if spec.mode == "step") else []
+        delayed = [w for w in picked.waiting if w.get("kind") == "delay"]
         for row, spec in picked.start:
-            until = self._not_before(row, spec, table, units)
-            if until is not None:
-                delayed.append({"row": row.key, "target": row.target, "code": row.code, "kind": "delay",
-                                "step": spec.steps[0], "until": until.isoformat(timespec="seconds"),
-                                "reason": f"waiting: {spec.steps[0]} starts after {until:%Y-%m-%d %H:%M:%S}"})
-                continue
             self.started_rows.add(row.key)
             started += self.launch(spec, table)
         self.delayed = delayed
@@ -1217,28 +1284,42 @@ class Runner:
         self.started_rows = {k for k in self.started_rows if k in busy or (
             (r := table.row(k)) is not None and unit_for_row(r, table.steps, mode, self.plan["on_failure"]))}
         # Rows waiting on a conflict are only "waiting" while something they wait for still runs.
-        waiting = picked.waiting + delayed
+        waiting = picked.waiting  # conflicts and delays (kind: delay)
         if waiting != (self.plan.get("waiting") or []):
             self.save_plan(waiting=waiting)
         return started
 
     def _not_before(self, row: pc.PlanRow, spec: UnitSpec, table: pc.PlanTable,
                     units: Sequence[Mapping[str, Any]]) -> datetime | None:
-        """When a step with ``after`` may start: its previous step's finish + the delay; None if now."""
+        """When a step with ``after`` may start; None if now.
+
+        A delay counts from the previous step's finish (for this row); a clock time is
+        its first occurrence after that finish (``02:00``) or the date-time given. The
+        first step counts from when the plan started.
+        """
         if spec.mode != "step":
             return None
+        from alfrd.execution import next_clock
+
         step = spec.steps[0]
-        delay = self.cfg.step(step).after
+        cfg = self.cfg.step(step)
+        delay, at = cfg.after, cfg.at
         steps = list(table.steps)
-        if not delay or step not in steps or steps.index(step) == 0:
+        if (not delay and not at) or step not in steps:
             return None
-        previous = steps[steps.index(step) - 1]
-        finished = [_parse_stamp(u.get("finished")) for u in units
-                    if previous in (u.get("steps") or []) and row.key in (u.get("rows") or [u.get("row")]) and u.get("status") == "done"]
-        finished = [f for f in finished if f]
-        if not finished:
+        if steps.index(step) == 0:
+            since = _parse_stamp(self.plan.get("started_at") or self.plan.get("created"))
+        else:
+            previous = steps[steps.index(step) - 1]
+            finished = [_parse_stamp(u.get("finished")) for u in units
+                        if previous in (u.get("steps") or []) and row.key in (u.get("rows") or [u.get("row")]) and u.get("status") == "done"]
+            finished = [f for f in finished if f]
+            since = max(finished) if finished else None
+            if since is None and at:  # previous step done in an earlier run: a clock time still holds
+                since = _parse_stamp(self.plan.get("started_at") or self.plan.get("created"))
+        if since is None:
             return None
-        until = max(finished) + timedelta(seconds=delay)
+        until = next_clock(at, since) if at else since + timedelta(seconds=delay)
         return until if datetime.now() < until else None
 
     @staticmethod
@@ -1282,6 +1363,26 @@ class Runner:
                     "retry_of": f"{previous.get('plan')}/{previous.get('id')}"}
         return {"logical_turn_id": uuid.uuid4().hex, "attempt_number": 1, "retry_of": None}
 
+    def _previous_attempt(self, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The attempt a retried unit repeats (``retry_of`` = "<plan>/<unit>"), else None."""
+        plan_id, _, unit_id = str(unit.get("retry_of") or "").partition("/")
+        if not unit_id:
+            return None
+        units = self.folder.units() if plan_id == self.folder.id else PlanDir(self.folder.root, plan_id).units()
+        return next((u for u in units if u.get("id") == unit_id), None)
+
+    def _agent_prompt(self, unit: dict[str, Any], source: Path) -> Path:
+        """The prompt an agent step is sent: its stdin file, plus a retry note on a later attempt (kept per attempt)."""
+        from alfrd.agent_loop import atomic_text, retry_note
+
+        text = source.read_text(encoding="utf-8")
+        note = retry_note(self._previous_attempt(unit), int(unit.get("attempt_number") or 1), None)
+        prompt = self.folder.path / "handoffs" / unit["id"] / "prompt.md"
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        atomic_text(prompt, text + (f"\n\n---{note}" if note else ""))
+        unit["prompt_file"] = str(prompt.relative_to(self.folder.root))
+        return prompt
+
     def launch(self, spec: UnitSpec, table: pc.PlanTable) -> int:
         row = spec.rows[0]
         unit: dict[str, Any] = {
@@ -1308,13 +1409,21 @@ class Runner:
             step = self.cfg.step(spec.steps[0]) if spec.mode == "step" else None
             values = values_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
             if step and step.handoff:
-                from alfrd.agent_loop import prepare
+                from alfrd.agent_loop import prepare, progress_file, retry_note
 
                 archive = self.folder.path / "handoffs" / unit["id"]
-                unit["handoff"] = prepare(self.folder.root, archive, step, self.folder.id, unit["id"], target=values["target"])
+                progress = progress_file(step.loop_options, values["target"], bool(self.plan.get("workspace")))
+                unit["handoff"] = prepare(self.folder.root, archive, step, self.folder.id, unit["id"], target=values["target"],
+                                          progress=progress, timeout=step.timeout,
+                                          retry=retry_note(self._previous_attempt(unit), int(unit.get("attempt_number") or 1), progress))
+                if progress:
+                    unit["handoff"]["progress_file"] = progress
                 unit.update(iteration=step.iteration, agent=step.entrypoint or step.base_step, manual=step.manual,
                             human_review=step.human_review, requested_model=step.model, adapter=step.adapter,
                             review_gate="runner", turn=step.turn, roles=unit["handoff"].get("roles", []))
+            elif step and step.agent:  # an agent step outside a loop: same records (agent, model, tokens)
+                unit.update(agent=step.entrypoint or step.base_step, agent_step=True, requested_model=step.model,
+                            adapter=step.adapter, manual=step.manual)
             argv, env, timeout = command_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
             fallback = self._fallback_model(step, unit) if step else None
             if fallback:
@@ -1368,11 +1477,20 @@ class Runner:
                 if step and step.stdin_file:
                     stdin_path = Path(render([step.stdin_file], values)[0])
                     stdin_path = stdin_path if stdin_path.is_absolute() else self.folder.root / stdin_path
+                    if step.agent and not step.handoff:
+                        stdin_path = self._agent_prompt(unit, stdin_path)
                     shim_args += ["--stdin-file", str(stdin_path)]
                 if step and step.output_file:
                     output_path = Path(render([step.output_file], values)[0])
                     output_path = output_path if output_path.is_absolute() else self.folder.root / output_path
                     output_path.parent.mkdir(parents=True, exist_ok=True)
+                    if output_path.exists() and step.agent and not step.handoff:
+                        # An earlier attempt's (or run's) answer: keep it with this attempt, then write anew.
+                        kept = self.folder.path / "handoffs" / unit["id"] / f"previous-{output_path.name}"
+                        kept.parent.mkdir(parents=True, exist_ok=True)
+                        output_path.replace(kept)
+                        unit["previous_output"] = str(kept.relative_to(self.folder.root))
+                        log.write(f"# earlier {output_path.name} moved to {unit['previous_output']}\n")
                     if output_path.exists():
                         raise ExecutionError("response file already exists; refusing to reuse a stale response")
                     if step.output_capture == "stdout" and not step.manual:
@@ -1499,7 +1617,7 @@ class Runner:
             self.finalize(live.unit, process=live.process, reason=live.reason)
 
     def agent_metadata(self, unit: dict[str, Any]) -> None:
-        if not unit.get("handoff"):
+        if not unit.get("handoff") and not unit.get("agent_step"):
             return
         from alfrd.agent_io import codex_report, unit_adapter
 
@@ -1521,7 +1639,7 @@ class Runner:
             _write_json(metadata_path, metadata)
         elif not metadata and exit_path.is_file() and not metadata_path.exists():
             metadata = {"usage": None, "usage_source": "unavailable", "total_cost_usd": None}
-        changes = {"roles": unit["handoff"].get("roles", [])}
+        changes = {"roles": (unit.get("handoff") or {}).get("roles", [])}
         if "usage" in metadata:
             changes.update(agent_usage=metadata["usage"], total_cost_usd=metadata.get("total_cost_usd"),
                            usage_source=metadata.get("usage_source") or ("unavailable" if not metadata["usage"] else None))
@@ -1829,6 +1947,10 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
         want = bool(alive) or action == "cancel" or (plan.get("auto_resume") == "always" and plan.get("status") == "running" and action == "run")
         if plan.get("auto_resume") == "never" and not alive:
             want = action == "cancel"
+        # Waiting for a start time or a step's delay: the person asked for it later, so keep it.
+        if action == "run" and plan.get("status") == "running" and (
+                plan.get("start_at") or any(w.get("kind") in ("start", "delay") for w in plan.get("waiting") or [])):
+            want = True
         if want:
             if spawn:
                 spawn_runner(folder)
@@ -1890,7 +2012,7 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
                        [u for u in all_units if u.get("status") == "running"]),
         "durations": durations,
         "waiting": waiting,
-        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"), "target": p.get("target"), "targets": p.get("targets")} for p in plans[:20]],
+        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"), "target": p.get("target"), "targets": p.get("targets"), "start_at": p.get("start_at")} for p in plans[:20]],
     }
 
 
@@ -1958,7 +2080,10 @@ __all__ = [
 def manifest_hash(root, *, legacy=False):
     from alfrd.manifest_default import manifest_data
 
-    _, path, _ = manifest_data(root)
+    try:
+        _, path, _ = manifest_data(root, strict=True)
+    except ValueError as exc:
+        raise ExecutionError(str(exc)) from exc
     if path is None:
         raise ExecutionError("project manifest is missing")
     if legacy:

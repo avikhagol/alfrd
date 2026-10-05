@@ -1,14 +1,12 @@
 // Remove project dialog (Projects → Remove). Loaded on first use.
 //
-// Forget removes the project's rows (runs, datasets, workflows) from the
-// runtime database only; files stay on disk. Permanent deletion stays
-// disabled until a deletion scope is configured on the server (it is not), so
-// this dialog never deletes anything on disk.
+// Forget: database rows only. Delete (name typed): also ALFRD's files; with
+// "Delete all files and folders" the whole folder (server refuses unsafe ones).
 
 import { $, esc, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
 
-const DELETE_SCOPE_MISSING = "Deletion scope has not been configured.";
+const size = (b) => (b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : b >= 1 << 20 ? `${(b / (1 << 20)).toFixed(1)} MB` : `${Math.ceil(b / 1024)} KB`);
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function countsText(c = {}) {
@@ -37,7 +35,14 @@ export async function openRemoval(ctx, { key, label, root, onDone } = {}) {
   const counts = countsText(preview.counts);
   const blocked = !preview.can_remove;
   const reason = preview.reason || "";
-  const deleteReason = preview.delete_scope ? "" : DELETE_SCOPE_MISSING;
+  const scope = preview.delete_scope || { alfrd_files: [], all_files_allowed: false };
+  const listed = scope.alfrd_files || [];
+  const alfrdText = !scope.exists ? "The folder no longer exists; only the database records are removed."
+    : listed.length ? `Deletes ALFRD's files: ${listed.slice(0, 8).join(", ")}${listed.length > 8 ? ` and ${listed.length - 8} more` : ""}. Your other files and folders stay.`
+      : "No ALFRD files are left in the folder; only the database records are removed.";
+  const allText = !scope.all_files_allowed ? scope.all_files_reason || "Not available for this folder."
+    : `Deletes the folder ${scope.path} with ${scope.truncated ? "more than " : ""}${plural(scope.files || 0, "file")} (${size(scope.bytes || 0)}). This cannot be undone.`;
+  const deleteReason = "";
 
   ctx.modal(`
     <header class="modal-h rm-h"><div>
@@ -52,10 +57,14 @@ export async function openRemoval(ctx, { key, label, root, onDone } = {}) {
       </section>
       <section class="rm-sec rm-danger" aria-labelledby="rm-delete-h">
         <h3 id="rm-delete-h">Delete permanently</h3>
-        <p>Also removes ${esc(counts)}.</p>
+        <p>Removes ${esc(counts)} from the runtime database.</p>
+        <p class="rm-note" id="rm-delete-what">${esc(alfrdText)}</p>
+        ${scope.exists ? `<label class="rm-all"><input type="checkbox" id="rm-all" ${scope.all_files_allowed ? "" : "disabled"} aria-describedby="rm-all-what"> Delete all files and folders</label>
+        <p class="rm-note" id="rm-all-what">${esc(allText)}</p>
+        ${scope.git_repository ? `<p class="rm-note" id="rm-all-git" hidden><b>The folder is a git repository: its whole history is deleted too.</b></p>` : ""}` : ""}
         ${deleteReason ? `<p class="rm-note" id="rm-delete-reason">${esc(deleteReason)}</p>` : ""}
         <label class="rm-confirm">Type <b class="mono">${esc(name)}</b> to confirm
-          <input id="rm-name" class="input" type="text" autocomplete="off" spellcheck="false" aria-describedby="rm-delete-reason" ${blocked || deleteReason ? "disabled" : ""}>
+          <input id="rm-name" class="input" type="text" autocomplete="off" spellcheck="false" aria-describedby="${deleteReason ? "rm-delete-reason" : "rm-delete-what"}" ${blocked || deleteReason ? "disabled" : ""}>
         </label>
       </section>
       <p id="rm-status" class="rm-status" role="status" aria-live="polite"></p>
@@ -63,7 +72,7 @@ export async function openRemoval(ctx, { key, label, root, onDone } = {}) {
     </div>
     <footer class="modal-f rm-f">
       <button class="btn primary" id="rm-forget" ${blocked ? "disabled" : ""} ${blocked ? 'aria-describedby="rm-reason"' : ""}>Forget</button>
-      <button class="btn danger" id="rm-delete" disabled aria-describedby="${blocked ? "rm-reason" : "rm-delete-reason"}">Delete permanently</button>
+      <button class="btn danger" id="rm-delete" disabled aria-describedby="${blocked ? "rm-reason" : deleteReason ? "rm-delete-reason" : "rm-delete-what"}">Delete permanently</button>
       <button class="btn" id="rm-cancel" data-close>Cancel</button>
     </footer>`, (dlg, close) => {
     const forgetBtn = $("#rm-forget", dlg);
@@ -72,7 +81,13 @@ export async function openRemoval(ctx, { key, label, root, onDone } = {}) {
     const status = $("#rm-status", dlg);
     const alert = $("#rm-alert", dlg);
     let busy = false;
+    const all = $("#rm-all", dlg);
     const deleteAllowed = () => !blocked && !deleteReason && input.value === name; // case-sensitive
+    all?.addEventListener("change", () => {
+      const git = $("#rm-all-git", dlg);
+      if (git) git.hidden = !all.checked;
+      deleteBtn.textContent = all.checked ? "Delete everything" : "Delete permanently";
+    });
     const sync = () => {
       forgetBtn.disabled = busy || blocked;
       deleteBtn.disabled = busy || !deleteAllowed();
@@ -114,11 +129,16 @@ export async function openRemoval(ctx, { key, label, root, onDone } = {}) {
       alert.textContent = "";
       status.textContent = `Deleting ${name}…`;
       try {
-        await server.deleteProject(key, { confirm: input.value });
+        const everything = Boolean(all?.checked);
+        if (everything && !confirm(`Delete the whole folder ${scope.path}? This cannot be undone.`)) { busy = false; status.textContent = ""; sync(); return; }
+        const res = await server.deleteProject(key, { confirm: input.value, all_files: everything });
         status.textContent = `Deleted ${name}.`;
+        const detail = res.all_files ? `the folder ${res.path}` : `${plural(res.removed?.length || 0, "ALFRD file")}`;
+        ctx.log?.("info", `Project ${key} deleted: ${detail} removed and the project forgotten.`, "server");
         busy = false;
         close();
-        onDone?.({ deleted: key });
+        ctx.toast?.(`Deleted ${name} (${detail})`, "ok");
+        onDone?.({ ...res, deleted: key });
       } catch (error) {
         busy = false;
         status.textContent = "";

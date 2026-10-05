@@ -242,6 +242,23 @@ def nrun(
     executor.run_entrypoint(name, args)
 
 
+def _serve_production(app, host: str, port: int) -> None:
+    """Serve with waitress (a production WSGI server) instead of Flask's development server.
+
+    Live updates are long-lived Server-Sent Event streams, one per open Studio tab, each holding a
+    thread: hence many threads, output sent as soon as it is yielded, and a channel timeout above
+    the 15 s ping. Falls back to Flask's server only when waitress is not installed.
+    """
+    try:
+        from waitress import serve
+    except ImportError:
+        print("waitress is not installed (pip install waitress); using Flask's development server.")
+        app.run(host=host, port=port, debug=False)
+        return
+    serve(app, host=host, port=port, threads=48, send_bytes=1, channel_timeout=300,
+          connection_limit=200, asyncore_use_poll=True, ident="alfrd", _quiet=True)
+
+
 def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
     """Open once the local HTTP server responds; stop if serving exits early."""
     from urllib.error import URLError
@@ -418,7 +435,10 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
                 signal.signal(signal.SIGINT, signal.default_int_handler)
             print("Press Ctrl+C (or Quit in the Studio) to stop.")
         try:
-            app.run(host=host, port=port, debug=debug)
+            if debug:
+                app.run(host=host, port=port, debug=True)  # Flask's development server: reloader, debugger
+            else:
+                _serve_production(app, host, port)
         except KeyboardInterrupt:
             pass
         print("alfrd serve stopped.")
@@ -1176,8 +1196,9 @@ def plan_run(
     treatment: str = typer.Option("baseline", "--treatment", help="Label recorded on every turn (baseline report)."),
     run_kind: str = typer.Option("production", "--run-kind", help="production | experiment | … (baseline report)."),
     retry_of: Optional[str] = typer.Option(None, "--retry-of", help="Earlier plan whose unaccepted turns this plan retries."),
+    at: Optional[str] = typer.Option(None, "--at", help='Start later: "02:00" (the next 02:00) or "2026-10-07 02:00" (at most 7 days ahead).'),
 ):
-    """Start a plan: run every todo cell with its step command."""
+    """Start a plan: run every todo cell with its step command (now, or --at a time)."""
     from alfrd.execution import ExecutionError
     from alfrd.runtime import scheduler
 
@@ -1187,14 +1208,16 @@ def plan_run(
             return
         folder = scheduler.create_plan(root, csv_file, mode=mode, concurrency=concurrency,
                                        on_failure=on_failure, retry_failed=retry_failed, target=target,
-                                       treatment=treatment, run_kind=run_kind, retry_of=retry_of)
+                                       treatment=treatment, run_kind=run_kind, retry_of=retry_of, start_at=at)
     except (ExecutionError, OSError, ValueError) as error:
         _plan_fail(error)
     if folder.load().get("workspace_warning"):
         print(f"warning: {folder.load()['workspace_warning']}")
     if detach:
         pid = scheduler.spawn_runner(folder)
-        print(f"plan {folder.id} started (runner pid {pid}). It keeps running when you close this terminal or the Studio.")
+        starts = folder.load().get("start_at")
+        print(f"plan {folder.id} {'scheduled for ' + starts.replace('T', ' ') if starts else 'started'} (runner pid {pid}). "
+              "It keeps running when you close this terminal or the Studio.")
         print(f"  alfrd plan status -C {folder.root}      alfrd plan pause|cancel {folder.id} -C {folder.root}")
         return
     raise typer.Exit(code=scheduler.Runner(folder.root, folder.id).run())
@@ -1207,7 +1230,7 @@ def plan_turn_command(
     root: str = _ROOT_OPT,
     review: Optional[bool] = typer.Option(None, "--review/--no-review", help="Hold this turn's handoff for human review."),
     manual: Optional[bool] = typer.Option(None, "--manual/--agent", help="A person writes this turn (chat) instead of the agent."),
-    after: Optional[str] = typer.Option(None, "--after", help="Delay after the previous step, e.g. +1h, 90m; 0 runs it now."),
+    after: Optional[str] = typer.Option(None, "--after", help='Delay after the previous step (+1h, 90m), a clock time ("02:00", "2026-10-07 02:00"); 0 runs it now.'),
     model: Optional[str] = typer.Option(None, "--model", help="Model for this turn."),
     clear: bool = typer.Option(False, "--clear", help="Drop this plan's overrides for the step."),
 ):
@@ -1434,7 +1457,7 @@ def _plan_control(action: str, plan_id: Optional[str], root: str, retry_failed: 
             if not plans:
                 raise ExecutionError("no plans in this project")
             plan_id = plans[0]["id"]
-        plan = scheduler.control(root, plan_id, action, retry_failed=retry_failed)
+        plan = scheduler.start_now(root, plan_id) if action == "start-now" else scheduler.control(root, plan_id, action, retry_failed=retry_failed)
     except ExecutionError as error:
         _plan_fail(error)
     print(f"plan {plan_id}: {action} requested (status {plan.get('status')})")
@@ -1454,6 +1477,12 @@ def plan_resume(
 ):
     """Continue a paused or interrupted plan (starts a runner if none is alive)."""
     _plan_control("resume", plan_id, root, retry_failed)
+
+
+@plan_cli.command("start-now")
+def plan_start_now(plan_id: Optional[str] = typer.Argument(None), root: str = _ROOT_OPT):
+    """Start a plan scheduled with --at now instead of at its time."""
+    _plan_control("start-now", plan_id, root)
 
 
 @plan_cli.command("cancel")

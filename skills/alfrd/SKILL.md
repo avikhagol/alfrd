@@ -63,7 +63,8 @@ compact, versioned JSON form made for you. Prefer it over reading files.
 ## Ask the user before
 
 `plan run`, `plan resume --retry-failed`, `plan cancel`, `plan new --force`,
-`plan turn`, `plan reject`, `targets import --replace`, `targets remove`, and
+`plan turn`, `plan reject`, Studio *Delete permanently* (deletes ALFRD's files;
+with *Delete all files and folders* the whole project folder), setup-form saves, `targets import --replace`, `targets remove`, and
 edits to `alfrd.yaml` or `avica.inp`. Runs start real CASA/MPI jobs or agent
 turns that can take hours.
 
@@ -101,6 +102,12 @@ execution:                 # keys override the template one by one
 entrypoint:
   - {name: avica-step, cmd: [avica, pipe, run, --t, "{target}", --f, "{FILENAMES}", "{step}"]}
 ```
+
+Setup forms: `quickstart: {setup: {type: form, target: {file: avica.inp | alfrd.yaml}, fields: {KEY: {type: textbox|textarea|number|toggle|path|select|list}}}}`
+(details: `docs/studio-guide.md` → Setup forms). The AVICA template's form writes `avica.inp`; the agent-loop's writes the agents in `alfrd.yaml`.
+
+Drop a template step: `steps: {phaseshift: {skip: true}}` (or `{id: phaseshift, skip: true}` in the
+workflow list); it disappears from the workflow and new plan CSVs.
 
 Placeholders: `{target} {step} {from_step} {targets} {plan_csv} {root}` plus
 any plan CSV column (`{FILENAMES}`, `{PROJECT_CODE}`, `{WORKDIR}`). No shell:
@@ -175,6 +182,7 @@ GET /api/studio/projects/<p>/view?entity=target=J0742%2B103              # evalu
 GET /api/studio/projects/<p>/notes
 GET /api/studio/projects/<p>/tasks                                       # turns, worktree, latest run per task
 GET /api/studio/projects/<p>/plans/<id>/turns                            # per-turn settings + what can still change
+GET /api/studio/projects/<p>/quickstart                                  # template setup forms + current values
 ```
 
 Same document as the CLI. Other hosts need `ALFRD_API_TOKEN` +

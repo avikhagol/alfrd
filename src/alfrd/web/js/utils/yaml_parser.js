@@ -320,8 +320,24 @@ class Parser {
     return out;  // still open: scalar() reports the unterminated string
   }
 
+  // A plain scalar continued on more-indented lines (PyYAML wraps long values):
+  // line breaks fold to spaces, blank lines to "\n".
+  plain(text, indent) {
+    let out = text, newlines = 0, j = this.i;
+    while (j < this.lines.length) {
+      const raw = stripComment(this.lines[j].raw);
+      if (raw.trim() === "") { newlines += 1; j += 1; continue; }
+      if (raw.length - raw.trimStart().length <= indent) break;
+      out += (newlines ? "\n".repeat(newlines) : " ") + raw.trim();
+      newlines = 0;
+      this.i = j += 1;
+    }
+    return out;
+  }
+
   scalarOrBlockScalar(text, indent, lineNo) {
     if (text[0] === "'" || text[0] === '"') text = this.multiline(text, indent);
+    else if (!/^[[{|>&*!]/.test(text)) text = this.plain(text, indent);
     const m = /^([|>])([+-]?)$/.exec(text);
     if (!m) return inlineValue(text, lineNo);
     const folded = m[1] === ">";

@@ -71,7 +71,8 @@ def create_project(service, path: str | Path, *, name: str | None = None,
         workflow["repeat"].pop("passes", None)
         workflow["repeat"]["iterations"] = iterations
     parse_manifest(data)
-    files = {"alfrd.yaml": yaml.safe_dump(data, sort_keys=False)}
+    from alfrd.yaml_text import dump
+    files = {"alfrd.yaml": dump(data)}
     if looping:
         workflow = data["workflows"][0]
         if is_sequence(workflow):

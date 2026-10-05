@@ -237,6 +237,13 @@ export function mount(el, ctx) {
   on(el, "click", "#dr-open-workflow", () => ctx.navigate("workflow", { target: ctx.state.selectedTarget }));
   on(el, "input", "#dr-notes", (e) => ctx.setNote(ctx.state.selectedTarget, e.target.value));
   on(el, "click", "#dr-retry", () => retryStep(ctx));
+  on(el, "click", "[data-home-setup]", async (e, b) => {
+    const project = b.dataset.homeSetup;
+    try {
+      const { openQuickstart } = await import("./quickstart.js");
+      await openQuickstart(ctx, project, { onSaved: () => ctx.refreshProject?.(project) });
+    } catch (error) { ctx.toast(error.message, "fail"); }
+  });
   on(el, "click", "[data-home-targets]", () => ctx.openTargets("import"));
   on(el, "click", "[data-home-run]", (e, b) => openRunDialog(ctx, b.dataset.homeRun, { onStarted: () => ctx.openRun(b.dataset.homeRun) }));
   on(el, "click", "[data-home-open]", (e, b) => ctx.openRun(b.dataset.homeOpen));
@@ -325,6 +332,9 @@ export function render(el, ctx) {
   el.querySelector(".ov-body").classList.toggle("no-drawer", loop);
 }
 
+const setupForms = (ctx, project) => Object.values(ctx.state.trees?.[project]?.defs?.quickstart || {}).filter((f) => f && typeof f === "object");
+const hasSetup = (ctx, project) => ctx.state.mode === "server" && setupForms(ctx, project).length > 0;
+const setupTitle = (ctx, project) => setupForms(ctx, project).map((f) => f.title || "setup").join(", ");
 const homeAsked = new Set();
 export function renderHome(el, ctx) {
   // Setup/run summary only for the selected project; All projects never borrows one.
@@ -336,10 +346,11 @@ export function renderHome(el, ctx) {
   const hasSteps = ctx.state.workflow.steps.length > 0, hasTargets = ctx.state.targets.some((t) => t.project === project);
   const run = planOf(project)?.plan;
   box.innerHTML = `${!hasSteps || !hasTargets || !run ? `<section class="card setup-card"><h2>Get started</h2><p>Set up ${esc(ctx.projectName(project))}, then run your workflow.</p><ol class="setup-list">
+    ${hasSetup(ctx, project) ? `<li>⓪ <button class="link-btn" data-home-setup="${esc(project)}">Open the setup wizard</button> (${esc(setupTitle(ctx, project))})</li>` : ""}
     <li>${hasSteps ? "✓" : "①"} <a href="#/workflow">Add steps in Workflow</a> · <a href="#/config">Edit alfrd.yaml in Settings</a></li>
     <li>${hasTargets ? "✓" : "②"} <button class="link-btn" data-home-targets>Add targets</button></li>
     <li>${run ? "✓" : "③"} <button class="link-btn" data-home-run="${esc(project)}" ${hasSteps && hasTargets ? "" : "disabled"}>Start a run</button></li></ol></section>` : ""}
-    ${run ? `<section class="card setup-card"><div class="row gap wrap"><h2>Latest run</h2><span class="mono">Run ${esc(run.id)}</span><span>${esc(RUN_STATUS[run.status] || run.status)}</span><span class="grow"></span><button class="btn" data-home-open="${esc(project)}">Open run</button><a class="btn primary" href="#/results">View results</a></div></section>` : ""}`;
+    ${run ? `<section class="card setup-card"><div class="row gap wrap"><h2>Latest run</h2><span class="mono">Run ${esc(run.id)}</span><span>${esc(run.start_at ? "Scheduled" : RUN_STATUS[run.status] || run.status)}</span><span class="grow"></span><button class="btn" data-home-open="${esc(project)}">Open run</button><a class="btn primary" href="#/results">View results</a></div></section>` : ""}`;
 }
 
 function renderHead(el, ctx) {
@@ -663,7 +674,7 @@ function runSection(ctx, project, index) {
   if (isLoopProject(ctx, project)) {
     const runs = runsOf(project);
     return taskStrip(ctx, project) + runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
-      { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all" });
+      { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all", setup: hasSetup(ctx, project) });
   }
   const shown = runGridMod.filterRunGrid(grid, f, runLabel);
   return runGridMod.renderRunGrid(project, ctx.projectName(project), grid, shown, f, { runLabel, error, index });

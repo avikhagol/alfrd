@@ -30,7 +30,9 @@ dependencies = [
   "pyyaml",
   "platformdirs",
   "sqlalchemy>=2.0",
-  "flask", "flask_sqlalchemy"
+  "flask",
+  "flask_sqlalchemy",
+  "waitress>=3.0",
 ]
 
 [project.optional-dependencies]

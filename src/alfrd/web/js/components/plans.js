@@ -229,6 +229,16 @@ function saveOrderPrefs(prefs) {
   try { localStorage.setItem(ORDER_KEY, JSON.stringify(prefs)); } catch { /* private mode */ }
 }
 
+// Run order sections the user opened or closed ("project|Done" → open). A running plan
+// re-renders every few seconds; without this each refresh reset them to their defaults.
+const secOpen = new Map();
+const watched = new WeakSet();
+function rememberSections(box) {
+  if (watched.has(box) || !box.addEventListener) return;
+  watched.add(box);
+  box.addEventListener("toggle", (e) => { if (e.target.dataset?.sec) secOpen.set(e.target.dataset.sec, e.target.open); }, true);
+}
+
 
 export function renderSchedule(box, ctx, project) {
   if (!plansAvailable(ctx, project)) {
@@ -260,11 +270,13 @@ export function renderSchedule(box, ctx, project) {
       : tot.todo ? `<button class="btn sm primary" data-plan="resume">${icon("play")} Run remaining</button>`
         : `<button class="btn sm primary" data-plan="new">${icon("play")} New run…</button>`;
   const counts = ["running", "failed", "blocked", "todo"].filter((k) => tot[k]).map((k) => `<span class="pc pc-${k}" title="${esc(CELL[k]?.label || k)}">${tot[k]} ${esc(CELL[k]?.label || k)}</span>`).join("");
+  rememberSections(box);
   keepScroll(box, () => { box.innerHTML = `
     ${entry.error ? `<div class="callout fail" role="alert"><span>${esc(entry.error)}</span><button class="btn sm" data-plan="refresh">Retry</button><button class="btn sm" data-plan="dismiss-error">Dismiss</button></div>` : ""}
     <div class="sched-h">
-      <select class="input sm" data-plan-pick aria-label="Run">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(RUN_STATUS[x.status] || x.status)}</option>`).join("")}</select>
-      <span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(RUN_STATUS[p.status] || p.status)}</span>
+      <select class="input sm" data-plan-pick aria-label="Run">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(x.start_at ? "Scheduled" : RUN_STATUS[x.status] || x.status)}</option>`).join("")}</select>
+      ${p.start_at ? "" : `<span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(RUN_STATUS[p.status] || p.status)}</span>`}
+      ${p.start_at ? `<span class="badge tone-warn" title="The runner waits until then (alfrd plan start-now runs it at once)">${icon("clock")}Scheduled · starts ${esc(p.start_at.replace("T", " ").slice(0, 16))}</span>${canAct ? `<button class="btn sm primary" data-plan="start-now">${icon("play")} Run now</button>` : ""}` : ""}
       <div class="plan-bar" title="${pct}% of planned cells done"><i style="width:${pct}%"></i></div><span class="tabular small">${tot.done || 0}/${all}</span>
       <span class="sched-counts">${counts}</span>
       <span class="grow"></span>
@@ -315,7 +327,10 @@ function orderList(s, project) {
   const done = ended.filter((u) => u.status === "done");
   const queued = (s.queue || []).filter((q) => !running.some((u) => (u.rows || [u.row]).includes(q.row) && (u.steps || []).includes(q.step)));
   const prefs = orderPrefs();
-  const sec = (title, n, body, open = true) => (n ? `<details class="sched-sec" ${open ? "open" : ""}><summary><b>${title}</b> <span class="muted small">${n}</span></summary><table class="tbl small ord"><tbody>${body}</tbody></table></details>` : "");
+  const sec = (title, n, body, open = true) => {
+    const key = `${project}|${title}`;
+    return n ? `<details class="sched-sec" data-sec="${esc(key)}" ${(secOpen.get(key) ?? open) ? "open" : ""}><summary><b>${title}</b> <span class="muted small">${n}</span></summary><table class="tbl small ord"><tbody>${body}</tbody></table></details>` : "";
+  };
   const tally = [["running", running.length], ["queued", queued.length], ["failed", failed.length], ["done", done.length]]
     .filter(([, n]) => n).map(([k, n]) => `<span class="pc pc-${k === "queued" ? "todo" : k}">${n} ${k}</span>`).join("");
   return `<div class="ord-h"><h4>Run order</h4><span class="ord-tally">${tally}</span><span class="grow"></span>
@@ -385,6 +400,23 @@ export async function planAct(ctx, project, action, el, opts = {}) {
   return loadPlan(ctx, project);
 }
 
+/** "YYYY-MM-DDTHH:MM" in local time (datetime-local inputs). */
+function localStamp(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Hold a step of a running plan until a clock time (or a delay); empty clears it. Applies to every target. */
+async function setStart(ctx, project, planId, step) {
+  const value = window.prompt(`Start ${step} at (all targets):\n02:00 = the next 02:00 · 2026-10-07 02:00 · +1h = after the previous step · empty = no wait`, "");
+  if (value === null) return;
+  try {
+    await server.planTurnSet(project, planId, step, { after: value.trim() || null });
+    ctx.toast(value.trim() ? `${step} starts at ${value.trim()}` : `${step}: start time cleared`, "ok");
+    loadPlan(ctx, project);
+  } catch (error) { ctx.toast(error.message, "fail"); }
+}
+
 export function cellMenu(ctx, project, anchor) {
   const s = planOf(project);
   const key = anchor.dataset.cell;
@@ -405,6 +437,7 @@ export function cellMenu(ctx, project, anchor) {
     { label: "Follow in Log Stream", icon: "log", disabled: !u?.log, run: () => dockLog(ctx, project, u.log) },
     { label: "Resource usage", icon: "graph", disabled: !u?.usage_file, run: () => loadUsage().then((m) => m.openUsage(ctx, project, u, () => unitById(project, u.id) || u)) },
     { label: "Retry (todo)", icon: "reset", disabled: !can || v === "todo", run: () => set("todo") },
+    { label: "Start step at… (all targets)", icon: "clock", disabled: !can || !["running", "paused"].includes(s?.plan?.status), run: () => setStart(ctx, project, s.plan.id, step) },
     { label: "Skip", icon: "minus", disabled: !can || Boolean(s?.plan?.loop) || v === "skip", run: () => set("skip") },
     ...(u?.argv ? [{ label: "Copy command", icon: "copy", run: () => navigator.clipboard?.writeText(u.argv.join(" ")) }] : []),
     { label: "Notes…", icon: "file", run: () => ctx.openNotes(project, { target: row?.target, step, project_code: row?.code || undefined, workdir: row?.workdir || undefined }) },
@@ -544,6 +577,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
         <label class="field" ${isLoop ? "hidden" : ""}><span>Mode</span><select class="input" id="run-mode">${["step", "target", "batch"].map((m) => `<option value="${m}" ${st.mode === m ? "selected" : ""} ${m !== "step" && !info.settings[`${m}_entrypoint`] ? "disabled" : ""}>${esc(RUN_MODE[m])}</option>`).join("")}</select><small class="muted">Order of work. Batch sends all selected work to one command.</small></label>
         <label class="field" ${isLoop ? "hidden" : ""}><span>Targets at once</span><input class="input" id="run-conc" type="number" min="1" max="64" value="${esc(st.concurrency)}"></label>
         <label class="field" ${isLoop ? "hidden" : ""}><span>On failure</span><select class="input" id="run-fail">${["stop_target", "continue", "stop_plan"].map((m) => `<option value="${m}" ${st.on_failure === m ? "selected" : ""}>${esc(RUN_FAILURE[m])}</option>`).join("")}</select><small class="muted">What happens after a step fails.</small></label>
+        <label class="field"><span>Start at <span class="muted">(optional)</span></span><input class="input" id="run-at" type="datetime-local" min="${esc(localStamp(new Date()))}" max="${esc(localStamp(new Date(Date.now() + 7 * 864e5)))}"><small class="muted">Empty starts now. Up to 7 days ahead; the machine must be on then.</small></label>
         <label class="field"><span>Status from</span><input class="input" value="${esc({ exit_code: "Command exit code", result_csv: "Results CSV", both: "Exit code and results CSV" }[st.status_from] || st.status_from)}" disabled title="execution.status_from in alfrd.yaml"></label>
       </div>
       <div id="run-error" class="callout fail" role="alert" hidden></div>
@@ -568,6 +602,8 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       const src = $("input[name=src]:checked", root)?.value || "sel";
       const chosen = picker.selected();
       const out = isLoop ? {} : { mode: $("#run-mode", root).value, concurrency: Number($("#run-conc", root).value) || 1, on_failure: $("#run-fail", root).value };
+      const at = $("#run-at", root)?.value;
+      if (at) out.start_at = at.replace("T", " ");
       if (src === "sel") {
         if (isLoop && chosen.length !== steps.length) throw new Error("Agent loops require all turns. Use Agents & review to select review checkpoints.");
         out.rows = $$("input[data-i]", root).filter((c) => c.checked).map((c) => {
@@ -621,7 +657,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       }
       try {
         const res = await server.planStart(project, body);
-        ctx.toast(`Run ${res.plan.id} started`, "ok");
+        ctx.toast(res.plan.start_at ? `Run ${res.plan.id} scheduled for ${res.plan.start_at.replace("T", " ")}` : `Run ${res.plan.id} started`, "ok");
         ctx.log("info", `Run ${res.plan.id} started (${res.plan.mode}, ${res.plan.csv}).`, "plan");
         close();
         onStarted?.(res.plan);

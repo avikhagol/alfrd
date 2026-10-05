@@ -119,6 +119,7 @@
 .rm-danger h3 { color: var(--fail-text); }
 .rm-note { color: var(--text-3); }
 .rm-confirm { display: flex; flex-direction: column; gap: 6px; }
+.rm-all { display: flex; align-items: center; gap: 6px; font-weight: 500; }
 .rm-reason { margin: 0; padding: 8px 12px; border: 1px solid var(--warn-border); background: var(--warn-bg); color: var(--warn-text); border-radius: var(--r); }
 .rm-status:empty, .rm-alert:empty { display: none; }
 .rm-status, .rm-alert { margin: 0; }
@@ -202,3 +203,18 @@
 .turn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .turn-table th, .turn-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; }
 .turn-table input[type=text] { width: 6em; }
+.qs-inline { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
+
+/* Settings → All settings (form): alfrd.yaml keys as fields */
+.yf .yf-filter { width: 220px; max-width: 100%; }
+.yf h4.grow { margin: 0; }
+details.yf-group { border: 1px solid var(--border); border-radius: var(--r); margin: 8px 0; background: var(--surface); }
+details.yf-group > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text); }
+details.yf-group > summary > .muted:last-child { margin-left: auto; font-weight: 400; }
+details.yf-group[open] > summary { border-bottom: 1px solid var(--border); background: var(--subtle); }
+details.yf-group .yf-group { margin: 6px 0; }
+.yf-body { padding: 4px 12px 8px; }
+.yf-field .mono.muted { font-size: 11px; font-weight: 400; }
+.yf-field .check { font-weight: 500; }
+.yf-add { margin: 6px 0 2px; }
+details.yf-group > summary .icon-btn { margin-left: 4px; }

@@ -75,6 +75,8 @@ export const server = {
   planTurns(project, id) { return getJson(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns`); },
   planTurnSet(project, id, step, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns/${encodeURIComponent(step)}`, payload); },
   tasks(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/tasks`); },
+  quickstart(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/quickstart`); },
+  quickstartApply(project, form, values) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/quickstart/${encodeURIComponent(form)}`, { values }); },
   taskCreate(project, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/tasks`, payload); },
   taskRename(project, target, name) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(target)}`, { name }, "PATCH"); },
   task(project, target = null) { return getJson(`/studio/projects/${encodeURIComponent(project)}/${target ? `tasks/${encodeURIComponent(target)}/task` : "task"}`); },

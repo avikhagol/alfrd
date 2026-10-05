@@ -92,11 +92,12 @@ def test_cli_gui_is_a_serve_alias(monkeypatch):
 
     monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
     monkeypatch.setattr("alfrd.cli.webbrowser.open", lambda url: True)
+    monkeypatch.setattr("alfrd.cli._serve_production", lambda app, host, port: calls.append({"host": host, "port": port, "server": "waitress"}))
 
     result = runner.invoke(alfrd_cli, ["gui", "--port", "5050"])
 
     assert result.exit_code == 0, result.output
-    assert calls == [{"host": "127.0.0.1", "port": 5050, "debug": False}]
+    assert calls == [{"host": "127.0.0.1", "port": 5050, "server": "waitress"}]  # not Flask's development server
 
 
 def test_cli_serve_configures_runtime_database(monkeypatch, tmp_path):
@@ -128,11 +129,12 @@ def test_cli_no_browser_skips_browser_and_wildcard_prints_loopback(monkeypatch):
 
     monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
     monkeypatch.setattr("alfrd.cli.webbrowser.open", lambda url: (_ for _ in ()).throw(AssertionError(url)))
+    monkeypatch.setattr("alfrd.cli._serve_production", lambda app, host, port: calls.append({"host": host, "port": port}))
     result = runner.invoke(alfrd_cli, ["serve", "--host", "0.0.0.0", "--no-browser"])
     assert result.exit_code == 0, result.output
     assert "http://127.0.0.1:5000/dashboard/" in result.output
     assert "http://127.0.0.1:5000/studio/" in result.output
-    assert calls == [{"host": "0.0.0.0", "port": 5000, "debug": False}]
+    assert calls == [{"host": "0.0.0.0", "port": 5000}]
 
 
 def test_cli_manifest_validate_example():

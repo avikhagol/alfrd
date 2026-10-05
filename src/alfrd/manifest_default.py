@@ -96,8 +96,22 @@ def default_manifest_data(root: str | Path | None = None) -> dict[str, Any]:
     return data
 
 
-def manifest_data(root: str | Path) -> tuple[dict[str, Any], Path | None, bool]:
-    """``(data, path, is_default)``: the local manifest, else the default one."""
+def yaml_error(path: Path, error: Exception) -> str:
+    """``alfrd.yaml line 12, column 3: expected <block end>, but found '-'`` (the parser's own words)."""
+    mark = getattr(error, "problem_mark", None)
+    where = f" line {mark.line + 1}, column {mark.column + 1}" if mark is not None else ""
+    problem = getattr(error, "problem", None) or str(error)
+    context = getattr(error, "context", None)
+    return f"{path}{where}: invalid YAML: {problem}{f' ({context})' if context else ''}"
+
+
+def manifest_data(root: str | Path, *, strict: bool = False) -> tuple[dict[str, Any], Path | None, bool]:
+    """``(data, path, is_default)``: the local manifest, else the default one.
+
+    A local alfrd.yaml that does not parse reads as ``{}``; with ``strict`` it raises
+    :class:`alfrd.manifest.ManifestError` naming the line instead (anything that runs
+    commands uses strict, so a typo is reported rather than seen as "no steps").
+    """
     import yaml
 
     from alfrd.avica_layout import load_yaml_cached
@@ -106,8 +120,16 @@ def manifest_data(root: str | Path) -> tuple[dict[str, Any], Path | None, bool]:
     if path is not None:
         try:
             data = load_yaml_cached(path) or {}
-        except (OSError, yaml.YAMLError):
+        except (OSError, yaml.YAMLError) as exc:
+            if strict:
+                from alfrd.manifest import ManifestError
+
+                raise ManifestError(yaml_error(path, exc) if isinstance(exc, yaml.YAMLError) else f"{path}: {exc}") from exc
             data = {}
+        if strict and not isinstance(data, dict):
+            from alfrd.manifest import ManifestError
+
+            raise ManifestError(f"{path}: alfrd.yaml must be a YAML mapping (key: value), not a {type(data).__name__}")
         return (data if isinstance(data, dict) else {}), path, False
     data = default_manifest_data(root)
     return data, (default_manifest_path() if data else None), bool(data)

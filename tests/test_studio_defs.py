@@ -39,7 +39,8 @@ def tree(tmp_path: Path) -> Path:
 def test_template_defaults_and_alfrd_yaml_overrides():
     m = studio_manifest(TREE)
     assert m["template"] == "avica"
-    assert m["step_order"][0] == "preprocess_fitsidi" and len(m["steps"]) == 9
+    assert m["step_order"][0] == "preprocess_fitsidi" and len(m["steps"]) == 8
+    assert m["skipped_steps"] == ["phaseshift"]  # skipped by default in the template
     assert m["steps"]["fits_to_ms"]["label"] == "Convert FITS to CASA Measurement Set"  # template
     assert m["steps"]["avica_avg"]["logs"] == ["{workdir}/wd_{band}/avica_avg_*log*"]  # alfrd.yaml
     assert m["project_settings"]["field_aliases"]["vasco_avg"] == "avica_avg"

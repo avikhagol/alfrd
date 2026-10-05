@@ -27,6 +27,7 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -110,6 +111,7 @@ class StepCommand:
     human_review: bool = False
     model: str | None = None
     claude_stream: bool = False
+    agent: bool = False                # an agent step (claude/codex command, or category: Agent) outside a loop too
     roles: tuple[Mapping[str, str], ...] = ()
     next_roles: tuple[str, ...] = ()
     next_agent: str = ""
@@ -119,6 +121,7 @@ class StepCommand:
     model_option: str | None = None    # a generic agent's model flag (entrypoint ``model_option``)
     fallback_models: tuple[str, ...] = ()
     after: float | None = None         # seconds to wait after the previous step finishes
+    at: str | None = None              # or a clock time: "02:00" (next 02:00) / "2026-10-07 02:00"
     turn: int = 0
 
 
@@ -237,7 +240,7 @@ def merged_manifest(root: str | Path) -> dict[str, Any]:
     from alfrd.manifest_default import manifest_data
     from alfrd.studio_defs import _load_yaml, studio_manifest, template_name, template_path
 
-    merged = studio_manifest(root)
+    merged = studio_manifest(root, strict=True)  # a broken alfrd.yaml is an error, not "no steps"
     manifest, _path, _default = manifest_data(root)
     name = template_name(manifest)
     template = _load_yaml(template_path(name)) if name and template_path(name) else {}
@@ -346,6 +349,10 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
     contract = loop_options.get("contract", {})
     if not isinstance(contract, Mapping) or any(k not in ("first", "middle", "final") or not isinstance(v, str) for k, v in contract.items()):
         raise ExecutionError("loop.contract accepts first, middle and final text")
+    progress = loop_options.get("progress", True)
+    if not (isinstance(progress, bool) or (isinstance(progress, str) and progress.strip() and "\n" not in progress
+                                           and not Path(progress.strip()).is_absolute() and ".." not in Path(progress.strip()).parts)):
+        raise ExecutionError("loop.progress must be true, false or a file name in the agent's folder (e.g. PROGRESS.md)")
     settings = {**DEFAULT_EXECUTION, **(merged.get("execution") or {})}
     for key, allowed in (("mode", MODES), ("on_failure", ON_FAILURE), ("status_from", STATUS_FROM),
                          ("launcher", LAUNCHERS), ("auto_resume", AUTO_RESUME),
@@ -445,11 +452,17 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
         except ValueError as exc:
             raise ExecutionError(f"step {sid!r}: {exc}") from exc
         try:
-            after = parse_delay(io.get("after"))
+            at = clock_time(io.get("after")) if is_clock(io.get("after")) else None
+            after = parse_delay(io.get("after")) if is_delay(io.get("after")) and at is None else None
         except ValueError as exc:
             raise ExecutionError(f"step {sid!r}: {exc}") from exc
         native = fallbacks[0] if fallbacks and adapter.native_fallback else None
-        argv, model, claude_stream = agent_command(argv, model, stream=bool(handoff) and not io.get("manual", False), access=access,
+        from alfrd.agent_io import SUPPORTED_AGENTS
+
+        # Agent steps in any workflow get what loop turns get: token usage (Claude's stream), retry notes.
+        is_agent = bool(handoff) or adapter.name in SUPPORTED_AGENTS or str(spec.get("category") or "").strip().lower() == "agent"
+        stream = (bool(handoff) or (is_agent and bool(io.get("output_file")))) and not io.get("manual", False)
+        argv, model, claude_stream = agent_command(argv, model, stream=stream, access=access,
                                                    adapter=adapter, fallback=native) if argv else (None, model, False)
         steps.append(StepCommand(
             id=sid, argv=argv, entrypoint=entry,
@@ -465,7 +478,7 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
             roles=tuple({"key": key, **personas[key]} for key in role_keys(spec.get("roles", spec.get("role")))),
             human_review=review, model=model, claude_stream=claude_stream, loop_options=dict(loop_options),
             introduce_roles=bool(spec.get("introduce_roles", int(spec.get("iteration") or 0) == 1)),
-            adapter=adapter.name, fallback_models=tuple(fallbacks), after=after, turn=int(spec.get("turn") or 0),
+            adapter=adapter.name, fallback_models=tuple(fallbacks), after=after, at=at, agent=is_agent, turn=int(spec.get("turn") or 0),
             model_option=io.get("model_option"),
         ))
     steps = [replace(step, next_roles=tuple(r["label"] for r in steps[i + 1].roles),
@@ -521,6 +534,61 @@ def load_task_execution(root: str | Path, target: str | None, *, cap: bool = Fal
 
 
 MAX_DELAY = 7 * 24 * 3600
+
+
+_DELAY = re.compile(r"\+?\s*(?:\d+(?:\.\d+)?|(?:\d+d)?(?:\d+h)?(?:\d+m)?(?:\d+s)?)", re.I)
+
+
+_CLOCK = re.compile(r"(?:(\d{4}-\d{2}-\d{2})[ T])?(\d{1,2}):(\d{2})(?::(\d{2}))?")
+
+
+def is_clock(value: Any) -> bool:
+    """``after: "02:00"`` / ``"2026-10-07 02:00"`` (quoted: YAML reads a bare 02:00 as the number 120)."""
+    if isinstance(value, datetime):
+        return True
+    return isinstance(value, str) and bool(_CLOCK.fullmatch(value.strip()))
+
+
+def clock_time(value: Any) -> str:
+    """A clock ``after`` / start time, checked: ``HH:MM`` or ``YYYY-MM-DD HH:MM`` (at most seven days ahead)."""
+    if isinstance(value, datetime):
+        value = value.strftime("%Y-%m-%d %H:%M:%S")
+    match = _CLOCK.fullmatch(str(value or "").strip())
+    if not match:
+        raise ValueError("a start time looks like 02:00 or 2026-10-07 02:00")
+    day, hour, minute, second = match.groups()
+    if int(hour) > 23 or int(minute) > 59 or int(second or 0) > 59:
+        raise ValueError(f"{value!s} is not a time of day")
+    text = f"{int(hour):02d}:{minute}" + (f":{second}" if second else "")
+    if day:
+        try:
+            when = datetime.strptime(f"{day} {text}", "%Y-%m-%d %H:%M" + (":%S" if second else ""))
+        except ValueError as exc:
+            raise ValueError(f"{value!s} is not a date") from exc
+        if (when - datetime.now()).total_seconds() > MAX_DELAY:
+            raise ValueError("a start time must be at most 7 days ahead")
+        return f"{day} {text}"
+    return text
+
+
+def next_clock(value: str, after: datetime) -> datetime:
+    """When a clock time is reached: a date-time as given; ``HH:MM`` = its first occurrence after ``after``."""
+    day, hour, minute, second = _CLOCK.fullmatch(value.strip()).groups()
+    if day:
+        return datetime.strptime(day, "%Y-%m-%d").replace(hour=int(hour), minute=int(minute), second=int(second or 0))
+    when = after.replace(hour=int(hour), minute=int(minute), second=int(second or 0), microsecond=0)
+    return when if when > after else when + timedelta(days=1)
+
+
+def is_delay(value: Any) -> bool:
+    """``after:`` is a delay (a number, a duration or a clock time); a step name (or list) means "depends on"."""
+    if isinstance(value, bool):
+        return False
+    if is_clock(value):
+        return True
+    if isinstance(value, (int, float)):
+        return True
+    return isinstance(value, str) and bool(value.strip()) and bool(_DELAY.fullmatch(value.strip().replace(" ", "")))
 
 
 def parse_delay(value: Any) -> float | None:
@@ -581,7 +649,10 @@ __all__ = [
     "ExecutionError",
     "RenderError",
     "StepCommand",
+    "clock_time",
+    "is_clock",
     "load_execution",
+    "next_clock",
     "merged_manifest",
     "placeholders",
     "render",

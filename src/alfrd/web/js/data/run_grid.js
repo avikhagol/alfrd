@@ -250,9 +250,9 @@ export function filterHistory(runs, filters = FILTERS_DEFAULT, runLabel = (s) =>
 const dur = (s) => (s == null ? "—" : s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
 
 /** Empty states of a loop project's history. reason: none | offline | error | loading | nomatch. */
-export function historyEmpty(reason, project, error = "") {
+export function historyEmpty(reason, project, error = "", setup = false) {
   const p = esc(project);
-  if (reason === "none") return `<div class="rg-empty"><p><b>No runs yet.</b> Edit task.md, review your agents, then start a run in Workflow.</p><div class="row gap wrap"><button class="btn sm" data-rh-task="${p}">${icon("edit")} Edit task</button><button class="btn sm primary" data-rh-workflow="${p}">${icon("workflow")} Open Workflow</button></div></div>`;
+  if (reason === "none") return `<div class="rg-empty"><p><b>No runs yet.</b> ${setup ? "Set up your agents, edit task.md" : "Edit task.md, review your agents"}, then start a run in Workflow.</p><div class="row gap wrap">${setup ? `<button class="btn sm" data-home-setup="${p}">${icon("gear")} Setup wizard</button>` : ""}<button class="btn sm" data-rh-task="${p}">${icon("edit")} Edit task</button><button class="btn sm primary" data-rh-workflow="${p}">${icon("workflow")} Open Workflow</button></div></div>`;
   if (reason === "offline") return `<div class="rg-empty"><p>Connect to the ALFRD server to open this run.</p></div>`;
   if (reason === "error") return `<div class="callout fail rg-empty" role="alert"><span>Couldn’t load run history.${error ? ` ${esc(error)}` : ""}</span><button class="btn sm" data-rg-retry="${p}">Retry</button></div>`;
   if (reason === "nomatch") return `<div class="rg-empty"><p>No runs match these filters.</p><button class="btn sm" data-rg-reset="${p}">Clear filters</button></div>`;
@@ -273,7 +273,7 @@ export function renderRunHistory(project, name, full, grid, runs, summary, filte
   const id = `rg-${opts.index ?? 0}`;
   const head = `<h3 class="rg-title" id="${id}">${esc(name)} <span class="muted small">· ${runs.length} run${runs.length === 1 ? "" : "s"}</span></h3>`;
   const wrap = (body) => `<section class="rg" data-rg-section="${p}" aria-labelledby="${id}">${head}${body}</section>`;
-  if (full.empty && full.empty !== "nomatch" && !runs.length) return wrap(historyEmpty(full.empty === "unavailable" ? "none" : full.empty, project, opts.error));
+  if (full.empty && full.empty !== "nomatch" && !runs.length) return wrap(historyEmpty(full.empty === "unavailable" ? "none" : full.empty, project, opts.error, opts.setup));
   const shown = filterHistory(runs, f, runLabel);
   const size = opts.size || 25;
   const pages = Math.max(1, Math.ceil(shown.length / size));

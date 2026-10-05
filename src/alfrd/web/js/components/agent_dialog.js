@@ -137,7 +137,7 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
           <td class="mono">${esc(t.step)}</td><td>${esc(t.agent || "")}</td>
           <td><input type="checkbox" data-set="human_review" aria-label="Review ${esc(t.step)}" ${t.human_review ? "checked" : ""} ${can(t, "human_review") ? "" : "disabled"}></td>
           <td><input type="checkbox" data-set="manual" aria-label="Human writes ${esc(t.step)}" ${t.manual ? "checked" : ""} ${can(t, "manual") ? "" : "disabled"}></td>
-          <td><input type="text" class="input" data-set="after" aria-label="Delay before ${esc(t.step)}" placeholder="${can(t, "after") ? "+1h" : ""}" value="${t.after ? esc(t.overrides.after ?? `${Math.round(t.after / 60)}m`) : ""}" ${can(t, "after") ? "" : "disabled"}>${t.after && can(t, "after") ? ` <button class="btn sm" data-run-now>Run now</button>` : ""}</td>
+          <td><input type="text" class="input" data-set="after" aria-label="Delay before ${esc(t.step)}" placeholder="${can(t, "after") ? "+1h or 02:00" : ""}" value="${t.after || t.at ? esc(t.overrides.after ?? (t.at || `${Math.round(t.after / 60)}m`)) : ""}" ${can(t, "after") ? "" : "disabled"}>${(t.after || t.at) && can(t, "after") ? ` <button class="btn sm" data-run-now>Run now</button>` : ""}</td>
           <td>${esc(t.state)}</td></tr>`).join("")}</tbody></table><p id="plan-turns-error" role="alert"></p>`;
         box.querySelectorAll("tr[data-step]").forEach((row) => {
           const send = async (payload) => {

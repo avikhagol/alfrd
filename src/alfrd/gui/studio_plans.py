@@ -149,6 +149,7 @@ def plan_start(project_name: str):
             folder = scheduler.create_plan(
                 cfg.root, path, mode=payload.get("mode"), concurrency=payload.get("concurrency"),
                 on_failure=payload.get("on_failure"), retry_failed=bool(payload.get("retry_failed")), target=payload.get("target"),
+                start_at=payload.get("start_at") or None,
             )
         if payload.get("start", True):
             scheduler.spawn_runner(folder)
@@ -163,15 +164,18 @@ def plan_start(project_name: str):
 @studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/<action>")
 def plan_action(project_name: str, plan_id: str, action: str):
     payload = request.get_json(silent=True) or {}
-    if action not in ("pause", "resume", "cancel"):
+    if action not in ("pause", "resume", "cancel", "start-now"):
         return _json_error(ValueError(f"unknown action {action!r}"), 404)
     if action == "cancel" and not payload.get("confirm"):
         return _json_error(ValueError("cancel stops running commands; send confirm: true"), 400)
     if not re.match(r"^[A-Za-z0-9_-]+$", plan_id):
         return _json_error(ValueError("bad plan id"), 400)
     try:
-        plan = scheduler.control(_project_root(project_name), plan_id, action,
-                                 retry_failed=bool(payload.get("retry_failed")))
+        if action == "start-now":
+            plan = scheduler.start_now(_project_root(project_name), plan_id)
+        else:
+            plan = scheduler.control(_project_root(project_name), plan_id, action,
+                                     retry_failed=bool(payload.get("retry_failed")))
     except ExecutionError as error:
         return _json_error(error, 404)
     _poke(project_name)
@@ -340,7 +344,7 @@ def plan_turns(project_name: str, plan_id: str):
             latest = attempts[-1] if attempts else {}
             state = "done" if latest.get("artifact") or latest.get("status") == "done" else latest.get("status") or "pending"
             out.append({"step": step_id, "label": step.base_step or step_id, "turn": step.turn or None, "agent": step.entrypoint,
-                        "human_review": step.human_review, "manual": step.manual, "after": step.after, "model": step.model,
+                        "human_review": step.human_review, "manual": step.manual, "after": step.after, "at": step.at, "model": step.model,
                         "fallback_models": list(step.fallback_models), "state": state,
                         "editable": [] if state == "done" else ["human_review"] if state == "running" else sorted(scheduler.OVERRIDE_KEYS),
                         "overrides": overrides.get(step_id, {})})
@@ -494,7 +498,8 @@ def task_rename(project_name: str, old: str):
                 updated = [name + pattern[len(old):] if pattern.startswith(old + "/") else pattern for pattern in patterns]
                 if updated != patterns:
                     data["history"]["files"] = updated
-                    pc.atomic_write(manifest, yaml.safe_dump(data, sort_keys=False))
+                    from alfrd.yaml_text import dump
+                    pc.atomic_write(manifest, dump(data))
             # Only the moved files' archives: a glob on "old__*" would also match a task named "old__x".
             for path in destination.rglob("*"):
                 sub = path.relative_to(destination).as_posix()

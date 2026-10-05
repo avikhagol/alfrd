@@ -3,7 +3,9 @@
 # Loaded when alfrd.yaml says `template: avica`. Everything here is a default:
 # alfrd.yaml wins for any key it sets (stages, a step's label/category/stage/
 # description/metadata/logs, overview.ms_path, project_settings, artifacts).
-# Copy a block into alfrd.yaml to change it.
+# Copy a block into alfrd.yaml to change it. Set `skip: true` on a step
+# (`steps: {avica_snr: {skip: true}}`) to leave it out of the workflow.
+# phaseshift is skipped by default; `steps: {phaseshift: {skip: false}}` runs it.
 #
 # Placeholders in patterns:
 #   {target_dir}  resolved AVICA target_dir        {workdir}  a work dir (e.g. reductions/RDV41/wd)
@@ -84,6 +86,24 @@ targets:
 # entrypoints with the same name replace these; `execution:` keys override one by one.
 # Placeholders: {target} {step} {from_step} {targets} {plan_csv} {root} and any
 # plan CSV column ({FILENAMES}, {PROJECT_CODE}, ...). No shell: one argv item each.
+# Studio → Setup wizard: a form for avica.inp in the project folder (see docs/agent-loops.md "Setup forms").
+quickstart:
+  setup:
+    type: form
+    title: Set up AVICA
+    description: Writes these values to avica.inp in the project folder; other lines and comments stay as they are.
+    target: {file: avica.inp}
+    fields:
+      folder_for_fits: {type: path, label: Raw FITS-IDI folder, required: true, help: Folder with the raw visibility FITS files.}
+      casadir: {type: path, label: CASA installation, help: Monolithic CASA folder (casa-6.x…).}
+      target_dir: {type: path, label: Output folder, default: reductions, help: Where reductions are written (relative to the project).}
+      picard_input_template: {type: path, label: rPICARD input template}
+      use_local_antab: {type: toggle, label: Use local .antab files, default: true}
+      apply_flag_from_idi: {type: toggle, label: Apply flags from FITS-IDI, default: true}
+      fits_to_ms.mpi_cores: {type: number, label: MPI cores · fits_to_ms, min: 1, default: 5}
+      rpicard.mpi_cores: {type: number, label: MPI cores · rPICARD, min: 1, default: 10}
+      snr_threshold_phref: {type: number, label: SNR threshold (phase reference), min: 0, default: 7}
+      size_limit: {type: number, label: Size limit (MB), min: 0, default: 2000.0}
 entrypoint:
   - name: avica-step                    # mode: step — one call per target × step
     cmd: [avica, pipe, run, --t, "{target}", --f, "{FILENAMES}", "{step}"]
@@ -119,7 +139,9 @@ step_defaults:
   # Added to every step's logs.
   logs:
     - "{logs}/avica_crash_{step}.json"
-
+workflows:
+  - name: avica
+    steps: [preprocess_fitsidi, fits_to_ms, phaseshift, avica_avg, avicameta_ms, avica_snr, avica_fill_input, avica_split_ms, rpicard]
 steps:
   preprocess_fitsidi:
     label: FITS-IDI data processing
@@ -149,6 +171,7 @@ steps:
       - "{workdir}/fits_to_ms_*log*"
   phaseshift:
     label: Phase shifting
+    skip: true
     short: phaseshift
     category: MeasurementSet
     stage: preprocess

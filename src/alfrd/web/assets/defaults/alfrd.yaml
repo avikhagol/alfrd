@@ -57,13 +57,6 @@ avica:
     - "input_template_{n}"
     - "wd_{band}_{target}/input_template_{band}_{target}"
 
-# Overview → "MS Storage Path" column ({workdir} = a folder matching avica.workdir).
-overview:
-  ms_path:
-    - "{workdir}/wd_{band}_{target}/VLBI_{band}.ms"
-    - "{workdir}/wd_{band}/VLBI_{band}.ms"
-    - "{workdir}/VLBI.ms"
-
 dataset_columns:
   - name: TARGET_NAME
     type: string
@@ -78,53 +71,18 @@ dataset_columns:
     required: false
     description: FITS-IDI files used for the target.
 
-# Workflow stages (canvas bands). Remove to use the template's stages.
-stages:
-  - {id: preprocessing, title: Loading to MeasurementSet}
-  - {id: average, title: Average MeasurementSet}
-  - {id: automation, title: Automated Metadata and Input generation}
-  - {id: calib, title: Calibration Setup & Execution}
-
+# Step order. Labels, stages, categories, metadata files and logs come from the
+# template (templates/avica.yaml `steps:`); add a mapping here to override one, or
+# leave a step out with `skip: true`, e.g. steps: {avica_snr: {skip: true}}.
+# Stages, the Overview MS path patterns and the log artifacts also come from the
+# template; set `stages:` / `overview:` here to replace them.
 workflows:
   - name: avica
     description: AVICA step status from per-target result CSV files.
-    # A step can be a plain id (template defaults) or a mapping that overrides
-    # label, category, stage, description, icon, metadata and logs.
-    steps:
-      - id: preprocess_fitsidi
-        stage: preprocessing
-        category: FITSIDI
-        label: FITS-IDI data processing
-        metadata:
-          - {file: fitsfiles_used.avica, label: FITS files used, require: [filepath]}
-          - {file: listobs.json, label: listobs (scans), require: [listobs]}
-          - {file: listobs_fits.out, label: listobs (FITS)}
-      - id: fits_to_ms
-        stage: preprocessing
-        category: MeasurementSet
-        metadata:
-          -  {file: available_wd_ifolder.avica, label: input_template}
-      # - phaseshift
-      - id: avica_avg
-        stage: average
-        logs:
-          - "{workdir}/wd_{band}/avica_avg_*log*"
-      - id: avicameta_ms
-        stage: automation
-        category: MeasurementSet
-      - id: avica_snr
-        stage: automation
-        category: MeasurementSet
-      - id: avica_fill_input
-        stage: automation
-        category: MeasurementSet
-      - id: avica_split_ms
-        stage: calib
-        category: MeasurementSet
-      - id: rpicard
-        stage: calib
-        category: MeasurementSet
+    steps: [preprocess_fitsidi, fits_to_ms, avica_avg, avicameta_ms, avica_snr, avica_fill_input, avica_split_ms, rpicard]
 
+# Merged with the template's artifacts by name (the template adds rpicard
+# diagnostics, AVICA/CASA logs and crash snapshots).
 artifacts:
   - name: result_csv
     # Newer AVICA: one file per (target, project code, work dir); {workdirname} = wd, wd_1, ...
@@ -160,26 +118,6 @@ artifacts:
     media_type: text/plain
     kind: text
     viewer: inp
-  # Logs view groups: every artifact with kind: log (or show_in_logs: true).
-  - name: avica_logs
-    path_pattern: "avica.logs/avica__log-*.log"
-    description: AVICA run logs
-    media_type: text/plain
-    kind: log
-    viewer: text
-  - name: crash_snapshots
-    path_pattern: "avica.logs/avica_crash_*.json"
-    description: Last crash snapshot per step
-    media_type: application/json
-    kind: json
-    viewer: json
-    show_in_logs: true
-  - name: casa_logs
-    path_pattern: "{workdir}/wd_{band}_{target}/*_casa_log-*.log"
-    description: CASA logs written per step
-    media_type: text/plain
-    kind: log
-    viewer: text
   - name: casa_root_logs
     path_pattern: "casa-*.log"
     description: CASA logs next to alfrd.yaml

@@ -1462,7 +1462,8 @@ async function onLiveBadge() {
 
 
 // Desktop sidebar: 240 px or a 64 px icon rail (≥1280 px; narrower windows keep their own layout).
-const shellUi = loadUi("shell", { sidebarCollapsed: false });
+// Collapsed (icon rail) by default; "shell.v2" so earlier saved "expanded" states start collapsed once.
+const shellUi = loadUi("shell.v2", { sidebarCollapsed: true });
 function setSidebar(collapsed) {
   shellUi.sidebarCollapsed = collapsed === true;
   $("#app").dataset.sidebar = shellUi.sidebarCollapsed ? "collapsed" : "expanded";
@@ -1473,7 +1474,7 @@ function setSidebar(collapsed) {
     b.setAttribute("aria-label", label);
     b.title = `${label} (Alt+Shift+S)`;
   }
-  storage.set("ui:shell", { sidebarCollapsed: shellUi.sidebarCollapsed }); // at once: a reload right after must keep it
+  storage.set("ui:shell.v2", { sidebarCollapsed: shellUi.sidebarCollapsed }); // at once: a reload right after must keep it
 }
 document.addEventListener("keydown", (e) => {
   if (!(e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyS") || e.isComposing) return;
@@ -1663,7 +1664,7 @@ onDock(() => renderStrip());
 /** Jobs · N running: every active run across projects (switching never stops them). */
 const jobStatus = new Map(); // `${project}\u0000${run}` -> label, for polite announcements
 function jobLabel(s) {
-  if (s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
+  if (s.plan.start_at || s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
   return { running: "Running", paused: "Paused", interrupted: "Interrupted" }[s.plan.status] || s.plan.status;
 }
 function renderJobs() {

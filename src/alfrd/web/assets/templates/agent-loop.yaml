@@ -4,7 +4,26 @@ history:
 loop:
   max_input_chars: 40000
   workspace: worktree   # each task gets its own git worktree at {target}/workspace (shared: one tree)
+  progress: true        # agents keep PROGRESS.md (a checklist) and continue from it; a retried turn resumes from it
 primary_key: TARGET_NAME
+# Studio → Setup wizard: the agents' commands, models and the loop (writes alfrd.yaml).
+quickstart:
+  setup:
+    type: form
+    title: Set up the agents
+    description: Commands and models of the agents, the turn order and review. Saved to alfrd.yaml.
+    target: {file: alfrd.yaml}
+    fields:
+      workflows.0.repeat.sequence: {type: list, label: Agent sequence (one pass; repeats), required: true, help: "Entrypoint names in turn order, e.g. claude, claude, codex."}
+      workflows.0.repeat.iterations: {type: number, label: Iterations (total turns; the maximum per task), min: 1, max: 200, required: true}
+      entrypoint.claude.cmd.0: {type: path, pick: program, label: Claude CLI program, required: true, help: "claude, or the full path to it."}
+      entrypoint.claude.model: {type: textbox, label: Claude model, placeholder: CLI default}
+      entrypoint.claude.fallback_models: {type: list, label: Claude fallback models}
+      entrypoint.codex.cmd.0: {type: path, pick: program, label: Codex CLI program, required: true, help: "codex, or the full path to it."}
+      entrypoint.codex.model: {type: textbox, label: Codex model, placeholder: CLI default}
+      entrypoint.codex.fallback_models: {type: list, label: Codex fallback models}
+      project_settings.human_review: {type: toggle, label: Review every turn before handoff, default: false}
+      loop.workspace: {type: select, label: Task workspace, options: [worktree, shared], default: worktree, help: worktree gives each task its own git worktree.}
 entrypoint:
   - name: claude
     cmd: [claude, -p, --permission-mode, acceptEdits, --output-format, text]
@@ -43,6 +62,7 @@ artifacts:
 views:
   metadata:
     - {panel: text, title: Task, scope: target, source: "{target}/task.md"}
+    - {panel: text, title: Progress (agent checklist), scope: target, source: "{target}/workspace/PROGRESS.md"}
     - {panel: text, title: Next step for Claude, scope: target, source: "{target}/next-step-claude.md"}
     - {panel: text, title: Next step for Codex, scope: target, source: "{target}/next-step-codex.md"}
 

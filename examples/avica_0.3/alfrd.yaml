@@ -35,7 +35,7 @@ workflows:
     steps:
       - preprocess_fitsidi
       - fits_to_ms
-      - phaseshift
+      # - phaseshift
       - avica_avg
       - avicameta_ms
       - avica_snr
