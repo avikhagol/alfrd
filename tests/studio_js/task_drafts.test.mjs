@@ -51,6 +51,7 @@ function openModal(html) {
 let calls;
 let onDisk;
 function fakeServer({ save } = {}) {
+  server.tasks = async () => ({ tasks: [] });
   calls = { save: [], task: 0 };
   onDisk = { text: "# Goal\nShip it.\n", hash: "h1" };
   server.session = { mutations_enabled: true };
@@ -64,7 +65,7 @@ function fakeServer({ save } = {}) {
 }
 
 /** Open the Task editor; resolves to a handle over the fake dialog. */
-async function open(project = "p1", run = "next", mod = dialog) {
+async function open(project = "p1", run = "next", mod = dialog, target = null) {
   let root, close;
   const ctx = {
     toast() {},
@@ -74,7 +75,7 @@ async function open(project = "p1", run = "next", mod = dialog) {
       setup(root, close);
     },
   };
-  await mod.openTask(ctx, project, { run });
+  await mod.openTask(ctx, project, { run, target });
   await new Promise((r) => queueMicrotask(r));
   const $ = (s) => root.querySelector(s);
   return {
@@ -264,4 +265,49 @@ test("Clear all saved data (forgetTaskDrafts + storage.clear) leaves no draft in
   const again = await open();
   assert.equal(again.text(), "# Goal\nShip it.\n");
   assert.equal(again.banner(), false);
+});
+
+
+test("task picker isolates drafts and sends the selected target when saving", async () => {
+  server.tasks = async () => ({ tasks: [{ name: "task" }, { name: "fix-login" }] });
+  const saved = [];
+  server.taskSave = async (project, payload, target) => { saved.push(target); return { text: payload.text, hash: "h2" }; };
+  const a = await open("p1", "next", dialog, "task");
+  assert.match(a.root.html, /id="task-picker"/);
+  await a.type("first task draft"); await a.close();
+  const b = await open("p1", "next", dialog, "fix-login");
+  assert.equal(b.text(), "# Goal\nShip it.\n");
+  await b.type("fix login"); await b.$("#task-save").fire("click");
+  assert.deepEqual(saved, ["fix-login"]);
+  await b.close();
+  assert.equal((await open("p1", "next", dialog, "task")).text(), "first task draft");
+});
+
+test("New task and Rename submit named task API requests", async () => {
+  let tasks = [{ name: "task" }], created, renamed;
+  server.tasks = async () => ({ tasks });
+  server.taskCreate = async (project, body) => { created = body; tasks = [...tasks, { name: body.name }]; };
+  server.taskRename = async (project, old, name) => { renamed = { old, name }; tasks = tasks.map((t) => t.name === old ? { name } : t); };
+  const d = await open("p1", "next", dialog, "task");
+  await d.$("#task-new").fire("click");
+  assert.equal(d.$("#task-name").value, "task-2");
+  d.$("#task-new-goal").value = "New independent goal";
+  await d.$("#task-name-save").fire("click");
+  assert.deepEqual(created, { name: "task-2", task: "New independent goal" });
+  const e = await open("p1", "next", dialog, "task-2");
+  await e.$("#task-rename").fire("click");
+  e.$("#task-name").value = "fix-login";
+  await e.$("#task-name-save").fire("click");
+  assert.deepEqual(renamed, { old: "task-2", name: "fix-login" });
+});
+
+
+test("legacy root projects keep their file path and hide folder actions", async () => {
+  server.tasks = async () => ({ tasks: [{ name: "task" }], folder_layout: false });
+  server.task = async () => ({ text: "Legacy goal", hash: "h1", file: "task.md" });
+  const d = await open("legacy");
+  assert.equal(d.$("#task-new").hidden, true);
+  assert.equal(d.$("#task-rename").hidden, true);
+  assert.match(d.root.html, /Edit task\.md\./);
+  assert.doesNotMatch(d.root.html, /Edit task\/task\.md/);
 });

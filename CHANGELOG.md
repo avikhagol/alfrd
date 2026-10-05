@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased] — 0.2.2
+
+- **Agent sequences.** `repeat.sequence: [claude, claude, codex, …]` sets the order of turns; `iterations` is now the **total number of turns** (custom passes and `passes:` also accepted). New agent-loop projects use it; older projects (`repeat.iterations` + `steps`) keep counting passes unchanged.
+- **Agent agnostic.** Built-in adapters for Claude and Codex, and a `generic` adapter for any stdin→stdout CLI (`adapter:`, `model_option:`). Studio project creation takes an agent sequence; `alfrd projects create --sequence`.
+- **Fallback models.** `fallback_models:` per entrypoint or turn. Claude uses `--fallback-model`; other agents are relaunched with the next model after a runtime failure (never after an invalid or rejected response).
+- **Per-turn human edit and review.** `workflow.turns` sets `manual`, `human_review` or `after` for single turns; Studio's Agents dialog has a per-turn table.
+- **Edit a running plan.** Handoffs → *Turns of this run* (or `alfrd plan turn`) adds review to any turn — including the running one — or changes human turns, delays and models of turns not yet started, for that plan only. The review gate now lives in the runner, after the command exits; **Reject and stop** (`alfrd plan reject`) refuses a held handoff. No plan CSV columns are added.
+- **Delays.** `after: "+1h"` starts a step that long after the previous one finished; `waiting[]` reports `kind: delay`; **Run now** / `--after 0`.
+- **Tasks.** The project's iterations are the maximum per task (enforced). With `loop.workspace: worktree` (new projects) each task gets its own git worktree at `<task>/workspace` on branch `alfrd/<task>`, so tasks run in parallel without sharing files. Overview lists tasks (turns, worktree branch, runs) above the run history; click one to filter.
+- **Attempt records.** Each turn records `logical_turn_id`, `attempt_number`, `retry_of`, `treatment`, `run_kind`, `outcome`, `usage_source`, normalized `input_uncached_tokens`, and raw / trimmed / final prompt sizes with truncated sections.
+- **Fix:** plan token totals mixed Claude's uncached input with Codex's cache-inclusive input; totals now add `input_uncached_tokens` (raw counters unchanged).
+- **Baseline report.** `alfrd plan baseline` reports consecutive production turns with coverage gates (80% per field), retries, truncation and tokens per accepted result.
+
 ## [0.2.1.0]
 
 - AVICA: result CSVs are named `result__<TARGET>__<CODE>__<wd>.csv` by default. Earlier `result_<TARGET>_<CODE>_<wd>.csv` and `<TARGET>_result.csv` names are still read. Targets and project codes never keep a leading or trailing `_`, so an `alfrd.yaml` without a `result_csv` artifact no longer shows `_0554+580` / `_BV015_`.

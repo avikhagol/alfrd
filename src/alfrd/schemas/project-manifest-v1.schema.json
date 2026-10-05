@@ -15,7 +15,8 @@
               "type": "object", "required": ["label", "instructions"],
               "properties": {
                 "label": {"type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[^\\r\\n]+$"},
-                "instructions": {"type": "string", "maxLength": 4000}
+                "instructions": {"type": "string", "maxLength": 4000},
+                "summary": {"type": "string", "maxLength": 1000}
               },
               "additionalProperties": false
             }
@@ -37,6 +38,8 @@
     "loop": {
       "type": "object",
       "properties": {
+        "max_input_chars": {"type": "integer", "minimum": 1, "default": 40000},
+        "workspace": {"enum": ["shared", "worktree"], "default": "shared"},
         "task_row": {"type": "string", "minLength": 1},
         "headings": {
           "type": "array",
@@ -89,6 +92,9 @@
           "manual": {"type": "boolean"},
           "human_review": {"type": "boolean"},
           "model": {"type": ["string", "null"], "minLength": 1},
+          "adapter": {"enum": ["claude", "codex", "generic"]},
+          "model_option": {"type": "string", "pattern": "^--?[A-Za-z0-9][A-Za-z0-9-]*$"},
+          "fallback_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
           "timeout": {"type": "number", "exclusiveMinimum": 0},
           "env": {"type": "object"},
           "cmd": {

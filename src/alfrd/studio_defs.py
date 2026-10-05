@@ -158,9 +158,21 @@ def studio_manifest(root: str | Path) -> dict[str, Any]:
     merged["template"] = name
     workflows = merged.get("workflows") or []
     workflow = workflows[0] if isinstance(workflows, list) and workflows else next(iter(workflows.values()), {}) if isinstance(workflows, dict) else {}
-    if isinstance(workflow, dict) and (workflow.get("repeat") is not None or "roles" in workflow or any("role" in s for s in steps.values())):
-        from alfrd.agent_loop import expand_steps
+    from alfrd.agent_loop import expand_steps, is_sequence, sequence_passes
 
+    if isinstance(workflow, dict) and is_sequence(workflow):
+        # Sequence items name workflow steps or entrypoints; labels come from top-level ``steps``.
+        labels = {**defs, **(manifest.get("steps") if isinstance(manifest.get("steps"), dict) else {})}
+        own = {resolve_alias(_step_id(s), aliases): s for s in workflow.get("steps") or [] if isinstance(s, dict)}
+        base: dict[str, dict[str, Any]] = {}
+        for item in dict.fromkeys(i for p in sequence_passes(workflow["repeat"]) for i in p):
+            base[item] = {**(labels.get(item) if isinstance(labels.get(item), dict) else {}),
+                          **{k: v for k, v in own.get(item, {}).items() if k not in {"id", "key", "name"}}}
+        merged["_base_steps"] = base
+        merged["steps"] = expand_steps(workflow, base)
+        merged["step_order"] = list(merged["steps"])
+    elif isinstance(workflow, dict) and (workflow.get("repeat") is not None or "roles" in workflow or any("role" in s for s in steps.values())):
+        merged["_base_steps"] = steps
         merged["steps"] = expand_steps(workflow, steps)
         merged["step_order"] = list(merged["steps"])
     return merged

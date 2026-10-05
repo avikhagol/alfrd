@@ -50,9 +50,12 @@ export function buildRunGrid(status, opts = {}) {
 
   const unitIter = new Map();
   units.forEach((u) => (u.steps || []).forEach((st) => { if (u.iteration) unitIter.set(st, Number(u.iteration)); }));
+  // Sequence loops (t001-claude, …): every turn is its own column on one row.
+  const turnsOnly = loop && steps.length > 0 && steps.every((id) => /^t\d{3}-/.test(id));
   const split = (id) => {
     const m = /^i(\d+)[-_](.+)$/.exec(id);
     if (!loop) return { iteration: 0, base: id };
+    if (turnsOnly) return { iteration: 1, base: id };
     return { iteration: unitIter.get(id) ?? (m ? Number(m[1]) : 0), base: m ? m[2] : id };
   };
   const columns = [];
@@ -111,7 +114,7 @@ export function buildRunGrid(status, opts = {}) {
       });
       [...byIter.entries()].sort((a, b) => a[0] - b[0]).forEach(([it, cells]) => rows.push({
         key: `${r.key}:${it}`, row: r.key, target: name, iteration: it || null,
-        label: `${it ? `Iteration ${it}` : "Iteration —"}${multi ? ` · ${name}` : ""}`, cells,
+        label: `${turnsOnly ? "Turns" : it ? `Iteration ${it}` : "Iteration —"}${multi ? ` · ${name}` : ""}`, cells,
       }));
     } else {
       const cells = {};
@@ -241,7 +244,7 @@ export function filterHistory(runs, filters = FILTERS_DEFAULT, runLabel = (s) =>
   const f = { ...FILTERS_DEFAULT, ...filters };
   const q = f.search.trim().toLowerCase();
   return runs.filter((r) => (f.run === "all" || r.id === f.run) && (f.status === "all" || PLAN_GRID[r.status] === f.status)
-    && (!q || `run ${r.id} ${runLabel(r.status)} ${r.status}`.toLowerCase().includes(q)));
+    && (!q || `run ${r.id} ${runLabel(r.status)} ${r.status} ${(r.targets || [r.target]).filter(Boolean).join(" ")}`.toLowerCase().includes(q)));
 }
 
 const dur = (s) => (s == null ? "—" : s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
@@ -322,4 +325,20 @@ export function cellDetail(projectName, found, logHtml = "", now = Date.now()) {
     ${dd("Attempts", esc(cell.attempts || 0))}
     ${cell.error ? dd("Error", `<pre class="code small">${esc(cell.error)}</pre>`) : ""}
   </dl>${logHtml ? `<div class="row gap">${logHtml}</div>` : cell.status === "na" ? "" : '<p class="muted small">No log recorded for this step yet.</p>'}`;
+}
+
+/** Tasks of an agent-loop project (own turn count and worktree) above its run history. */
+export function renderTaskStrip(project, name, got, active, runLabel = (s) => s) {
+  const tasks = got?.tasks || [];
+  if (!got?.max_iterations || !tasks.length) return "";
+  const unit = got.iteration_unit === "turns" ? "turns" : "iterations";
+  return `<div class="task-strip" role="group" aria-label="Tasks of ${esc(name)}">${tasks.map((t) => {
+    const ws = t.workspace;
+    const tip = [`${t.iterations ?? "?"} of at most ${got.max_iterations} ${unit}`, ws ? `worktree ${ws.branch}${ws.changed ? `, ${ws.changed} uncommitted changes` : ""}` : null,
+      `${t.runs || 0} run${t.runs === 1 ? "" : "s"}`, t.error].filter(Boolean).join(" · ");
+    return `<button class="task-chip${active === t.name ? " on" : ""}" data-rg-task="${esc(project)}" data-task="${esc(t.name)}" aria-pressed="${active === t.name}" title="${esc(tip)}">
+      <b>${esc(t.name)}</b><span class="muted small">${t.iterations ?? "?"}/${got.max_iterations}</span>${t.over_limit ? `<span class="badge tone-warn">over max</span>` : ""}
+      ${ws ? `<span class="mono small">${icon("split")}${esc(ws.branch || "")}${ws.changed ? ` · ${ws.changed}` : ""}</span>` : ""}
+      ${t.latest ? `<span class="small">${esc(runLabel(t.latest.status))}</span>` : `<span class="muted small">no runs</span>`}</button>`;
+  }).join("")}</div>`;
 }

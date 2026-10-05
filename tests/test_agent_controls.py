@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from test_agent_loop import RESPONSE, project, service, wait
-from alfrd.agent_io import agent_command, ClaudeStream
+from alfrd.agent_io import agent_command, ClaudeStream, codex_usage, agent_totals
 from alfrd.agent_loop import approve_response, sha256
 from alfrd.execution import load_execution
 from alfrd.runtime import scheduler
@@ -18,13 +18,14 @@ from alfrd.api import status as api
 def configure(project, *, review=False):
     path = project / "alfrd.yaml"
     data = yaml.safe_load(path.read_text())
-    data["workflows"][0]["repeat"]["iterations"] = 1
+    data["workflows"][0]["repeat"]["iterations"] = 2
     data["project_settings"] = {"human_review": review}
-    data["workflows"][0]["steps"][1]["human_review"] = False
+    data["workflows"][0]["turns"] = {2: {"human_review": False}}
     path.write_text(yaml.safe_dump(data))
     cfg = load_execution(project)
     from alfrd.runtime import plan_csv
 
+    (project / "alfrd.plan.csv").unlink(missing_ok=True)
     plan_csv.create(project / "alfrd.plan.csv", [{"target": "task"}], cfg.step_ids, cfg.step_ids,
                     key_column=cfg.key_column, files_column=cfg.files_column,
                     code_column=cfg.code_column, workdir_column=cfg.workdir_column)
@@ -38,7 +39,7 @@ def test_handoff_results_expose_turn_timestamps(project, service, tmp_path):
 
     folder = scheduler.create_plan(project)
     step = load_execution(project).steps[0]
-    handoff = prepare(project, folder.path / "handoffs" / "result-turn", step, folder.id, "result-turn")
+    handoff = prepare(project, folder.path / "handoffs" / "result-turn", step, folder.id, "result-turn", target="task")
     folder.save_unit({"id": "result-turn", "handoff": handoff, "status": "done",
                       "iteration": 1, "agent": "claude", "started": "2026-10-03T10:00:00Z",
                       "finished": "2026-10-03T10:00:30Z", "row": "task", "steps": ["i001-claude-turn"]})
@@ -67,6 +68,65 @@ def test_model_arguments_and_stream_preserve_other_flags():
     assert "-m" not in argv
 
 
+def test_claude_result_records_tokens_and_cost(tmp_path):
+    stream = ClaudeStream(tmp_path / "response.md", tmp_path / "unit.exit")
+    usage = {"input_tokens": 120, "output_tokens": 35, "cache_read_input_tokens": 700, "cache_creation_input_tokens": 90}
+    stream.feed(json.dumps({"type": "result", "subtype": "success", "result": RESPONSE,
+                            "usage": usage, "total_cost_usd": 0.0123}) + "\n")
+    assert stream.close() is None
+    metadata = json.loads((tmp_path / "unit.agent.json").read_text())
+    assert metadata["usage"] == {**usage, "total_tokens": 945, "input_uncached_tokens": 120}
+    assert metadata["usage_source"] == "claude_result"
+    assert metadata["total_cost_usd"] == 0.0123
+
+
+def test_codex_reported_usage_and_unavailable_counts():
+    assert codex_usage("model: codex\nresponse\ntokens used\n12,345\n")["total_tokens"] == 12345
+    usage = codex_usage(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 15}}))
+    assert usage["input_tokens"] == 100 and usage["total_tokens"] == 115
+    assert codex_usage("plain response without a usage report") is None
+
+
+def test_agent_totals_leave_unknown_metrics_null():
+    totals = agent_totals([{"agent_usage": {"total_tokens": 5}, "total_cost_usd": 0.01},
+                           {"agent_usage": None, "total_cost_usd": None},
+                           {"agent_usage": {"total_tokens": 7}, "total_cost_usd": 0.02}])
+    assert totals["total_tokens"] == 12
+    assert totals["input_tokens"] is None
+    assert totals["total_cost_usd"] == 0.03
+
+
+def test_plan_token_total_includes_units_outside_page(project):
+    folder = scheduler.create_plan(project)
+    for index in range(3):
+        folder.save_unit({"id": f"turn-{index}", "status": "done", "agent_usage": {"total_tokens": 10},
+                          "total_cost_usd": 0.01, "steps": [], "handoff": {}})
+    status = scheduler.plan_status(project, folder.id, units=1)
+    assert len(status["units"]) == 1
+    assert status["agent_totals"]["total_tokens"] == 30
+    assert status["agent_totals"]["total_cost_usd"] == 0.03
+
+
+@pytest.mark.parametrize("reported", [False, True])
+def test_codex_completed_unit_persists_reported_or_unknown_usage(tmp_path, reported):
+    from types import SimpleNamespace
+
+    (tmp_path / "unit.exit").write_text('{"exit_code": 0}')
+    (tmp_path / "unit.log").write_text("model: example-model\n" + ("tokens used\n1,234\n" if reported else "no usage report\n"))
+    unit = {"id": "unit", "handoff": {}, "argv": ["codex", "exec"], "exit_file": "unit.exit", "log": "unit.log"}
+    unit["handoff"] = {"roles": []}
+    runner = scheduler.Runner.__new__(scheduler.Runner)
+    runner.folder = SimpleNamespace(root=tmp_path, save_unit=lambda value: None)
+    runner.agent_metadata(unit)
+    metadata = json.loads((tmp_path / "unit.agent.json").read_text())
+    assert metadata["usage"] == unit["agent_usage"]
+    assert metadata["total_cost_usd"] is None
+    if reported:
+        assert unit["agent_usage"]["total_tokens"] == 1234
+    else:
+        assert unit["agent_usage"] is None
+
+
 @pytest.mark.parametrize("failure", [True, False])
 def test_claude_stream_keeps_activity_out_of_handoff(tmp_path, capsys, failure):
     response = tmp_path / "response.md"
@@ -76,7 +136,8 @@ def test_claude_stream_keeps_activity_out_of_handoff(tmp_path, capsys, failure):
         {"type": "assistant", "message": {"model": "claude-reported", "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "app.py"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "content": "file contents"}]}},
         {"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "Working..."}}},
-        {"type": "result", "subtype": "error_during_execution" if failure else "success", "is_error": failure, "result": RESPONSE},
+        {"type": "result", "subtype": "error_during_execution" if failure else "success", "is_error": failure, "result": RESPONSE,
+         "usage": {"input_tokens": 123, "output_tokens": 45}, "total_cost_usd": 0.02},
     ]
     for event in events:
         stream.feed(json.dumps(event) + "\n")
@@ -91,7 +152,7 @@ def test_claude_stream_keeps_activity_out_of_handoff(tmp_path, capsys, failure):
 
 def test_human_adjustment_blocks_next_agent_and_survives_runner_death(project):
     configure(project, review=True)
-    original = (project / "next-step-codex.md").read_text()
+    original = (project / "task/next-step-codex.md").read_text()
     folder = scheduler.create_plan(project)
     scheduler.spawn_runner(folder)
     try:
@@ -99,7 +160,7 @@ def test_human_adjustment_blocks_next_agent_and_survives_runner_death(project):
         unit = folder.units()[0]
         assert api.plan_status(project, folder.id)["loop"]["phase"] == "awaiting_review"
         assert len((project / "calls.jsonl").read_text().splitlines()) == 1
-        assert (project / "next-step-codex.md").read_text() == original
+        assert (project / "task/next-step-codex.md").read_text() == original
         response = Path(unit["handoff"]["response_file"])
         before = response.read_text()
         with pytest.raises(Exception, match="changed on disk"):
@@ -120,13 +181,13 @@ def test_human_adjustment_blocks_next_agent_and_survives_runner_death(project):
 
 def test_cancel_pending_human_review_preserves_handoff(project):
     configure(project, review=True)
-    original = (project / "next-step-codex.md").read_bytes()
+    original = (project / "task/next-step-codex.md").read_bytes()
     folder = scheduler.create_plan(project)
     scheduler.spawn_runner(folder)
     assert wait(lambda: folder.units() and folder.units()[0].get("review_status") == "pending")
     scheduler.control(project, folder.id, "cancel")
     assert wait(lambda: folder.load()["status"] == "cancelled")
-    assert (project / "next-step-codex.md").read_bytes() == original
+    assert (project / "task/next-step-codex.md").read_bytes() == original
     assert len(folder.units()) == 1
 
 
@@ -136,13 +197,13 @@ def test_review_wait_respects_total_runtime_budget(project):
     data = yaml.safe_load(path.read_text())
     data["execution"].update(max_runtime=3, kill_grace=.2)
     path.write_text(yaml.safe_dump(data))
-    original = (project / "next-step-codex.md").read_bytes()
+    original = (project / "task/next-step-codex.md").read_bytes()
     folder = scheduler.create_plan(project)
     scheduler.spawn_runner(folder)
     assert wait(lambda: folder.units() and folder.units()[0].get("review_status") == "pending")
     assert wait(lambda: folder.load()["status"] == "failed")
     assert folder.load()["error"] == "total runtime limit reached"
-    assert (project / "next-step-codex.md").read_bytes() == original
+    assert (project / "task/next-step-codex.md").read_bytes() == original
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -152,7 +213,8 @@ def test_real_shim_stream_reports_model_and_publishes_only_result(project, tmp_p
     events = [
         {"type": "system", "subtype": "init", "model": "resolved-model"},
         {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "task.md"}}]}},
-        {"type": "result", "subtype": "error_during_execution" if failure else "success", "is_error": failure, "result": RESPONSE},
+        {"type": "result", "subtype": "error_during_execution" if failure else "success", "is_error": failure, "result": RESPONSE,
+         "usage": {"input_tokens": 123, "output_tokens": 45}, "total_cost_usd": 0.02},
     ]
     executable.write_text(f"#!{sys.executable}\nimport json,sys\nsys.stdin.read()\nfor event in {events!r}: print(json.dumps(event), flush=True)\n")
     executable.chmod(0o755)
@@ -164,6 +226,8 @@ def test_real_shim_stream_reports_model_and_publishes_only_result(project, tmp_p
     scheduler.Runner(project, folder.id).run()
     unit = folder.units()[0]
     assert unit["model"] == "resolved-model" and unit["requested_model"] == "requested-model"
+    assert unit["agent_usage"]["total_tokens"] == 168
+    assert unit["total_cost_usd"] == 0.02
     if failure:
         assert not Path(unit["handoff"]["response_file"]).exists()
         assert len(folder.units()) == 1
@@ -190,7 +254,7 @@ def test_task_editor_conflicts_sync_and_csrf(project, tmp_path, service):
     assert client.post(prefix + "/task", json=payload).status_code == 403
     response = client.post(prefix + "/task", json=payload, headers=headers)
     assert response.status_code == 200, response.get_json()
-    assert (project / "next-step-claude.md").read_text() == "Build the new feature\n"
+    assert (project / "task/next-step-claude.md").read_text() == "Build the new feature\n"
     assert client.post(prefix + "/task", json=payload, headers=headers).status_code == 409
     configure(project, review=True)
     folder = scheduler.create_plan(project)
@@ -199,7 +263,7 @@ def test_task_editor_conflicts_sync_and_csrf(project, tmp_path, service):
     latest = client.get(prefix + "/task").get_json()
     response = client.post(prefix + "/task", json={"text": "another task", "base_hash": latest["hash"], "use_for_next_run": True}, headers=headers)
     assert response.status_code == 409
-    assert (project / "task.md").read_text() == latest["text"]
+    assert (project / "task/task.md").read_text() == latest["text"]
     handoffs = client.get(prefix + f"/plans/{folder.id}/handoffs").get_json()["handoffs"]
     unit = handoffs[0]
     content = client.get(prefix + f"/plans/{folder.id}/handoffs/{unit['id']}/response").get_json()["content"]

@@ -166,6 +166,15 @@ class PlanDir:
             raise ExecutionError(f"unknown control action {action!r}")
         _write_json(self.control_file, {"action": action, "at": now_iso(), **extra})
 
+    @property
+    def overrides_file(self) -> Path:
+        return self.path / "overrides.json"
+
+    def overrides(self) -> dict[str, dict[str, Any]]:
+        """Per-step settings changed on this plan while it runs (``{step id: {setting: value}}``)."""
+        data = _read_json(self.overrides_file, {}) or {}
+        return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
     def units(self) -> list[dict[str, Any]]:
         if not self.units_dir.is_dir():
             return []
@@ -213,11 +222,12 @@ def list_plans(root: str | Path) -> list[dict[str, Any]]:
     return sorted(out, key=lambda p: str(p.get("created") or ""), reverse=True)
 
 
-def active_plan(root: str | Path, csv_file: str | Path | None = None) -> dict[str, Any] | None:
+def active_plan(root: str | Path, csv_file: str | Path | None = None, target: str | None = None) -> dict[str, Any] | None:
     for plan in list_plans(root):
         if plan.get("status") in ACTIVE + ("interrupted",):
             if csv_file is None or Path(plan["csv"]).name == Path(csv_file).name:
-                return plan
+                if target is None or not plan.get("targets") or target in plan["targets"]:
+                    return plan
     return None
 
 
@@ -651,13 +661,29 @@ def resolve_csv(cfg: ExecutionConfig, csv_file: str | Path | None = None) -> Pat
 
 def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: str | None = None,
                 concurrency: int | None = None, on_failure: str | None = None,
-                status_from: str | None = None, retry_failed: bool = False) -> PlanDir:
+                status_from: str | None = None, retry_failed: bool = False, target: str | None = None,
+                treatment: str = "baseline", run_kind: str = "production", retry_of: str | None = None) -> PlanDir:
+    """``retry_of`` names an earlier plan whose unaccepted turns this plan retries (lineage);
+    ``retry_failed`` without it retries the latest earlier plan on the same CSV and target."""
+    for label, value in (("treatment", treatment), ("run_kind", run_kind)):
+        if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,39}", value):
+            raise ExecutionError(f"{label} must be a short lowercase label")
     cfg = load_execution(root)
+    if target is None and any(step.iterations for step in cfg.steps):
+        selected = table_for(cfg, resolve_csv(cfg, csv_file)).rows
+        if len(selected) != 1:
+            raise ExecutionError("agent loops need exactly one task row selected; specify target")
+        target = selected[0].target
+    if target is not None and any("{target}" in v for step in cfg.steps for v in step.handoff.values()):
+        from alfrd.agent_loop import validate_target
+        target = validate_target(target)
+        from alfrd.execution import load_task_execution
+        cfg = load_task_execution(root, target, cap=True)
     path = resolve_csv(cfg, csv_file)
     if not path.exists():
         raise ExecutionError(f"plan CSV {path} does not exist (create one with `alfrd plan new`)")
-    busy = active_plan(cfg.root, path)
-    if busy and PlanDir(cfg.root, busy["id"]).runner_alive():
+    busy = active_plan(cfg.root, path, target)
+    if busy and (target is not None or PlanDir(cfg.root, busy["id"]).runner_alive()):
         raise ExecutionError(f"plan {busy['id']} is already running on {path.name}; pause or cancel it first")
     settings = dict(cfg.settings)
     if mode:
@@ -669,16 +695,36 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
     if status_from:
         settings["status_from"] = status_from
     table = table_for(cfg, path)
+    if target is not None:
+        table.rows = [r for r in table.rows if r.target == target]
+        if not table.rows:
+            raise ExecutionError(f"unknown task target: {target}")
     loop = next((s for s in cfg.steps if s.iterations), None)
     if loop:
         if settings["mode"] != "step" or settings["concurrency"] != 1 or settings["on_failure"] != "stop_plan" or settings["status_from"] != "exit_code":
             raise ExecutionError("agent loops require step mode, concurrency 1, stop_plan and exit_code status")
         if len(table.rows) != 1 or table.steps != cfg.step_ids or any(table.rows[0].cell(s) == "skip" for s in table.steps):
-            raise ExecutionError("agent loops need one task row and every repeated step selected")
+            raise ExecutionError("agent loops need exactly one task row selected and every repeated step selected")
     if not table.steps:
         raise ExecutionError(f"{path.name} has no step columns ({', '.join(cfg.step_ids)})")
+    if retry_of is not None and not PlanDir(cfg.root, retry_of).plan_file.is_file():
+        raise ExecutionError(f"unknown plan to retry: {retry_of}")
     if retry_failed:
-        reset_failed(cfg, path)
+        if retry_of is None:
+            earlier = next((p for p in list_plans(cfg.root) if Path(str(p.get("csv") or "")).name == path.name
+                            and (target is None or not p.get("targets") or target in p["targets"])), None)
+            retry_of = earlier["id"] if earlier else None
+        reset_failed(cfg, path, target)
+    workspace: dict[str, Any] = {}
+    if loop and cfg.loop_workspace == "worktree" and any("{target}" in v for step in cfg.steps for v in step.handoff.values()):
+        from alfrd import workspaces
+
+        try:
+            made = workspaces.ensure(cfg.root, table.rows[0].target)
+        except ValueError as exc:
+            raise ExecutionError(str(exc)) from exc
+        cwd = workspaces.agent_cwd(cfg.root, table.rows[0].target) if made.get("workspace") else None
+        workspace = {"workspace": str(cwd)} if cwd else {"workspace_warning": made.get("warning")}
     plan_id = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid() % 10000:04d}"
     if loop:
         plan_id += "-" + uuid.uuid4().hex[:8]
@@ -693,6 +739,7 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
         "root": str(cfg.root),
         "csv": rel,
         "workflow": cfg.workflow,
+        **({"targets": [r.target for r in table.rows], "target": table.rows[0].target} if loop else {}),
         "steps": table.steps,
         "mode": settings["mode"],
         "concurrency": settings["concurrency"],
@@ -707,9 +754,13 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
         "usage_interval": settings.get("usage_interval", 5),
         "max_runtime": settings.get("max_runtime"),
         "status": "running",
+        "treatment": treatment,
+        "run_kind": run_kind,
+        **workspace,
+        **({"retry_of": retry_of} if retry_of else {}),
         "runner": {},
         "history": [{"at": now_iso(), "event": "created"}],
-        **({"loop": {"iterations": loop.iterations, "definition": cfg.to_dict(), "manifest_sha256": manifest_hash(cfg.root)}} if loop else {}),
+        **({"loop": {"iterations": loop.iterations, "unit": cfg.loop_unit, "definition": cfg.to_dict(), "manifest_sha256": manifest_hash(cfg.root)}} if loop else {}),
     })
     folder.set_control("run")
     return folder
@@ -727,17 +778,15 @@ def add_row(cfg: ExecutionConfig, path: Path, *, target: str, files: str = "", c
     Raises ``pc.DuplicateRowError`` for a duplicate (target, code) and
     ``FileNotFoundError`` for a missing CSV unless ``create``.
     """
-    if any(s.iterations for s in cfg.steps):
-        raise ExecutionError("an agent loop has one task row; create another project for another task")
     lock = cfg.root / ".alfrd" / "locks" / f"{Path(path).name}.lock"
     return pc.add_row(path, lock, list(steps or cfg.step_ids), target=target, files=files, code=code,
                       workdir=workdir, selected=selected, create=create, **_columns(cfg))
 
 
-def reset_failed(cfg: ExecutionConfig, path: Path) -> int:
+def reset_failed(cfg: ExecutionConfig, path: Path, target: str | None = None) -> int:
     """failed / blocked / interrupted / cancelled cells → todo."""
     table = table_for(cfg, path)
-    cells = {(r.key, s): pc.TODO for r in table.rows for s in table.steps if r.cell(s) in pc.STOP_VALUES}
+    cells = {(r.key, s): pc.TODO for r in table.rows for s in table.steps if (target is None or r.target == target) and r.cell(s) in pc.STOP_VALUES}
     if cells:
         lock = cfg.root / ".alfrd" / "locks" / f"{path.name}.lock"
         pc.update(path, lock, cfg.step_ids, cells, **_columns(cfg))
@@ -844,6 +893,79 @@ def control(root: str | Path, plan_id: str, action: str, *, retry_failed: bool =
 # The runner
 
 
+OVERRIDE_KEYS = {"human_review", "manual", "after", "model"}
+
+
+def apply_overrides(cfg: ExecutionConfig, overrides: Mapping[str, Mapping[str, Any]]) -> ExecutionConfig:
+    """The configuration with a plan's per-step overrides (unknown steps are ignored)."""
+    if not overrides:
+        return cfg
+    from dataclasses import replace
+
+    from alfrd.agent_io import adapter_for, agent_command
+    from alfrd.execution import parse_delay
+
+    steps = []
+    for step in cfg.steps:
+        change = overrides.get(step.id) or {}
+        updates: dict[str, Any] = {}
+        if isinstance(change.get("human_review"), bool):
+            updates["human_review"] = change["human_review"]
+        if isinstance(change.get("manual"), bool):
+            updates["manual"] = change["manual"]
+        if "after" in change:
+            with contextlib.suppress(ValueError):
+                updates["after"] = parse_delay(change["after"])
+        if isinstance(change.get("model"), str) and change["model"].strip() and step.argv:
+            argv, model, _ = agent_command(step.argv, change["model"].strip(), adapter=adapter_for(name=step.adapter, model_option=step.model_option))
+            updates.update(argv=argv, model=model or change["model"].strip())
+        steps.append(replace(step, **updates) if updates else step)
+    return replace(cfg, steps=steps)
+
+
+def set_override(root: str | Path, plan_id: str, step: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+    """Change a step of a running plan: review, human-written turn, delay or model.
+
+    Review may be switched while the turn runs (until its handoff is published);
+    the other settings only for turns that have not started. ``None`` clears a setting.
+    """
+    from alfrd.execution import parse_delay
+
+    folder = PlanDir(Path(root).resolve(), plan_id)
+    plan = folder.load()
+    if step not in (plan.get("steps") or []):
+        raise ExecutionError(f"step {step!r} is not part of plan {plan_id}")
+    unknown = set(changes) - OVERRIDE_KEYS
+    if unknown or not changes:
+        raise ExecutionError(f"overrides accept {', '.join(sorted(OVERRIDE_KEYS))}")
+    for key in ("human_review", "manual"):
+        if changes.get(key) is not None and not isinstance(changes[key], bool):
+            raise ExecutionError(f"{key} must be true or false")
+    if changes.get("after") is not None:
+        try:
+            parse_delay(changes["after"])
+        except ValueError as exc:
+            raise ExecutionError(str(exc)) from exc
+    if changes.get("model") is not None and (not isinstance(changes["model"], str) or not changes["model"].strip()):
+        raise ExecutionError("model must be a nonempty string")
+    attempts = [u for u in folder.units() if step in (u.get("steps") or [])]
+    latest = attempts[-1] if attempts else None
+    if latest and (latest.get("artifact") or latest.get("status") == "done"):
+        raise ExecutionError(f"{step} already finished; its settings can no longer change")
+    if latest and latest.get("status") == "running" and set(changes) - {"human_review"}:
+        raise ExecutionError(f"{step} is running; only its review can still change")
+    with pc.locked(folder.path / "overrides.lock"):
+        current = folder.overrides()
+        merged = {**current.get(step, {}), **changes}
+        merged = {k: v for k, v in merged.items() if v is not None}
+        if merged:
+            current[step] = merged
+        else:
+            current.pop(step, None)
+        _write_json(folder.overrides_file, current)
+    return current
+
+
 @dataclass
 class Live:
     unit: dict[str, Any]
@@ -864,6 +986,7 @@ class Runner:
         self.host = socket.gethostname()
         self._cfg: ExecutionConfig | None = None
         self._cfg_key: tuple | None = None
+        self.delayed: list[dict[str, Any]] = []  # rows whose next step waits for its ``after`` delay
 
     # -- helpers ---------------------------------------------------------
     def log(self, text: str) -> None:
@@ -874,9 +997,12 @@ class Runner:
         from alfrd.manifest_default import local_manifest
 
         path = local_manifest(self.folder.root)
-        key = (str(path), path.stat().st_mtime_ns if path and path.exists() else None)
+        overrides = self.folder.overrides_file
+        key = (str(path), path.stat().st_mtime_ns if path and path.exists() else None,
+               overrides.stat().st_mtime_ns if overrides.exists() else None)
         if self._cfg is None or key != self._cfg_key:
-            self._cfg, self._cfg_key = load_execution(self.folder.root), key
+            cfg = load_execution(self.folder.root, iterations=self.plan.get("loop", {}).get("iterations"))
+            self._cfg, self._cfg_key = apply_overrides(cfg, self.folder.overrides()), key
         return self._cfg
 
     @property
@@ -884,7 +1010,10 @@ class Runner:
         return self.folder.csv_path(self.plan)
 
     def table(self) -> pc.PlanTable:
-        return table_for(self.cfg, self.csv_file, self.plan.get("steps"))
+        table = table_for(self.cfg, self.csv_file, self.plan.get("steps"))
+        if self.plan.get("targets"):
+            table.rows = [r for r in table.rows if r.target in self.plan["targets"]]
+        return table
 
     def set_cells(self, cells: Mapping[tuple[str, str], str], *, only_if: Mapping[tuple[str, str], set[str]] | None = None,
                   fills: Mapping[tuple[str, str], str] | None = None) -> None:
@@ -919,7 +1048,14 @@ class Runner:
                     return 3
             if self.plan.get("loop"):
                 workspace = self.cfg.cwd
-                guard = workspace / ".alfrd-agent-loop.lock"
+                scoped = any("{target}" in v for step in self.cfg.steps for v in step.handoff.values())
+                guard_name = f".alfrd-agent-loop-{_slug(self.plan.get('target', 'task'))}.lock" if scoped else ".alfrd-agent-loop.lock"
+                guard = workspace / guard_name
+                if self.plan.get("workspace"):
+                    # A task worktree: one loop per worktree; the lock stays out of the checkout.
+                    from alfrd.agent_loop import validate_target
+
+                    guard = self.folder.root / validate_target(self.plan.get("target", "task")) / ".alfrd-agent-loop.lock"
                 with open(guard, "a+") as workspace_lock:
                     if fcntl is not None:
                         cancel_started = None
@@ -995,7 +1131,7 @@ class Runner:
                     break
             else:
                 started = self.schedule()
-                if not self.live and not started:
+                if not self.live and not started and not self.delayed:
                     final = "failed" if self.stop_new else "finished"
                     break
             time.sleep(POLL)
@@ -1026,8 +1162,9 @@ class Runner:
         return keys
 
     def schedule(self) -> int:
+        self.delayed = []
         if self.plan.get("loop"):
-            if manifest_hash(self.folder.root) != self.plan["loop"]["manifest_sha256"]:
+            if self.plan["loop"]["manifest_sha256"] not in (manifest_hash(self.folder.root), manifest_hash(self.folder.root, legacy=True)):
                 self.stop_new = True
                 self.save_plan(error="agent workflow changed; restore its manifest before resuming")
                 return 0
@@ -1063,18 +1200,46 @@ class Runner:
             picked = pick_rows(table, mode=mode, on_failure=self.plan["on_failure"], limit=limit, free=limit,
                                names=names, match=match, base=self.cfg.cwd)
         started = 0
+        delayed = []
+        units = self.folder.units() if any(self.cfg.step(spec.steps[0]).after for _row, spec in picked.start if spec.mode == "step") else []
         for row, spec in picked.start:
+            until = self._not_before(row, spec, table, units)
+            if until is not None:
+                delayed.append({"row": row.key, "target": row.target, "code": row.code, "kind": "delay",
+                                "step": spec.steps[0], "until": until.isoformat(timespec="seconds"),
+                                "reason": f"waiting: {spec.steps[0]} starts after {until:%Y-%m-%d %H:%M:%S}"})
+                continue
             self.started_rows.add(row.key)
             started += self.launch(spec, table)
+        self.delayed = delayed
         # A row with nothing left to run holds nothing (and holds again only once it starts anew).
         busy = self._busy_rows()
         self.started_rows = {k for k in self.started_rows if k in busy or (
             (r := table.row(k)) is not None and unit_for_row(r, table.steps, mode, self.plan["on_failure"]))}
         # Rows waiting on a conflict are only "waiting" while something they wait for still runs.
-        waiting = picked.waiting
+        waiting = picked.waiting + delayed
         if waiting != (self.plan.get("waiting") or []):
             self.save_plan(waiting=waiting)
         return started
+
+    def _not_before(self, row: pc.PlanRow, spec: UnitSpec, table: pc.PlanTable,
+                    units: Sequence[Mapping[str, Any]]) -> datetime | None:
+        """When a step with ``after`` may start: its previous step's finish + the delay; None if now."""
+        if spec.mode != "step":
+            return None
+        step = spec.steps[0]
+        delay = self.cfg.step(step).after
+        steps = list(table.steps)
+        if not delay or step not in steps or steps.index(step) == 0:
+            return None
+        previous = steps[steps.index(step) - 1]
+        finished = [_parse_stamp(u.get("finished")) for u in units
+                    if previous in (u.get("steps") or []) and row.key in (u.get("rows") or [u.get("row")]) and u.get("status") == "done"]
+        finished = [f for f in finished if f]
+        if not finished:
+            return None
+        until = max(finished) + timedelta(seconds=delay)
+        return until if datetime.now() < until else None
 
     @staticmethod
     def _lock_key(unit: Mapping[str, Any]) -> str | None:
@@ -1084,6 +1249,38 @@ class Runner:
         n = len(list(self.folder.units_dir.glob("*.json"))) + 1 if self.folder.units_dir.is_dir() else 1
         label = spec.steps[0] if spec.mode == "step" else spec.mode
         return f"{n:04d}-{_slug(spec.row_key)}-{_slug(label)}"
+
+    def _fallback_model(self, step: Any, unit: dict[str, Any]) -> str | None:
+        """The next ``fallback_models`` entry when the attempt this unit retries asked for one."""
+        if not unit.get("retry_of") or not step.fallback_models:
+            return None
+        plan_id, _, unit_id = str(unit["retry_of"]).partition("/")
+        previous = next((u for u in PlanDir(self.folder.root, plan_id).units() if u.get("id") == unit_id), None)
+        index = previous.get("fallback_next") if previous else None
+        if not isinstance(index, int) or not 0 <= index < len(step.fallback_models):
+            return None
+        unit["fallback_index"] = index
+        return step.fallback_models[index]
+
+    def _lineage(self, spec: UnitSpec) -> dict[str, Any]:
+        """Logical turn identity: retries inherit it, fresh work gets a new one.
+
+        A retry is an earlier unaccepted attempt at the same (row, step) in this
+        plan, or, in a plan created with ``retry_of``, in that earlier plan.
+        """
+        def latest(units: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+            same = [u for u in units if u.get("row") == spec.row_key and list(u.get("steps") or []) == list(spec.steps)
+                    and u.get("logical_turn_id")]
+            return same[-1] if same else None
+
+        previous = latest(self.folder.units())
+        if previous is None and self.plan.get("retry_of"):
+            previous = latest(PlanDir(self.folder.root, self.plan["retry_of"]).units())
+        if previous and previous.get("outcome") != "accepted" and previous.get("status") in ("failed", "cancelled", "interrupted"):
+            return {"logical_turn_id": previous["logical_turn_id"],
+                    "attempt_number": int(previous.get("attempt_number") or 1) + 1,
+                    "retry_of": f"{previous.get('plan')}/{previous.get('id')}"}
+        return {"logical_turn_id": uuid.uuid4().hex, "attempt_number": 1, "retry_of": None}
 
     def launch(self, spec: UnitSpec, table: pc.PlanTable) -> int:
         row = spec.rows[0]
@@ -1101,7 +1298,10 @@ class Runner:
             "started": now_iso(),
             "host": self.host,
             "results": {},
-            "schema": 2,  # 2: usage / usage_file after the command ends
+            "schema": 3,  # 2: usage / usage_file after the command ends; 3: lineage, labels, outcome
+            "treatment": self.plan.get("treatment"),
+            "run_kind": self.plan.get("run_kind"),
+            **self._lineage(spec),
         }
         cells_rows = spec.rows
         try:
@@ -1111,15 +1311,23 @@ class Runner:
                 from alfrd.agent_loop import prepare
 
                 archive = self.folder.path / "handoffs" / unit["id"]
-                unit["handoff"] = prepare(self.folder.root, archive, step, self.folder.id, unit["id"])
+                unit["handoff"] = prepare(self.folder.root, archive, step, self.folder.id, unit["id"], target=values["target"])
                 unit.update(iteration=step.iteration, agent=step.entrypoint or step.base_step, manual=step.manual,
-                            human_review=step.human_review, requested_model=step.model,
-                            roles=unit["handoff"].get("roles", []))
+                            human_review=step.human_review, requested_model=step.model, adapter=step.adapter,
+                            review_gate="runner", turn=step.turn, roles=unit["handoff"].get("roles", []))
             argv, env, timeout = command_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
+            fallback = self._fallback_model(step, unit) if step else None
+            if fallback:
+                from alfrd.agent_io import adapter_for, agent_command
+
+                argv = list(agent_command(argv, fallback, adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
+                unit.update(requested_model=fallback)
+                self.event(f"{unit['id']}: retrying with fallback model {fallback}")
             if step and step.manual:
                 argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
         except (ExecutionError, OSError, ValueError) as exc:
-            unit.update(status="failed", error=str(exc), finished=now_iso())
+            unit.update(status="failed", error=str(exc), finished=now_iso(),
+                        outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
             self.folder.save_unit(unit)
             self.log(f"{unit['id']}: cannot start: {exc}")
             first = spec.steps[0]
@@ -1129,7 +1337,7 @@ class Runner:
         log_path = self.folder.logs_dir / f"{unit['id']}.log"
         exit_path = self.folder.logs_dir / f"{unit['id']}.exit"
         self.folder.logs_dir.mkdir(parents=True, exist_ok=True)
-        cwd = self.cfg.cwd
+        cwd = Path(self.plan["workspace"]) if self.plan.get("workspace") else self.cfg.cwd
         if step and step.cwd:
             cwd = Path(render([step.cwd], values)[0]).expanduser()
             cwd = cwd if cwd.is_absolute() else self.folder.root / cwd
@@ -1173,8 +1381,6 @@ class Runner:
                         if step.output_capture != "stdout":
                             shim_args += ["--stdout-file", str(output_path)]
                         shim_args += ["--claude-stream"]
-                    if step.human_review and step.handoff:
-                        shim_args += ["--human-review", "--response-file", str(output_path), "--response-headings", json.dumps(unit["handoff"].get("headings"))]
                 workspace_fd = getattr(self, "workspace_fd", None)
                 process = subprocess.Popen(
                     [sys.executable, "-m", "alfrd.runtime.shim", "--exit-file", str(exit_path), *shim_args, "--", *argv],
@@ -1183,7 +1389,8 @@ class Runner:
                     pass_fds=(workspace_fd,) if workspace_fd is not None else (),
                 )
             except (OSError, ExecutionError) as exc:
-                unit.update(status="failed", error=str(exc), finished=now_iso())
+                unit.update(status="failed", error=str(exc), finished=now_iso(),
+                            outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
                 self.folder.save_unit(unit)
                 first = spec.steps[0]
                 self.set_cells({(r.key, first): pc.FAILED for r in cells_rows})
@@ -1221,10 +1428,61 @@ class Runner:
         child = _read_json(self.folder.root / (unit.get("exit_file", "") + "").replace(".exit", ".child"), {}) or {}
         return pid_alive(child.get("pid"), child.get("proc_start"), unit.get("host"))
 
+    def _review_hold(self, live: Live) -> bool:
+        """After a successful exit, hold the handoff until a person approves it.
+
+        Whether a turn needs review is read when its command ends (alfrd.yaml plus
+        this plan's overrides), so review can be switched on while it runs.
+        """
+        unit = live.unit
+        if live.killed_at or not unit.get("handoff") or unit.get("review_gate") != "runner":
+            return False
+        exit_path = self.folder.root / str(unit.get("exit_file") or "-")
+        exit_data = _read_json(exit_path, None)
+        if not isinstance(exit_data, dict) or exit_data.get("exit_code") != 0:
+            return False
+        review, approval = exit_path.with_suffix(".review.json"), exit_path.with_suffix(".approval.json")
+        rejection = exit_path.with_suffix(".rejection.json")
+        if approval.exists():
+            if unit.get("review_status") != "approved":
+                unit.update(review_status="approved")
+                self.folder.save_unit(unit)
+                self.event(f"review approved: {unit['id']}")
+            return False
+        if rejection.exists():
+            decision = _read_json(rejection, {}) or {}
+            live.reason = "rejected in review" + (f": {decision['reason']}" if decision.get("reason") else "")
+            unit.update(review_status="rejected", outcome="rejected", outcome_reason=decision.get("reason") or "rejected in review")
+            self.folder.save_unit(unit)
+            return False
+        try:
+            step = self.cfg.step(unit["steps"][0])
+        except Exception:  # noqa: BLE001 - the step left the manifest
+            return review.exists()
+        if not step.human_review and not review.exists():
+            return False
+        if not review.exists():
+            from alfrd.agent_loop import REQUIRED_HEADINGS, sha256, validate_response
+
+            response = Path(unit["handoff"]["response_file"])
+            try:
+                text = response.read_text(encoding="utf-8")
+            except OSError:
+                return False
+            if validate_response(text, unit["handoff"].get("headings", REQUIRED_HEADINGS)):
+                return False  # finalize reports the invalid response
+            _write_json(review, {"status": "pending", "hash": sha256(text)})
+            unit.update(review_status="pending", human_review=True)
+            self.folder.save_unit(unit)
+            self.event(f"awaiting human review: {unit['id']}")
+        return True
+
     def poll(self) -> None:
         for unit_id, live in list(self.live.items()):
             self.agent_metadata(live.unit)
             alive = self._alive(live)
+            if not alive and self._review_hold(live):
+                continue
             timeout = live.unit.get("timeout")
             if alive and timeout and not live.killed_at:
                 started = _parse_stamp(live.unit.get("started"))
@@ -1243,12 +1501,33 @@ class Runner:
     def agent_metadata(self, unit: dict[str, Any]) -> None:
         if not unit.get("handoff"):
             return
+        from alfrd.agent_io import codex_report, unit_adapter
+
+        adapter = unit_adapter(unit)
         exit_path = self.folder.root / unit.get("exit_file", "-")
-        metadata = _read_json(exit_path.with_suffix(".agent.json"), {}) or {}
+        metadata_path = exit_path.with_suffix(".agent.json")
+        metadata = _read_json(metadata_path, {}) or {}
+        if adapter.log_usage and exit_path.is_file() and not metadata_path.exists():
+            text = ""
+            try:
+                with open(self.folder.root / unit["log"], "rb") as log:
+                    log.seek(max(0, log.seek(0, 2) - 65536))
+                    text = log.read().decode("utf-8", errors="replace")
+            except OSError:
+                pass
+            usage, source = codex_report(text)
+            metadata = {"models": [unit["model"]] if unit.get("model") else [], "usage": usage,
+                        "usage_source": source, "total_cost_usd": None}
+            _write_json(metadata_path, metadata)
+        elif not metadata and exit_path.is_file() and not metadata_path.exists():
+            metadata = {"usage": None, "usage_source": "unavailable", "total_cost_usd": None}
         changes = {"roles": unit["handoff"].get("roles", [])}
+        if "usage" in metadata:
+            changes.update(agent_usage=metadata["usage"], total_cost_usd=metadata.get("total_cost_usd"),
+                           usage_source=metadata.get("usage_source") or ("unavailable" if not metadata["usage"] else None))
         if metadata.get("model"):
             changes.update(model=metadata["model"], models=metadata.get("models", []))
-        elif unit.get("argv") and Path(unit["argv"][0]).name == "codex" and not unit.get("model"):
+        elif adapter.name == "codex" and not unit.get("model"):
             try:
                 with open(self.folder.root / unit["log"], encoding="utf-8") as log:
                     header = log.read(16384)
@@ -1259,7 +1538,8 @@ class Runner:
                 pass
         review = _read_json(exit_path.with_suffix(".review.json"), {}) or {}
         if review.get("status") == "pending":
-            changes["review_status"] = "approved" if exit_path.with_suffix(".approval.json").exists() else "pending"
+            changes["review_status"] = ("approved" if exit_path.with_suffix(".approval.json").exists() else
+                                        "rejected" if exit_path.with_suffix(".rejection.json").exists() else "pending")
         if any(unit.get(k) != v for k, v in changes.items()):
             unit.update(changes)
             self.folder.save_unit(unit)
@@ -1312,7 +1592,7 @@ class Runner:
                 running_rows.update(unit.get("rows") or [])
                 continue
             live = Live(unit=unit)
-            if self._alive(live):
+            if self._alive(live) or (self.folder.control() != "cancel" and self._review_hold(live)):
                 self.live[unit["id"]] = live
                 running_rows.update(unit.get("rows") or [unit.get("row")])
                 self.log(f"{unit['id']}: re-adopted pid {unit.get('pid')}")
@@ -1362,15 +1642,24 @@ class Runner:
         fills: dict[tuple[str, str], str] = {}
         failed_step = None
         interrupted = exit_code is None and reason is None
+        outcome: tuple[str | None, str | None] | None = None
         if unit.get("handoff") and exit_code == 0 and reason is None:
-            try:
-                from alfrd.agent_loop import publish
+            from alfrd.agent_loop import HandoffConflictError, ResponseValidationError, publish
 
+            try:
                 unit["artifact"] = publish(self.folder.root, unit["handoff"], plan_id=self.folder.id,
                                            unit_id=unit["id"], iteration=unit["iteration"], agent=unit["agent"])
                 self.event(f"handoff published: {unit['id']} → {unit['artifact']['path']}")
+                outcome = ("accepted", None)
+            except ResponseValidationError as exc:
+                reason = f"invalid handoff: {exc}"
+                outcome = ("failed_validation", str(exc))
+            except HandoffConflictError as exc:
+                reason = f"invalid handoff: {exc}"
+                outcome = ("rejected", str(exc))
             except (OSError, ValueError) as exc:
                 reason = f"invalid handoff: {exc}"
+                outcome = ("failed_runtime", str(exc))
         results_all: dict[str, Any] = {}
         for key in unit.get("rows") or [unit["row"]]:
             row = self.table().row(key)
@@ -1435,6 +1724,23 @@ class Runner:
                 error = first[failed_step].get("desc") or f"{failed_step} failed (result CSV)"
         unit.update(status=status, finished=now_iso(), exit_code=exit_code,
                     results={k: v for k, v in results_all.items() if v}, error=error)
+        if unit.get("handoff"):
+            if outcome is None:
+                outcome = (("abandoned", "cancelled") if status == "cancelled" else
+                           ("rejected", unit.get("outcome_reason")) if unit.get("outcome") == "rejected" else
+                           ("failed_runtime", error) if status == "failed" else
+                           (unit.get("outcome"), unit.get("outcome_reason")))
+            unit["outcome"], unit["outcome_reason"] = outcome
+            if self._fallback_eligible(unit, exit_code, reason, outcome):
+                # Run the same turn again on the next fallback model instead of stopping.
+                unit["fallback_next"] = int(unit.get("fallback_index", -1)) + 1
+                retry = {(key, unit["steps"][0]): pc.TODO for key in unit.get("rows") or [unit["row"]]}
+                self.set_cells(retry, only_if={k: {pc.FAILED} for k in retry})
+                blocked = {(key, s): pc.TODO for key in unit.get("rows") or [unit["row"]] for s in unit["steps"][1:]}
+                if blocked:
+                    self.set_cells(blocked, only_if={k: {pc.BLOCKED} for k in blocked})
+                failed_step = None
+                self.event(f"{unit['id']}: failed on its model; next attempt uses a fallback model")
         if isinstance(exit_data, dict) and isinstance(exit_data.get("usage"), dict):
             unit["usage"] = exit_data["usage"]  # peak memory, CPU s, cores, I/O, wall (alfrd.runtime.usage)
         if adopted:
@@ -1444,6 +1750,30 @@ class Runner:
         if status == "failed" and failed_step:
             rows = [r for r in (self.table().row(k) for k in unit.get("rows") or [unit["row"]]) if r]
             self.after_failure(rows, failed_step)
+
+    def _fallback_eligible(self, unit: Mapping[str, Any], exit_code: int | None, reason: str | None,
+                           outcome: tuple[str | None, str | None]) -> bool:
+        """A provider/runtime failure with no usable response, and a fallback model left to try.
+
+        Never after a validation failure, a rejection, a cancel or a timeout; the
+        Claude CLI handles its own ``--fallback-model``.
+        """
+        if outcome[0] != "failed_runtime" or unit.get("mode") != "step":
+            return False
+        if reason and not str(reason).startswith("invalid handoff"):
+            return False
+        if exit_code is None:
+            return False
+        try:
+            step = self.cfg.step(unit["steps"][0])
+        except Exception:  # noqa: BLE001
+            return False
+        from alfrd.agent_io import ADAPTERS
+
+        adapter = ADAPTERS.get(step.adapter)
+        if not step.fallback_models or (adapter and adapter.native_fallback):
+            return False
+        return int(unit.get("fallback_index", -1)) + 1 < len(step.fallback_models)
 
     def after_failure(self, rows: Sequence[pc.PlanRow], step: str) -> None:
         policy = self.plan.get("on_failure") or "stop_target"
@@ -1466,6 +1796,15 @@ class Runner:
 # Reconcile (on server start / project load / `alfrd plan status`)
 
 
+def _held_for_review(root: Path, unit: Mapping[str, Any]) -> bool:
+    """A finished command whose handoff the runner holds for a person (it needs a runner, not a process)."""
+    if unit.get("review_gate") != "runner" or not unit.get("exit_file"):
+        return False
+    exit_path = root / str(unit["exit_file"])
+    exit_data = _read_json(exit_path, None)
+    return isinstance(exit_data, dict) and exit_data.get("exit_code") == 0 and exit_path.with_suffix(".review.json").is_file()
+
+
 def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
     """Re-attach to plans whose runner died.
 
@@ -1485,7 +1824,7 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
         if folder.runner_alive() or _starting(plan):
             continue
         units = [u for u in folder.units() if u.get("status") == "running"]
-        alive = [u for u in units if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"))]
+        alive = [u for u in units if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host")) or _held_for_review(base, u)]
         action = folder.control()
         want = bool(alive) or action == "cancel" or (plan.get("auto_resume") == "always" and plan.get("status") == "running" and action == "run")
         if plan.get("auto_resume") == "never" and not alive:
@@ -1521,11 +1860,13 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
     all_units = folder.units()
     waiting: list[dict[str, Any]] = []
     try:
-        cfg = load_execution(base)
+        cfg = load_execution(base, iterations=plan.get("loop", {}).get("iterations"))
         parsed = table_for(cfg, folder.csv_path(plan), plan.get("steps"))
+        if plan.get("targets"):
+            parsed.rows = [r for r in parsed.rows if r.target in plan["targets"]]
         table = parsed.to_dict()
         if plan.get("status") in ACTIVE:
-            waiting = waiting_rows(plan, parsed, all_units, cfg)
+            waiting = waiting_rows(plan, parsed, all_units, cfg) + [w for w in plan.get("waiting") or [] if w.get("kind") == "delay"]
     except Exception as exc:  # noqa: BLE001
         table = {"error": str(exc), "rows": [], "steps": plan.get("steps") or []}
     alive = folder.runner_alive()
@@ -1534,9 +1875,11 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
     runner.update(alive=alive, heartbeat_age=(datetime.now() - beat).total_seconds() if beat else None)
     durations = step_durations(base)
     from alfrd.agent_loop import status as loop_status
+    from alfrd.agent_io import agent_totals
 
     return {
         "loop": loop_status(plan, all_units),
+        "agent_totals": agent_totals(all_units),
         "plan": plan,
         "control": folder.control(),
         "runner": runner,
@@ -1547,7 +1890,7 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
                        [u for u in all_units if u.get("status") == "running"]),
         "durations": durations,
         "waiting": waiting,
-        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv")} for p in plans[:20]],
+        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"), "target": p.get("target"), "targets": p.get("targets")} for p in plans[:20]],
     }
 
 
@@ -1612,10 +1955,16 @@ __all__ = [
 ]
 
 
-def manifest_hash(root):
+def manifest_hash(root, *, legacy=False):
     from alfrd.manifest_default import manifest_data
 
     _, path, _ = manifest_data(root)
     if path is None:
         raise ExecutionError("project manifest is missing")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    if legacy:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    import yaml
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        data.pop("history", None)  # File tracking changes do not change the running workflow.
+    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()

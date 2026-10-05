@@ -65,7 +65,7 @@ export function isLoopProject(ctx, project) {
   const text = tree.manifestText || "";
   if (loopSeen.get(project)?.[0] !== text) {
     let loop = false;
-    try { loop = Object.values(parseYaml(text)?.workflows || []).some((w) => w?.repeat && Object.values(w.steps || {}).some((s) => s?.handoff)); } catch { /* not YAML */ }
+    try { loop = Object.values(parseYaml(text)?.workflows || []).some((w) => w?.repeat && (w.repeat.sequence || Object.values(w.steps || {}).some((s) => s?.handoff))); } catch { /* not YAML */ }
     loopSeen.set(project, [text, loop]);
   }
   return loopSeen.get(project)[1];
@@ -551,7 +551,7 @@ const runLoads = new Map(); // project -> {state: "loading"|"ok"|"error", status
 const runLabel = (s) => RUN_STATUS[s] || s;
 
 export function forgetProject(project) {
-  runLoads.delete(project); runFilters.delete(project); homeAsked.delete(project); histPage.delete(project);
+  runLoads.delete(project); runFilters.delete(project); homeAsked.delete(project); histPage.delete(project); taskLoads.delete(project);
   [...summaries.keys()].filter((k) => k.startsWith(`${project}|`)).forEach((k) => summaries.delete(k));
   if (runGridFocus?.project === project) runGridFocus = null;
 }
@@ -645,12 +645,24 @@ function summaryOf(ctx, project, got, ref) {
   return known?.run || null;
 }
 
+// Tasks of an agent-loop project (own turn count and worktree); a click shows that task's runs.
+const taskLoads = new Map(); // project -> {at, tasks, max_iterations, iteration_unit}
+function taskStrip(ctx, project) {
+  const got = taskLoads.get(project);
+  if (!got || (!got.loading && Date.now() - got.at > 30000)) {
+    taskLoads.set(project, { ...(got || {}), loading: true, at: Date.now() });
+    server.tasks(project).then((r) => { taskLoads.set(project, { ...r, at: Date.now() }); ctx.update(); },
+      () => taskLoads.set(project, { tasks: [], at: Date.now() }));
+  }
+  return runGridMod.renderTaskStrip(project, ctx.projectName(project), got, (runFilters.get(project)?.search || "").trim(), runLabel);
+}
+
 function runSection(ctx, project, index) {
   const { grid, error, got } = runGridOf(ctx, project);
   const f = runFilters.get(project) || runGridMod.FILTERS_DEFAULT;
   if (isLoopProject(ctx, project)) {
     const runs = runsOf(project);
-    return runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
+    return taskStrip(ctx, project) + runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
       { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all" });
   }
   const shown = runGridMod.filterRunGrid(grid, f, runLabel);
@@ -677,6 +689,10 @@ function bindRunGrids(el, ctx) {
   on(el, "click", "[data-rg-reset]", (e, b) => { runFilters.delete(b.dataset.rgReset); runLoads.delete(b.dataset.rgReset); runGridFocus = null; renderGrid(el, ctx); });
   on(el, "click", "[data-rg-retry]", (e, b) => { runLoads.delete(b.dataset.rgRetry); fetchRuns(ctx, b.dataset.rgRetry); });
   on(el, "click", "[data-rg-cell]", (e, b) => openRunCell(ctx, b.dataset));
+  on(el, "click", "[data-rg-task]", (e, b) => {
+    const project = b.dataset.rgTask, current = (runFilters.get(project)?.search || "").trim();
+    set(project, { search: current === b.dataset.task ? "" : b.dataset.task, run: "all" });
+  });
 }
 
 async function openRunCell(ctx, d) {

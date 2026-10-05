@@ -102,7 +102,8 @@ def create_project_api():
     try:
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
-                                    iterations=payload.get("iterations", DEFAULT_ITERATIONS))
+                                    iterations=payload.get("iterations", DEFAULT_ITERATIONS),
+                                    sequence=payload.get("sequence"))
     except FileExistsError as error:
         return _json_error(error, 409)
     except (ValueError, OSError, TypeError) as error:

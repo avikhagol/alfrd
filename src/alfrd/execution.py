@@ -114,6 +114,12 @@ class StepCommand:
     next_roles: tuple[str, ...] = ()
     next_agent: str = ""
     loop_options: Mapping[str, Any] = field(default_factory=dict)
+    introduce_roles: bool = False      # full persona instructions (first appearance) instead of the summary
+    adapter: str = "generic"
+    model_option: str | None = None    # a generic agent's model flag (entrypoint ``model_option``)
+    fallback_models: tuple[str, ...] = ()
+    after: float | None = None         # seconds to wait after the previous step finishes
+    turn: int = 0
 
 
 @dataclass
@@ -125,6 +131,9 @@ class ExecutionConfig:
     steps: list[StepCommand]
     aliases: dict[str, Any]
     primary_key: str
+    loop_max: int = 0               # project maximum: turns (sequence) or passes (legacy repeat)
+    loop_unit: str = ""             # "turns" or "iterations" (legacy passes); "" without a loop
+    loop_workspace: str = "shared"  # "worktree": each task works in {target}/workspace
 
     @property
     def step_ids(self) -> list[str]:
@@ -186,7 +195,8 @@ class ExecutionConfig:
             "steps": [
                 {"id": s.id, "entrypoint": s.entrypoint, "argv": list(s.argv) if s.argv else None, "timeout": s.timeout,
                  "handoff": dict(s.handoff), "iteration": s.iteration, "manual": s.manual,
-                 "human_review": s.human_review, "model": s.model, "roles": [dict(r) for r in s.roles]}
+                 "human_review": s.human_review, "model": s.model, "roles": [dict(r) for r in s.roles],
+                 "turn": s.turn, "adapter": s.adapter, "fallback_models": list(s.fallback_models), "after": s.after}
                 for s in self.steps
             ],
             "key_column": self.key_column,
@@ -243,12 +253,44 @@ def merged_manifest(root: str | Path) -> dict[str, Any]:
     return merged
 
 
-def load_execution(root: str | Path) -> ExecutionConfig:
+def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool = False) -> ExecutionConfig:
+    """``iterations`` overrides the loop length (a task's own count); ``cap`` also refuses more than the project maximum."""
     base = Path(root).expanduser().resolve()
     try:
         merged = merged_manifest(base)
     except ValueError as exc:
         raise ExecutionError(str(exc)) from exc
+    if iterations is not None:
+        from alfrd.agent_loop import expand_steps, is_sequence, workflow_turns
+        workflow = copy.deepcopy(merged.get("_workflow") or {})
+        if not workflow.get("repeat"):
+            raise ExecutionError("task iterations require a repeated workflow")
+        try:
+            maximum = workflow_turns(workflow)
+        except ValueError as exc:
+            raise ExecutionError(str(exc)) from exc
+        from alfrd.agent_loop import MAX_ITERATIONS, MAX_TURNS
+        limit = maximum if cap else MAX_TURNS if is_sequence(workflow) else MAX_ITERATIONS
+        if isinstance(iterations, bool) or not isinstance(iterations, int) or not 1 <= iterations <= limit:
+            unit = "turns" if is_sequence(workflow) else "iterations"
+            raise ExecutionError(f"task {unit} must be an integer from 1 to {'the project maximum of ' if cap else ''}{limit}")
+        workflow["repeat"]["iterations"] = iterations
+        workflow["repeat"].pop("passes", None)
+        originals = merged.get("_base_steps")
+        if originals is None:
+            originals = {}
+            for key, step in merged["steps"].items():
+                if step.get("iteration") == 1:
+                    spec = copy.deepcopy(step)
+                    spec["label"] = re.sub(r"^1/\d+ · ", "", spec.get("label", ""))
+                    originals[spec["base_step"]] = spec
+        try:
+            merged["steps"] = expand_steps(workflow, originals)
+        except ValueError as exc:
+            raise ExecutionError(str(exc)) from exc
+        merged["step_order"] = list(merged["steps"])
+        merged["_project_workflow"] = merged.get("_workflow")
+        merged["_workflow"] = workflow
     project_settings = merged.get("project_settings", {})
     if not isinstance(project_settings, Mapping):
         raise ExecutionError("project_settings must be a mapping")
@@ -258,13 +300,17 @@ def load_execution(root: str | Path) -> ExecutionConfig:
     for key, persona in personas.items():
         if not isinstance(key, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", key):
             raise ExecutionError("persona key must match [a-z0-9][a-z0-9_-]{0,39}")
-        if not isinstance(persona, Mapping) or set(persona) != {"label", "instructions"}:
-            raise ExecutionError(f"persona {key!r} needs only label and instructions")
+        if not isinstance(persona, Mapping) or (not {"label", "instructions"} <= set(persona) or set(persona) - {"label", "instructions", "summary"}):
+            raise ExecutionError(f"persona {key!r} needs only label and instructions, with optional summary")
         label = persona["label"]
         if not isinstance(label, str) or not label.strip() or len(label) > 60 or any(c in label for c in "\r\n"):
             raise ExecutionError(f"persona {key!r} label must be 1–60 characters on one line")
         if not isinstance(persona["instructions"], str) or len(persona["instructions"]) > 4000:
             raise ExecutionError(f"persona {key!r} instructions must be a string of at most 4000 characters")
+
+    for key, persona in personas.items():
+        if "summary" in persona and (not isinstance(persona["summary"], str) or len(persona["summary"]) > 1000):
+            raise ExecutionError(f"persona {key!r} summary must be a string of at most 1000 characters")
 
     def role_keys(raw):
         keys = [raw] if isinstance(raw, str) else [] if raw is None else raw
@@ -290,6 +336,9 @@ def load_execution(root: str | Path) -> ExecutionConfig:
         raise ExecutionError("loop must be a mapping")
     if "task_row" in loop_options and (not isinstance(loop_options["task_row"], str) or not loop_options["task_row"].strip()):
         raise ExecutionError("loop.task_row must be a nonempty string")
+    limit = loop_options.get("max_input_chars", 40000)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ExecutionError("loop.max_input_chars must be a positive integer")
     headings = loop_options.get("headings")
     if headings is not None and (not isinstance(headings, list) or not headings or
                                 not all(isinstance(h, str) and h.strip() and "\n" not in h for h in headings)):
@@ -373,7 +422,9 @@ def load_execution(root: str | Path) -> ExecutionConfig:
             for value in handoff.values():
                 if not isinstance(value, str) or not value.endswith(".md"):
                     raise ExecutionError("handoff files must be Markdown (.md)")
-                project_file(base, value)
+                project_file(base, value.replace("{target}", "task"))
+                if "{" in value.replace("{target}", "") or "}" in value.replace("{target}", ""):
+                    raise ExecutionError("handoff supports only the {target} placeholder")
         if io.get("output_capture", "file") not in ("file", "stdout"):
             raise ExecutionError("output_capture must be file or stdout")
         review = io.get("human_review", review_default)
@@ -382,9 +433,24 @@ def load_execution(root: str | Path) -> ExecutionConfig:
         model = io.get("model")
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise ExecutionError("model must be a nonempty string or null")
-        from alfrd.agent_io import agent_command
+        from alfrd.agent_io import adapter_for, agent_command
 
-        argv, model, claude_stream = agent_command(argv, model, stream=bool(handoff) and not io.get("manual", False), access=access) if argv else (None, model, False)
+        fallbacks = io.get("fallback_models") or []
+        if not isinstance(fallbacks, list) or not all(isinstance(m, str) and m.strip() for m in fallbacks):
+            raise ExecutionError(f"step {sid!r}: fallback_models must be a list of model names")
+        if io.get("model_option") is not None and (not isinstance(io["model_option"], str) or not re.fullmatch(r"--?[A-Za-z0-9][A-Za-z0-9-]*", io["model_option"])):
+            raise ExecutionError(f"step {sid!r}: model_option must be a command-line option such as --model")
+        try:
+            adapter = adapter_for(argv, io.get("adapter"), io.get("model_option")) if argv else adapter_for(None, "generic")
+        except ValueError as exc:
+            raise ExecutionError(f"step {sid!r}: {exc}") from exc
+        try:
+            after = parse_delay(io.get("after"))
+        except ValueError as exc:
+            raise ExecutionError(f"step {sid!r}: {exc}") from exc
+        native = fallbacks[0] if fallbacks and adapter.native_fallback else None
+        argv, model, claude_stream = agent_command(argv, model, stream=bool(handoff) and not io.get("manual", False), access=access,
+                                                   adapter=adapter, fallback=native) if argv else (None, model, False)
         steps.append(StepCommand(
             id=sid, argv=argv, entrypoint=entry,
             timeout=float(timeout) if timeout not in (None, "", 0) else None,
@@ -398,6 +464,9 @@ def load_execution(root: str | Path) -> ExecutionConfig:
             manual=bool(io.get("manual", False)),
             roles=tuple({"key": key, **personas[key]} for key in role_keys(spec.get("roles", spec.get("role")))),
             human_review=review, model=model, claude_stream=claude_stream, loop_options=dict(loop_options),
+            introduce_roles=bool(spec.get("introduce_roles", int(spec.get("iteration") or 0) == 1)),
+            adapter=adapter.name, fallback_models=tuple(fallbacks), after=after, turn=int(spec.get("turn") or 0),
+            model_option=io.get("model_option"),
         ))
     steps = [replace(step, next_roles=tuple(r["label"] for r in steps[i + 1].roles),
                      next_agent=steps[i + 1].entrypoint or steps[i + 1].base_step)
@@ -414,11 +483,67 @@ def load_execution(root: str | Path) -> ExecutionConfig:
         if any(s.cwd for s in steps):
             raise ExecutionError("agent loops use execution.cwd for the shared workspace")
     aliases = (merged.get("project_settings") or {}).get("field_aliases") or {}
+    loop_max, loop_unit = 0, ""
+    if workflow.get("repeat") is not None:
+        from alfrd.agent_loop import is_sequence, workflow_turns
+
+        project = merged.get("_project_workflow") or workflow
+        loop_max, loop_unit = workflow_turns(project), "turns" if is_sequence(project) else "iterations"
+    workspace = loop_options.get("workspace", "shared")
+    if workspace not in ("shared", "worktree"):
+        raise ExecutionError("loop.workspace must be shared or worktree")
     return ExecutionConfig(
         root=base, settings=settings, entrypoints=entrypoints,
         workflow=str(workflow.get("name") or "workflow"), steps=steps,
         aliases=dict(aliases), primary_key=str(merged.get("primary_key") or "TARGET_NAME"),
+        loop_max=loop_max, loop_unit=loop_unit, loop_workspace=workspace,
     )
+
+
+def load_task_execution(root: str | Path, target: str | None, *, cap: bool = False) -> ExecutionConfig:
+    """The project's configuration with one task's own turn count (``{target}/.alfrd-task.json``)."""
+    import json
+
+    cfg = load_execution(root)
+    if not target or not any("{target}" in v for step in cfg.steps for v in step.handoff.values()):
+        return cfg
+    from alfrd.agent_loop import project_file, task_iterations, validate_target
+
+    path = project_file(cfg.root, f"{validate_target(target)}/.alfrd-task.json")
+    if not path.is_file():
+        return cfg
+    try:
+        options = json.loads(path.read_text(encoding="utf-8"))
+        count = task_iterations(options if isinstance(options, dict) else {}, merged_manifest(cfg.root).get("_workflow") or {})
+    except ValueError as exc:
+        raise ExecutionError(f"{target}/.alfrd-task.json: {exc}") from exc
+    return load_execution(root, iterations=count, cap=cap) if count is not None else cfg
+
+
+MAX_DELAY = 7 * 24 * 3600
+
+
+def parse_delay(value: Any) -> float | None:
+    """``+1h``, ``90m``, ``2h30m``, ``45s`` or seconds → seconds; at most seven days."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("after must be a duration such as +1h, 90m or 2h30m")
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    else:
+        text = str(value).strip().lstrip("+").replace(" ", "").lower()
+        match = re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", text)
+        if not text or not match or not any(match.groups()):
+            if not re.fullmatch(r"\d+(?:\.\d+)?", text):
+                raise ValueError("after must be a duration such as +1h, 90m or 2h30m")
+            seconds = float(text)
+        else:
+            d, h, m, sec = (int(g or 0) for g in match.groups())
+            seconds = float(d * 86400 + h * 3600 + m * 60 + sec)
+    if not 0 <= seconds <= MAX_DELAY:
+        raise ValueError("after must be between 0 and 7 days")
+    return seconds or None
 
 
 def placeholders(argv: Sequence[str]) -> list[str]:

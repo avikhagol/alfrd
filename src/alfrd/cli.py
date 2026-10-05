@@ -575,7 +575,9 @@ def projects_create(
     template: str = typer.Option("basic", "--template"),
     task: str = typer.Option("", "--task", help="Initial agent task."),
     task_file: Optional[str] = typer.Option(None, "--task-file", help="Read the initial task from Markdown."),
-    iterations: Optional[int] = typer.Option(None, "--iterations", min=1, max=MAX_ITERATIONS),
+    iterations: Optional[int] = typer.Option(None, "--iterations", min=1, max=2 * MAX_ITERATIONS,
+                                             help="Agent loops: total turns (the project maximum)."),
+    sequence: Optional[str] = typer.Option(None, "--sequence", help="Agent loops: comma-separated agents for one pass, e.g. claude,claude,codex."),
     db: Optional[str] = typer.Option(None, "--db", help="Runtime SQLite database."),
 ):
     """Scaffold and register a project without starting its commands."""
@@ -593,8 +595,10 @@ def projects_create(
             print("warning: --iterations is ignored for a template without a loop")
         if task_file:
             task = Path(task_file).read_text(encoding="utf-8")
+        agents = [a.strip() for a in sequence.split(",") if a.strip()] if sequence else None
         project, _ = create_project(_runtime_service(db), path, name=name, template=template,
-                                    task=task, iterations=DEFAULT_ITERATIONS if iterations is None else iterations)
+                                    task=task, iterations=DEFAULT_ITERATIONS if iterations is None else iterations,
+                                    sequence=agents)
     except (ValueError, OSError) as error:
         print(f"error: {error}")
         raise typer.Exit(1)
@@ -1168,6 +1172,10 @@ def plan_run(
     concurrency: Optional[int] = typer.Option(None, "--concurrency", "-j", help="Targets at once."),
     on_failure: Optional[str] = typer.Option(None, "--on-failure", help="stop_target | continue | stop_plan."),
     retry_failed: bool = typer.Option(False, "--retry-failed", help="Set failed/blocked/interrupted cells back to todo first."),
+    target: Optional[str] = typer.Option(None, "--target", help="Agent loops: the task to run."),
+    treatment: str = typer.Option("baseline", "--treatment", help="Label recorded on every turn (baseline report)."),
+    run_kind: str = typer.Option("production", "--run-kind", help="production | experiment | … (baseline report)."),
+    retry_of: Optional[str] = typer.Option(None, "--retry-of", help="Earlier plan whose unaccepted turns this plan retries."),
 ):
     """Start a plan: run every todo cell with its step command."""
     from alfrd.execution import ExecutionError
@@ -1178,15 +1186,90 @@ def plan_run(
             _print_preview(scheduler.preview(root, csv_file, mode=mode, on_failure=on_failure))
             return
         folder = scheduler.create_plan(root, csv_file, mode=mode, concurrency=concurrency,
-                                       on_failure=on_failure, retry_failed=retry_failed)
-    except (ExecutionError, OSError) as error:
+                                       on_failure=on_failure, retry_failed=retry_failed, target=target,
+                                       treatment=treatment, run_kind=run_kind, retry_of=retry_of)
+    except (ExecutionError, OSError, ValueError) as error:
         _plan_fail(error)
+    if folder.load().get("workspace_warning"):
+        print(f"warning: {folder.load()['workspace_warning']}")
     if detach:
         pid = scheduler.spawn_runner(folder)
         print(f"plan {folder.id} started (runner pid {pid}). It keeps running when you close this terminal or the Studio.")
         print(f"  alfrd plan status -C {folder.root}      alfrd plan pause|cancel {folder.id} -C {folder.root}")
         return
     raise typer.Exit(code=scheduler.Runner(folder.root, folder.id).run())
+
+
+@plan_cli.command("turn")
+def plan_turn_command(
+    plan_id: str = typer.Argument(..., help="A plan, usually running."),
+    step: str = typer.Argument(..., help="Step id, e.g. t003-claude."),
+    root: str = _ROOT_OPT,
+    review: Optional[bool] = typer.Option(None, "--review/--no-review", help="Hold this turn's handoff for human review."),
+    manual: Optional[bool] = typer.Option(None, "--manual/--agent", help="A person writes this turn (chat) instead of the agent."),
+    after: Optional[str] = typer.Option(None, "--after", help="Delay after the previous step, e.g. +1h, 90m; 0 runs it now."),
+    model: Optional[str] = typer.Option(None, "--model", help="Model for this turn."),
+    clear: bool = typer.Option(False, "--clear", help="Drop this plan's overrides for the step."),
+):
+    """Change one step of a plan while it runs (review, human turn, delay, model)."""
+    import json as _json
+
+    from alfrd.execution import ExecutionError
+    from alfrd.runtime import scheduler
+
+    changes = {k: v for k, v in {"human_review": review, "manual": manual, "after": after, "model": model}.items() if v is not None}
+    if clear:
+        changes = {k: None for k in scheduler.OVERRIDE_KEYS}
+    try:
+        current = scheduler.set_override(root, plan_id, step, changes)
+    except (ExecutionError, OSError) as error:
+        _plan_fail(error)
+    print(_json.dumps(current.get(step, {})))
+
+
+@plan_cli.command("reject")
+def plan_reject_command(
+    plan_id: str = typer.Argument(...),
+    unit_id: str = typer.Argument(..., help="The turn awaiting review."),
+    reason: str = typer.Option("", "--reason"),
+    root: str = _ROOT_OPT,
+):
+    """Refuse a handoff held for review: nothing is published; the plan stops like a failed turn."""
+    from alfrd.agent_loop import reject_response
+
+    try:
+        reject_response(Path(root).resolve(), plan_id, unit_id, reason)
+    except (ValueError, OSError) as error:
+        _plan_fail(error)
+    print("rejected")
+
+
+@plan_cli.command("baseline")
+def plan_baseline_command(
+    root: str = _ROOT_OPT,
+    start: Optional[str] = typer.Option(None, "--from", help="Starting boundary: a logical turn id or plan/unit address."),
+    count: int = typer.Option(10, "--count", min=1, max=1000, help="Logical turns to include."),
+    exclude: list[str] = typer.Option([], "--exclude", help="TURN_ID=evidence of an infrastructure outage (repeatable)."),
+    coverage: float = typer.Option(0.80, "--coverage", min=0.0, max=1.0, help="Minimum share of attempts reporting a field."),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Baseline report over consecutive production turns: usage, retries, truncation, acceptance. Read-only."""
+    import json as _json
+
+    from alfrd import baseline
+
+    exclusions = {}
+    for item in exclude:
+        turn, sep, evidence = item.partition("=")
+        if not sep or not turn.strip() or not evidence.strip():
+            _plan_fail(ValueError("--exclude needs TURN_ID=evidence"))
+        exclusions[turn.strip()] = evidence.strip()
+    try:
+        doc = baseline.report(root, start=start, count=count, exclude=exclusions, coverage=coverage)
+    except (ValueError, OSError) as error:
+        _plan_fail(error)
+    print(_json.dumps(doc, indent=2) if as_json else baseline.markdown(doc))
+    raise typer.Exit(code=0 if doc["readiness"]["ready"] else 1)
 
 
 @plan_cli.command("response")

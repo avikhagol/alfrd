@@ -194,3 +194,11 @@
 .job-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); }
 .job-row .job-main { flex: 1 1 220px; min-width: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Agent-loop tasks above the run history; per-turn settings of a running plan. */
+.task-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.task-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.task-chip.on, .task-chip:hover { border-color: var(--accent); }
+.task-chip .ic { width: 13px; height: 13px; vertical-align: -2px; }
+.turn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.turn-table th, .turn-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; }
+.turn-table input[type=text] { width: 6em; }

@@ -1,6 +1,9 @@
 description: A bounded Claude Code and Codex handoff workflow.
 history:
-  files: [alfrd.yaml, task.md, next-step-claude.md, next-step-codex.md]
+  files: [alfrd.yaml, "*/task.md", "*/next-step-*.md"]
+loop:
+  max_input_chars: 40000
+  workspace: worktree   # each task gets its own git worktree at {target}/workspace (shared: one tree)
 primary_key: TARGET_NAME
 entrypoint:
   - name: claude
@@ -24,26 +27,24 @@ execution:
   auto_resume: adopt
 workflows:
   - name: agent-loop
-    repeat: {iterations: 5}
-    steps:
-      - id: claude-turn
-        entrypoint: claude
-        handoff: {input: next-step-claude.md, output: next-step-codex.md}
-      - id: codex-turn
-        entrypoint: codex
-        handoff: {input: next-step-codex.md, output: next-step-claude.md}
+    # iterations = total turns. The sequence repeats (one pass) and may stop mid-pass;
+    # use passes: N instead of iterations for whole passes, or a list of lists for custom passes.
+    repeat: {iterations: 10, sequence: [claude, codex]}
+    # turns: {3: {human_review: true}, t004-codex: {manual: true, after: "+1h"}}
 steps:
+  claude: {label: Claude, category: Agent}
+  codex: {label: Codex, category: Agent}
   claude-turn: {label: Claude, category: Agent}
   codex-turn: {label: Codex, category: Agent}
 artifacts:
-  - {name: task, kind: text, path_pattern: task.md}
-  - {name: claude-handoff, kind: text, path_pattern: next-step-claude.md}
-  - {name: codex-handoff, kind: text, path_pattern: next-step-codex.md}
+  - {name: task, kind: text, path_pattern: "{target}/task.md"}
+  - {name: claude-handoff, kind: text, path_pattern: "{target}/next-step-claude.md"}
+  - {name: codex-handoff, kind: text, path_pattern: "{target}/next-step-codex.md"}
 views:
   metadata:
-    - {panel: text, title: Task, scope: target, source: task.md}
-    - {panel: text, title: Next step for Claude, scope: target, source: next-step-claude.md}
-    - {panel: text, title: Next step for Codex, scope: target, source: next-step-codex.md}
+    - {panel: text, title: Task, scope: target, source: "{target}/task.md"}
+    - {panel: text, title: Next step for Claude, scope: target, source: "{target}/next-step-claude.md"}
+    - {panel: text, title: Next step for Codex, scope: target, source: "{target}/next-step-codex.md"}
 
 project_settings:
   personas:

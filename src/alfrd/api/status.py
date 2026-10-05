@@ -255,8 +255,12 @@ def _summary(doc: Mapping[str, Any]) -> str:
         f = failed[0]
         parts.append(f"{len(failed)} failed ({f['target']} {f['step']}: {(f.get('reason') or 'failed')[:80]}"
                      f"{'; …' if len(failed) > 1 else ''})")
-    if doc.get("waiting"):
-        parts.append(f"{len(doc['waiting'])} waiting on a conflict")
+    delayed = [w for w in doc.get("waiting") or [] if w.get("kind") == "delay"]
+    conflicts = len(doc.get("waiting") or []) - len(delayed)
+    if conflicts:
+        parts.append(f"{conflicts} waiting on a conflict")
+    if delayed:
+        parts.append(f"{delayed[0]['step']} starts after {delayed[0]['until']}")
     eta = progress.get("eta_s")
     if eta and plan["status"] == "running":
         parts.append(f"ETA ~{_human(eta)}")
@@ -342,7 +346,8 @@ def plan_status(root: str | Path, plan: str | None = None, *, detail: str = "sum
                 counts[key] += 1
     waiting: list[dict[str, Any]] = []
     if table is not None and cfg is not None and data.get("status") in sch.ACTIVE and data.get("mode") != "batch":
-        waiting = sch.waiting_rows(data, table, units, cfg)
+        # Conflicts are recomputed; step delays only the runner knows (it records them in the plan).
+        waiting = sch.waiting_rows(data, table, units, cfg) + [w for w in data.get("waiting") or [] if w.get("kind") == "delay"]
         limit_c = int(data.get("concurrency") or 1)
         names, match = sch.serialize_settings(data, cfg)
         picked = sch.pick_rows(table, mode=str(data.get("mode") or "step"), on_failure=str(data.get("on_failure") or "stop_target"),

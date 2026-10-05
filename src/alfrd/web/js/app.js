@@ -1507,8 +1507,9 @@ function renderShell() {
       <button class="icon-btn" id="btn-quit" aria-label="Quit alfrd" title="Quit alfrd" hidden>${icon("power")}</button>
     </header>
     <nav class="rail" aria-label="Workspace">
-      <div class="rail-head"><span class="rail-label">Workspace</span><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
+      <div class="rail-head"><span class="rail-label">Workspace</span></div>
       <div class="rail-links" id="rail-links">${VIEWS.map((v) => `<a href="#/${v.id}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
+      <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
     <main id="main" tabindex="-1">${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
     <footer class="footbar">

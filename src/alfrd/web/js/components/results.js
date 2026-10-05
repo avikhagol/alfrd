@@ -77,7 +77,7 @@ function loopProjects(ctx) {
     if (tree.defs?.template === "agent-loop") return true;
     try {
       const workflows = parseYaml(tree.manifestText || "")?.workflows || [];
-      return Object.values(workflows).some((w) => w?.repeat && Object.values(w.steps || {}).some((s) => s?.handoff));
+      return Object.values(workflows).some((w) => w?.repeat && (w.repeat.sequence || Object.values(w.steps || {}).some((s) => s?.handoff)));
     } catch { return false; }
   }).map(([p]) => p);
 }

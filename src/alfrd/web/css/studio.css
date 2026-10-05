@@ -978,13 +978,16 @@ summary:focus-visible, pre:focus-visible, [role=tab]:focus-visible { outline: 2p
 .rail-links { display: contents; }
 .rail-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 4px; }
 .rail-label { flex: 1; font-size: 12px; color: var(--text-3); }
+.rail-foot { margin-top: auto; display: flex; justify-content: flex-start; padding: 4px 4px 0; }
 .rail-toggle { width: 44px; height: 44px; }
 .rail a span, .rail-label { min-width: 0; }
-@media (max-width: 1279px) { .rail-head { display: none; } }
+@media (max-width: 1279px) { .rail-head, .rail-foot { display: none; } }
 @media (min-width: 1280px) {
   .app[data-sidebar="collapsed"] { --rail: 64px; }
   .app[data-sidebar="collapsed"] .rail { padding: 12px 10px; gap: 6px; align-items: center; }
   .app[data-sidebar="collapsed"] .rail-head { padding: 0; justify-content: center; }
+  .app[data-sidebar="collapsed"] .rail-foot { padding: 0; justify-content: center; }
+  .app[data-sidebar="collapsed"] .rail-toggle .ic { transform: rotate(180deg); }
   .app[data-sidebar="collapsed"] .rail a { width: 44px; height: 44px; padding: 0; gap: 0; justify-content: center; }
   .app[data-sidebar="collapsed"] .rail a .ic { width: 22px; height: 22px; }
   .app[data-sidebar="collapsed"] :is(.rail-label, .rail a span) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

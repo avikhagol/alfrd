@@ -1,4 +1,5 @@
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
+import { isSequence, MAX_ITERATIONS, MAX_TURNS, workflowTurns } from "./defs.js";
 
 export function configFields(text) {
   const data = parseYaml(text);
@@ -6,7 +7,8 @@ export function configFields(text) {
   const workflows = Array.isArray(data.workflows) ? data.workflows : Object.values(data.workflows || {});
   const repeated = workflows.filter((w) => w?.repeat);
   return { name: data.name || "", description: data.description || "", timeout: data.execution?.timeout ?? "",
-    iterations: repeated.length === 1 ? repeated[0].repeat.iterations : null };
+    iterations: repeated.length === 1 ? (() => { try { return workflowTurns(repeated[0]); } catch { return repeated[0].repeat.iterations ?? null; } })() : null,
+    iterationUnit: repeated.length === 1 && isSequence(repeated[0]) ? "turns" : "passes" };
 }
 
 // Rewrite only a changed section; unrelated keys and comments stay byte-for-byte.
@@ -34,11 +36,13 @@ export function setConfigField(text, key, value) {
   }
   if (key === "iterations") {
     const n = Number(value);
-    if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error("Iterations must be a whole number from 1 to 100.");
     const workflows = Array.isArray(data.workflows) ? data.workflows : Object.values(data.workflows || {});
     const repeated = workflows.filter((w) => w?.repeat);
     if (repeated.length !== 1) throw new Error("Edit multiple repeating workflows in the YAML file.");
+    const limit = isSequence(repeated[0]) ? MAX_TURNS : MAX_ITERATIONS;
+    if (!Number.isInteger(n) || n < 1 || n > limit) throw new Error(`Iterations must be a whole number from 1 to ${limit}.`);
     repeated[0].repeat.iterations = n;
+    delete repeated[0].repeat.passes;
     return section(text, "workflows", data.workflows);
   }
   throw new Error(`Unknown setting: ${key}`);

@@ -41,10 +41,10 @@ export const server = {
     return null;
   },
 
-  async mutate(path, payload) {
+  async mutate(path, payload, method = "POST") {
     if (!this.session?.mutations_enabled) throw new Error("Runtime mutations are disabled on this server (loopback only).");
     return getJson(path, {
-      method: "POST",
+      method,
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": this.session.csrf_token },
       body: JSON.stringify(payload || {}),
     });
@@ -71,8 +71,14 @@ export const server = {
   handoffSave(project, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/handoff`, payload); },
   planResponse(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/response`, payload); },
   planReview(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/review`, payload); },
-  task(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/task`); },
-  taskSave(project, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/task`, payload); },
+  planReject(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/reject`, payload); },
+  planTurns(project, id) { return getJson(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns`); },
+  planTurnSet(project, id, step, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns/${encodeURIComponent(step)}`, payload); },
+  tasks(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/tasks`); },
+  taskCreate(project, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/tasks`, payload); },
+  taskRename(project, target, name) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(target)}`, { name }, "PATCH"); },
+  task(project, target = null) { return getJson(`/studio/projects/${encodeURIComponent(project)}/${target ? `tasks/${encodeURIComponent(target)}/task` : "task"}`); },
+  taskSave(project, payload, target = null) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/${target ? `tasks/${encodeURIComponent(target)}/task` : "task"}`, payload); },
 
   // The project's target list (alfrd.targets.csv; alfrd.targets_csv).
   targets(project) {
@@ -101,8 +107,8 @@ export const server = {
   },
 
   // Plans: run a plan CSV (targets × steps) with alfrd.yaml's commands (alfrd.runtime.scheduler).
-  executionInfo(project) {
-    return getJson(`/studio/projects/${encodeURIComponent(project)}/execution`);
+  executionInfo(project, target = null) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/execution${target ? `?${new URLSearchParams({ target })}` : ""}`);
   },
   planPreview(project, payload) {
     return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/preview`, payload);

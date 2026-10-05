@@ -1,5 +1,5 @@
 
-import { $, $$, esc, icon, short, bytes, keepScroll } from "../utils/dom.js";
+import { $, $$, esc, icon, short, bytes, keepScroll, storage } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { addLogSource, dockLog, openFileFull } from "./logview.js";
 import { notesAt } from "../data/notes.js";
@@ -29,7 +29,6 @@ document.addEventListener("click", async (e) => {
   try { (await loadUsage()).openUsage(usageCtx, project, u, () => unitById(project, u.id) || u); } catch (error) { usageCtx.toast(error.message, "fail"); }
 });
 const sessionRuns = new Set();
-const execCache = new Map(); // project -> execution settings
 const pollTimers = new Map(); // project -> timeout id
 
 export const CELL = {
@@ -82,17 +81,20 @@ export function planOf(project) {
   return cache.get(project)?.status || null;
 }
 
-export function activePlan(project) {
+export function activePlan(project, target = null) {
   const s = planOf(project);
-  return s?.plan && ["running", "paused", "interrupted"].includes(s.plan.status) ? s : null;
+  const active = (p) => p && ["running", "paused", "interrupted"].includes(p.status);
+  const matches = (p) => !target || p.target === target || p.targets?.includes(target);
+  if (active(s?.plan) && (matches(s.plan) || s.table?.rows?.some((r) => r.target === target))) return s;
+  const plan = s?.plans?.find((p) => active(p) && matches(p));
+  return plan ? { plan } : null;
 }
 
 export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) {
   if (!plansAvailable(ctx, project)) return null;
   usageCtx = ctx;
   const entry = cache.get(project) || {};
-  // An explicitly requested run (Overview → Open run) replaces the shown one at once and is
-  // read even when another read is in flight: the newest run never stands in for it.
+  // Explicit run selection wins over in-flight reads.
   if (id && entry.status?.plan?.id !== id) { entry.want = id; entry.status = null; entry.error = null; }
   cache.set(project, entry);
   if (entry.loading) return entry.status;
@@ -105,7 +107,7 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
     delete entry.want;
     const run = status.plan?.id, key = `plan:${project}`;
     if (status.plan?.status === "failed") {
-      // Background polls never raise a banner; only a viewed failure does, with a real retry.
+      // Only viewed failures raise a banner.
       if (!quiet && entry.failedRun !== run) {
         entry.failedRun = run;
         ctx.showError(`Run ${run} failed. View logs for details or retry failed steps.`,
@@ -133,7 +135,7 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
   return entry.status;
 }
 
-// One poll timer per project so a run keeps updating while another project is open.
+// Poll each project independently.
 function schedulePoll(ctx, project) {
   clearTimeout(pollTimers.get(project));
   pollTimers.delete(project);
@@ -152,10 +154,9 @@ export function forgetPlan(project) {
   clearTimeout(pollTimers.get(project));
   pollTimers.delete(project);
   cache.delete(project);
-  execCache.delete(project);
 }
 
-// Every cached run that is still active, for the Jobs tray.
+// Active cached runs for Jobs.
 export function activeJobs() {
   return [...cache.entries()].map(([project, e]) => ({ project, status: e.status }))
     .filter((j) => j.status?.plan && ["running", "paused", "interrupted"].includes(j.status.plan.status));
@@ -213,7 +214,7 @@ function moreMenu(ctx, project, anchor) {
     canAct && !p.loop && { icon: "plus", label: "Add target…", hint: "append a row to this run's CSV", run: act("add-row") },
     p.loop && { icon: "file", label: "Handoffs…", run: async () => { try { const { openHandoffs } = await import("./agent_dialog.js"); await openHandoffs(ctx, project, p.id); } catch (error) { ctx.toast(error.message, "fail"); } } },
     canAct && { icon: "play", label: "New run…", run: act("new") },
-    (s.units || []).some((u) => u.usage) && { icon: "graph", label: "Usage", hint: "CPU / memory per step", run: act("usage") },
+    (s.units || []).some((u) => u.usage || u.agent_usage || u.handoff) && { icon: "graph", label: "Usage", hint: "Tokens, cost, CPU / memory", run: act("usage") },
     { icon: "log", label: "Runner log", hint: "follow in the Log Stream", run: () => { dockLog(ctx, project, log); } },
     { icon: "sync", label: "Refresh", run: act("refresh") },
     canAct && active && { icon: "stop", label: "Cancel run…", hint: "Cancel: stops the current turn now", danger: true, run: act("cancel") },
@@ -275,7 +276,7 @@ export function renderSchedule(box, ctx, project) {
       <button class="btn sm" data-plan="more" aria-haspopup="menu" title="Cancel, add a target, new run, usage, runner log …">${icon("more")} More</button>
     </div>
     <p class="sched-meta muted small"><span class="mono" title="Run CSV">${esc(p.csv)}</span> · ${esc(RUN_MODE[p.mode] || p.mode)} · concurrency ${esc(p.concurrency)} · ${esc(RUN_FAILURE[p.on_failure] || p.on_failure)} · ${esc(runnerTitle(s))}</p>
-    ${s.loop ? `<p class="sched-meta"><b>Turn ${esc(s.loop.turn)} of ${esc(s.loop.turns)} · Iteration ${esc(s.loop.iteration)}/${esc(s.loop.iterations)} · ${esc(s.loop.agent || "ready")}${s.loop.roles?.length ? ` as ${esc(s.loop.roles.join(" + "))}` : ""}</b> · ${esc(RUN_PHASE[s.loop.phase] || "Queued")} · Model: ${esc(s.loop.model || (s.loop.requested_model ? `${s.loop.requested_model} (requested)` : "not reported"))} · ${esc(loopElapsed([{ ...s.loop, status: "running" }]))}</p><p class="muted small">Pause finishes the current turn. Cancel stops it now.</p>` : ""}
+    ${s.loop ? `<p class="sched-meta"><b>Turn ${esc(s.loop.turn)} of ${esc(s.loop.turns)}${s.loop.iteration_unit === "turns" ? "" : ` · Iteration ${esc(s.loop.iteration)}/${esc(s.loop.iterations)}`} · ${esc(s.loop.agent || "ready")}${s.loop.roles?.length ? ` as ${esc(s.loop.roles.join(" + "))}` : ""}</b> · ${esc(RUN_PHASE[s.loop.phase] || "Queued")} · Model: ${esc(s.loop.model || (s.loop.requested_model ? `${s.loop.requested_model} (requested)` : "not reported"))} · ${esc(loopElapsed([{ ...s.loop, status: "running" }]))}</p><p class="muted small">Pause finishes the current turn. Cancel stops it now.</p>` : ""}
     <div class="sched-b dock-${esc(orderPrefs().dock)}${orderPrefs().folded ? " order-folded" : ""}">
       <section class="sched-grid">
         <h4>Targets × steps <span class="muted small">(click a cell: log, retry, skip)</span></h4>
@@ -487,9 +488,8 @@ export async function openAddRowDialog(ctx, project) {
 }
 
 
-async function execInfo(project) {
-  if (!execCache.has(project)) execCache.set(project, await server.executionInfo(project));
-  return execCache.get(project);
+async function execInfo(project, target = null) {
+  return server.executionInfo(project, target);
 }
 
 function selectionRows(ctx, project, info) {
@@ -501,9 +501,10 @@ function selectionRows(ctx, project, info) {
   }));
 }
 
-export async function openRunDialog(ctx, project, { dry = false, only = null, targets = null, onStarted = null } = {}) {
+export async function openRunDialog(ctx, project, { dry = false, only = null, targets = null, target = null, onStarted = null } = {}) {
+  const selectedTarget = target || targets?.[0] || storage.get(`task:selected:${project}`, null) || ctx.target()?.name || null;
   let info;
-  try { execCache.delete(project); info = await execInfo(project); } catch (error) { ctx.toast(`Run settings: ${error.message}`, "fail"); return; }
+  try { info = await execInfo(project, selectedTarget); } catch (error) { ctx.toast(`Run settings: ${error.message}`, "fail"); return; }
   if (info.error || !info.configured) {
     ctx.modal(`<header class="modal-h"><h2>${icon("play")} Start a run</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
       <div class="modal-b"><p>${info.error ? esc(info.error.message || info.error) : "No step has a command yet."}</p>
@@ -516,8 +517,8 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
   const isLoop = info.steps.every((s) => s.iteration && s.handoff?.input);
   let sel = selectionRows(ctx, project, info), preferNew = Boolean(only || targets);
   if (isLoop) {
-    const defaults = (await import("../data/agent_settings.js")).loopRunSelection(info);
-    sel = defaults.rows; preferNew = defaults.preferNew;
+    const defaults = (await import("../data/agent_settings.js")).loopRunSelection(info, selectedTarget);
+    sel = defaults.rows; preferNew = true;
   }
   const hasCsv = info.plan_csv_exists && info.table?.rows?.length;
   const st = info.settings;
@@ -525,14 +526,14 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
   ctx.modal(`
     <header class="modal-h"><h2>${icon("play")} ${dry ? "Preview a run" : "Start a run"} · ${esc(ctx.projectName(project))}</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b run-dlg">
-      <p class="muted small">Commands come from alfrd.yaml and run on the server machine in <code>${esc(info.cwd)}</code>. They keep running when you close the Studio or stop <code>alfrd serve</code>; the Studio re-attaches when the project is loaded again.</p>
+      <p class="muted small">Commands from alfrd.yaml run in <code>${esc(info.cwd)}</code> on the server. Runs continue after Studio or <code>alfrd serve</code> closes; reopening reconnects.</p>
       <fieldset><legend>Targets <button class="link-btn small" id="run-import" title="Add sources and their FITS file names to the targets CSV">${icon("upload")} Import targets CSV…</button></legend>
-        ${hasCsv ? `<label class="check"><input type="radio" name="src" value="csv" ${preferNew ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
-        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !preferNew ? "" : "checked"}> <span>New run from these targets${hasCsv ? ` <em class="muted">(replaces ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
+        ${hasCsv && !isLoop ? `<label class="check"><input type="radio" name="src" value="csv" ${preferNew ? "" : "checked"}> <span>Use <b class="mono">${esc(info.plan_csv_name)}</b> as it is (${info.table.rows.length} rows; edit it in any editor, even while it runs)</span></label>` : ""}
+        <label class="check"><input type="radio" name="src" value="sel" ${hasCsv && !preferNew ? "" : "checked"}> <span>New run from these targets${hasCsv ? ` <em class="muted">(${isLoop ? "keeps other tasks in" : "replaces"} ${esc(info.plan_csv_name)})</em>` : ""}:</span></label>
         <div class="run-targets" id="run-targets">
           <div class="row gap small"><button class="link-btn" data-all="1">all</button><button class="link-btn" data-all="0">none</button><input class="input sm grow" id="run-filter" placeholder="Filter targets"></div>
           <table class="tbl small"><thead><tr><th></th><th>Target</th><th>${esc(info.files_column)}</th><th>${esc(info.code_column)}</th></tr></thead><tbody>
-          ${sel.map((r, i) => `<tr data-name="${esc(r.target.toLowerCase())}"><td><input type="checkbox" data-i="${i}" ${(targets ? targets.includes(r.target) : !current || current.name === r.target) ? "checked" : ""}></td><td class="mono">${esc(r.target)}</td><td><input class="input sm mono" data-files="${i}" value="${esc(r.files)}" placeholder="a.idifits,b.idifits"></td><td><input class="input sm mono" data-code="${i}" value="${esc(r.code)}" size="7"></td></tr>`).join("") || '<tr><td colspan="4" class="muted">No targets in this project yet — add targets to the run CSV, or use <code>alfrd plan new --targets …</code>.</td></tr>'}
+          ${sel.map((r, i) => `<tr data-name="${esc(r.target.toLowerCase())}"><td><input type="checkbox" data-i="${i}" ${(isLoop || (targets ? targets.includes(r.target) : !current || current.name === r.target)) ? "checked" : ""}></td><td class="mono">${esc(r.target)}</td><td><input class="input sm mono" data-files="${i}" value="${esc(r.files)}" placeholder="a.idifits,b.idifits"></td><td><input class="input sm mono" data-code="${i}" value="${esc(r.code)}" size="7"></td></tr>`).join("") || '<tr><td colspan="4" class="muted">No targets in this project yet — add targets to the run CSV, or use <code>alfrd plan new --targets …</code>.</td></tr>'}
           </tbody></table>
         </div>
       </fieldset>
@@ -575,6 +576,10 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
         });
         out.steps = chosen;
       }
+      if (isLoop) {
+        if (out.rows?.length !== 1) throw new Error("Select exactly one task for an agent loop.");
+        out.target = out.rows[0].target;
+      }
       return out;
     };
     const showPreview = async () => {
@@ -610,7 +615,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       if (!r) return;
       if (r.errors.length && !window.confirm(`${r.errors.length} problem(s) — those cells will fail. Start anyway?`)) return;
       const body = payload();
-      if (body.rows && hasCsv) {
+      if (body.rows && hasCsv && !isLoop) {
         if (!window.confirm(`Replace ${info.plan_csv_name} (${info.table.rows.length} rows) with ${body.rows.length} target(s)?`)) return;
         body.overwrite = true;
       }
