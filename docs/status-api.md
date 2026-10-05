@@ -56,7 +56,7 @@ only; to serve other hosts set `ALFRD_API_TOKEN` and send
 | `progress` | cells_done, cells_total, eta_s (median step durations; null without history) |
 | `running[]` | row, target, project_code, workdir, step, started_at, elapsed_s, median_s, pid, log, entity |
 | `failures[]` | row, target, step, reason, exit_code, finished_at, log, entity |
-| `waiting[]` | rows held back by `execution.serialize_on` or the work dir lock: row, reason, blocked_by |
+| `waiting[]` | rows held back by `execution.serialize_on`, the work dir lock, or a step delay (`kind: delay`, `step`, `until`): row, reason, blocked_by |
 | `rows[]` | `--detail rows|full`: the targets × steps grid (`full` adds each cell's command, duration, log, usage) |
 | `summary` | one generated sentence, e.g. *Plan 20260929-0915 is running, running rpicard on J0742+103 (BV019/wd), 22/42 cells done, 1 failed (J1041+061 fits_to_ms: boom), ETA ~5 h.* |
 | `cursor` | pass back as `since`: `changed: false` when nothing changed, else the document plus `events[]` since then |
