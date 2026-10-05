@@ -276,7 +276,11 @@ span.count { cursor: default; }
 .ov-body.no-drawer { grid-template-columns: minmax(0, 1fr); }
 .ov-body.no-drawer .drawer { display: none; }
 .grid-card { padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.grid-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; }
+.grid-scroll { flex: 1 1 auto; min-width: 0; min-height: 0; max-width: 100%; overflow: auto; }
+/* Run grids stack under (or instead of) the target grid: the card scrolls, so no grid or its scrollbar is clipped. */
+.grid-card:has(> .rg-wrap) { overflow-y: auto; }
+.grid-card:has(> .rg-wrap) > .grid-scroll { flex: none; max-height: 60vh; }
+.rg-wrap { min-width: 0; }
 .grid-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .grid { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 13px; }
 .grid th, .grid td { padding: 0 12px; height: 46px; border-bottom: 1px solid var(--border); white-space: nowrap; background: var(--surface); }
@@ -507,8 +511,8 @@ tr:hover .path .icon-btn { visibility: visible; }
 /* Import → Connect → Browse… (server folders) */
 .fsb { margin: 8px 0 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
 .fsb[aria-busy="true"] { opacity: .7; }
-.fsb-bar { padding: 6px 8px; border-bottom: 1px solid var(--border); align-items: center; background: var(--subtle); }
-.fsb-crumbs { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; min-width: 0; font-size: 12.5px; }
+.fsb-bar { padding: 6px 8px; border-bottom: 1px solid var(--border); align-items: center; background: var(--subtle); flex-wrap: wrap; }
+.fsb-crumbs { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; flex: 1; min-width: 0; font-size: 12.5px; }
 .fsb-list { list-style: none; margin: 0; padding: 4px 0; max-height: 280px; overflow: auto; }
 .fsb-row { display: flex; align-items: center; gap: 8px; padding: 3px 10px; }
 .fsb-row:hover, .fsb-row:focus-within { background: var(--subtle); }
@@ -723,8 +727,12 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .sched-b { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .sched-b section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 10px 12px; min-width: 0; }
 .sched-b h4 { margin: 2px 0 8px; font-size: 13px; }
-.grid-scroll { overflow: auto; max-height: 46vh; }
-.plan-grid th { position: sticky; top: 0; background: var(--surface); z-index: 1; font-size: 11px; white-space: nowrap; }
+.wf-sched .grid-scroll { max-height: 46vh; }
+.plan-grid { width: max-content; min-width: 100%; }
+.plan-grid th { position: sticky; top: 0; background: var(--surface); z-index: 3; font-size: 11px; white-space: nowrap; }
+/* The target name stays in view while scrolling sideways to the last step (bounded so it never covers it). */
+.plan-grid tbody td:first-child { position: sticky; left: 0; z-index: 2; background: var(--surface); max-width: 220px; overflow-wrap: anywhere; box-shadow: 1px 0 0 var(--border); }
+.plan-grid thead th:first-child { left: 0; z-index: 4; box-shadow: 1px 0 0 var(--border); }
 .plan-grid td.cell { text-align: center; cursor: pointer; font-weight: 600; min-width: 34px; border-left: 1px solid var(--border); }
 .plan-grid td.cell:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
 .c-done { color: var(--ok-text); } td.c-done { background: var(--ok-bg); }
@@ -813,6 +821,13 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .loop-run select { min-width: 0; width: 100%; max-width: 100%; }
 .loop-results > .mono, .loop-results .kpis { overflow-wrap: anywhere; }
 .loop-result-table .tbl { min-width: 620px; }
+/* Loop KPIs: as many columns as fit, values wrap instead of overflowing into the table below.
+   Doubled class beats .kpis.small and the ≤1280/≤767 .kpis column counts. */
+.loop-results .kpis.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 12px; min-width: 0; max-width: 100%; margin-bottom: 16px; }
+.loop-results .kpis > div { min-width: 0; max-width: 100%; height: auto; }
+.loop-results .kpis b { font-size: clamp(20px, 2vw, 26px); line-height: 1.3; font-variant-numeric: tabular-nums; white-space: normal; overflow-wrap: anywhere; }
+.loop-results .kpis span, .loop-results .kpis small { white-space: normal; overflow-wrap: anywhere; }
+.loop-results .loop-result-table { min-width: 0; max-width: 100%; overflow-x: auto; }
 #ps-fields, .ps-grid > .card { min-width: 0; }
 #new-project-help { max-width: 230px; }
 .footbar #foot-mode { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -959,6 +974,22 @@ summary:focus-visible, pre:focus-visible, [role=tab]:focus-visible { outline: 2p
 .ws-choose .row { justify-content: center; margin-top: 12px; }
 #jobs-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* Minimized Log Stream: a readable strip above the footer that keeps following. */
+/* Sidebar toggle (≥1280 px): one --rail drives the grid track, Log Stream and log strip. */
+.rail-links { display: contents; }
+.rail-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 4px; }
+.rail-label { flex: 1; font-size: 12px; color: var(--text-3); }
+.rail-toggle { width: 44px; height: 44px; }
+.rail a span, .rail-label { min-width: 0; }
+@media (max-width: 1279px) { .rail-head { display: none; } }
+@media (min-width: 1280px) {
+  .app[data-sidebar="collapsed"] { --rail: 64px; }
+  .app[data-sidebar="collapsed"] .rail { padding: 12px 10px; gap: 6px; align-items: center; }
+  .app[data-sidebar="collapsed"] .rail-head { padding: 0; justify-content: center; }
+  .app[data-sidebar="collapsed"] .rail a { width: 44px; height: 44px; padding: 0; gap: 0; justify-content: center; }
+  .app[data-sidebar="collapsed"] .rail a .ic { width: 22px; height: 22px; }
+  .app[data-sidebar="collapsed"] :is(.rail-label, .rail a span) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .app[data-sidebar="collapsed"] .rail a:is(:hover, :focus-visible)::after { content: attr(title); position: fixed; left: 64px; background: var(--surface-float); color: var(--text); font-size: 12px; padding: 6px 10px; border-radius: var(--r-sm); z-index: 40; }
+}
 .dock-strip { position: fixed; left: var(--rail); right: 0; bottom: var(--foot); min-height: 48px; z-index: 19; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 6px 12px; background: var(--console-bg); color: var(--text-2); border-top: 1px solid var(--subtle); }
 .dock-strip .strip-name { max-width: 34%; color: var(--text); }
 .dock-strip .strip-last { flex: 1 1 200px; min-width: 0; font-size: 12px; }

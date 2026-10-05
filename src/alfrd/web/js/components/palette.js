@@ -46,7 +46,7 @@ function builtIns(ctx) {
   const p = projectOf(ctx);
   if (p) {
     projectLogs(ctx, p).slice(0, 2000).forEach((f) => add("log", { label: f.name || f.rel.split("/").pop(), detail: `log · ${[f.target, ...(f.steps || [])].filter(Boolean).join(" · ")} · ${f.rel}`,
-      icon: "logs", key: f.rel, run: () => openFileFull(ctx, p, f.rel).catch((e) => ctx.toast(e.message, "warn")) }));
+      icon: "log", key: f.rel, run: () => openFileFull(ctx, p, f.rel).catch((e) => ctx.toast(e.message, "warn")) }));
     const act = (label, action, iconName, detail = "action") => add("action", { label, detail, icon: iconName, key: action, run: () => planAct(ctx, p, action) });
     if (plansAvailable(ctx, p)) {
       const plan = planOf(p)?.plan;

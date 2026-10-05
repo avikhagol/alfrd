@@ -40,7 +40,7 @@ test("a finished run offers results and logs for that run", async () => {
   try { await loadPlan(ctx, "finished-test"); } finally { server.planStatus = old; }
   renderSchedule(box, ctx, "finished-test");
   assert.match(box.innerHTML, /href="#\/results">View results/);
-  assert.match(box.innerHTML, /data-plan="logs">View logs/);
+  assert.match(box.innerHTML, /data-plan="logs"><svg [^>]*>.*<\/svg> View logs/);
   let filter;
   ctx.openLogs = (opts) => filter = opts;
   await planAct(ctx, "finished-test", "logs");

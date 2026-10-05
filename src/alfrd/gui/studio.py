@@ -142,8 +142,10 @@ def _project_root(project_name: str) -> Path:
     return root
 
 
-def _json_error(error: Exception, status: int):
-    return jsonify(error={"code": status, "message": str(error)}), status
+def _json_error(error: Exception, status: int, **extra):
+    """``{"error": {"code", "message", **extra}}``; e.g. ``reason="permission"`` tells
+    a filesystem 403 apart from the session/CSRF 403s raised by ``require_local_csrf``."""
+    return jsonify(error={"code": status, "message": str(error), **extra}), status
 
 
 @studio_api.get("/studio/avica/<project_name>/layout")
@@ -718,8 +720,9 @@ def _manifest_name(folder: Path, manifest: Path) -> str | None:
 def fs_list():
     """Sub-folders of ``path`` on the server (``?path=&hidden=1``), marking ALFRD projects.
 
-    ``{path, parent, home, start, entries: [{name, path, is_project, manifest_name?, is_ms}], truncated}``.
+    ``{path, parent, home, start, writable, entries: [{name, path, is_project, manifest_name?, is_ms}], truncated}``.
     Files are never listed; ``*.ms`` folders are listed but not meant to be opened.
+    ``writable`` is a hint for New folder (``os.access``); mkdir may still fail.
     """
     import os
 
@@ -776,8 +779,66 @@ def fs_list():
     return jsonify(
         path=str(folder), parent=parent, home=str(Path.home()), start=str(_fs_default_path().resolve()),
         is_project=here is not None, manifest_name=_manifest_name(folder, here) if here else None,
-        entries=entries, truncated=truncated,
+        writable=os.access(folder, os.W_OK), entries=entries, truncated=truncated,
     )
+
+
+def _fs_child_name(name) -> str:
+    """One new folder name: a single path component, kept exactly as typed."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name is required")
+    if name in {".", ".."} or any(c in name for c in ("/", "\\", "\0")):
+        raise ValueError(f"{name!r} is not a single folder name")
+    if Path(name).name != name or len(Path(name).parts) != 1:
+        raise ValueError(f"{name!r} is not a single folder name")
+    return name
+
+
+@studio_api.post("/studio/fs/mkdir")
+def fs_mkdir():
+    """Create one folder ``{parent, name}`` on the server (Browse → New folder; loopback + CSRF).
+
+    201 ``{path, name, parent}``. 400 bad payload or name, 404 parent missing or
+    not a folder, 409 a file or folder of that name exists, 403 filesystem
+    permission (``error.reason == "permission"``); session/CSRF/mutation-policy
+    403s come from ``require_local_csrf`` and carry no ``reason``.
+    Missing ancestors are never created.
+    """
+    import errno
+
+    from alfrd.gui.security import require_local_csrf
+
+    require_local_csrf()
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error(ValueError("expected a JSON object {parent, name}"), 400)
+    raw = payload.get("parent")
+    if not isinstance(raw, str) or not raw.strip():
+        return _json_error(ValueError("parent is required"), 400)
+    try:
+        name = _fs_child_name(payload.get("name"))
+        folder = Path(raw).expanduser().resolve()
+    except ValueError as error:
+        return _json_error(error, 400)
+    except (OSError, RuntimeError) as error:
+        return _json_error(ValueError(f"Bad path {raw!r}: {error}"), 400)
+    if not folder.is_dir():
+        return _json_error(FileNotFoundError(f"{folder} does not exist or is not a folder"), 404)
+    target = folder / name
+    try:
+        target.mkdir()
+    except FileExistsError:
+        kind = "folder" if target.is_dir() else "file"
+        return _json_error(FileExistsError(f"A {kind} named {name!r} already exists in {folder}"), 409)
+    except PermissionError:
+        return _json_error(PermissionError(f"Permission denied: cannot create a folder in {folder}"), 403, reason="permission")
+    except (FileNotFoundError, NotADirectoryError):
+        return _json_error(FileNotFoundError(f"{folder} does not exist or is not a folder"), 404)
+    except OSError as error:
+        if error.errno == errno.EROFS:  # read-only file system: same answer as a permission error
+            return _json_error(PermissionError(f"Read-only file system: cannot create a folder in {folder}"), 403, reason="permission")
+        return _json_error(OSError(f"Cannot create {target}: {error.strerror or error}"), 400)
+    return jsonify(path=str(target), name=name, parent=str(folder)), 201
 
 
 @studio_api.post("/studio/quit")

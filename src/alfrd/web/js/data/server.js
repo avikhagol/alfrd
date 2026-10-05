@@ -296,6 +296,14 @@ export const server = {
     });
   },
 
+  /** → {path, name, parent}; errors get reason "permission" | "session" | "". */
+  mkdir(parent, name) {
+    return this.mutate("/studio/fs/mkdir", { parent, name }).catch((error) => {
+      error.reason = error.body?.error?.reason || (error.status === 403 || !this.session?.mutations_enabled ? "session" : "");
+      throw error;
+    });
+  },
+
   runLogs(runId) {
     return getJson(`/runtime/runs/${encodeURIComponent(runId)}/logs`);
   },

@@ -42,8 +42,8 @@ function csvTable(inst) {
   }).join("") || '<p class="muted small">No table.</p>';
 }
 
-function text(inst) {
-  return (inst.files || []).map((f) => `<details><summary class="mono small">${esc(f.rel)}${f.truncated ? " (first 64 KB)" : ""}</summary><pre class="code small">${esc(f.text)}</pre></details>`).join("") || '<p class="muted small">No file.</p>';
+function text(inst, id) {
+  return (inst.files || []).map((f) => `<details data-detail-key="${esc(`${id}|${f.rel || f.name}`)}"><summary class="mono small">${esc(f.rel)}${f.truncated ? " (first 64 KB)" : ""}</summary><pre class="code small">${esc(f.text)}</pre></details>`).join("") || '<p class="muted small">No file.</p>';
 }
 
 function images(inst, view, panel, project) {
@@ -64,7 +64,7 @@ function fileBody(f) {
 }
 
 /** Files of a folder, grouped by the step that writes them. */
-function files(inst, format) {
+function files(inst, format, id) {
   const list = inst.files || [];
   if (!list.length) return '<p class="muted small">No files.</p>';
   const groups = new Map();
@@ -73,7 +73,7 @@ function files(inst, format) {
   return order.map((g) => [g, groups.get(g)]).map(([g, items]) => `<h5>${esc(g)}</h5>${items.map((f) => {
     let body;
     try { body = format ? format(f) : fileBody(f); } catch { body = fileBody(f); }
-    return `<details class="meta-file"><summary><span class="mono">${esc(f.name)}</span><span class="muted small">${esc(f.label || "")}</span>${f.band ? `<span class="code-chip">${esc(f.band)}</span>` : ""}<span class="grow"></span><span class="muted small">${bytes(f.size || 0)}</span></summary>${body}</details>`;
+    return `<details class="meta-file" data-detail-key="${esc(`${id}|${f.rel || f.name}`)}"><summary><span class="mono">${esc(f.name)}</span><span class="muted small">${esc(f.label || "")}</span>${f.band ? `<span class="code-chip">${esc(f.band)}</span>` : ""}<span class="grow"></span><span class="muted small">${bytes(f.size || 0)}</span></summary>${body}</details>`;
   }).join("")}`).join("");
 }
 
@@ -101,14 +101,16 @@ export async function renderPanels(view, ctx, t, opts = {}) {
     const key = `${p.index}:${p.panel}`;
     const instances = p.instances || [];
     const chosen = Math.min(opts.tabs?.[key] ?? 0, Math.max(0, instances.length - 1));
-    const bodies = await Promise.all(instances.map(async (inst) => {
+    const bodies = await Promise.all(instances.map(async (inst, i) => {
+      // Disclosure identity: panel + instance (work dir, chip …) + file rel; never status or size.
+      const id = `${key}|${inst.path || where(inst.where) || `#${i}`}`;
       try {
         if (inst.client) {
           const draw = opts.clientPanels?.[p.panel];
           return draw ? await draw(inst, ctx, t) : `<p class="muted small">${esc(p.panel)} is drawn by a Studio module that is not loaded.</p>`;
         }
-        return p.panel === "file_status" ? fileStatus(inst, t) : p.panel === "files" ? files(inst, opts.formatFile)
-          : p.panel === "json_fields" ? jsonFields(inst) : p.panel === "csv_table" ? csvTable(inst) : p.panel === "text" ? text(inst)
+        return p.panel === "file_status" ? fileStatus(inst, t) : p.panel === "files" ? files(inst, opts.formatFile, id)
+          : p.panel === "json_fields" ? jsonFields(inst) : p.panel === "csv_table" ? csvTable(inst) : p.panel === "text" ? text(inst, id)
             : p.panel === "image" ? images(inst, view, p, t.project) : `<p class="muted small">${esc(inst.error || `unknown panel ${p.panel}`)}</p>`;
       } catch (error) {
         return `<p class="callout warn small">${icon("alert")}<span>${esc(error.message)}</span></p>`;

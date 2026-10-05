@@ -3,8 +3,9 @@ import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { DEFAULT_ITERATIONS, MAX_ITERATIONS, loadTemplate } from "../data/defs.js";
 import { loopTurnCount, hasDirtyHandoff } from "./loop_helpers.js";
 import { dockLog } from "./logview.js";
+import { activePlan } from "./plans.js";
 import { server } from "../data/server.js";
-import { esc } from "../utils/dom.js";
+import { esc, icon, storage, copyText, loadCss } from "../utils/dom.js";
 
 export async function openCreateProject(ctx, onCreated) {
   const { templates } = await server.projectTemplates();
@@ -268,18 +269,114 @@ export async function openAgentSettings(ctx, project, text, apply) {
   });
 }
 
-export async function openTask(ctx, project) {
+// task.md drafts: kept in this browser (never written to the project) until Save task
+// succeeds or the user discards them. Keyed by server, project identifier and the run
+// the editor was opened for ("next" when no run is active), frozen for the dialog.
+const DRAFT_V = 1;
+const drafts = new Map(); // key -> draft: still recoverable in this tab when storage fails
+/** Settings → Clear all saved data: drop this tab's drafts too, not just the stored copies. */
+export function forgetTaskDrafts() { drafts.clear(); }
+const draftPrefix = (project) => `draft:task:${location.origin}|${project}|`;
+function readDraft(key) {
+  const d = drafts.get(key) || storage.get(key, null);
+  return d?.v === DRAFT_V && typeof d.text === "string" && typeof d.base_hash === "string" ? d : null;
+}
+/** Runs of this project with a kept draft (memory and storage), other than `run`. */
+function otherDrafts(project, run) {
+  const prefix = draftPrefix(project);
+  let stored = [];
+  try { stored = Object.keys(localStorage).filter((k) => k.startsWith(`alfrd-studio:${prefix}`)).map((k) => k.slice(13)); } catch { /* storage unavailable */ }
+  return [...new Set([...drafts.keys(), ...stored])].filter((k) => k.startsWith(prefix) && readDraft(k)).map((k) => k.slice(prefix.length)).filter((r) => r !== run);
+}
+
+export async function openTask(ctx, project, { run = null } = {}) {
+  run ||= activePlan(project)?.plan?.id || "next";
+  const key = `${draftPrefix(project)}${run}`;
   let loaded = await server.task(project);
+  const kept = readDraft(key);
+  // A restored draft keeps the baseline it started from: saving it never adopts a newer hash.
+  let base = kept ? { hash: kept.base_hash, text: kept.base_text ?? "" } : { hash: loaded.hash, text: loaded.text };
+  const others = otherDrafts(project, run);
+  const runName = (r) => (r === "next" ? "the next run" : `run ${r}`);
+  loadCss("css/lazy.css");
   ctx.modal(`<header class="modal-h"><h2>Task</h2><button class="btn" data-close>Close</button></header><div class="modal-b">
-    <p>Edit task.md. Include the goal, constraints, and how to know it is done.</p><textarea class="input" id="task-text" rows="16" aria-label="task.md">${esc(loaded.text)}</textarea>
-    <label><input type="checkbox" id="task-seed" checked> Use this goal for the next run (replace the initial handoff)</label>
-    <p class="muted small">Finish or cancel the current run before replacing its initial handoff. Saving task.md alone does not change an active turn.</p><p id="task-message" role="status"></p>
-    </div><footer class="modal-f"><button class="btn primary" id="task-save" ${server.session?.mutations_enabled ? "" : "disabled"}>Save task</button></footer>`, (root) => {
-    root.querySelector("#task-save").addEventListener("click", async (event) => {
-      event.target.disabled = true;
-      try { loaded = await server.taskSave(project, { text: root.querySelector("#task-text").value, base_hash: loaded.hash, use_for_next_run: root.querySelector("#task-seed").checked }); root.querySelector("#task-message").textContent = "Saved. Start a new run for this task."; }
-      catch (error) { root.querySelector("#task-message").textContent = error.status === 409 ? `Not saved: ${error.message}. Reopen Task to reload if the file changed.` : error.message; }
-      finally { event.target.disabled = false; }
+    <p>Edit task.md. Include the goal, constraints, and how to know it is done.</p>
+    ${others.length ? `<p class="muted small">Unsaved draft also kept for ${others.map((r) => `<button type="button" class="link-btn" data-task-run="${esc(r)}">${esc(runName(r))}</button>`).join(", ")}.</p>` : ""}
+    <div class="callout warn task-draft" id="task-draft" hidden>${icon("file")}<span class="grow"><b>Unsaved draft</b> <span id="task-draft-note">Kept in this browser. Save task to update task.md.</span></span>
+      <span id="task-draft-acts"><button type="button" class="link-btn" id="task-copy" hidden>Copy text</button> <button type="button" class="link-btn" id="task-discard">Discard</button></span>
+      <span id="task-draft-confirm" hidden>Discard this unsaved task draft? <button type="button" class="btn sm danger" id="task-discard-yes">Discard draft</button> <button type="button" class="btn sm" id="task-discard-no">Keep editing</button></span></div>
+    <p class="sr-only" role="status" id="task-draft-status"></p>
+    <textarea class="input" id="task-text" rows="16" aria-label="task.md">${esc(kept ? kept.text : loaded.text)}</textarea>
+    <label><input type="checkbox" id="task-seed" ${(kept ? kept.seed : true) ? "checked" : ""}> Use this goal for the next run (replace the initial handoff)</label>
+    <p class="muted small">Finish or cancel the current run before replacing its initial handoff. Saving task.md alone does not change an active turn.</p><p id="task-message" role="status"></p><p id="task-error" class="fail-t" role="alert"></p>
+    <details id="task-current" hidden><summary>View current file</summary><pre class="code small"></pre></details>
+    </div><footer class="modal-f row gap"><button class="btn primary" id="task-save" ${server.session?.mutations_enabled ? "" : "disabled"}>Save task</button><span class="muted small">Closing keeps your draft.</span></footer>`, (root, close) => {
+    const $r = (s) => root.querySelector(s);
+    const text = $r("#task-text"), seed = $r("#task-seed"), save = $r("#task-save");
+    let stored = true, timer = 0;
+    const draft = () => ({ v: DRAFT_V, project, run, text: text.value, base_hash: base.hash, base_text: base.text, seed: seed.checked, updated: new Date().toISOString() });
+    const persist = () => {
+      clearTimeout(timer);
+      const d = drafts.get(key);
+      if (d) stored = storage.set(key, d); else storage.remove(key);
+      $r("#task-draft-note").textContent = stored ? "Kept in this browser. Save task to update task.md."
+        : "Draft kept for this tab only. Browser storage is unavailable; copy your text before closing this tab.";
+      $r("#task-copy").hidden = stored;
+    };
+    // Every input updates memory at once and storage shortly after; exactly the baseline is no draft.
+    const changed = () => {
+      if (text.value === base.text) drafts.delete(key); else drafts.set(key, draft());
+      $r("#task-draft").hidden = !drafts.has(key);
+      clearTimeout(timer);
+      timer = setTimeout(persist, 250);
+    };
+    text.addEventListener("input", changed);
+    seed.addEventListener("change", changed);
+    window.addEventListener("pagehide", persist);
+    root.addEventListener("beforeclose", () => { persist(); window.removeEventListener("pagehide", persist); });
+    queueMicrotask(() => text.focus()); // after the modal's own first-control focus
+    if (kept) {
+      drafts.set(key, kept);
+      $r("#task-draft").hidden = false;
+      $r("#task-draft-status").textContent = `Unsaved draft restored for ${runName(run)}.`;
+    }
+    root.querySelectorAll("[data-task-run]").forEach((b) => b.addEventListener("click", () => { close(); openTask(ctx, project, { run: b.dataset.taskRun }).catch((e) => ctx.toast(e.message, "fail")); }));
+    $r("#task-copy").addEventListener("click", async () => ctx.toast((await copyText(text.value)) ? "Copied" : "Copy failed", "ok"));
+    const confirming = (on) => { $r("#task-draft-acts").hidden = on; $r("#task-draft-confirm").hidden = !on; (on ? $r("#task-discard-no") : $r("#task-discard")).focus(); };
+    $r("#task-discard").addEventListener("click", () => confirming(true));
+    $r("#task-discard-no").addEventListener("click", () => { confirming(false); text.focus(); });
+    $r("#task-discard-yes").addEventListener("click", async () => {
+      // Reload first: the draft is only dropped once the server text is in the editor.
+      try { loaded = await server.task(project); } catch (error) { $r("#task-error").textContent = error.message; confirming(false); return; }
+      base = { hash: loaded.hash, text: loaded.text };
+      text.value = loaded.text;
+      seed.checked = true;
+      drafts.delete(key);
+      persist();
+      confirming(false);
+      $r("#task-draft").hidden = true;
+      $r("#task-current").hidden = true;
+      $r("#task-error").textContent = "";
+      text.focus();
+    });
+    save.addEventListener("click", async () => {
+      const submitted = text.value;
+      save.disabled = true; save.textContent = "Saving…"; text.readOnly = true; seed.disabled = true;
+      $r("#task-error").textContent = ""; $r("#task-message").textContent = "";
+      try {
+        loaded = await server.taskSave(project, { text: submitted, base_hash: base.hash, use_for_next_run: seed.checked });
+        base = { hash: loaded.hash, text: loaded.text };
+        drafts.delete(key);
+        persist();
+        $r("#task-draft").hidden = true;
+        $r("#task-current").hidden = true;
+        $r("#task-message").textContent = "Saved. Start a new run for this task.";
+      } catch (error) {
+        persist(); // the draft and text stay
+        const conflict = error.status === 409 && typeof error.body?.current === "string";
+        $r("#task-error").textContent = conflict ? "task.md changed since this draft started. Your draft is kept. Review the current file before saving." : error.message;
+        if (conflict) { $r("#task-current pre").textContent = error.body.current; $r("#task-current").hidden = false; }
+      } finally { save.disabled = false; save.textContent = "Save task"; text.readOnly = false; seed.disabled = false; }
     });
   });
 }

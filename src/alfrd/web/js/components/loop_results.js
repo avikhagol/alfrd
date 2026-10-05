@@ -18,8 +18,19 @@ async function load(ctx, project, id = null) {
     const status = await server.planStatus(project, id);
     const handoffs = status.plan?.loop ? (await server.handoffs(project, status.plan.id)).handoffs : [];
     entry.status = status; entry.handoffs = handoffs;
-  } catch (error) { entry.error = error.message; }
+  } catch (error) { entry.error = id && error.status === 404 ? "This run is no longer available. Refresh run history." : error.message; }
   finally { entry.loading = false; if (before !== JSON.stringify([entry.status, entry.handoffs, entry.error])) ctx.update(); }
+  // A run chosen while another read was in flight (Overview → View results) is read next.
+  if (entry.selected && entry.selected !== id && !entry.error) load(ctx, project, entry.selected);
+}
+
+/** Show exactly this run in Results (Overview → View results); never the latest instead. */
+export function selectRun(ctx, project, id) {
+  const entry = cache.get(project) || {};
+  entry.selected = id;
+  if (entry.status?.plan?.id !== id) { entry.status = null; entry.handoffs = []; }
+  cache.set(project, entry);
+  load(ctx, project, id);
 }
 
 export function mount(el, ctx) {

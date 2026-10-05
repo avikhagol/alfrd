@@ -394,7 +394,7 @@ function act(el, ctx, name, button) {
         { label: "Export workflow YAML", icon: "download", run: () => document.querySelector("#btn-export").click() },
         { label: "Clear simulation", icon: "reset", run: () => { resetSimulation(); ctx.update(); } },
         ...(plansAvailable(ctx, wfProject(ctx)) ? [{ label: "Simulate in the browser (nothing runs)", icon: "play", run: () => toggleSim(ctx) }] : []),
-        { label: "Open log stream", icon: "terminal", run: () => ctx.renderConsole() },
+        { label: "Open log stream", icon: "log", run: () => ctx.renderConsole() },
       ]);
       break;
     case "fetch-logs": fetchRunLogs(ctx); break;
@@ -622,10 +622,11 @@ export function leave() {
   /* keep simulation running in the background */
 }
 
-export function showRun(ctx, project) {
+export function showRun(ctx, project, id = null) {
   if (ctx.switchProject) ctx.switchProject(project, { restoreView: false });
   else ctx.state.selectedProject = project;
   if (ctx.target()?.project !== project) ctx.state.selectedTarget = null;
+  if (id) loadPlan(ctx, project, { id }); // that run, not the newest
   ui.mode = "schedule"; remember(); ctx.navigate("workflow");
 }
 

@@ -124,7 +124,7 @@ export function logItem(f, { project, open = false, showGroups = false, defs = n
       <span class="muted small mono trunc log-dir">${esc(dir)}</span>${groups}<span class="grow"></span>
       <span class="live-dot" data-log-live hidden title="Following this file as it grows"></span>
       <span class="muted small tabular" data-log-meta="${esc(key)}">${esc(metaText(f))}</span>
-      <button class="icon-btn xs" data-log-dock="${esc(f.rel)}" data-log-project="${esc(project)}" title="Follow in the Log Stream panel (keeps running on other views)" aria-label="Follow ${esc(f.name || f.rel)} in the Log Stream panel">${icon("terminal")}</button>
+      <button class="icon-btn xs" data-log-dock="${esc(f.rel)}" data-log-project="${esc(project)}" title="Follow in the Log Stream panel (keeps running on other views)" aria-label="Follow ${esc(f.name || f.rel)} in the Log Stream panel">${icon("log")}</button>
       <button class="icon-btn xs" data-log-zoom="${esc(f.rel)}" data-log-project="${esc(project)}" title="Open full screen" aria-label="Open ${esc(f.name || f.rel)} full screen">${icon("expand")}</button></summary>
     <div class="log-wrap"><pre class="log log-box" data-log-body data-log-key="${esc(key)}">${isOpen ? "Loading…" : ""}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></details>`;
 }

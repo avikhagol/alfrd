@@ -71,7 +71,7 @@ export function formatFile(f) {
 // ---------------------------------------------------------------------------
 // Folder mode: the whole view
 
-export function renderFolder(el, ctx, { activeCode, rerender }) {
+export function renderFolder(el, ctx, { activeCode, rerender, show }) {
   const t = ctx.target();
   const head = $("#md-head", el);
   const main = $("#md-main", el);
@@ -112,7 +112,7 @@ export function renderFolder(el, ctx, { activeCode, rerender }) {
   }
   const wd = ui.wd;
   const defs = ctx.state.trees?.[t.project]?.defs;
-  main.innerHTML = `${healthSection(ctx, t, wd, defs)}${metaSection(wd, defs, t)}${configSection(ctx, t, index)}${inputsSection(ctx, t, wd)}`;
+  show(main, `${healthSection(ctx, t, wd, defs)}${metaSection(wd, defs, t)}${configSection(ctx, t, index)}${inputsSection(ctx, t, wd)}`, `${t.project}|${t.id}|${code}`);
   ctx.setFooterRight(`${esc(wd.wd)} · ${wd.meta.length} avica.meta file(s)`);
 }
 
@@ -143,7 +143,7 @@ function metaSection(wd, defs, t) {
     groups.get(key).push({ ...m, ownerLabel: owner?.label });
   });
   const body = wd.meta.length ? [...groups.entries()].map(([g, list]) => `<h5>${esc(g)}</h5>
-    ${list.map((m) => `<details class="meta-file"><summary><span class="mono">${esc(m.name)}</span><span class="muted small">${esc(m.ownerLabel || "")}</span>${m.band ? `<span class="code-chip">${esc(m.band)}</span>` : ""}${m.legacy ? `<span class="badge tone-warn" title="read from a folder renamed by field_aliases">${esc(m.legacy)}</span>` : ""}<span class="grow"></span><span class="muted small">${bytes(m.size || 0)}</span></summary>${renderMetaBody(m)}</details>`).join("")}`).join("")
+    ${list.map((m) => `<details class="meta-file" data-detail-key="${esc(`meta|${wd.wd}|${m.rel || m.name}`)}"><summary><span class="mono">${esc(m.name)}</span><span class="muted small">${esc(m.ownerLabel || "")}</span>${m.band ? `<span class="code-chip">${esc(m.band)}</span>` : ""}${m.legacy ? `<span class="badge tone-warn" title="read from a folder renamed by field_aliases">${esc(m.legacy)}</span>` : ""}<span class="grow"></span><span class="muted small">${bytes(m.size || 0)}</span></summary>${renderMetaBody(m)}</details>`).join("")}`).join("")
     : `<p class="muted">No files in ${esc(wd.wd)}/avica.meta.</p>`;
   return section("meta", `avica.meta <span class="mono small muted">${esc(wd.wd)}/avica.meta</span>`, body, `<span class="grow"></span><span class="muted small">${wd.meta.length} file(s) · bands ${esc((wd.bands || []).join(", ") || "—")}</span>`);
 }
@@ -215,7 +215,7 @@ function inputsBody(ctx, t, wd) {
       const keys = Object.keys(f.values);
       const added = Object.keys(updated).filter((k) => !(k in f.values));
       const nSup = keys.filter((k) => k in updated).length;
-      return `<details class="inp-file"><summary><span class="mono">${esc(f.file)}</span><span class="muted small">${keys.length} keys</span>${nSup ? `<span class="badge tone-warn">${nSup} superseded</span>` : ""}${added.length ? `<span class="badge tone-run">+${added.length} from update</span>` : ""}</summary>
+      return `<details class="inp-file" data-detail-key="${esc(`inp|${choice}|${f.file}`)}"><summary><span class="mono">${esc(f.file)}</span><span class="muted small">${keys.length} keys</span>${nSup ? `<span class="badge tone-warn">${nSup} superseded</span>` : ""}${added.length ? `<span class="badge tone-run">+${added.length} from update</span>` : ""}</summary>
         <table class="tbl small inp"><tbody>
         ${keys.map((k) => (k in updated
           ? `<tr class="sup"><td class="mono"><b>${esc(k)}</b></td><td class="mono"><b>${esc(updated[k])}</b> <s class="muted">${esc(f.values[k])}</s></td></tr>`
