@@ -52,7 +52,11 @@ def _tuple(value: Any) -> tuple:
 
 @dataclass(frozen=True)
 class Converter:
-    """``run(src: Path, dst: Path)`` turns a file with one of the ``src`` extensions into ``to``."""
+    """``run(src: Path, dest: Path, *, timeout: float)`` turns a file with one of the ``src`` extensions into ``to``.
+
+    It writes ``dest`` or raises; ``timeout`` (seconds) bounds any subprocess it starts. The
+    Studio calls it in a worker process (:mod:`alfrd.extensions.convert`) and caches the output.
+    """
 
     src: tuple[str, ...]
     to: str
@@ -395,6 +399,33 @@ def get(plugin_id: str) -> Record | None:
     return next((r for r in (_LOADED if _LOADED is not None else discover()) if r.id == plugin_id), None)
 
 
+def module_dir(record: Record) -> Path | None:
+    """The package folder of a loaded plugin (where ``web`` and ``theme`` are relative to)."""
+    if record.plugin is None or not record.entry_point:
+        return None
+    module = sys.modules.get(record.entry_point.split(":", 1)[0])
+    filename = getattr(module, "__file__", None)
+    return Path(filename).resolve().parent if filename else None
+
+
+def web_dir(record: Record) -> Path | None:
+    """The plugin's declared ``web`` folder, confined to its package folder; ``None`` if it has none."""
+    base = module_dir(record)
+    web = record.plugin.web if record.plugin is not None else None
+    if base is None or not web or Path(web).is_absolute():
+        return None
+    try:
+        path = (base / web).resolve()
+    except (OSError, RuntimeError):
+        return None
+    return path if path.is_relative_to(base) and path.is_dir() else None
+
+
+def active(record: Record) -> bool:
+    """Loaded in this process and not disabled since (disable applies to the browser at once)."""
+    return record.source == "entry_point" and record.status == "ok" and record.id not in read_state()["disabled"]
+
+
 def reset() -> None:
     """Forget the loaded plugins and undo their registrations (tests; a fresh ``load()`` follows)."""
     global _LOADED
@@ -403,7 +434,7 @@ def reset() -> None:
 
 
 __all__ = [
-    "ALFRD_PLUGIN_API", "Converter", "DEFAULT_THEME", "GROUP", "PanelSpec", "Plugin", "Record", "add_site", "api_ok",
-    "discover", "get", "load", "loaded", "plugins_dir", "read_state", "reset", "safe_mode", "set_enabled", "set_theme",
-    "site_dir", "state_file", "themes_dir", "write_state",
+    "ALFRD_PLUGIN_API", "Converter", "DEFAULT_THEME", "GROUP", "PanelSpec", "Plugin", "Record", "active", "add_site",
+    "api_ok", "discover", "get", "load", "loaded", "module_dir", "plugins_dir", "read_state", "reset", "safe_mode", "set_enabled", "set_theme",
+    "site_dir", "state_file", "themes_dir", "web_dir", "write_state",
 ]

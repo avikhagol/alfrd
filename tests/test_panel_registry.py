@@ -109,3 +109,33 @@ def test_raw_file_serves_images_and_pdf_only(served):
     assert client.get(url, query_string={"path": "../x.png", "raw": "1"}).status_code == 400
     (root / "secret.png").write_bytes(b"x")
     assert client.get(url, query_string={"path": "secret.png", "raw": "1"}).status_code == 403  # not declared
+
+
+def test_raw_file_serves_view_panel_sources(served):
+    """D6: images/PDFs a views `image`/`text` panel declares open with raw=1 (still typed, still confined)."""
+    client, _, root = served
+    yaml = root / "alfrd.yaml"
+    assert "views:" not in yaml.read_text()
+    yaml.write_text(yaml.read_text() + "views:\n  target:\n"
+                    "    - {panel: image, source: \"diag/{target}/*.png\"}\n"
+                    "    - {panel: text, source: \"notes/*\"}\n")
+    (root / "diag" / "0742+103").mkdir(parents=True)
+    (root / "diag" / "0742+103" / "amp.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    (root / "notes").mkdir()
+    (root / "notes" / "report.pdf").write_bytes(b"%PDF-1.4\n")
+    (root / "notes" / "page.svg").write_text("<svg/>")
+    (root / "other.png").write_bytes(b"x")
+    url = "/api/studio/projects/avica-t-0.3/file"
+    png = client.get(url, query_string={"path": "diag/0742+103/amp.png", "raw": "1"})
+    assert png.status_code == 200 and png.mimetype == "image/png"
+    assert png.headers["X-Content-Type-Options"] == "nosniff"
+    assert client.get(url, query_string={"path": "notes/report.pdf", "raw": "1"}).status_code == 200
+    assert client.get(url, query_string={"path": "notes/page.svg", "raw": "1"}).status_code == 415
+    assert client.get(url, query_string={"path": "other.png", "raw": "1"}).status_code == 403
+    assert client.get(url, query_string={"path": "diag/a/b/amp.png", "raw": "1"}).status_code in (403, 404)
+    assert client.get(url, query_string={"path": "notes/../other.png", "raw": "1"}).status_code == 400
+    assert lg.declared_source(root, "diag/x/amp.png") and not lg.declared_source(root, "/etc/x.png")
+    (root / "notes" / "readme.md").write_text("# Notes\n")
+    text = client.get(url, query_string={"path": "notes/readme.md"})
+    assert text.status_code == 200 and text.data == b"# Notes\n"
+    assert client.get(url, query_string={"path": "other.png"}).status_code == 403

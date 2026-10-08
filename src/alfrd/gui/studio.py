@@ -45,7 +45,7 @@ def studio_asset(filename: str):
         from alfrd.extensions.themes import css_path, current_theme
         from werkzeug.exceptions import NotFound
 
-        path = css_path(current_theme())
+        path = css_path(current_theme(), plugins=False)  # plugin themes: /studio/plugins/<id>/theme.css
         try:
             response = send_from_directory(path.parent, path.name, mimetype="text/css", max_age=0)
         except (NotFound, OSError):
@@ -337,12 +337,20 @@ def _project_file_raw(project_name: str, rel: str):
     mimetype = RAW_TYPES.get(Path(rel).suffix.lower())
     if mimetype is None:
         return _json_error(ValueError("raw=1 serves images and PDF only"), 415)
+    root = _project_root(project_name)
     try:
-        path = _allowed_cached(_project_root(project_name), rel)
+        path = _allowed_cached(root, rel)
     except ValueError as error:
         return _json_error(error, 400)
     except PermissionError as error:
-        return _json_error(error, 403)
+        # Images and PDFs a views `text`/`image` panel declares open in the viewers too.
+        from alfrd.layout_generic import declared_source
+
+        if not declared_source(root, rel):
+            return _json_error(error, 403)
+        path = (root.resolve() / rel).resolve()
+        if not path.is_relative_to(root.resolve()):
+            return _json_error(error, 403)
     except FileNotFoundError as error:
         return _json_error(error, 404)
     response = send_file(path, mimetype=mimetype, conditional=True, max_age=0)
@@ -372,7 +380,17 @@ def project_file(project_name: str):
     except ValueError:
         return _json_error(ValueError("offset must be an integer"), 400)
     try:
-        path = _allowed_cached(_project_root(project_name), rel)
+        root = _project_root(project_name)
+        try:
+            path = _allowed_cached(root, rel)
+        except PermissionError:
+            # A views `text`/`image` panel's source (e.g. notes.md): the panel already shows it.
+            from alfrd.layout_generic import declared_source
+
+            if not declared_source(root, rel):
+                raise
+            path = (root.resolve() / rel).resolve()
+            path.relative_to(root.resolve())  # ValueError when a symlink leads outside
         chunk = read_range(path, offset, file=request.args.get("id") or None)
     except ValueError as error:
         return _json_error(error, 400)
@@ -656,7 +674,7 @@ ALFRD_FILES = ("alfrd.yaml", "alfrd.yaml.bak", ".alfrd.yaml", ".alfrd.yaml.bak",
                "alfrd.targets.csv", "alfrd.targets.csv.bak", "alfrd.notes.jsonl",
                ".alfrd_project.yaml", ".alfrd_workflow.yaml", "alfrd.db")
 #: Project state inside ``.alfrd/`` (removed one by one when ``.alfrd`` also holds global state).
-ALFRD_STATE_DIRS = ("plans", "history", "locks", "tmp")
+ALFRD_STATE_DIRS = ("plans", "history", "locks", "tmp", "cache")  # cache: plugin conversions
 
 
 def _alfrd_files(root: Path, database: Path | None) -> list[Path]:

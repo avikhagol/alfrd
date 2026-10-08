@@ -1551,6 +1551,9 @@ class Runner:
                         if step.output_capture != "stdout":
                             shim_args += ["--stdout-file", str(output_path)]
                         shim_args += ["--claude-stream"]
+                        if unit.get("handoff", {}).get("headings"):
+                            # A later status-only result must not replace the handoff (see ClaudeStream).
+                            shim_args += ["--response-headings", json.dumps(unit["handoff"]["headings"])]
                 workspace_fd = getattr(self, "workspace_fd", None)
                 process = subprocess.Popen(
                     [sys.executable, "-m", "alfrd.runtime.shim", "--exit-file", str(exit_path), *shim_args, "--", *argv],

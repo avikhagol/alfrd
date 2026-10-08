@@ -99,6 +99,7 @@ def create_app(config=None):
     import alfrd.gui.studio_search  # noqa: F401  (adds the full-text search routes to studio_api)
     import alfrd.gui.studio_notes  # noqa: F401  (adds the annotation routes to studio_api)
     import alfrd.gui.studio_views  # noqa: F401  (adds the template-driven view route to studio_api)
+    import alfrd.gui.studio_plugins  # noqa: F401  (adds the plugin list/toggle/theme/file routes)
 
     from alfrd.gui.api_v1 import api_v1
 

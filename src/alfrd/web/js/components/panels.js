@@ -5,11 +5,13 @@
 
 import { esc, icon, bytes } from "../utils/dom.js";
 import { server } from "../data/server.js";
-import { viewerFor, fileObject } from "./viewers.js";
+import { viewerFor, fileObject, mimeOf, renderViewer, conversionButton, mountConversion, viewerGeneration } from "./viewers.js";
 
 const TONE = { ok: "ok", invalid: "fail", missing: "fail", notrun: "muted" };
 const LABEL = { ok: "Present", invalid: "Invalid", missing: "Missing", notrun: "Not run" };
 let levels = []; // hierarchy order (JSON replies sort their keys)
+let revision = 0;
+export const rendererGeneration = () => revision + viewerGeneration();
 const where = (w) => Object.entries(w || {}).filter(([k]) => k !== "target")
   .sort(([a], [b]) => (levels.indexOf(a) + 1 || 99) - (levels.indexOf(b) + 1 || 99)).map(([, v]) => v).join(" / ");
 const short = (v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "—"));
@@ -47,8 +49,10 @@ function text(inst, id) {
   return (inst.files || []).map((f) => {
     const viewer = viewerFor(f.rel, "text/plain");
     // Built-in text: the same <pre> as always; another viewer is mounted after render (mountViewers).
-    const body = viewer.id === "text" ? `<pre class="code small">${esc(f.text)}</pre>`
-      : `<div class="viewer" data-viewer="${esc(viewer.id)}" data-viewer-rel="${esc(f.rel)}"></div>`;
+    let body = viewer.id === "text" ? `<pre class="code small">${esc(f.text)}</pre>`
+      : `<div class="viewer" data-viewer="${esc(viewer.id)}" data-viewer-rel="${esc(f.rel)}"${f.text != null && mimeOf(f.rel).startsWith("text/") ? ` data-viewer-text="${esc(f.text)}"` : ""}></div>`;
+    const action = conversionButton(f.rel, viewer);
+    if (action) body = `${action}<p data-convert-status role="status" aria-live="polite" hidden></p><div data-convert-body>${body}</div>`;
     return `<details data-detail-key="${esc(`${id}|${f.rel || f.name}`)}"><summary class="mono small">${esc(f.rel)}${f.truncated ? " (first 64 KB)" : ""}</summary>${body}</details>`;
   }).join("") || '<p class="muted small">No file.</p>';
 }
@@ -110,6 +114,7 @@ export const panelRenderers = {
 
 export function registerPanel(kind, render) {
   if (typeof kind !== "string" || !kind || typeof render !== "function") throw new TypeError("registerPanel(kind, render)");
+  if (panelRenderers[kind] !== render) revision++;
   panelRenderers[kind] = render;
 }
 
@@ -119,7 +124,13 @@ export function mountViewers(el, project) {
     node.setAttribute("data-mounted", "");
     const rel = node.getAttribute("data-viewer-rel");
     const viewer = viewerFor(rel, "text/plain");
-    try { viewer.render(fileObject(project, rel), node); } catch (error) { node.textContent = error.message; }
+    const text = node.getAttribute("data-viewer-text");
+    renderViewer(viewer, fileObject(project, rel, text != null ? { text } : {}), node).catch((error) => { node.textContent = error.message; });
+  });
+  el.querySelectorAll?.("button[data-convert-rel]:not([data-mounted])").forEach((button) => {
+    button.setAttribute("data-mounted", "");
+    const row = button.closest("details");
+    mountConversion(button, row.querySelector("[data-convert-body]"), row.querySelector("[data-convert-status]"), fileObject(project, button.dataset.convertRel));
   });
 }
 

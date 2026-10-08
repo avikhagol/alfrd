@@ -75,6 +75,7 @@ where = ["src"]
   "js/components/*.js",
   "js/data/*.js",
   "js/utils/*.js",
+  "js/vendor/*",
   "assets/*.svg",
   "assets/templates/*.yaml",
   "assets/defaults/*.yaml",

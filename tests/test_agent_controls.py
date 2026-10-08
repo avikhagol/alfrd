@@ -151,6 +151,24 @@ def test_claude_stream_keeps_activity_out_of_handoff(tmp_path, capsys, failure):
     assert json.loads((tmp_path / "unit.agent.json").read_text())["model"] == "claude-reported"
 
 
+def test_claude_status_note_after_the_report_does_not_replace_the_handoff(tmp_path, capsys):
+    """Seen 2026-10-08: a stopped background waiter got a 284-character reply after the report."""
+    from alfrd.agent_loop import REQUIRED_HEADINGS
+
+    response = tmp_path / "response.md"
+    stream = ClaudeStream(response, tmp_path / "unit.exit", headings=list(REQUIRED_HEADINGS))
+    for text in ("Still in progress. Waiting for the notification.", RESPONSE, "The closing report above stands."):
+        stream.feed(json.dumps({"type": "result", "subtype": "success", "result": text}) + "\n")
+    assert stream.close() is None
+    assert response.read_text() == RESPONSE  # the early note was replaced; the late one was not
+    assert "Kept the earlier handoff" in capsys.readouterr().out
+    later = RESPONSE.replace("## Goal", "## Goal\nRevised.", 1)
+    stream = ClaudeStream(response, tmp_path / "unit.exit", headings=list(REQUIRED_HEADINGS))
+    for text in (RESPONSE, later):
+        stream.feed(json.dumps({"type": "result", "subtype": "success", "result": text}) + "\n")
+    assert response.read_text() == later  # the last valid handoff wins
+
+
 def test_human_adjustment_blocks_next_agent_and_survives_runner_death(project):
     configure(project, review=True)
     original = (project / "task/next-step-codex.md").read_text()

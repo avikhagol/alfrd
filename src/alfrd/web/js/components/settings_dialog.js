@@ -1,6 +1,6 @@
 import { notificationPanel, mountNotifications } from "./notifications.js";
-// Studio settings (gear button): four tabs, one visible at a time — Projects,
-// Preferences, Browser data, Server. Loaded with import() on first open.
+// Studio settings (gear button): a fixed-size dialog, sections in a sidebar
+// (a strip on narrow screens), one visible at a time; only the section scrolls. Loaded with import() on first open.
 // `app` carries the shell functions the dialog drives (live, quit, project list …).
 
 import { $, esc, icon, bytes, storage, loadUi, saveUi, resetUi, loadCss } from "../utils/dom.js";
@@ -10,6 +10,7 @@ const TABS = [
   { id: "projects", label: "Projects", icon: "database" },
   { id: "prefs", label: "Preferences", icon: "gear" },
   { id: "notify", label: "Notifications", icon: "bell" },
+  { id: "plugins", label: "Plugins", icon: "metadata" },
   { id: "data", label: "Browser data", icon: "reset" },
   { id: "server", label: "Server", icon: "power" },
 ];
@@ -60,6 +61,7 @@ export function openSettings(ctx, app) {
         <label class="field"><span>Rows per page</span><select id="set-page" class="input sm">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
       </div>`,
     notify: notificationPanel(ctx),
+    plugins: '<p class="muted small">Loading plugins…</p>',
     data: `<p class="muted small">Filters, folded panels, zoom, selections, folder attachments and unsaved task drafts are remembered in this browser. <b class="tabular">${bytes(storage.size())}</b> saved.</p>
       <div class="row gap wrap"><button class="btn sm" id="set-reset-ui">${icon("reset")} Reset view state</button><button class="btn sm danger" id="set-clear" title="Also removes imported data, notes and unsaved task drafts">${icon("trash")} Clear all saved data</button></div>
       <p class="muted small">Reset view state keeps your drafts. Clear all saved data also removes unsaved task drafts and notes.</p>`,
@@ -73,27 +75,38 @@ export function openSettings(ctx, app) {
   };
   ctx.modal(`
     <header class="modal-h"><h2>Studio settings</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="seg set-tabs" role="tablist" aria-label="Settings sections">${TABS.map((t) => `<button type="button" role="tab" id="set-tab-${t.id}" aria-controls="set-panel-${t.id}" aria-selected="${t.id === section}" tabindex="${t.id === section ? 0 : -1}" class="${t.id === section ? "on" : ""}" data-tab="${t.id}">${icon(t.icon)}<span>${t.label}</span></button>`).join("")}</div>
-    <div class="modal-b set set-panels">${TABS.map((t) => `<section class="set-panel" role="tabpanel" id="set-panel-${t.id}" aria-labelledby="set-tab-${t.id}" ${t.id === section ? "" : "hidden"}>${panels[t.id]}</section>`).join("")}</div>`, (root, close) => {
+    <div class="set-body"><div class="set-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">${TABS.map((t) => `<button type="button" role="tab" id="set-tab-${t.id}" aria-controls="set-panel-${t.id}" aria-selected="${t.id === section}" tabindex="${t.id === section ? 0 : -1}" class="${t.id === section ? "on" : ""}" data-tab="${t.id}">${icon(t.icon)}<span>${t.label}</span></button>`).join("")}</div>
+    <div class="modal-b set set-panels">${TABS.map((t) => `<section class="set-panel" role="tabpanel" id="set-panel-${t.id}" aria-labelledby="set-tab-${t.id}" ${t.id === section ? "" : "hidden"}>${panels[t.id]}</section>`).join("")}</div></div>`, (root, close) => {
     const tabs = [...root.querySelectorAll("[role=tab]")];
+    let pluginsMounted = false;
+    const mountPlugins = () => {
+      if (pluginsMounted) return;
+      pluginsMounted = true;
+      import("./settings_plugins.js").then((m) => m.mountPlugins(ctx, root)).catch((error) => {
+        pluginsMounted = false;
+        $("#set-panel-plugins", root).textContent = `Couldn’t load plugins: ${error.message}`;
+      });
+    };
     const select = (id) => {
       tabs.forEach((b) => { const on = b.dataset.tab === id; b.classList.toggle("on", on); b.setAttribute("aria-selected", on); b.tabIndex = on ? 0 : -1; });
       root.querySelectorAll("[role=tabpanel]").forEach((p) => { p.hidden = p.id !== `set-panel-${id}`; });
       ui.section = id;
       saveUi("settings", ui, ["section"]);
+      if (id === "plugins") mountPlugins();
     };
     const bar = $(".set-tabs", root);
     bar.addEventListener("click", (e) => { const b = e.target.closest("[role=tab]"); if (b) select(b.dataset.tab); });
     // Manual activation: arrows/Home/End move focus; Enter/Space (native button click) selects.
     bar.addEventListener("keydown", (e) => {
       const i = tabs.indexOf(document.activeElement);
-      const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+      const to = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
       if (i < 0 || to === undefined) return;
       e.preventDefault();
       tabs[(to + tabs.length) % tabs.length].focus();
     });
     if (serverMode) drawProjects(ctx, app, root);
     mountNotifications(ctx, root);
+    if (section === "plugins") mountPlugins();
     $("#set-create", root)?.addEventListener("click", () => { close(); app.newProject(); });
     $("#set-open", root)?.addEventListener("click", () => { close(); app.openProject(); });
     $("#set-quit", root)?.addEventListener("click", () => { close(); app.quitServer(); });

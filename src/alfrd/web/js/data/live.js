@@ -12,7 +12,7 @@
 // tab listens. When the tab comes back, versions tell what was missed.
 
 import { server } from "./server.js";
-import { folderFingerprint, diffFingerprints } from "./folder_scan.js";
+let folderScan = null; // folder mode only: loads on first poll
 
 const RETRY_SSE_MS = 60000;
 const POLL_MIN_MS = 3000;
@@ -172,6 +172,7 @@ export function createLive(hooks) {
     for (const { project, handle } of folders) {
       try {
         if (handle.queryPermission && (await handle.queryPermission({ mode: "read" })) !== "granted") { needPermission = true; continue; }
+        const { folderFingerprint, diffFingerprints } = await (folderScan ||= import("./folder_scan.js"));
         const { prints, ms } = await folderFingerprint(handle);
         if (gen !== live.gen) return;
         slowest = Math.max(slowest, ms);

@@ -20,8 +20,9 @@ One iteration is **one agent turn**: `iterations` is the total number of turns,
 and the project's value is the maximum any task may use. The agent sequence is
 one pass and repeats until that total is reached, possibly stopping mid-pass;
 the default `[claude, codex]` with 10 iterations gives five Claude and five Codex
-turns. The first turn plans the task; later turns execute the incoming handoff
-and plan the next task; the last turn supplies a closing report.
+turns. The first turn starts on the task when it already says what to build, and
+plans first only when it is vague; later turns execute the incoming handoff and
+plan the next task; the last turn supplies a closing report.
 
 ## Agent sequences
 
@@ -264,8 +265,9 @@ with scheduler units. There is no second database execution loop.
 
 ## Turn contracts and responses
 
-The default headings and phase instructions remain unchanged. Override them in
-YAML when your workflow needs another response structure:
+Override the default headings and phase instructions in YAML when your workflow
+needs another response structure. For example, `first:` can make turn 1 always
+plan (the default starts work on a concrete task):
 
 ```yaml
 loop:

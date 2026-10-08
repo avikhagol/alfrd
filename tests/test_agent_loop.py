@@ -132,6 +132,8 @@ def test_five_cycles_feed_each_handoff_and_stop(project):
     assert [c["agent"] for c in calls] == ["claude", "codex"] * 5
     assert "Fix the widget" in calls[0]["prompt"]
     assert "first turn" in calls[0]["prompt"]
+    # A concrete task starts at once: the first turn no longer hands all implementation on.
+    assert "start doing it" in calls[0]["prompt"] and "leave implementation" not in calls[0]["prompt"]
     assert all("Agent: " + calls[i - 1]["agent"] in calls[i]["prompt"] for i in range(1, 10))
     assert "final turn" in calls[-1]["prompt"]
     assert folder.load()["status"] == "finished"

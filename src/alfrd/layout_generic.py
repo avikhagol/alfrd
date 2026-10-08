@@ -611,4 +611,50 @@ def panel_file(root: str | Path, entity: Mapping[str, Any], index: int, rel: str
     raise PermissionError(f"{rel} is not an image of this panel")
 
 
-__all__ = ["CLIENT_PANELS", "PANELS", "PANEL_TYPES", "flatten", "register_panel", "unregister_panel", "panel_file", "schema", "spec_for", "validate", "view", "walk"]
+#: Placeholders that name a folder path (several levels) rather than one folder.
+_PATH_VARS = {"workdir", "workdir_path", "meta_dir", "target_dir", "logs"}
+
+
+def declared_source(root: str | Path, rel: str) -> bool:
+    """Whether ``rel`` matches the ``source`` of a ``text`` or ``image`` panel in the project's views.
+
+    Without an entity the placeholders stay open (folder-path ones span levels, the
+    others one level); ``..`` and absolute paths never match. Callers still confine
+    the resolved path to ``root`` and check the file type.
+    """
+    from alfrd.studio_defs import _TOKEN
+
+    if not rel or rel.startswith(("/", "\\")) or ".." in Path(rel).parts:
+        return False
+    base = Path(root).resolve()
+    try:
+        spec = spec_for(base)
+        values = dict(base_values(base))
+    except Exception:  # noqa: BLE001 - a broken alfrd.yaml declares nothing
+        return False
+    for name, template in _vars(base, spec).items():
+        values[name] = _fill(template, values)
+    for name, panels in (spec.get("views") or {}).items():
+        if name == "vars" or not isinstance(panels, list):
+            continue
+        for panel in panels:
+            if not isinstance(panel, Mapping) or panel.get("panel") not in ("text", "image") or not panel.get("source"):
+                continue
+            text = _fill(str(panel["source"]), values)
+            text = text[2:] if text.startswith("./") else text
+            out = []
+            for token in _TOKEN.split(text.strip("/")):
+                if token == "*":
+                    out.append(r"[^/]*")
+                elif token == "?":
+                    out.append(r"[^/]")
+                elif token.startswith("{") and token.endswith("}"):
+                    out.append(r".+?" if token[1:-1] in _PATH_VARS else r"[^/]+")
+                elif token:
+                    out.append(re.escape(token))
+            if re.fullmatch("".join(out), rel):
+                return True
+    return False
+
+
+__all__ = ["CLIENT_PANELS", "PANELS", "PANEL_TYPES", "declared_source", "flatten", "register_panel", "unregister_panel", "panel_file", "schema", "spec_for", "validate", "view", "walk"]

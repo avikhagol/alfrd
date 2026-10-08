@@ -1,0 +1,7 @@
+.markdown-body { overflow: auto; padding: 16px; color: var(--text); overflow-wrap: anywhere; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body pre { overflow: auto; padding: 12px; background: var(--muted-bg); border-radius: 6px; }
+.markdown-body img { max-width: 100%; height: auto; }
+.markdown-body table { border-collapse: collapse; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 6px 10px; }
+.markdown-body a { color: var(--accent); }

@@ -127,7 +127,7 @@ function renderGeneric(el, ctx, t, head, main) {
   const entity = { project: t.project, target: t.name, project_code: projectCode, workdir };
   const gen = `${workdirGeneration(t.project)}|${Object.keys(index?.codes || {}).length}|${ui.templateFolder[t.id] || ""}`;
   const scope = `${t.project}|${t.id}|${JSON.stringify(entity)}|${ui.templateFolder[t.id] || ""}`;
-  const key = `${scope}|${gen}`;
+  const key = `${scope}|${gen}|${panels?.rendererGeneration() || 0}`;
   if (ui.view.key !== key) {
     // A live update re-reads the same context: keep the current render until the new one is ready.
     ui.view = ui.view.scope === scope ? { ...ui.view, key } : { key, scope, html: `<div class="card empty">Reading ${esc(t.name)}…</div>` };

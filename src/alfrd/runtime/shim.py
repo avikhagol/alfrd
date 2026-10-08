@@ -98,7 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.claude_stream:
         from alfrd.agent_io import ClaudeStream
 
-        stream = ClaudeStream(Path(args.stdout_file), exit_file)
+        stream = ClaudeStream(Path(args.stdout_file), exit_file,
+                              headings=json.loads(args.response_headings) if args.response_headings else None)
 
         def consume():
             try:

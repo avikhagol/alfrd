@@ -102,7 +102,7 @@ def test_plugin_theme_id_with_underscore_is_selectable(monkeypatch, tmp_path):
 
 def test_missing_at_send_time_never_breaks_page(studio_app, monkeypatch, tmp_path):
     app, _ = studio_app
-    monkeypatch.setattr(themes, "css_path", lambda _: tmp_path / "gone.css")
+    monkeypatch.setattr(themes, "css_path", lambda *_, **__: tmp_path / "gone.css")
     response = app.test_client().get("/studio/theme.css")
     assert response.status_code == 200
     assert b"color-scheme: dark" in response.data

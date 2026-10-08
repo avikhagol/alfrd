@@ -184,8 +184,10 @@ def agent_command(argv, model=None, stream=False, access=None, adapter=None, fal
 class ClaudeStream:
     """Keep raw events for inspection, log activity, capture only a successful result."""
 
-    def __init__(self, response: Path, exit_file: Path):
+    def __init__(self, response: Path, exit_file: Path, headings=None):
         self.response = response
+        self.headings = headings  # a handoff's required headings: a result with them is not replaced by one without
+        self.kept_valid = False
         self.events = exit_file.with_suffix(".events.jsonl").open("w", encoding="utf-8")
         self.metadata_path = exit_file.with_suffix(".agent.json")
         self.metadata = {"models": [], "result_seen": False, "error": None, "usage": None, "usage_source": "unavailable", "total_cost_usd": None}
@@ -239,9 +241,16 @@ class ClaudeStream:
                 self.metadata["error"] = event.get("result") or str(event.get("errors") or event.get("subtype"))
                 print(f"\n[claude] Error: {self.metadata['error']}", flush=True)
             elif isinstance(event.get("result"), str) and event["result"].strip():
-                from alfrd.agent_loop import atomic_text
+                from alfrd.agent_loop import atomic_text, validate_response
 
-                atomic_text(self.response, event["result"])
+                # Claude answers each finished background task with another result; a short
+                # status note after the report ("the report above stands") must not replace it.
+                valid = self.headings is not None and not validate_response(event["result"], self.headings)
+                if valid or not self.kept_valid:
+                    atomic_text(self.response, event["result"])
+                    self.kept_valid = self.kept_valid or valid
+                else:
+                    print("\n[alfrd] Kept the earlier handoff: a later Claude result has no handoff headings.", flush=True)
             else:
                 self.metadata["error"] = "Claude returned no final text"
             if not self.pending_tasks and not self.metadata["error"]:

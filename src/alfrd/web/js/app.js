@@ -8,7 +8,13 @@ import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
-import { canPickDirectory, pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle, forgetFolderHandles, ensureReadPermission, readFileFromHandle, readWholeFromHandle, readFileRange, writeFileToHandle } from "./data/folder_scan.js";
+// Folder mode (File System Access) loads on demand; every call below is async.
+let folderScan = null;
+const folderMod = () => (folderScan ||= import("./data/folder_scan.js"));
+const canPickDirectory = () => typeof window.showDirectoryPicker === "function";
+const [pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle, forgetFolderHandles, ensureReadPermission, readFileFromHandle, readWholeFromHandle, readFileRange, writeFileToHandle] =
+  "pickProjectFolder scanProjectFolder saveFolderHandle loadFolderHandle forgetFolderHandles ensureReadPermission readFileFromHandle readWholeFromHandle readFileRange writeFileToHandle"
+    .split(" ").map((name) => async (...args) => (await folderMod())[name](...args));
 import { createLive } from "./data/live.js";
 import { server } from "./data/server.js";
 import { mountFolderBrowser } from "./components/folder_browser.js";
@@ -23,7 +29,7 @@ import * as metadata from "./components/metadata.js";
 import * as results from "./components/results.js";
 import * as config from "./components/alfrd_config.js";
 import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace } from "./data/workspace.js";
-import { forgetPlan, releasePlanPin, activeJobs, loadPlan, plansAvailable, openLinkedRun } from "./components/plans.js";
+import { forgetPlan, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
 const DEMO_ALFRD_PROJECT = "avica-demo"; // data/demo.js's key; the demo data itself loads on demand
 
 export let VERSION = "standalone";
@@ -115,14 +121,14 @@ export const ctx = {
     renderFooter();
     if (state.consoleOpen) renderConsole();
   },
-  toast(text, tone = "info", { sticky = false, link = null } = {}) {
+  toast(text, tone = "info", { sticky = false, link = null, linkLabel = "View run" } = {}) {
     const host = $("#toasts");
     const el = document.createElement("div");
     el.className = `toast toast-${tone}`;
     el.setAttribute("role", "status");
     el.innerHTML = `${icon(tone === "fail" ? "xCircle" : tone === "ok" ? "checkCircle" : tone === "warn" ? "alert" : "info")}<span>${esc(text)}</span>`;
     if (link) {
-      const a = document.createElement("a"); a.className = "btn sm"; a.href = link; a.textContent = "View run"; el.appendChild(a);
+      const a = document.createElement("a"); a.className = "btn sm"; a.href = link; a.textContent = linkLabel; el.appendChild(a);
     }
     if (sticky) {
       const close = document.createElement("button"); close.className = "icon-btn sm"; close.setAttribute("aria-label", "Dismiss notification"); close.innerHTML = icon("close"); close.onclick = () => el.remove(); el.appendChild(close);
@@ -738,6 +744,7 @@ function openImport(tab = "files") {
       ${serverBlock}
     </div>`, (root, close) => {
     const report = $("#imp-report", root);
+    folderMod(); // load it now so the folder picker still has the click's user activation
     const replaceMode = () => ($("#imp-replace", root).checked ? true : false);
     const show = (bundle, entries) => {
       const msgs = bundle.messages.map((m) => `<li class="lvl-${m.level}">${esc(m.text)}</li>`).join("");
@@ -1029,7 +1036,25 @@ async function sha256(text) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Agent-loop runs of a project that a changed alfrd.yaml would stop before their next turn. */
+async function loopRunsInProgress(project) {
+  if (state.mode !== "server" || !plansAvailable(ctx, project)) return [];
+  await loadPlan(ctx, project, { quiet: true }).catch(() => null);
+  const s = planOf(project);
+  const runs = new Map();
+  for (const p of [...(s?.plans || []), s?.plan]) {
+    if (p?.id && !runs.has(p.id) && ["running", "paused", "interrupted"].includes(p.status) && (p.loop || p.turns)) runs.set(p.id, p);
+  }
+  return [...runs.values()];
+}
+
 async function saveManifest(project, text, { force = false } = {}) {
+  // The runner stops a loop whose alfrd.yaml changed (see scheduler.manifest_hash): ask first.
+  const runs = force ? [] : await loopRunsInProgress(project);
+  if (runs.length && !confirm(`A run is in progress:\n${runs.map((p) => `• ${p.target || p.id} (${p.status}${p.turn ? `, turn ${p.turn}/${p.turns}` : ""})`).join("\n")}\n\n`
+    + `Saving alfrd.yaml stops ${runs.length > 1 ? "them before their" : "it before its"} next turn. To continue, restore the file and resume.\n\nSave anyway?`)) {
+    throw new Error("a run is in progress; alfrd.yaml was left unchanged");
+  }
   const tree = state.trees[project] || {};
   const info = manifestToWorkflows(parseYaml(text), tree.manifestFile || "alfrd.yaml");
   if (state.mode === "server" && tree.provider === "server") {
@@ -2002,6 +2027,10 @@ async function boot() {
   }
   if (state.mode !== "server") resolveInitialProject(); // loadServer resolves it for server mode
   setActive(state.selectedProject);
+  if (session && !state.demoEnabled && !server.authRequired) {
+    import("./components/plugin_api.js").then(async (p) => p.activateAll(await p.fetchPlugins(), ctx))
+      .catch((error) => { if (!server.authRequired) ctx.log("error", error.message, "plugins"); });
+  }
   scheduleRender();
   live.start();
 }

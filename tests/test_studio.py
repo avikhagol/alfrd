@@ -40,10 +40,11 @@ def test_index_references_local_assets_only():
     assert 'src="js/app.js"' in html and 'type="module"' in html
     assert 'href="css/studio.css"' in html
     for path in _web_files():
-        if path.suffix in {".html", ".js", ".css"}:
+        if path.suffix in {".html", ".js", ".mjs", ".css"}:
             text = path.read_text(encoding="utf-8")
             # No third-party runtime scripts, stylesheets or fonts.
-            assert not re.search(r"""(src|href)\s*=\s*["']https?://""", text), path
+            # Ordinary documentation anchors do not fetch runtime assets.
+            assert not re.search(r"""(?:\bsrc|<link\b[^>]*\bhref)\s*=\s*["']https?://""", text), path
             assert not re.search(r"""import\s[^;]*from\s+["']https?://""", text), path
             assert "@import url(" not in text, path
 
@@ -67,6 +68,8 @@ LAZY_MODULES = {
     "js/components/folder_create.js", "js/components/settings_dialog.js", "js/utils/keep_view.js",
     "js/data/run_history.js",
     "js/components/yaml_form.js", "js/data/yaml_form.js", "js/data/demo.js",
+    "js/data/folder_scan.js",
+    "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
 }
 
 
@@ -112,6 +115,8 @@ def test_startup_payload_under_178kb_compressed():
     # 188,922 (task-notify-finish t004-claude, 2026-10-08). Next step: lazy-load the Settings panel.
     # Header pickers (components/picker.js, utils/text_fit.js) were paid for by loading the demo
     # data (data/demo.js) on demand: no budget change (2026-10-08).
+    # Plugins Phase 3: folder mode (data/folder_scan.js, ~6.5 KiB) loads on demand to pay for the
+    # plugin boot hook: no budget change (task-plugins-p3p5, 2026-10-08).
     assert total < 185 * 1024, f"{total} bytes gzip"
 
 
@@ -147,7 +152,14 @@ def test_lazy_payload_under_106kb_compressed():
     # panels.js, on demand only: 122 KiB (124,928 bytes); measured 124,465 (task-plugins-p1p2, 2026-10-08).
     # Phase 2 themes: the on-demand Daylight Orbit palette and theme metadata add 802 B.
     # 123 KiB (125,952 bytes); measured 125,267. Startup remains capped at 185 KiB.
-    assert total < 123 * 1024, f"{total} bytes gzip"
+    # Plugins Phase 3 (D1): folder mode (data/folder_scan.js, 6,649 B) moved here from startup to pay
+    # for the plugin boot hook: 130 KiB (133,120 bytes); measured 132,113 (task-plugins-p3p5, 2026-10-08).
+    # T3.8: pinned DOMPurify ES module (~11 KiB gzip), its complete dual licence (~4 KiB)
+    # and provenance add ~15 KiB on demand: 130 → 146 KiB. The earlier ~143 KiB estimate
+    # omitted the full licence and underestimated this current sanitizer build.
+    # T3.7/T3.9–T3.11: the lazy browser API, conversion controls, Settings/Diagnostics and
+    # theme-token styles add ~7 KiB: 146 → 152 KiB; measured 155,086 bytes. Startup cap unchanged.
+    assert total < 152 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
