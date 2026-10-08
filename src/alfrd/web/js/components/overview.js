@@ -562,7 +562,7 @@ const runLoads = new Map(); // project -> {state: "loading"|"ok"|"error", status
 const runLabel = (s) => RUN_STATUS[s] || s;
 
 export function forgetProject(project) {
-  runLoads.delete(project); runFilters.delete(project); homeAsked.delete(project); histPage.delete(project); taskLoads.delete(project);
+  runLoads.delete(project); runFilters.delete(project); homeAsked.delete(project); histPage.delete(project);
   [...summaries.keys()].filter((k) => k.startsWith(`${project}|`)).forEach((k) => summaries.delete(k));
   if (runGridFocus?.project === project) runGridFocus = null;
 }
@@ -656,18 +656,6 @@ function summaryOf(ctx, project, got, ref) {
   return known?.run || null;
 }
 
-// Tasks of an agent-loop project (own turn count and worktree); a click selects that task as the header target.
-const taskLoads = new Map(); // project -> {at, tasks, max_iterations, iteration_unit}
-function taskStrip(ctx, project) {
-  const got = taskLoads.get(project);
-  if (!got || (!got.loading && Date.now() - got.at > 30000)) {
-    taskLoads.set(project, { ...(got || {}), loading: true, at: Date.now() });
-    server.tasks(project).then((r) => { taskLoads.set(project, { ...r, at: Date.now() }); ctx.update(); },
-      () => taskLoads.set(project, { tasks: [], at: Date.now() }));
-  }
-  return runGridMod.renderTaskStrip(project, ctx.projectName(project), got, headerTarget(ctx, project), runLabel);
-}
-
 /** Name of the header's target when it belongs to project (loop tasks are targets). */
 function headerTarget(ctx, project) {
   const t = ctx.target();
@@ -679,7 +667,7 @@ function runSection(ctx, project, index) {
   const f = runFilters.get(project) || runGridMod.FILTERS_DEFAULT;
   if (isLoopProject(ctx, project)) {
     const runs = runsOf(project);
-    return taskStrip(ctx, project) + runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
+    return runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
       { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all", setup: hasSetup(ctx, project),
         target: headerTarget(ctx, project), targetOnly: ui.targetOnly });
   }
@@ -707,10 +695,6 @@ function bindRunGrids(el, ctx) {
   on(el, "click", "[data-rg-reset]", (e, b) => { runFilters.delete(b.dataset.rgReset); runLoads.delete(b.dataset.rgReset); runGridFocus = null; renderGrid(el, ctx); });
   on(el, "click", "[data-rg-retry]", (e, b) => { runLoads.delete(b.dataset.rgRetry); fetchRuns(ctx, b.dataset.rgRetry); });
   on(el, "click", "[data-rg-cell]", (e, b) => openRunCell(ctx, b.dataset));
-  on(el, "click", "[data-rg-task]", (e, b) => {
-    const t = ctx.state.targets.find((x) => x.project === b.dataset.rgTask && x.name === b.dataset.task);
-    if (t) ctx.selectTarget(t.id);
-  });
   on(el, "click", "[data-rg-scope]", (e, b) => {
     ui.targetOnly = b.dataset.scope === "target";
     histPage.delete(b.dataset.rgScope);

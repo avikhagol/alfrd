@@ -8,36 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from alfrd.gui.services import resolve_selected_manifest
-from alfrd.manifest import ManifestError, load_manifest
-
-CONFIG_COLUMNS = (
-    {"key": "step", "label": "Step"},
-    {"key": "parameter", "label": "Parameter"},
-    {"key": "source", "label": "Source"},
-    {"key": "value", "label": "Value"},
-)
-RESULT_LABELS = {
-    "dataset": "Dataset",
-    "step": "Step",
-    "status": "Status",
-    "attempt": "Attempt",
-    "duration_seconds": "Duration (seconds)",
-    "finished_at": "Finished",
-    "result_summary": "Result",
-    "error_summary": "Error",
-    "artifact_count": "Artifacts",
-}
-DEFAULT_RESULT_COLUMNS = tuple(RESULT_LABELS)
-
-
-def _table(title: str, columns, rows=None, error: str | None = None) -> dict[str, Any]:
-    return {
-        "title": title,
-        "columns": [dict(column) for column in columns],
-        "rows": list(rows or []),
-        "error": error,
-    }
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -48,101 +18,9 @@ def _iso(value: datetime | None) -> str | None:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def _duration(started: datetime | None, finished: datetime | None) -> float | None:
-    if started is None or finished is None:
-        return None
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    if finished.tzinfo is None:
-        finished = finished.replace(tzinfo=timezone.utc)
-    return (finished - started).total_seconds()
-
-
 def _last_line(value: str | None) -> str | None:
     lines = [line.strip() for line in (value or "").splitlines() if line.strip()]
     return lines[-1] if lines else None
-
-
-def build_summaries(project: dict[str, Any], runtime_service) -> dict[str, dict[str, Any]]:
-    """Build the two dashboard tables without importing consumer code."""
-
-    config = _table("Configuration snapshot", CONFIG_COLUMNS)
-    result_columns = list(DEFAULT_RESULT_COLUMNS)
-    result_title = "Latest results"
-    root_path = project.get("root_path")
-    manifest = None
-    if not root_path:
-        config["error"] = "No project manifest path is available."
-    else:
-        try:
-            manifest = load_manifest(resolve_selected_manifest(Path(root_path)))
-        except (ManifestError, OSError, ValueError) as error:
-            config["error"] = str(error)
-
-    if manifest is not None:
-        raw_summaries = manifest.extra.get("summaries", {})
-        config_spec = raw_summaries.get("config", {})
-        config["title"] = config_spec.get("title", config["title"])
-        config["rows"] = [
-            {
-                "step": row["step"],
-                "parameter": row["parameter"],
-                "source": row.get("source", "manifest snapshot"),
-                "value": row["value"],
-            }
-            for row in config_spec.get("rows", [])
-        ]
-        result_spec = raw_summaries.get("result", {})
-        result_title = result_spec.get("title", result_title)
-        result_columns = list(result_spec.get("columns", result_columns))
-
-    result = _table(
-        result_title,
-        ({"key": key, "label": RESULT_LABELS[key]} for key in result_columns),
-    )
-    if runtime_service is None:
-        result["error"] = "Result persistence is not configured."
-        return {"config": config, "result": result}
-
-    try:
-        datasets = {
-            item.id: item.external_id
-            for item in runtime_service.list_datasets(project["id"])
-        }
-        runs = runtime_service.list_runs(project_id=project["id"])
-    except Exception as error:
-        # The dashboard must remain available if runtime rows are stale or an
-        # independently managed catalog project has no matching runtime row.
-        result["error"] = f"Could not read runtime results: {error}"
-        return {"config": config, "result": result}
-
-    rows: list[dict[str, Any]] = []
-    # list_runs is oldest first, matching the matrix's latest-run view.
-    latest_runs = {(run.workflow_id, run.dataset_id): run for run in runs}
-    for run in latest_runs.values():
-        latest = {}
-        for execution in run.step_executions:
-            key = execution.step_definition.key
-            current = latest.get(key)
-            if current is None or execution.attempt > current.attempt:
-                latest[key] = execution
-        for key, execution in sorted(latest.items(), key=lambda item: item[1].sequence):
-            values = {
-                "dataset": datasets.get(run.dataset_id, run.dataset_id),
-                "step": key,
-                "status": execution.status,
-                "attempt": execution.attempt,
-                "duration_seconds": _duration(execution.started_at, execution.finished_at),
-                "finished_at": _iso(execution.finished_at),
-                "result_summary": _last_line(execution.stdout),
-                "error_summary": execution.error,
-                "artifact_count": sum(
-                    artifact.step_execution_id == execution.id for artifact in run.artifacts
-                ),
-            }
-            rows.append({column: values[column] for column in result_columns})
-    result["rows"] = rows
-    return {"config": config, "result": result}
 
 
 def _json_value(value: Any, fallback: Any = None) -> Any:
@@ -339,4 +217,4 @@ def build_dataset_summary(runtime_service, project_id: str, workflow_id: str, da
     return _runtime_dataset_summary(runtime_service, dataset, workflow)
 
 
-__all__ = ["build_dataset_summary", "build_summaries"]
+__all__ = ["build_dataset_summary"]

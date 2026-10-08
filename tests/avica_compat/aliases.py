@@ -8,7 +8,7 @@ ALFRD-side public names exist at the documented import paths.
 
 from __future__ import annotations
 
-from alfrd.core.config import BaseConfig, CONFIG_MAPPING, Config
+from alfrd.config import BaseConfig, CONFIG_MAPPING, Config
 from alfrd.core.logframe import LogFrame as LogFramework
 from alfrd.core.pipeline import BatchResult as AvicaResult
 from alfrd.core.pipeline import PipelineCore as AvicaPipelineCore

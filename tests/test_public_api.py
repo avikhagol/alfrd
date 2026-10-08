@@ -7,55 +7,47 @@ import alfrd.core
 def test_documented_public_imports():
     from alfrd import (
         BaseConfig,
+        CONFIG_MAPPING,
         Config,
         ArtifactRef,
         BatchResult,
-        Pipeline,
+        LogFrame,
         PipelineContext,
         PipelineCore,
         PipelineStepBase,
         PipelineStepValidatorBase,
         PipelineStepValidatorResult,
-        Project,
         ProjectManifest,
         RepositoryService,
         StepResult,
-        Workflow,
         get_alfrd_dir,
-        get_project_dir,
-        register,
-        validate,
-        validator,
     )
-    from alfrd.core import Project as CoreProject, Workflow as CoreWorkflow
-    from alfrd.core.config import Config as CoreConfig
-    from alfrd.core.manifest import ProjectManifest as CoreProjectManifest
-    from alfrd.core.repository import RepositoryService as CoreRepositoryService
-    from alfrd.lib import LogFrame
+    from alfrd.config import Config as ConfigModuleConfig
+    from alfrd.core import LogFrame as CoreLogFrame, PipelineCore as CorePipelineCore
+    from alfrd.core.logframe import LogFrame as LogFrameModuleLogFrame
+    from alfrd.manifest import ProjectManifest as ManifestModuleProjectManifest
+    from alfrd.repository import RepositoryService as RepositoryModuleRepositoryService
 
-    assert Pipeline is not None
     assert all(
         item is not None
         for item in (
             ArtifactRef,
             BatchResult,
             PipelineContext,
-            PipelineCore,
             PipelineStepBase,
             PipelineStepValidatorBase,
             PipelineStepValidatorResult,
             StepResult,
         )
     )
-    assert LogFrame is not None
-    assert Project is CoreProject
-    assert Config is CoreConfig
+    assert LogFrame is CoreLogFrame is LogFrameModuleLogFrame
+    assert PipelineCore is CorePipelineCore
+    assert Config is ConfigModuleConfig
     assert BaseConfig is type(Config)
-    assert ProjectManifest is CoreProjectManifest
-    assert RepositoryService is CoreRepositoryService
-    assert Workflow is CoreWorkflow
-    assert callable(register) and callable(validate) and callable(validator)
-    assert get_project_dir() == get_alfrd_dir() / "projects"
+    assert isinstance(CONFIG_MAPPING, dict)
+    assert ProjectManifest is ManifestModuleProjectManifest
+    assert RepositoryService is RepositoryModuleRepositoryService
+    assert isinstance(get_alfrd_dir(), Path)
 
 
 def test_version_uses_four_components():
@@ -91,4 +83,4 @@ def test_lazy_exports_resolve():
     runtime = importlib.import_module("alfrd.runtime")
     assert all(hasattr(runtime, name) for name in runtime.__all__)
     assert all(hasattr(alfrd.core, name) for name in alfrd.core.__all__)
-    assert alfrd.Pipeline is alfrd.Pipeline
+    assert alfrd.PipelineCore is alfrd.PipelineCore

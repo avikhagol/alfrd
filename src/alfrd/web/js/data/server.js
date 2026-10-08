@@ -110,6 +110,7 @@ export const server = {
   planReject(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/reject`, payload); },
   planTurns(project, id) { return getJson(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns`); },
   planTurnSet(project, id, step, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns/${encodeURIComponent(step)}`, payload); },
+  system() { return getJson("/studio/system"); },
   tasks(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/tasks`); },
   quickstart(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/quickstart`); },
   quickstartApply(project, form, values) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/quickstart/${encodeURIComponent(form)}`, { values }); },

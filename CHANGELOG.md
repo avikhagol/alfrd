@@ -19,12 +19,25 @@
 - **Plugins.** New `alfrd plugin list|info|install|remove|update|enable|disable|theme|new`. Plugins are Python packages with an `alfrd.plugins` entry point (`from alfrd.extensions import Plugin, PanelSpec`), installed into `~/.local/share/alfrd/plugins/site` (never alfrd's own environment) with alfrd's packages pinned, one install at a time, and removed file by file. Plugins run as you with access to your files: `install` warns and asks (`--yes`). A plugin that fails to load is listed with its error and never stops `alfrd serve` or the CLI; `alfrd serve --safe-mode` / `ALFRD_NO_PLUGINS=1` skips them all. Plugins can add `views.metadata` panel kinds and `alfrd <id> …` commands; browser viewers and converters activate independently, and Settings → Plugins includes Diagnostics and a persistent theme picker. See [docs/plugins.md](docs/plugins.md).
 - **Themes.** A light theme, **Daylight Orbit**: `alfrd plugin theme daylight-orbit`, then reload the Studio (no restart). **Obsidian Orbit** stays the default and looks as before. Drop-in themes go in `~/.local/share/alfrd/themes/<id>/theme.css`; `alfrd plugin new <id> --kind theme` writes one with every colour token.
 - **Install plugins from the Studio.** Settings → Plugins → Browse: choose a catalog (no default), review hash-pinned versions and dependencies, or use an advanced source with typed plugin-id confirmation. Install/update/remove run one at a time with a 10-minute timeout, live progress/logs and a Studio audit log (`plugins/audit.jsonl`; CLI changes are not recorded there). `--no-gui-install` shows terminal commands instead. Restart now preserves the login session, checks health before reloading, and confirms unsaved workflow edits.
-- Studio Overview, agent loops: **All targets / Target only** above the run history (as in Results), where *Target only* keeps the runs of the task selected in the header. Clicking a task chip selects that task in the header instead of typing its name into the search box.
+- Studio Overview, agent loops: **All targets / Target only** above the run history (as in Results), where *Target only* keeps the runs of the task selected in the header. The row of task chips is gone; pick a task in the header instead.
+- Studio: **Settings → All settings** shows the top-level keys; sections (loop, execution, workflows, …) open in **Advanced…**, a dialog with one section at a time and a filter. Remove buttons sit at the right of each item.
+- Studio: when browser notifications are blocked, Settings → Notifications names the address to unblock and offers **Ask again**; the switch turns on by itself once they are allowed.
+- Studio footer: CPU and RAM of the machine running `alfrd serve` (every 5 s while the tab is visible; `GET /api/studio/system`).
 - **Faster start-up.** `import alfrd` and `alfrd.runtime` load their public API on first use, so the CLI, plan runners and each turn's shim no longer import pandas and SQLAlchemy at start (shim 0.9 s → 0.07 s, `alfrd --help` 0.7 s → 0.3 s). The runner wakes as soon as a turn's process exits, and checks whether alfrd.yaml changed without re-parsing it on every tick.
 - **Fix: usage of two plans running at once.** Each command's processes are marked with `ALFRD_UNIT=<plan id>/<unit id>`; the unit id alone repeats across plans, so two plans with the same target and step counted each other's processes.
 - **Fix: retrying the right plan.** Plans created within the same second are now ordered by creation time (`created_ns`), so *Retry failed* continues from the latest one.
 - Tests run in parallel (`pytest -n auto -m "not serial"`, then `pytest -m serial`; `pytest-xdist` is in the `dev` extra), and on every push and pull request on GitHub. The full suite takes about a minute instead of twelve.
 - Studio: `views.metadata` accepts panel kinds registered by plugins, and an unknown kind lists the known ones. Images and PDFs declared as project files open in a viewer from the full-file view.
+
+### Removed
+
+Code nothing in alfrd (or AVICA) used any more:
+
+- The 0.1 project CLI: `alfrd init`, `ls`, `lsp`, `run`, `add`, `rm`, `inspect`, `nrun`, with the decorator API behind it (`alfrd.plugins`: `register`, `validate`, `validator`; `alfrd.Pipeline`, `PipelineRun`), `alfrd.core.project`, `alfrd.core.inspect` and `alfrd.core.workflow` (`WorkflowManager`). Use `PipelineCore` for Python pipelines and `alfrd.yaml` for projects.
+- The old Flask dashboard (`/dashboard/` pages, templates and CSS); the Studio is the UI. `/` opens the Studio; `/api/*` is unchanged.
+- `alfrd.core.viewers`, `alfrd.core.artifacts` and `alfrd.runtime.adapters` (`RuntimePipelineRunner` and the runtime event sinks), `alfrd.util`, the alias modules `alfrd.lib`, `alfrd.core.logger`, `alfrd.core.config`, `alfrd.core.manifest`, `alfrd.core.repository`, and `ALFRD_DIR`, `PROJ_DIR`, `get_project_dir`, `ProjectSchema`.
+- An agent-loop run still active from before the current alfrd.yaml hash (comments and `history` ignored) now stops as changed; start it again.
+- `alfrd gui` stays as an alias of `alfrd serve`.
 
 ## [0.2.2]
 

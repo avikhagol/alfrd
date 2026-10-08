@@ -2,10 +2,7 @@ from importlib import resources
 
 
 EXPECTED_RESOURCES = (
-    "templates/dashboard/index.htm",
-    "templates/dashboard/layout.htm",
-    "templates/dashboard/project_details.htm",
-    "static/alfrd.css",
+    "templates/auth/landing.htm",
     "model/schema.sql",
 )
 

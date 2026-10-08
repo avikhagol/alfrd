@@ -11,7 +11,7 @@ let requests = 0;
 class FakeNotification {
   static permission = "default";
   static sent = [];
-  static async requestPermission() { requests++; return this.permission = "granted"; }
+  static async requestPermission() { requests++; return this.permission === "denied" ? "denied" : (this.permission = "granted"); } // a blocked site stays blocked
   constructor(title, options) { Object.assign(this, { title, options }); FakeNotification.sent.push(this); }
   close() { this.closed = true; }
 }
@@ -23,7 +23,7 @@ const { loadPlan, openLinkedRun, forgetPlan } = await import("../../src/alfrd/we
 const flush = () => new Promise((r) => setTimeout(r, 180));
 
 test("mounting the toggle never requests permission; enabling does, denial stays off", async () => {
-  const handlers = {}, toggle = { addEventListener: (kind, fn) => handlers[kind] = fn }, hint = {};
+  const handlers = {}, toggle = { addEventListener: (kind, fn) => handlers[kind] = fn }, hint = { addEventListener() {} };
   const root = { querySelector: (sel) => ({ "[data-notify-browser]": toggle, "[data-notify-hint]": hint })[sel] };
   mountNotifications({ toast() {} }, root);
   assert.equal(requests, 0); assert.equal(toggle.checked, false);
@@ -33,6 +33,20 @@ test("mounting the toggle never requests permission; enabling does, denial stays
   assert.equal(await setBrowserNotifications(true), false); await flush();
   assert.equal(browserEnabled(), false); assert.equal(requests, 1);
   globalThis.isSecureContext = false; assert.equal(browserState(), "unsupported"); globalThis.isSecureContext = true;
+});
+test("blocked: the hint names the site and Ask again asks the browser once more", async () => {
+  FakeNotification.permission = "denied";
+  const toggle = { addEventListener() {} }, hintHandlers = {}, toasts = [];
+  const hint = { addEventListener: (kind, fn) => hintHandlers[kind] = fn };
+  const root = { querySelector: (sel) => ({ "[data-notify-browser]": toggle, "[data-notify-hint]": hint })[sel] };
+  mountNotifications({ toast: (...a) => toasts.push(a) }, root);
+  assert.match(hint.innerHTML, /Blocked for <span class="mono">this site/);
+  assert.match(hint.innerHTML, /data-notify-ask/);
+  const before = requests;
+  await hintHandlers.click({ target: { closest: (sel) => (sel === "[data-notify-ask]" ? {} : null) } });
+  assert.equal(requests, before + 1);
+  assert.equal(toasts.length, 1, "still blocked: says so");
+  FakeNotification.permission = "default";
 });
 test("route matching, sticky toasts and browser click preserve the exact run/unit link", async () => {
   const original = server.notificationRoutes, toasts = [];

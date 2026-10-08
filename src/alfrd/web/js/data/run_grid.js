@@ -329,19 +329,3 @@ export function cellDetail(projectName, found, logHtml = "", now = Date.now()) {
     ${cell.error ? dd("Error", `<pre class="code small">${esc(cell.error)}</pre>`) : ""}
   </dl>${logHtml ? `<div class="row gap">${logHtml}</div>` : cell.status === "na" ? "" : '<p class="muted small">No log recorded for this step yet.</p>'}`;
 }
-
-/** Tasks of an agent-loop project (own turn count and worktree) above its run history. active: the header target's name; a click selects that target. */
-export function renderTaskStrip(project, name, got, active, runLabel = (s) => s) {
-  const tasks = got?.tasks || [];
-  if (!got?.max_iterations || !tasks.length) return "";
-  const unit = got.iteration_unit === "turns" ? "turns" : "iterations";
-  return `<div class="task-strip" role="group" aria-label="Tasks of ${esc(name)}">${tasks.map((t) => {
-    const ws = t.workspace;
-    const tip = [`${t.iterations ?? "?"} of at most ${got.max_iterations} ${unit}`, ws ? `worktree ${ws.branch}${ws.changed ? `, ${ws.changed} uncommitted changes` : ""}` : null,
-      `${t.runs || 0} run${t.runs === 1 ? "" : "s"}`, t.error].filter(Boolean).join(" · ");
-    return `<button class="task-chip${active === t.name ? " on" : ""}" data-rg-task="${esc(project)}" data-task="${esc(t.name)}" aria-pressed="${active === t.name}" title="${esc(`${tip} · select in the header`)}">
-      <b>${esc(t.name)}</b><span class="muted small">${t.iterations ?? "?"}/${got.max_iterations}</span>${t.over_limit ? `<span class="badge tone-warn">over max</span>` : ""}
-      ${ws ? `<span class="mono small">${icon("split")}${esc(ws.branch || "")}${ws.changed ? ` · ${ws.changed}` : ""}</span>` : ""}
-      ${t.latest ? `<span class="small">${esc(runLabel(t.latest.status))}</span>` : `<span class="muted small">no runs</span>`}</button>`;
-  }).join("")}</div>`;
-}

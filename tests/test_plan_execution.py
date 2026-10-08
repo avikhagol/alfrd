@@ -542,3 +542,34 @@ def test_fast_runner_is_not_mistaken_for_one_still_starting(tmp_path, monkeypatc
     with pytest.raises(OSError):
         scheduler.spawn_runner(folder)
     assert not scheduler._starting(folder.load())
+
+
+def test_a_copied_project_never_adopts_the_originals_commands(tmp_path):
+    """A copied project folder keeps the original's pids in its running units."""
+    import subprocess
+    import socket
+
+    original, copy = tmp_path / "original", tmp_path / "copy"
+    copy.mkdir()
+    procs = {}
+    for name, root in (("theirs", original), ("ours", copy)):
+        procs[name] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                       env={**os.environ, "ALFRD_ROOT": str(root)}, start_new_session=True)
+    try:
+        assert _wait(lambda: all(scheduler.proc_start(p.pid) for p in procs.values()))
+        for name, proc in procs.items():
+            assert scheduler.pid_alive(proc.pid)  # alive either way
+            assert scheduler.pid_alive(proc.pid, root=copy) is (name == "ours")
+            assert scheduler.owned_by(proc.pid, copy) is (name == "ours")
+        # Resuming after a killed runner or server is unchanged: the copy's own command is re-adopted.
+        folder = scheduler.PlanDir(copy, "p")
+        folder.path.mkdir(parents=True)
+        folder.save({"id": "p", "status": "running", "created": "2026-10-09T10:00:00"})
+        folder.save_unit({"id": "0001-t", "status": "running", "pid": procs["ours"].pid,
+                          "proc_start": scheduler.proc_start(procs["ours"].pid), "host": socket.gethostname()})
+        assert [a["action"] for a in scheduler.reconcile(copy, spawn=False)] == ["needs runner"]
+        assert procs["theirs"].poll() is None, "the original's command is never signalled"
+    finally:
+        for proc in procs.values():
+            proc.kill()
+            proc.wait(5)

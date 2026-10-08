@@ -3,7 +3,6 @@
 # Exports load on first use (PEP 562): the shim and the plan runner import
 # ``alfrd.runtime.<module>`` directly and must not pay for SQLAlchemy at start-up.
 _LAZY = {
-    ".adapters": ("CompositeEventSink", "RuntimeEventSink", "RuntimePipelineRunner", "artifact_ref_from_model",),
     ".models": ("Artifact", "AuditEvent", "Dataset", "Project", "Run", "StepDefinition", "StepExecution", "WorkflowDefinition",),
     ".matrix": ("MATRIX_STATUSES", "Matrix", "MatrixCell", "MatrixQueryService", "MatrixReader", "MatrixRow", "MatrixSummary", "cell_detail", "export_matrix_csv", "export_matrix_details_csv",),
     ".protocols": ("RuntimeOperations", "StepWorker",),
@@ -31,13 +30,15 @@ def __dir__():
 __all__ = [
     "Artifact",
     "AuditEvent",
-    "CompositeEventSink",
+    "cell_detail",
     "Dataset",
     "DuplicateRunError",
+    "export_matrix_csv",
+    "export_matrix_details_csv",
     "InvalidTransition",
     "LocalSubprocessWorker",
-    "MATRIX_STATUSES",
     "Matrix",
+    "MATRIX_STATUSES",
     "MatrixCell",
     "MatrixQueryService",
     "MatrixReader",
@@ -46,10 +47,9 @@ __all__ = [
     "ParameterValidationError",
     "Project",
     "Run",
+    "run_workflow",
     "RuntimeNotFound",
     "RuntimeOperations",
-    "RuntimeEventSink",
-    "RuntimePipelineRunner",
     "RuntimeService",
     "RuntimeStore",
     "SCHEMA_VERSION",
@@ -59,9 +59,4 @@ __all__ = [
     "StepExecution",
     "StepWorker",
     "WorkflowDefinition",
-    "artifact_ref_from_model",
-    "cell_detail",
-    "export_matrix_csv",
-    "export_matrix_details_csv",
-    "run_workflow",
 ]

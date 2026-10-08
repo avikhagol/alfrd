@@ -90,7 +90,7 @@ def create_app(config=None):
         app.config["ACCESS_TOKEN"] = new_token()
     app.session_interface = AlfrdSessionInterface()
 
-    from alfrd.gui.routes import api, control, dashboard, system
+    from alfrd.gui.routes import api, control, system
     from alfrd.gui.studio import studio, studio_api
     import alfrd.gui.studio_plans  # noqa: F401  (adds the plan routes to studio_api)
     import alfrd.gui.studio_targets  # noqa: F401  (adds the targets CSV routes to studio_api)
@@ -115,7 +115,6 @@ def create_app(config=None):
     app.register_blueprint(studio_api)
     app.register_blueprint(api_v1)
     app.register_blueprint(api)
-    app.register_blueprint(dashboard)
     app.register_blueprint(system)
     app.register_blueprint(control)
 
@@ -136,26 +135,13 @@ def create_app(config=None):
         reader = SqlAlchemyCatalogReader()
     app.extensions["alfrd_catalog_reader"] = reader
 
-    from alfrd.gui.security import (
-        csrf_token,
-        mutations_enabled,
-        protect_mutation,
-        runtime_enabled,
-    )
+    from alfrd.gui.security import protect_mutation
 
     from alfrd.gui.auth import require_access
 
     # Order matters: an unauthenticated POST gets 401 before the CSRF check's 403.
     app.before_request(require_access)
     app.before_request(protect_mutation)
-
-    @app.context_processor
-    def dashboard_runtime_context():
-        return {
-            "runtime_enabled": runtime_enabled(),
-            "mutations_enabled": mutations_enabled(),
-            "csrf_token": csrf_token(),
-        }
 
     @app.errorhandler(HTTPException)
     def api_http_error(error):

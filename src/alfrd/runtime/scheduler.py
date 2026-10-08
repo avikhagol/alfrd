@@ -89,9 +89,13 @@ def _parse_stamp(value: str | None) -> datetime | None:
     return stamp
 
 
-def pid_alive(pid: int | None, start: str | None = None, host: str | None = None) -> bool:
-    """Is ``pid`` (on this host, started at ``start``) still running and not a zombie?"""
+def pid_alive(pid: int | None, start: str | None = None, host: str | None = None, root: str | Path | None = None) -> bool:
+    """Is ``pid`` (on this host, started at ``start``) still running and not a zombie?
+
+    With ``root``: and not a command of another project (see :func:`owned_by`)."""
     if not pid or (host and host != socket.gethostname()):
+        return False
+    if root is not None and not owned_by(pid, root):
         return False
     try:
         os.kill(int(pid), 0)
@@ -109,6 +113,27 @@ def pid_alive(pid: int | None, start: str | None = None, host: str | None = None
             return False
         if start and proc_start(int(pid)) != start:
             return False
+    return True
+
+
+def owned_by(pid: int | None, root: str | Path) -> bool:
+    """False when ``pid`` runs a command of another project.
+
+    Every command, and whatever it starts, inherits ``ALFRD_ROOT``. A copied project
+    folder keeps the original's pids in its units; without this check its runner would
+    adopt, and could signal, the original's agents. True when unknown (no /proc, not
+    readable, no ``ALFRD_ROOT``), as before.
+    """
+    try:
+        environ = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return True
+    for item in environ.split(b"\0"):
+        if item.startswith(b"ALFRD_ROOT="):
+            theirs = Path(os.fsdecode(item[len(b"ALFRD_ROOT="):]))
+            with contextlib.suppress(OSError):
+                return theirs.resolve() == Path(root).resolve()
+            return theirs == Path(root)
     return True
 
 
@@ -1137,14 +1162,14 @@ class Runner:
                                 fcntl.flock(workspace_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                                 break
                             except OSError:
-                                if any(u.get("status") == "running" and pid_alive(u.get("pid"), u.get("proc_start"), u.get("host")) for u in self.folder.units()):
+                                if any(u.get("status") == "running" and pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), self.folder.root) for u in self.folder.units()):
                                     created = _parse_stamp(self.plan.get("created"))
                                     expired = self.plan.get("max_runtime") and created and (datetime.now() - created).total_seconds() >= self.plan["max_runtime"]
                                     if self.folder.control() == "cancel" or expired:
                                         cancel_started = cancel_started or time.time()
                                         sig = signal.SIGKILL if time.time() - cancel_started > float(self.plan.get("kill_grace") or 30) else signal.SIGTERM
                                         for unit in self.folder.units():
-                                            if unit.get("status") == "running" and pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host")):
+                                            if unit.get("status") == "running" and pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host"), self.folder.root):
                                                 self._signal(Live(unit=unit), sig)
                                     time.sleep(0.1)
                                     continue
@@ -1305,7 +1330,7 @@ class Runner:
     def schedule(self) -> int:
         self.delayed = []
         if self.plan.get("loop"):
-            if self.plan["loop"]["manifest_sha256"] not in (manifest_hash(self.folder.root), manifest_hash(self.folder.root, legacy=True)):
+            if self.plan["loop"]["manifest_sha256"] != manifest_hash(self.folder.root):
                 self.stop_new = True
                 self.save_plan(error="agent workflow changed; restore its manifest before resuming")
                 return 0
@@ -1633,10 +1658,10 @@ class Runner:
         if live.process is not None:
             return live.process.poll() is None
         unit = live.unit
-        if pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host")):
+        if pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host"), self.folder.root):
             return True
         child = _read_json(self.folder.root / (unit.get("exit_file", "") + "").replace(".exit", ".child"), {}) or {}
-        return pid_alive(child.get("pid"), child.get("proc_start"), unit.get("host"))
+        return pid_alive(child.get("pid"), child.get("proc_start"), unit.get("host"), self.folder.root)
 
     def _review_hold(self, live: Live) -> bool:
         """After a successful exit, hold the handoff until a person approves it.
@@ -1787,12 +1812,12 @@ class Runner:
 
     def _signal(self, live: Live, sig: int) -> None:
         pgid = live.unit.get("pgid") or live.unit.get("pid")
-        if not pgid:
+        if not pgid or not owned_by(live.unit.get("pid"), self.folder.root):
             return
         with contextlib.suppress(OSError):
             os.killpg(int(pgid), sig)
         child = _read_json(self.folder.root / str(live.unit.get("exit_file", "")).replace(".exit", ".child"), {}) or {}
-        if child.get("pid") and pid_alive(child.get("pid"), child.get("proc_start")):
+        if child.get("pid") and pid_alive(child.get("pid"), child.get("proc_start"), root=self.folder.root):
             with contextlib.suppress(OSError):
                 os.kill(int(child["pid"]), sig)
 
@@ -2069,7 +2094,7 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
         if folder.runner_alive() or _starting(plan):
             continue
         units = [u for u in folder.units() if u.get("status") == "running"]
-        alive = [u for u in units if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host")) or _held_for_review(base, u)]
+        alive = [u for u in units if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), base) or _held_for_review(base, u)]
         action = folder.control()
         want = bool(alive) or action == "cancel" or (plan.get("auto_resume") == "always" and plan.get("status") == "running" and action == "run")
         if plan.get("auto_resume") == "never" and not alive:
@@ -2108,7 +2133,7 @@ def plan_activity(root: str | Path, plan: Mapping[str, Any]) -> dict[str, Any]:
     running = [u for u in units if u.get("status") == "running"]
     review = [u for u in units if u.get("review_status") == "pending"]
     manual = [u for u in running if u.get("manual")]
-    live = [u for u in running if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"))]
+    live = [u for u in running if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), root)]
     if review:
         phase = "review"
     elif manual:
@@ -2267,7 +2292,7 @@ __all__ = [
 ]
 
 
-def manifest_hash(root, *, legacy=False):
+def manifest_hash(root):
     from alfrd.manifest_default import manifest_data
 
     try:
@@ -2277,8 +2302,6 @@ def manifest_hash(root, *, legacy=False):
     if path is None:
         raise ExecutionError("project manifest is missing")
     raw = path.read_bytes()
-    if legacy:
-        return hashlib.sha256(raw).hexdigest()
     # The runner checks every tick; parse only when the bytes change (pure-Python YAML is slow).
     key = hashlib.sha256(raw).digest()
     if key not in _MANIFEST_HASHES:

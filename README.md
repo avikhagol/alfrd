@@ -147,7 +147,6 @@ ssh -L 5000:127.0.0.1:5000 user@cluster   # then run `alfrd serve --no-browser` 
 Good to know:
 
 - Saving `alfrd.yaml` or `avica.inp` from the UI only works from the same machine (loopback).
-- The old dashboard is still at `/dashboard/`.
 - `alfrd gui` is the same as `alfrd serve`.
 
 ---
@@ -287,24 +286,6 @@ result = PipelineCore(
 - One failed dataset skips only its own remaining steps.
 - Parameters come from `step.param`, then global values, then defaults.
 
-Decorator style (older, still supported):
-
-```python
-# pipe.py
-from alfrd.plugins import register
-
-@register("A hello world function")
-def step_hello_world(name):
-    print(f"hello, {name}")
-```
-
-```bash
-alfrd init MYPROJ
-alfrd add pipe.py MYPROJ
-alfrd run step_hello_world MYPROJ name=World
-alfrd run step_hello_world MYPROJ config.txt    # config.txt: name = World
-```
-
 ---
 
 ## Studio plugins and themes
@@ -369,22 +350,15 @@ alfrd import avica-run reductions/ --project my-project --manifest alfrd.yaml
 
 ## Public API
 
-Stable in `0.2.x` (tested in `tests/test_public_api.py`):
+Stable in `0.3.x` (tested in `tests/test_public_api.py`):
 
 - `alfrd` – `PipelineCore`, `PipelineContext`, `PipelineStepBase`, validators, results, events.
 - `alfrd.config` – `BaseConfig`, `Config`.
 - `alfrd.manifest` – `load_manifest`, `validate_manifest`, `ProjectManifest`, …
 - `alfrd.repository` – `RepositoryService`, `add_repository`, …
 - `alfrd.core.logframe` – `LogFrame`, `LogFrameAdapter`, `LogFrameEventSink`.
-- `alfrd.runtime` – `RuntimeStore`, `RuntimeService`, `RuntimePipelineRunner`, models.
+- `alfrd.runtime` – `RuntimeStore`, `RuntimeService`, models.
 - `alfrd.gui` – `create_app()`, catalog readers, `/api/*`, `/studio/`.
-- `alfrd.plugins` – `register`, `validate`, `validator`.
-
-Deprecated (still work, warn):
-
-- `alfrd.Pipeline` / `PipelineRun` → use `PipelineCore`.
-- `alfrd.core.workflow.WorkflowManager` → use `PipelineCore`.
-- `alfrd.core.logger` → use `alfrd.core.logging`.
 
 ---
 

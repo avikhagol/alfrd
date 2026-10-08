@@ -1741,12 +1741,30 @@ function renderHeader() {
 
 }
 
+// Footer: CPU and RAM of the server machine, every 5 s while the tab is visible.
+let systemText = "", systemTimer = null;
+const gib = (n) => (n / 1024 ** 3).toFixed(1);
+async function pollSystem() {
+  if (state.mode !== "server" || document.hidden) return;
+  try {
+    const s = await server.system();
+    systemText = `CPU ${Math.round(s.cpu)}% · RAM ${gib(s.mem_used)} / ${gib(s.mem_total)} GB`;
+    const el = $("#foot-mode span");
+    if (el) el.lastChild.textContent = ` ${systemText}`;
+  } catch { clearInterval(systemTimer); systemTimer = null; } // older server or offline: keep the label
+}
+function startSystemPoll() {
+  if (systemTimer || state.mode !== "server") return;
+  pollSystem();
+  systemTimer = setInterval(pollSystem, 5000);
+}
+
 function renderFooter() {
   const st = $("#foot-storage");
   if (!st) return;
   st.textContent = `Local Storage: ${bytes(storage.size())} / Saved`;
   $("#foot-mode").innerHTML = state.mode === "server"
-    ? `${icon("server")} alfrd — runtime actions go through the ALFRD API`
+    ? `<span title="CPU and memory of the machine running alfrd serve">${icon("server")} ${systemText || "alfrd serve"}</span>`
     : `${icon("info")} Browser mode · preview workflows and import results`;
   const errors = state.consoleLines.filter((l) => l.level === "error").length;
   const warns = state.consoleLines.filter((l) => l.level === "warn").length;
@@ -2013,6 +2031,7 @@ async function boot() {
   state.demoEnabled = Boolean(session?.demo) || new URLSearchParams(location.search).has("demo");
   if (session) {
     state.mode = "server";
+    startSystemPoll();
     ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();
     if (server.authRequired) return;

@@ -28,15 +28,13 @@ class FailsOnceAdapter(RecordingAdapter):
         super().update_cell(dataframe, rows, columns)
 
 
-def test_logframe_has_canonical_and_legacy_imports():
+def test_logframe_has_canonical_imports():
     from alfrd import LogFrame as TopLevelLogFrame
     from alfrd.core import LogFrame as CoreLogFrame
     from alfrd.core.logframe import LogFrame
-    from alfrd.lib import LogFrame as LegacyLogFrame
 
     assert TopLevelLogFrame is LogFrame
     assert CoreLogFrame is LogFrame
-    assert LegacyLogFrame is LogFrame
 
 
 def test_pandas_is_default_for_empty_path_stream_and_memory(tmp_path: Path):

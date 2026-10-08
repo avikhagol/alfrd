@@ -340,5 +340,6 @@ export function render(el, ctx) {
   if (formHost) import("./yaml_form.js").then((m) => m.showYamlForm(el, formHost, ui.text, {
     setText: (text) => { ui.text = text; setDirty(p, ui, true); ui.report = ui.aliases = null; shown = signature(ctx, p); shownText = text; renderStatus(el, ctx); },
     rebuild: () => { shown = null; render(el, ctx); },
+    modal: ctx.modal,
   })).catch((error) => { formHost.textContent = error.message; });
 }

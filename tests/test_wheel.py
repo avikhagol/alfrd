@@ -29,13 +29,8 @@ EXPECTED_WHEEL_PATHS = {
     "alfrd/schemas/project-manifest-v1.schema.json",
     "alfrd/core/logframe.py",
     "alfrd/core/pipeline.py",
-    "alfrd/runtime/adapters.py",
-    "alfrd/gui/templates/dashboard/index.htm",
-    "alfrd/gui/templates/dashboard/layout.htm",
-    "alfrd/gui/templates/dashboard/project_details.htm",
     "alfrd/gui/templates/auth/landing.htm",
     "alfrd/gui/auth.py",
-    "alfrd/gui/static/alfrd.css",
     "alfrd/gui/model/schema.sql",
     "alfrd/gui/studio.py",
     "alfrd/web/__init__.py",
@@ -127,35 +122,28 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
 from importlib import resources
 from pathlib import Path
 from alfrd import (
-    ArtifactDefinition, ArtifactRef, BatchResult, Pipeline, PipelineContext, PipelineCore,
+    ArtifactDefinition, ArtifactRef, BatchResult, Config, PipelineContext, PipelineCore,
     PipelineStepBase, PipelineStepValidatorBase, PipelineStepValidatorResult,
-    LogFrame, LogFrameEventSink, Project, ProjectManifest, RepositoryService, StepResult, Workflow,
-    __version__, register, validate, validator,
+    LogFrame, LogFrameEventSink, ProjectManifest, RepositoryService, StepResult,
+    __version__,
 )
 from alfrd.core import LogFrame as CoreLogFrame
 from alfrd.core.logframe import LogFrameAdapter
 from alfrd.core.logging import logger
-from alfrd.lib import LogFrame as LegacyLogFrame
-from alfrd.runtime import RuntimeEventSink, RuntimePipelineRunner, RuntimeService, RuntimeStore
+from alfrd.runtime import RuntimeService, RuntimeStore
 from alfrd.gui.services import RuntimeCatalogReader
 import logging
 assert __version__ == '@VERSION@'
-assert Pipeline and Project and ProjectManifest and RepositoryService and Workflow and LogFrame
+assert ProjectManifest and RepositoryService and LogFrame and Config
 assert all((ArtifactRef, BatchResult, PipelineContext, PipelineCore, PipelineStepBase,
             PipelineStepValidatorBase, PipelineStepValidatorResult, StepResult))
-assert all((ArtifactDefinition, LogFrameEventSink, RuntimeEventSink,
-            RuntimePipelineRunner, RuntimeService, RuntimeStore, RuntimeCatalogReader))
-assert LogFrame is CoreLogFrame is LegacyLogFrame
+assert all((ArtifactDefinition, LogFrameEventSink, RuntimeService, RuntimeStore, RuntimeCatalogReader))
+assert LogFrame is CoreLogFrame
 assert LogFrameAdapter
 assert isinstance(logger, logging.Logger)
-assert register and validate and validator
 root = resources.files('alfrd.gui')
 for item in (
-    'templates/dashboard/index.htm',
-    'templates/dashboard/layout.htm',
-    'templates/dashboard/project_details.htm',
     'templates/auth/landing.htm',
-    'static/alfrd.css',
     'model/schema.sql',
 ):
     assert root.joinpath(*item.split('/')).is_file(), item
@@ -171,6 +159,7 @@ assert client.get('/api/projects').status_code == 401
 assert client.get('/login').status_code == 200
 bearer = {'Authorization': 'Bearer ' + app.config['ACCESS_TOKEN']}
 assert client.get('/api/projects', headers=bearer).get_json() == {'projects': []}
+assert client.get('/', headers=bearer).headers['Location'].endswith('/studio/')
 """
     environment_vars = os.environ.copy()
     environment_vars.pop("PYTHONPATH", None)
@@ -191,20 +180,18 @@ assert client.get('/api/projects', headers=bearer).get_json() == {'projects': []
         capture_output=True,
         text=True,
     )
-    assert "init" in help_result.stdout
-    assert "run" in help_result.stdout
     assert "serve" in help_result.stdout
+    assert "runtime" in help_result.stdout
     for command in (
-        "init",
-        "ls",
-        "lsp",
-        "run",
-        "add",
-        "rm",
-        "inspect",
-        "nrun",
         "serve",
         "gui",
+        "url",
+        "projects",
+        "runtime",
+        "manifest",
+        "import",
+        "plan",
+        "plugin",
     ):
         subprocess.run(
             [str(alfrd_command), command, "--help"],

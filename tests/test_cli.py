@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from alfrd import get_project_dir
 from alfrd.cli import alfrd_cli
 
 
@@ -14,9 +13,7 @@ def test_cli_help_smoke():
     result = runner.invoke(alfrd_cli, ["--help"])
 
     assert result.exit_code == 0, result.output
-    assert "init" in result.output
-    assert "run" in result.output
-    assert "inspect" in result.output
+    assert "runtime" in result.output
     assert "serve" in result.output
     assert "gui" in result.output
     assert "studio" in result.output
@@ -24,41 +21,19 @@ def test_cli_help_smoke():
 
 def test_cli_command_help_smoke():
     for command in (
-        "init",
-        "ls",
-        "lsp",
-        "run",
-        "add",
-        "rm",
-        "inspect",
-        "nrun",
         "serve",
         "gui",
         "studio",
         "url",
+        "projects",
+        "runtime",
+        "manifest",
+        "import",
+        "plan",
+        "plugin",
     ):
         result = runner.invoke(alfrd_cli, [command, "--help"])
         assert result.exit_code == 0, f"{command}: {result.output}"
-
-
-def test_cli_init_uses_isolated_project_directory(tmp_path):
-    result = runner.invoke(alfrd_cli, ["init", "smoke"])
-
-    assert result.exit_code == 0, result.output
-    project_dir = get_project_dir() / "smoke"
-    assert project_dir.is_dir()
-    assert project_dir.is_relative_to(tmp_path)
-
-
-def test_cli_rm_rejects_paths_outside_project_directory(tmp_path):
-    sentinel = tmp_path / "sentinel"
-    sentinel.mkdir()
-
-    result = runner.invoke(alfrd_cli, ["rm", str(sentinel)])
-
-    assert result.exit_code != 0
-    assert isinstance(result.exception, ValueError)
-    assert sentinel.is_dir()
 
 
 def test_cli_serve_runs_app_with_explicit_network_settings(monkeypatch):
@@ -82,7 +57,8 @@ def test_cli_serve_runs_app_with_explicit_network_settings(monkeypatch):
     assert result.exit_code == 0, result.output
     assert calls == [{"host": "127.0.0.2", "port": 8765, "debug": True}]
     assert configs[0]["RUNTIME_SERVICE"] is not None
-    assert "ALFRD dashboard: http://127.0.0.2:8765/dashboard/" in result.output
+    assert "ALFRD Studio: http://127.0.0.2:8765/studio/" in result.output
+    assert "/dashboard/" not in result.output
 
 
 def test_cli_gui_is_a_serve_alias(monkeypatch):
@@ -134,7 +110,6 @@ def test_cli_no_browser_skips_browser_and_wildcard_prints_loopback(monkeypatch):
     monkeypatch.setattr("alfrd.cli._serve_production", lambda app, host, port: calls.append({"host": host, "port": port}))
     result = runner.invoke(alfrd_cli, ["serve", "--host", "0.0.0.0", "--no-browser"])
     assert result.exit_code == 0, result.output
-    assert "http://127.0.0.1:5000/dashboard/" in result.output
     assert "http://127.0.0.1:5000/studio/" in result.output
     assert "clear text" in result.output
     assert calls == [{"host": "0.0.0.0", "port": 5000}]
@@ -150,7 +125,7 @@ def test_cli_manifest_validate_example():
 def test_browser_opens_only_after_http_readiness(monkeypatch):
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
-    from alfrd.cli import _open_dashboard_when_ready
+    from alfrd.cli import _open_studio_when_ready
 
     calls = []
 
@@ -170,12 +145,12 @@ def test_browser_opens_only_after_http_readiness(monkeypatch):
     base = f"http://127.0.0.1:{server.server_port}"
     url = f"{base}/studio/?token=browser-token"
     try:
-        _open_dashboard_when_ready(url, threading.Event(), f"{base}/api/health")
+        _open_studio_when_ready(url, threading.Event(), f"{base}/api/health")
         assert calls == [("http", "/api/health"), ("browser", url)]
         assert "?token=" in calls[1][1]
         stopped = threading.Event()
         stopped.set()
-        _open_dashboard_when_ready(url, stopped)
+        _open_studio_when_ready(url, stopped)
         assert len(calls) == 2
     finally:
         server.shutdown()
@@ -194,7 +169,7 @@ def test_cli_server_access_link_and_file(monkeypatch, command, source):
     port = 8765
     monkeypatch.setattr("alfrd.gui.create_app", lambda config: configs.append(config) or object())
     monkeypatch.setattr("alfrd.cli._reconcile_plans_later", lambda *args, **kwargs: None)
-    monkeypatch.setattr("alfrd.cli._open_dashboard_when_ready", lambda url, stopped, probe: opened.append((url, probe)))
+    monkeypatch.setattr("alfrd.cli._open_studio_when_ready", lambda url, stopped, probe: opened.append((url, probe)))
     monkeypatch.setattr("alfrd.cli._serve_production", lambda *args: stored.append(auth.read_server_file(port)))
     args = [command, "--port", str(port)]
     if source == "option":
@@ -289,7 +264,7 @@ def test_cli_formats_ipv6_and_rejects_remote_debug(monkeypatch):
     monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
     result = runner.invoke(alfrd_cli, ["serve", "--host", "::1", "--no-browser"])
     assert result.exit_code == 0, result.output
-    assert "http://[::1]:5000/dashboard/" in result.output
+    assert "http://[::1]:5000/studio/" in result.output
     result = runner.invoke(alfrd_cli, ["serve", "--host", "0.0.0.0", "--debug", "--no-browser"])
     assert result.exit_code != 0
     assert "loopback" in result.output

@@ -134,8 +134,6 @@ test("history: All targets / Target only follows the header target", () => {
   const none = rg.renderRunHistory("p", "P", { groups: [] }, { groups: [] }, runs, () => null, {}, { target: null, targetOnly: true });
   assert.match(none, /data-scope="target" class="" aria-pressed="false" disabled/);
   assert.match(none, /data-rh-run="r1"/, "no header target: every run");
-  const strip = rg.renderTaskStrip("p", "P", { max_iterations: 4, tasks: [{ name: "task-a" }, { name: "task-b" }] }, "task-b");
-  assert.match(strip, /class="task-chip on"[^>]*data-task="task-b" aria-pressed="true"/);
 });
 
 test("Open run loads that run even while another read is in flight", async () => {

@@ -45,7 +45,7 @@ function group(g, depth) {
   const count = g.children.length;
   const title = typeof g.key === "number" ? `<span class="mono">${esc(g.label)}</span>` : `${esc(human(g.key))} <span class="mono muted small">${esc(g.key)}</span>`;
   return `<details class="yf-group${depth ? "" : " top"}" data-yf-group="${esc(key)}" data-yf-key="${esc(g.path.join("."))}" ${opened.has(key) ? "open" : ""}>
-    <summary>${title}<span class="muted small">${g.unset ? "not set · defaults" : g.list ? `${count} item${count === 1 ? "" : "s"}` : `${count} key${count === 1 ? "" : "s"}`}</span>${typeof g.key === "number" ? `<button type="button" class="icon-btn xs" data-yf-remove="${id(g.path)}" title="Remove this item" aria-label="Remove ${esc(g.label)}">${icon("trash")}</button>` : ""}</summary>
+    <summary>${title}<span class="muted small yf-count">${g.unset ? "not set · defaults" : g.list ? `${count} item${count === 1 ? "" : "s"}` : `${count} key${count === 1 ? "" : "s"}`}</span>${typeof g.key === "number" ? `<button type="button" class="icon-btn xs" data-yf-remove="${id(g.path)}" title="Remove this item" aria-label="Remove ${esc(g.label)}">${icon("trash")}</button>` : ""}</summary>
     <div class="yf-body">${body(g.children, depth + 1)}${addButton(g.path, g.list)}</div></details>`;
 }
 
@@ -64,10 +64,12 @@ export function renderYamlForm(text) {
   } catch (error) { return `<p class="lvl-error">Fix the YAML first: ${esc(error.message)}</p>`; }
   const rank = (n) => { const i = ["name", "description"].indexOf(n.key); return i < 0 ? 9 : i; };
   const top = tree.filter((n) => n.kind === "field").sort((a, b) => rank(a) - rank(b)), groups = tree.filter((n) => n.kind === "group");
+  const adv = groups.length ? `<div class="yf-adv"><div class="grow"><b>Advanced settings</b><p class="muted small">${groups.map((g) => esc(human(g.key))).join(" · ")}</p></div>
+    <button type="button" class="btn sm" data-yf-advanced>${icon("gear")} Advanced…</button></div>` : "";
   return `<div id="ps-form" class="yf">
     <div class="row gap wrap"><h4 class="grow">All settings</h4><input class="input sm yf-filter" type="search" placeholder="Filter keys…" aria-label="Filter settings" data-yf-filter></div>
     <p class="muted small">Every key in alfrd.yaml, with defaults for known keys that are not set. A change rewrites that top-level section (its comments are dropped). Save when ready.</p>
-    ${body(top, 0)}${body(groups, 0)}${addButton([], false).replace("Add key", "Add setting")}</div>`;
+    ${body(top, 0)}${addButton([], false).replace("Add key", "Add setting")}${adv}</div>`;
 }
 
 /**
@@ -148,14 +150,47 @@ export function bindYamlForm(el, { getText, setText, rebuild }) {
 }
 
 const drafts = new WeakMap(); // el → { text, hooks }: the draft the bound listeners edit
+const draftHooks = (el, redraw = () => {}) => ({
+  getText: () => drafts.get(el).text,
+  setText: (next) => { const d = drafts.get(el); if (next !== d.text) { d.text = next; d.hooks.setText(next); } },
+  rebuild: () => { drafts.get(el).hooks.rebuild(); redraw(); },
+});
+let section = null; // the Advanced dialog's open section, kept while the page lives
 
-/** Draw the form for `text` into `host` inside `el` (listeners bound once). hooks: { setText(text), rebuild() } */
+/** Advanced settings: alfrd.yaml's sections (top-level mappings and lists), one at a time, in a dialog. */
+function openAdvanced(el, query) {
+  drafts.get(el).hooks.modal(`<header class="modal-h"><h2>Advanced settings</h2><span class="mono muted small">alfrd.yaml</span><span class="grow"></span>
+      <input class="input sm yf-filter" type="search" placeholder="Filter keys…" aria-label="Filter settings" data-yf-filter value="${esc(query)}">
+      <button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <div class="set-body"><div class="set-tabs" role="tablist" aria-label="Sections" aria-orientation="vertical" data-yf-tabs></div><div class="modal-b set-panels yf" data-yf-panel></div></div>
+    <footer class="modal-f row gap"><span class="muted small">Edits the same draft as All settings and Edit YAML file. Save on the page when ready.</span><span class="grow"></span><button class="btn sm primary" data-close>Done</button></footer>`, (root) => {
+    const tabs = root.querySelector("[data-yf-tabs]"), panel = root.querySelector("[data-yf-panel]"), filter = root.querySelector("[data-yf-filter]");
+    const draw = () => {
+      let groups;
+      try { groups = formTree(parseYaml(drafts.get(el).text)).filter((n) => n.kind === "group"); } catch (error) { panel.innerHTML = `<p class="lvl-error">Fix the YAML first: ${esc(error.message)}</p>`; return; }
+      const q = filter.value.trim().toLowerCase();
+      const hit = (g) => !q || JSON.stringify(g, ["key", "label", "children"]).toLowerCase().includes(q);
+      const shown = groups.filter(hit);
+      if (!shown.some((g) => g.key === section)) section = shown[0]?.key ?? null;
+      tabs.innerHTML = shown.map((g) => `<button type="button" role="tab" aria-selected="${g.key === section}" class="${g.key === section ? "on" : ""}" data-yf-sec="${esc(g.key)}"><span class="grow">${esc(human(g.key))}</span><span class="muted small">${g.children.length}</span></button>`).join("");
+      const g = groups.find((n) => n.key === section);
+      panel.innerHTML = g ? `<section class="set-panel"><div class="row gap"><h3 class="grow">${esc(human(g.key))} <span class="mono muted small">${esc(g.key)}</span></h3><span class="muted small">${g.unset ? "not set · defaults" : ""}</span></div>
+        ${body(g.children, 1)}${addButton(g.path, g.list)}</section>` : `<p class="muted">${q ? "No key matches the filter." : "No sections in alfrd.yaml."}</p>`;
+      if (q) filter.dispatchEvent(new Event("input", { bubbles: true })); // field-level filter (bindYamlForm)
+    };
+    bindYamlForm(root, draftHooks(el, draw));
+    tabs.addEventListener("click", (e) => { const b = e.target.closest("[data-yf-sec]"); if (b) { section = b.dataset.yfSec; draw(); panel.scrollTop = 0; } });
+    filter.addEventListener("input", (e) => { if (e.isTrusted) draw(); });
+    draw();
+  }, "set-dlg yf-adv-dlg");
+}
+
+/** Draw the form for `text` into `host` inside `el` (listeners bound once). hooks: { setText(text), rebuild(), modal(html, setup, cls) } */
 export function showYamlForm(el, host, text, hooks) {
   if (!drafts.has(el)) {
-    bindYamlForm(el, {
-      getText: () => drafts.get(el).text,
-      setText: (next) => { const d = drafts.get(el); if (next !== d.text) { d.text = next; d.hooks.setText(next); } },
-      rebuild: () => drafts.get(el).hooks.rebuild(),
+    bindYamlForm(el, draftHooks(el));
+    el.addEventListener("click", (e) => {
+      if (e.target.closest?.("[data-yf-advanced]")) openAdvanced(el, el.querySelector("#ps-form [data-yf-filter]")?.value || "");
     });
   }
   drafts.set(el, { text, hooks });

@@ -206,10 +206,6 @@
 .job-row .job-main { flex: 1 1 220px; min-width: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* Agent-loop tasks above the run history; per-turn settings of a running plan. */
-.task-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
-.task-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
-.task-chip.on, .task-chip:hover { border-color: var(--accent); }
-.task-chip .ic { width: 13px; height: 13px; vertical-align: -2px; }
 .turn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .turn-table th, .turn-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; }
 .turn-table input[type=text] { width: 6em; }
@@ -220,7 +216,7 @@
 .yf h4.grow { margin: 0; }
 details.yf-group { border: 1px solid var(--border); border-radius: var(--r); margin: 8px 0; background: var(--surface); }
 details.yf-group > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text); }
-details.yf-group > summary > .muted:last-child { margin-left: auto; font-weight: 400; }
+details.yf-group > summary > .yf-count { margin-left: auto; font-weight: 400; }
 details.yf-group[open] > summary { border-bottom: 1px solid var(--border); background: var(--subtle); }
 details.yf-group .yf-group { margin: 6px 0; }
 .yf-body { padding: 4px 12px 8px; }
@@ -228,6 +224,12 @@ details.yf-group .yf-group { margin: 6px 0; }
 .yf-field .check { font-weight: 500; }
 .yf-add { margin: 6px 0 2px; }
 details.yf-group > summary .icon-btn { margin-left: 4px; }
+.yf-adv { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); }
+.yf-adv p { margin: 2px 0 0; }
+.yf-adv-dlg .modal-h .yf-filter { width: 200px; }
+.yf-adv-dlg > .modal-f { flex: none; position: static; }
+.yf-adv-dlg .set-tabs [role=tab] .muted { font-weight: 400; }
+.yf-adv-dlg .set-panel > .row h3 { margin: 0; }
 
 .fits-suggestions { max-height: 14rem; overflow: auto; border: 1px solid var(--border); border-radius: 6px; margin-top: 4px; background: var(--surface); }
 .fits-suggestions [role=option] { padding: 6px 10px; cursor: pointer; font-family: var(--mono); overflow-wrap: anywhere; }
@@ -264,7 +266,7 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 /* Plugins catalog and install dialogs reuse the Settings theme tokens. */
 .plug-tabs,.plug-browse-bar,.plug-actions { display:flex; gap:8px; flex-wrap:wrap; }
 .plug-tabs { margin:12px 0; }
-.plug-tabs [aria-selected=true] { border-color:var(--accent); color:var(--accent); }
+.plug-tabs [aria-selected=true], .plug-tabs [aria-selected=true]:hover { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
 .plug-browse-bar input { flex:1; min-width:120px; width:auto; }
 .plug-browse-bar select { width:auto; }
 .plug-trust { display:block; }
@@ -277,3 +279,6 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 .plug-failure { color:var(--fail-text); overflow-wrap:anywhere; }
 [data-browse] pre,[data-policy] pre { white-space:pre-wrap; overflow-wrap:anywhere; }
 @media(max-width:479px) { .plug-facts { grid-template-columns:1fr; gap:4px; } .plug-facts dd { margin-bottom:8px; } }
+.notify-blocked { display: flex; gap: 12px; align-items: flex-start; }
+.notify-blocked > div { flex: 1; line-height: 1.5; }
+.notify-blocked .btn { flex: none; }

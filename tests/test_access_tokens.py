@@ -119,7 +119,7 @@ def test_api_401_is_json_with_www_authenticate(app):
 
 
 def test_browser_401_is_the_landing_page(app):
-    response = anon(app).get("/dashboard/", headers={"Accept": "text/html,*/*;q=0.8"})
+    response = anon(app).get("/", headers={"Accept": "text/html,*/*;q=0.8"})
     assert response.status_code == 401
     assert response.mimetype == "text/html"
     body = response.get_data(as_text=True)
@@ -263,7 +263,7 @@ def test_requests_without_a_token_are_not_counted(app):
 # --- interplay with the mutation checks ---------------------------------------
 
 def test_unauthenticated_post_is_401_not_403(app):
-    response = anon(app).post("/dashboard/connect", data={"path": "/tmp"})
+    response = anon(app).post("/api/projects/connect", json={"path": "/tmp"})
     assert response.status_code == 401
 
 
@@ -271,13 +271,13 @@ def test_authenticated_post_from_another_host_is_still_403(app):
     client = app.test_client()  # Bearer token from conftest
     with client.session_transaction() as session:
         session["_alfrd_csrf_token"] = "known"
-    response = client.post("/dashboard/connect", data={"path": "/tmp"}, headers={"X-CSRF-Token": "known"},
+    response = client.post("/api/projects/connect", json={"path": "/tmp"}, headers={"X-CSRF-Token": "known"},
                            environ_base={"REMOTE_ADDR": "10.0.0.5"})
     assert response.status_code == 403
 
 
 def test_authenticated_post_without_csrf_is_403(app):
-    response = app.test_client().post("/dashboard/connect", data={"path": "/tmp"})
+    response = app.test_client().post("/api/projects/connect", json={"path": "/tmp"})
     assert response.status_code == 403
 
 
@@ -366,3 +366,10 @@ def test_serve_debug_shares_token_with_reloader_child(monkeypatch):
     assert configs[0]["ACCESS_TOKEN"] == "pinned"
     assert configs[0]["SECRET_KEY"] == "pinned-key"
     assert not auth.server_file(5096).exists()
+
+
+def test_system_usage_for_the_footer_needs_the_token(app):
+    assert anon(app).get("/api/studio/system").status_code == 401
+    data = app.test_client().get("/api/studio/system").get_json()
+    assert 0 <= data["cpu"] <= 100 and data["cores"] >= 1
+    assert 0 < data["mem_used"] <= data["mem_total"]

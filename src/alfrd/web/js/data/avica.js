@@ -17,7 +17,6 @@ export function metaDirNames(metaDir = "avica.meta") {
   return [metaDir, ...aliasRules().filter((r) => r.to === metaDir).map((r) => r.from)];
 }
 
-export const PICARD_INP_FILES = ["array.inp", "observation.inp", "array_finetune.inp", "flagging.inp", "constants.inp"];
 // Layout patterns: alfrd.yaml `avica:` keys override these (see alfrd/avica_layout.py).
 // Placeholders: {target_dir}, {project_code}, {n}, {band}, {target}; lists mean "any of".
 export const DEFAULT_PATTERNS = {

@@ -245,9 +245,7 @@ class RuntimeService:
     ) -> tuple[Project, list[WorkflowDefinition]]:
         """Register a discovered project without importing consumer code.
 
-        Each manifest entrypoint becomes a one-step command workflow. Typed
-        Python workflows can use the same persisted definition through
-        ``RuntimePipelineRunner`` when their step names match.
+        Each manifest entrypoint becomes a one-step command workflow.
         """
 
         document = (

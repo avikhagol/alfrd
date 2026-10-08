@@ -5,7 +5,7 @@ The Studio is a client-side application (``alfrd.web``). When it is loaded
 from ``alfrd serve`` it detects ``/api/studio/session`` and switches to server
 mode: projects and matrices come from the existing read-only API, and the
 only mutations it performs (connect a project path, retry a step) go through
-the same loopback + CSRF gate as the rest of the dashboard.
+the same loopback + CSRF gate as the rest of the server.
 """
 
 from __future__ import annotations
@@ -60,6 +60,19 @@ def studio_asset(filename: str):
     return _send(filename)
 
 
+@studio_api.get("/studio/system")
+def studio_system():
+    """CPU and memory of the machine running alfrd serve, for the Studio footer.
+
+    Cheap: CPU is the average since the previous call (no sampling wait).
+    """
+    import psutil
+
+    mem = psutil.virtual_memory()
+    return jsonify(cpu=psutil.cpu_percent(interval=None), cores=psutil.cpu_count() or 1,
+                   mem_used=mem.total - mem.available, mem_total=mem.total)
+
+
 @studio_api.get("/studio/session")
 def studio_session():
     """Tell the Studio it is served by ALFRD and hand it a CSRF token."""
@@ -92,7 +105,7 @@ def studio_session():
 
 @studio_api.post("/projects/connect")
 def connect_project_api():
-    """JSON twin of ``/dashboard/connect`` used by the Studio's Import dialog."""
+    """Connect a project folder (the Studio's Import dialog)."""
     from alfrd.gui.routes import connect_manifest_path
 
     payload = request.get_json(silent=True) or {}
@@ -1280,7 +1293,7 @@ def studio_available() -> bool:
     try:
         return (web_root() / "index.html").is_file()
     except FileNotFoundError:  # pragma: no cover
-        current_app.logger.warning("Studio assets missing; falling back to /dashboard/")
+        current_app.logger.warning("Studio assets missing")
         return False
 
 

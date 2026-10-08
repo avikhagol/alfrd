@@ -161,7 +161,9 @@ def test_lazy_payload_under_106kb_compressed():
     # theme-token styles add ~7 KiB: 146 → 152 KiB; measured 155,086 bytes. Startup cap unchanged.
     # Phase 4 Browse/install dialogs and job log/restart UI load only from Settings → Plugins.
     # Measured 165510 bytes; rounded once to 162 KiB. Startup cap unchanged.
-    assert total < 162 * 1024, f"{total} bytes gzip"
+    # Settings → All settings → Advanced (sections in a dialog) and the blocked-notifications
+    # hint with Ask again: +1.3 KiB on demand, measured 166,840 → 164 KiB. Startup cap unchanged.
+    assert total < 164 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
@@ -251,7 +253,7 @@ def test_flask_serves_studio_and_blocks_python_files(studio_app):
     assert js.status_code == 200 and js.mimetype == "text/javascript"
     assert client.get("/studio/__init__.py").status_code == 404
     assert client.get("/studio/../cli.py").status_code == 404
-    assert client.get("/dashboard/").status_code == 200
+    assert client.get("/dashboard/").status_code == 404  # the legacy dashboard is gone
 
 
 def test_studio_session_and_json_connect(studio_app, tmp_path):

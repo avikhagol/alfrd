@@ -900,20 +900,6 @@ def test_rerunning_finished_task_resets_only_selected_row(service, tmp_path, pro
 
 
 
-def test_existing_plan_with_legacy_manifest_hash_runs(project):
-    manifest = project / "alfrd.yaml"
-    data = yaml.safe_load(manifest.read_text())
-    data["workflows"][0]["repeat"]["iterations"] = 1
-    manifest.write_text(yaml.safe_dump(data, sort_keys=False))
-    folder = scheduler.create_plan(project)
-    plan = folder.load()
-    plan["loop"]["manifest_sha256"] = scheduler.manifest_hash(project, legacy=True)
-    folder.save(plan)
-    scheduler.Runner(project, folder.id).run()
-    assert folder.load()["status"] == "finished"
-
-
-
 def test_history_and_comments_do_not_change_workflow_hash(project):
     manifest = project / "alfrd.yaml"
     original = scheduler.manifest_hash(project)

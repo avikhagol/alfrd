@@ -220,15 +220,3 @@ class ArtifactDefinitionDB(db.Model):
             "media_type": self.media_type,
         }
 
-
-def create_project_row(proj, projconfig):
-    """Compatibility helper for legacy project metadata synchronization."""
-
-    configfile = getattr(projconfig, "configfile", None)
-    return ProjectDB(
-        name=proj.name,
-        description=proj.desc,
-        root_path=str(proj.get_projdir()),
-        manifest_path=str(configfile) if configfile and configfile.exists() else None,
-        sync_state="synced",
-    )

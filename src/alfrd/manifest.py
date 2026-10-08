@@ -62,7 +62,6 @@ class SchemaDefinition:
 
 
 # A short compatibility alias matching the manifest's ``schema`` key.
-ProjectSchema = SchemaDefinition
 
 
 DEFAULT_ARTIFACT_KIND = "file"
@@ -75,7 +74,7 @@ class ArtifactDefinition:
     This differs from ``ArtifactRef`` (one produced value) and the runtime
     ``Artifact`` row (one persisted value). ``path_pattern`` may contain glob
     metacharacters (``*``, ``?``, ``[``), in which case discovery resolves it
-    to zero or more matches; see ``alfrd.core.artifacts.resolve_declared_artifacts``.
+    to zero or more matches; the Studio resolves them.
     """
 
     name: str
@@ -285,7 +284,6 @@ __all__ = [
     "ManifestError",
     "ManifestNotFoundError",
     "ProjectManifest",
-    "ProjectSchema",
     "SchemaDefinition",
     "discover_manifest",
     "get_manifest_schema",

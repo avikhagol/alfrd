@@ -215,11 +215,6 @@ export function defaultWorkflow() {
   return { name: "workflow", label: "No workflow loaded", description: "", template: null, steps: [], stages: [] };
 }
 
-/** Resolve an identifier through legacy aliases (re-exported for importers). */
-export function canonicalStep(name) {
-  return resolveAlias(name).name;
-}
-
 /** Search haystack for a target row. */
 export function targetText(target) {
   const parts = [target.name, target.project, target.msPath, target.fitsidi, target.meta?.file, target.notes];

@@ -178,4 +178,3 @@ export function applyAgentSettings(data, agents, reviewEnabled, reviews) {
   return result;
 }
 
-export const AGENT_ADAPTERS = ["claude", "codex", "generic"];

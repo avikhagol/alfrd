@@ -38,7 +38,7 @@ export async function handleNotifications(ctx, project, events) {
 export function notificationPanel(ctx) {
   const projects = ctx.projects();
   const picked = projects.some((p) => p.id === ctx.state.selectedProject) ? ctx.state.selectedProject : projects[0]?.id;
-  return `<h3>This browser</h3><label class="check"><input type="checkbox" role="switch" data-notify-browser><span>Show browser notifications</span></label><p class="muted small" data-notify-hint></p>
+  return `<h3>This browser</h3><label class="check"><input type="checkbox" role="switch" data-notify-browser><span>Show browser notifications</span></label><div class="muted small" data-notify-hint></div>
     <h3>Routes</h3>${ctx.state.mode === "server" ? `<label class="field"><span>Project</span><select class="input" data-notify-project>${projects.map((p) => `<option value="${esc(p.id)}" ${p.id === picked ? "selected" : ""}>${esc(ctx.projectName(p.id))}</option>`).join("")}</select></label><div data-notify-routes aria-live="polite">Loading routes…</div>` : '<p class="muted">Connect to an ALFRD server to see notification routes.</p>'}
     <p class="muted small">Routes are read when a run starts. Edits apply to runs started afterwards.</p>`;
 }
@@ -51,10 +51,30 @@ export function mountNotifications(ctx, root) {
     }
     toggle.disabled = permission === "unsupported";
     toggle.checked = permission === "granted" && browserEnabled();
-    hint.className = permission === "denied" ? "callout warn small" : "muted small";
-    hint.textContent = permission === "unsupported" ? "This browser can't show notifications here" : permission === "denied" ? "Notifications are blocked for this site. Allow them in the browser's site settings, then turn this on again." : toggle.checked ? "On for this browser" : "Reviews pending, failed or finished runs and idle turns, while a Studio tab is open.";
+    hint.className = permission === "denied" ? "callout warn small notify-blocked" : "muted small";
+    if (permission === "denied") {
+      // A browser never prompts again for a blocked site: only its own site settings can unblock it.
+      hint.innerHTML = `<div><b>Blocked for <span class="mono">${esc(globalThis.location?.origin || "this site")}</span>.</b> Allow notifications in the browser's site settings (icon left of the address bar).</div>
+        <button type="button" class="btn sm" data-notify-ask>Ask again</button>`;
+    } else hint.textContent = permission === "unsupported" ? "This browser can't show notifications here" : toggle.checked ? "On for this browser" : "Reviews pending, failed or finished runs and idle turns, while a Studio tab is open.";
   };
   drawToggle();
+  hint.addEventListener("click", async (e) => {
+    if (!e.target.closest("[data-notify-ask]")) return;
+    const asked = await Notification.requestPermission().catch(() => "denied");
+    if (asked === "granted") await setBrowserNotifications(true);
+    else ctx.toast("The browser didn't ask: notifications are still blocked in its site settings.", "warn");
+    drawToggle();
+  });
+  // Allowed in the browser's site settings while this dialog is open: follow it without a reload.
+  const following = browserPrefs.browser || browserState() === "denied";
+  navigator.permissions?.query({ name: "notifications" }).then((status) => {
+    status.onchange = async () => {
+      if (!root.isConnected) { status.onchange = null; return; }
+      if (status.state === "granted" && following) await setBrowserNotifications(true);
+      drawToggle();
+    };
+  }).catch(() => {});
   toggle.addEventListener("change", async () => {
     toggle.disabled = true;
     try { await setBrowserNotifications(toggle.checked); } catch (error) { ctx.toast(error.message, "warn"); }

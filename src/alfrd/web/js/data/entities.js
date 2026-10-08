@@ -50,9 +50,6 @@ export function entityFromQuery(text, levels) {
 
 export const entityToFragment = (e, levels) => FRAGMENT + entityToQuery(e, levels);
 
-/** True when `inner` is `outer` or below it. */
-export const entityContains = (outer, inner) => Object.entries(outer).every(([k, v]) => inner[k] === v);
-
 /** Short label: "J0742+103 · BV019/wd_1 · rpicard · casa.log:812". */
 export function entityLabel(e) {
   const where = [e.project_code, e.workdir, e.band].filter(Boolean).join("/");

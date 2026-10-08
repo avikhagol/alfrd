@@ -105,11 +105,6 @@ class PipelineStepValidatorResult:
     def __bool__(self) -> bool:
         return self.success
 
-    @property
-    def msg(self) -> str:
-        """Compatibility alias used by older class-based validators."""
-        return self.description
-
     @classmethod
     def normalize(cls, value: Any) -> PipelineStepValidatorResult:
         """Normalize legacy Boolean/list validator returns into one result."""
@@ -632,12 +627,6 @@ class PipelineCore(Generic[DatasetT]):
         self._steps_by_name[step.name] = step
         return step
 
-    add_step = register_step
-
-    def register_steps(self) -> list[PipelineStepBase]:
-        """Compatibility no-op: construction already registers in order."""
-        return list(self.steps)
-
     def step_names(self) -> list[str]:
         return [step.name for step in self.steps]
 
@@ -656,53 +645,6 @@ class PipelineCore(Generic[DatasetT]):
 
     def get_kwargs(self, step: PipelineStepBase) -> dict[str, Any]:
         return self.resolve_parameters(step, self.provided_pipe_params)
-
-    @classmethod
-    def from_legacy_registries(
-        cls,
-        registered_steps: Mapping[str, Mapping[str, Any]],
-        validate_before: Mapping[str, Mapping[str, Any]] | None = None,
-        validate_after: Mapping[str, Mapping[str, Any]] | None = None,
-        validators: Mapping[str, Mapping[str, Any]] | None = None,
-        *,
-        sequence: Iterable[str] | None = None,
-        **kwargs: Any,
-    ) -> PipelineCore[Any]:
-        """Adapt legacy decorator registries without making them engine state."""
-        validate_before = validate_before or {}
-        validate_after = validate_after or {}
-        validators = validators or {}
-
-        def adapt_validator(function: Callable[..., Any]) -> FunctionPipelineStepValidator:
-            metadata = validators.get(function.__name__, {})
-            return FunctionPipelineStepValidator(
-                function,
-                description=str(metadata.get("desc", "")),
-                run_once=bool(metadata.get("run_once", False)),
-            )
-
-        names = list(sequence) if sequence is not None else list(registered_steps)
-        steps: list[FunctionPipelineStep] = []
-        for name in names:
-            metadata = registered_steps[name]
-            before = [
-                adapt_validator(function)
-                for function in validate_before.get(name, {}).get("functions", ())
-            ]
-            after = [
-                adapt_validator(function)
-                for function in validate_after.get(name, {}).get("functions", ())
-            ]
-            steps.append(
-                FunctionPipelineStep(
-                    metadata["function"],
-                    name=name,
-                    description=str(metadata.get("desc", "")),
-                    before=before,
-                    after=after,
-                )
-            )
-        return cls(steps, **kwargs)
 
     def resolve_parameters(
         self,
