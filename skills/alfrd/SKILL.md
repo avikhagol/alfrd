@@ -156,6 +156,22 @@ CSS themes in `~/.local/share/alfrd/themes/<id>/`. CLI theme selection needs a
 Studio reload; Settings applies at once. Scaffold: `alfrd plugin new <id>
 [--kind viewer|converter|theme|panel]`. Details: `docs/plugins.md`.
 
+Writing one (start from `alfrd plugin new`, don't hand-roll the layout):
+
+- `pyproject.toml`: `dependencies` must **not** list `alfrd` (the host provides
+  it); exactly one `[project.entry-points."alfrd.plugins"]` entry, whose name
+  equals `Plugin.id` (`myid = "alfrd_myid:plugin"`).
+- `from alfrd.extensions import Plugin, PanelSpec, Converter`; `plugin = Plugin(id=…,
+  version=…, alfrd_api=">=1,<2", panels=[…], converters=[…], cli=typer_app,
+  theme="theme.css", web="web", viewers=[…], requires_bin=[…])`.
+- `PanelSpec(kind, evaluate=fn)`: `fn(root, panel, values, spec)` returns JSON
+  for the browser or raises. `Converter(src=[".ps"], to="pdf", run=fn)`:
+  `fn(src, dest, *, timeout)` writes `dest` or raises.
+- Theme only: `--kind theme` gives `theme.css` (colour tokens) + `theme.json`;
+  copy the folder to the drop-in themes path, no package needed.
+- Test: `uv pip install -e ./alfrd-myid` into alfrd's env, then
+  `alfrd plugin info myid` (shows the load error if any); restart `alfrd serve`.
+
 ## Agent loops
 
 `template: agent-loop`: agents take turns on one task, each reading the previous
