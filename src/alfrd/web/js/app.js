@@ -1741,16 +1741,24 @@ function renderHeader() {
 
 }
 
-// Footer: CPU and RAM of the server machine, every 5 s while the tab is visible.
-let systemText = "", systemTimer = null;
+// Footer: CPU and RAM of the server machine as two small bars, every 5 s while
+// the tab is visible; the numbers are in the tooltip.
+let systemHtml = "", systemTitle = "", systemTimer = null;
+const SYSTEM_HINT = "CPU and memory of the machine running alfrd serve";
 const gib = (n) => (n / 1024 ** 3).toFixed(1);
+function sysMeter(label, pct) {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  const level = v >= 90 ? "fail" : v >= 70 ? "warn" : "ok";
+  return `<span class="sys-meter" role="meter" aria-label="${label}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${v}">${label}<i class="sys-bar"><b class="${level}" style="width:${v}%"></b></i></span>`;
+}
 async function pollSystem() {
   if (state.mode !== "server" || document.hidden) return;
   try {
     const s = await server.system();
-    systemText = `CPU ${Math.round(s.cpu)}% · RAM ${gib(s.mem_used)} / ${gib(s.mem_total)} GB`;
-    const el = $("#foot-mode span");
-    if (el) el.lastChild.textContent = ` ${systemText}`;
+    systemHtml = sysMeter("CPU", s.cpu) + sysMeter("RAM", s.mem_total ? (100 * s.mem_used) / s.mem_total : 0);
+    systemTitle = `${SYSTEM_HINT}\nCPU ${Math.round(s.cpu)}% · RAM ${gib(s.mem_used)} / ${gib(s.mem_total)} GB`;
+    const el = $("#foot-mode .sys");
+    if (el) { el.title = systemTitle; el.lastElementChild.innerHTML = systemHtml; }
   } catch { clearInterval(systemTimer); systemTimer = null; } // older server or offline: keep the label
 }
 function startSystemPoll() {
@@ -1764,7 +1772,7 @@ function renderFooter() {
   if (!st) return;
   st.textContent = `Local Storage: ${bytes(storage.size())} / Saved`;
   $("#foot-mode").innerHTML = state.mode === "server"
-    ? `<span title="CPU and memory of the machine running alfrd serve">${icon("server")} ${systemText || "alfrd serve"}</span>`
+    ? `<span class="sys" title="${esc(systemTitle || SYSTEM_HINT)}">${icon("server")}<span class="sys-meters">${systemHtml || "alfrd serve"}</span></span>`
     : `${icon("info")} Browser mode · preview workflows and import results`;
   const errors = state.consoleLines.filter((l) => l.level === "error").length;
   const warns = state.consoleLines.filter((l) => l.level === "warn").length;
