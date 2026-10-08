@@ -7,6 +7,7 @@
 import { $, $$, on, esc, icon, bytes, when, loadCss } from "../utils/dom.js";
 import { parseCsv } from "../utils/csv_parser.js";
 import { server } from "../data/server.js";
+import { converterFor, convertFile, viewerFor } from "./viewers.js";
 
 const PAGE = 60;
 const TEXT_MAX = 400000;
@@ -127,9 +128,13 @@ async function drawRun(card, ctx, st, side) {
   $$("details.coll-group[open]", box).forEach((d) => fillGroup(d, st, run, list));
 }
 
+/** PostScript opens as a PDF when a plugin converts it (e.g. ps2pdf), else it is download only. */
+const converts = (f) => f.kind === "postscript" && !!converterFor(f.path);
+
 function fileChip(st, run, f) {
-  const act = f.kind === "table" ? "table" : f.kind === "text" ? "text" : f.kind === "image" ? "image" : f.kind === "pdf" ? "open" : "download";
-  const ic = { table: "list", text: "file", image: "graph", open: "external", download: "download" }[act];
+  const act = f.kind === "table" ? "table" : f.kind === "text" ? "text" : f.kind === "image" ? "image" : f.kind === "pdf" ? "open"
+    : converts(f) ? "pdf" : "download";
+  const ic = { table: "list", text: "file", image: "graph", open: "external", pdf: "file", download: "download" }[act];
   return `<button class="btn sm coll-file" data-coll-act="${act}" data-run="${esc(run)}" data-path="${esc(f.path)}" title="${esc(f.path)} · ${esc(bytes(f.size))}">${icon(ic)} ${esc(f.name)}</button>`;
 }
 
@@ -140,7 +145,7 @@ function fillGroup(details, st, run, list) {
   const n = Math.min(items.length, st.shown[folder] || PAGE);
   const tile = (f) => {
     if (f.kind === "image") return `<figure class="coll-tile"><button class="coll-thumb" data-coll-act="image" data-run="${esc(run)}" data-path="${esc(f.path)}" title="${esc(f.path)}"><img loading="lazy" decoding="async" alt="${esc(f.name)}" src="${esc(url(st, run, f.path))}"></button><figcaption class="small mono">${esc(f.name)}</figcaption></figure>`;
-    return `<figure class="coll-tile file">${fileChip(st, run, f)}${f.kind === "postscript" ? `<figcaption class="muted small">PostScript: download only</figcaption>` : ""}</figure>`;
+    return `<figure class="coll-tile file">${fileChip(st, run, f)}${f.kind === "postscript" ? `<figcaption class="muted small">${converts(f) ? `PostScript: opens as PDF (${esc(converterFor(f.path).title || converterFor(f.path).plugin)})` : "PostScript: download only"}</figcaption>` : ""}</figure>`;
   };
   grid.innerHTML = items.slice(0, n).map(tile).join("") + (items.length > n ? `<div class="coll-more"><button class="btn sm" data-coll-more="${esc(folder)}">Show ${Math.min(PAGE, items.length - n)} more (${items.length - n} left)</button></div>` : "");
 }
@@ -191,6 +196,7 @@ async function act(ctx, st, action, run, path) {
     return;
   }
   if (action === "image") return lightbox(ctx, st, run, path);
+  if (action === "pdf") return converted(ctx, st, run, path);
   let text;
   try {
     const res = await server.request(url(st, run, path));
@@ -224,6 +230,28 @@ async function act(ctx, st, action, run, path) {
   }
   ctx.modal(`<header class="modal-h"><h2>${title}</h2><span class="grow"></span>${dl}<button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b">${cut ? `<p class="muted small">Last 400 kB.</p>` : ""}<pre class="code coll-text">${esc(text)}</pre></div>`, null, "wide");
+}
+
+/** A PostScript file converted by a plugin, shown in the PDF viewer (cached on the server). */
+function converted(ctx, st, run, path) {
+  const dl = `<a class="btn sm" href="${esc(url(st, run, path, true))}" download>${icon("download")} Download .ps</a>`;
+  ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(path.split("/").pop())}</h2><span class="muted small mono trunc">${esc(path)}</span><span class="grow"></span>${dl}<button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <div class="modal-b"><p class="muted small" data-conv-status role="status" aria-live="polite">${icon("sync")} Converting to PDF…</p><div class="viewer viewer-full"></div></div>`, async (root) => {
+    const status = $("[data-conv-status]", root), host = $(".viewer-full", root);
+    let blobUrl;
+    try {
+      blobUrl = URL.createObjectURL(await convertFile(st.project, `${run}/${path}`));
+      if (!host.isConnected) { URL.revokeObjectURL(blobUrl); return; } // closed while converting
+      status.hidden = true;
+      await viewerFor("converted.pdf", "application/pdf").render({ project: st.project, path, name: path.split("/").pop(), mime: "application/pdf", url: blobUrl }, host);
+      const observer = new MutationObserver(() => { if (!host.isConnected) { URL.revokeObjectURL(blobUrl); observer.disconnect(); } });
+      observer.observe(document.body, { childList: true, subtree: true });
+    } catch (error) {
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      status.className = "callout warn small";
+      status.textContent = error.message;
+    }
+  }, "full");
 }
 
 /** Full-size image; ←/→ walk the images of the same folder. */
