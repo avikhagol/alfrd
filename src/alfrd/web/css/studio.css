@@ -728,6 +728,11 @@ details.log-item .log-dir { max-width: 40%; }
 .modal.full { width: calc(100vw - 32px); height: calc(100vh - 32px); max-height: none; display: flex; flex-direction: column; }
 .modal.full .modal-h { gap: 12px; justify-content: flex-start; }
 .modal.full .modal-b { flex: 1; min-height: 0; display: flex; padding: 12px; }
+/* File viewers (viewers.js): a full-screen viewer fills the modal; an inline PDF gets a usable height. */
+.modal.full .modal-b:has(> .viewer-full) { flex-direction: column; gap: 8px; }
+.viewer-full { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.viewer-pdf { display: block; width: 100%; height: 70vh; border: 0; background: var(--surface-2); }
+.viewer-full .viewer-pdf { flex: 1; height: auto; }
 .log-full { flex: 1; max-height: none; height: 100%; }
 .lg { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; }
 details.lg-group { padding: 0; }
