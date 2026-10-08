@@ -307,6 +307,19 @@ alfrd run step_hello_world MYPROJ config.txt    # config.txt: name = World
 
 ---
 
+## Studio plugins and themes
+
+Plugins add file viewers, metadata panels, PDF converters, themes and CLI
+commands. Open **Settings → Plugins** to browse a catalog you choose, review
+hash-pinned packages, watch install/update/remove logs and restart the server
+without logging in again. Plugins run as the server account with full access
+to files; install only code you trust. There is no default catalog.
+
+Use `alfrd plugin new <id>` to scaffold a plugin, or
+`alfrd serve --safe-mode` to recover from a broken one. See
+[Plugins and themes](docs/plugins.md) for the public API, packaging, catalogs,
+reference plugins and `--no-gui-install`.
+
 ## Track progress in a table
 
 `LogFrame` wraps a pandas table (CSV or Google Sheet).

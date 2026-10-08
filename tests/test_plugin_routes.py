@@ -83,6 +83,18 @@ def test_list_reports_state_web_files_and_errors(studio_app, plugin_pkgs, tmp_pa
     assert ids["obsidian-orbit"] == "builtin" and ids["daylight-orbit"] == "builtin" and ids["webby"] == "plugin"
 
 
+def test_list_reports_gui_install_policy(studio_app):
+    app, _ = studio_app
+    client = app.test_client()
+    assert client.get("/api/studio/plugins").get_json()["gui_install"] is True
+    extensions.state_file().parent.mkdir(parents=True, exist_ok=True)
+    extensions.state_file().write_text('{"gui_install": false}')
+    assert client.get("/api/studio/plugins").get_json()["gui_install"] is False
+    extensions.state_file().unlink()
+    app.config["PLUGINS_GUI_INSTALL"] = False  # alfrd serve --no-gui-install
+    assert client.get("/api/studio/plugins").get_json()["gui_install"] is False
+
+
 def test_plugin_files_are_confined_typed_and_follow_disable(studio_app, plugin_pkgs, tmp_path):
     app, _ = studio_app
     pkg = _setup(plugin_pkgs, tmp_path)
@@ -152,3 +164,14 @@ def test_scaffolded_converter_takes_keyword_timeout(tmp_path):
     exec(compile(source, "scaffold", "exec"), namespace)  # noqa: S102 - our own template
     params = inspect.signature(namespace["convert"]).parameters
     assert params["timeout"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_list_marks_only_installer_managed_plugins(studio_app, plugin_pkgs, tmp_path, monkeypatch):
+    from alfrd.extensions import installer
+
+    app, _ = studio_app
+    _setup(plugin_pkgs, tmp_path)
+    monkeypatch.setattr(installer, "installed", lambda: {"webby": {"source": "local"}})
+    by_id = {p["id"]: p for p in app.test_client().get("/api/studio/plugins").get_json()["plugins"]}
+    assert by_id["webby"]["managed"] is True
+    assert by_id["pany"]["managed"] is False

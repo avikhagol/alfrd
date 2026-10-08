@@ -385,6 +385,10 @@ class LiveHub:
             if event["key"] in sub.keys:
                 sub.put(event)
 
+    def broadcast(self, kind: str, **data: Any) -> None:
+        """An event for every subscriber (all of them hold the runtime key), e.g. ``plugin_job``."""
+        self._publish({"type": kind, "key": self.RUNTIME, **data})
+
     def watcher(self, key: str) -> Watcher | None:
         with self._lock:
             w = self._watchers.get(key)

@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover - Windows
 
 PLANS_DIR = Path(".alfrd") / "plans"
 ACTIVE = ("running", "paused")
-POLL = 1.0
+POLL = float(os.environ.get("ALFRD_RUNNER_POLL") or 1.0)  # seconds between runner ticks (tests lower it)
 NOTIFY_DRAIN = 15.0  # seconds a stopping runner waits for queued notifications
 
 
@@ -220,7 +220,8 @@ def list_plans(root: str | Path) -> list[dict[str, Any]]:
         data = _read_json(folder / "plan.json")
         if isinstance(data, dict):
             out.append(data)
-    return sorted(out, key=lambda p: str(p.get("created") or ""), reverse=True)
+    # created_ns orders plans made within the same second ("created" has 1 s resolution).
+    return sorted(out, key=lambda p: (str(p.get("created") or ""), int(p.get("created_ns") or 0)), reverse=True)
 
 
 def active_plan(root: str | Path, csv_file: str | Path | None = None, target: str | None = None) -> dict[str, Any] | None:
@@ -748,6 +749,7 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
     folder.save({
         "id": plan_id,
         "created": now_iso(),
+        "created_ns": time.time_ns(),
         "root": str(cfg.root),
         "csv": rel,
         "workflow": cfg.workflow,
@@ -1163,6 +1165,10 @@ class Runner:
 
         signal.signal(signal.SIGTERM, on_term)
         signal.signal(signal.SIGINT, on_term)
+        # A turn's process exiting wakes the runner at once instead of at the next tick.
+        self._wake_r, self._wake_w = os.pipe()
+        os.set_blocking(self._wake_w, False)
+        previous_chld = signal.signal(signal.SIGCHLD, self._on_child) if hasattr(signal, "SIGCHLD") else None
         self.save_plan(status="running", runner={
             "pid": os.getpid(), "host": self.host, "proc_start": proc_start(os.getpid()),
             "started": now_iso(), "heartbeat": now_iso(), "stopped": None,
@@ -1174,6 +1180,11 @@ class Runner:
         try:
             return self._main(stop)
         finally:
+            if hasattr(signal, "SIGCHLD"):
+                signal.signal(signal.SIGCHLD, previous_chld or signal.SIG_DFL)
+            for fd in (self._wake_r, self._wake_w):
+                os.close(fd)
+            self._wake_r = self._wake_w = None
             if self.notifier is not None:
                 self.notifier.stop(deadline=NOTIFY_DRAIN)
                 self.notifier = None
@@ -1196,7 +1207,7 @@ class Runner:
                 break
             action = self.folder.control()
             if action == "run" and self._waiting_to_start():
-                time.sleep(POLL)
+                self._nap()
                 continue
             self.poll()
             deadline = self.plan.get("max_runtime")
@@ -1223,7 +1234,7 @@ class Runner:
                 if not self.live and not started and not self.delayed:
                     final = "failed" if self.stop_new else "finished"
                     break
-            time.sleep(POLL)
+            self._nap()
         counts = self.counts()
         self.save_plan(status=final, counts=counts, waiting=[], runner={"stopped": now_iso(), "heartbeat": now_iso()})
         kind = {"finished": "plan.finished", "failed": "plan.failed", "cancelled": "plan.cancelled"}.get(final, "plan.interrupted")
@@ -1231,6 +1242,25 @@ class Runner:
                    status=final, counts=counts, **({"paused": True} if final == "paused" else {}))
         self.log(f"stopped: {final}")
         return 0
+
+    _wake_r: int | None = None
+    _wake_w: int | None = None
+
+    def _on_child(self, _sig, _frame) -> None:
+        with contextlib.suppress(OSError, TypeError):
+            os.write(self._wake_w, b"x")
+
+    def _nap(self) -> None:
+        """Sleep one tick, or less when a child process exits."""
+        if self._wake_r is None:
+            time.sleep(POLL)
+            return
+        import select
+
+        if select.select([self._wake_r], [], [], POLL)[0]:
+            with contextlib.suppress(BlockingIOError, OSError):
+                os.set_blocking(self._wake_r, False)
+                os.read(self._wake_r, 4096)
 
     def _waiting_to_start(self) -> bool:
         """A scheduled plan (``start_at``) waits, listed as waiting, until its time or "start now"."""
@@ -1512,7 +1542,9 @@ class Runner:
                             "ALFRD_STEPS": ",".join(spec.steps), "ALFRD_ROOT": str(self.folder.root),
                             "ALFRD_USAGE_INTERVAL": str(self.plan.get("usage_interval", self.cfg.settings.get("usage_interval", 5))),
                             "ALFRD_LAUNCHER": str(self.plan.get("launcher") or "detach"),
-                            "ALFRD_UNIT": unit["id"]})  # marks every process of this command (usage)
+                            # Marks every process of this command for usage. Unit ids repeat across plans
+                            # (0001-<target>-<step>), so the plan id keeps two live plans apart.
+                            "ALFRD_UNIT": f"{self.folder.id}/{unit['id']}"})
         usage_dir = self._workdir_path(spec)
         if usage_dir:
             process_env["ALFRD_USAGE_DIR"] = usage_dir
@@ -2244,10 +2276,20 @@ def manifest_hash(root, *, legacy=False):
         raise ExecutionError(str(exc)) from exc
     if path is None:
         raise ExecutionError("project manifest is missing")
+    raw = path.read_bytes()
     if legacy:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    import yaml
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        data.pop("history", None)  # File tracking changes do not change the running workflow.
-    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+        return hashlib.sha256(raw).hexdigest()
+    # The runner checks every tick; parse only when the bytes change (pure-Python YAML is slow).
+    key = hashlib.sha256(raw).digest()
+    if key not in _MANIFEST_HASHES:
+        import yaml
+        data = yaml.safe_load(raw.decode("utf-8"))
+        if isinstance(data, dict):
+            data.pop("history", None)  # File tracking changes do not change the running workflow.
+        if len(_MANIFEST_HASHES) > 64:
+            _MANIFEST_HASHES.clear()
+        _MANIFEST_HASHES[key] = hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+    return _MANIFEST_HASHES[key]
+
+
+_MANIFEST_HASHES: dict[bytes, str] = {}  # sha256(raw manifest) → normalized hash

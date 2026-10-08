@@ -314,9 +314,12 @@ Python side: `alfrd/studio_defs.py`, `alfrd/avica_layout.py`, `alfrd/gui/studio.
 Tests:
 
 ```bash
-python -m pytest -q
-node --test tests/studio_js/*.test.mjs
+python -m pytest -q -n auto -m "not serial"   # everything else, in parallel (about a minute)
+python -m pytest -q -m serial                 # tests that measure time or CPU, alone
+node --test tests/studio_js/*.test.mjs        # the Studio's tests only (pytest runs them too)
 ```
+
+Add `-m "not slow and not serial"` to skip building and installing the wheel while iterating.
 
 ## Setup forms (`quickstart:`)
 

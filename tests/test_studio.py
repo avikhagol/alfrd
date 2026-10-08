@@ -69,7 +69,7 @@ LAZY_MODULES = {
     "js/data/run_history.js",
     "js/components/yaml_form.js", "js/data/yaml_form.js", "js/data/demo.js",
     "js/data/folder_scan.js",
-    "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
+    "js/components/settings_plugins_view.js", "js/components/plugin_jobs.js", "js/components/plugins_install_dialog.js", "js/components/plugins_browse.js", "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
 }
 
 
@@ -159,7 +159,9 @@ def test_lazy_payload_under_106kb_compressed():
     # omitted the full licence and underestimated this current sanitizer build.
     # T3.7/T3.9–T3.11: the lazy browser API, conversion controls, Settings/Diagnostics and
     # theme-token styles add ~7 KiB: 146 → 152 KiB; measured 155,086 bytes. Startup cap unchanged.
-    assert total < 152 * 1024, f"{total} bytes gzip"
+    # Phase 4 Browse/install dialogs and job log/restart UI load only from Settings → Plugins.
+    # Measured 165510 bytes; rounded once to 162 KiB. Startup cap unchanged.
+    assert total < 162 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

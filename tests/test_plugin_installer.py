@@ -231,3 +231,77 @@ def test_local_source_is_saved_as_absolute_path(tmp_path, offline, monkeypatch):
     ins.update("testplug", extra=offline)
     ins.remove("testplug")
     assert files() == []
+
+
+# --- Phase 4: catalog (hash-pinned) installs ---------------------------------
+
+def _sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _pin(wheel: Path, version: str = "0.1", **extra) -> dict:
+    return {"version": version, "wheel": wheel.as_uri(), "sha256": _sha(wheel), **extra}
+
+
+def test_build_command_with_hashed_requirements(monkeypatch, tmp_path):
+    monkeypatch.setattr(ins.shutil, "which", lambda _: "/bin/uv")
+    cmd = ins.build_command("ignored", site=tmp_path, constraints=tmp_path / "c", requirements=tmp_path / "r.txt")
+    assert cmd[-4:] == ["--require-hashes", "--no-deps", "-r", str(tmp_path / "r.txt")] and "ignored" not in cmd
+
+
+def test_pinned_install_records_catalog_source_and_hashed_requirements(tmp_path, offline):
+    folder = tmp_path / "wheels"
+    dep = build_wheel(folder, name="alfrd_dep", plugin_id=None, source="x=1\n")
+    # The wheel's own Requires-Dist (alfrd itself here) is satisfied by the host: --no-deps.
+    wheel = build_wheel(folder, requires=["alfrd>=0.1", "alfrd-dep==0.1"])
+    record = ins.install_pinned("testplug", _pin(wheel, requirements=[f"alfrd-dep==0.1 --hash=sha256:{_sha(dep)}"]),
+                                extra=offline)[0]
+    assert record["source"] == "catalog:testplug" and record["sha256"] == _sha(wheel)
+    assert record["wheel"] == wheel.as_uri() and "alfrd-dep" in record["dists"]
+    assert not (ext.site_dir() / "alfrd").exists()
+    ins.remove("testplug")
+    assert files() == []
+
+
+def test_pinned_install_rejects_hash_mismatch_before_installing(tmp_path, offline):
+    wheel = build_wheel(tmp_path / "wheels")
+    with pytest.raises(ins.InstallError, match="Hash mismatch"):
+        ins.install_pinned("testplug", dict(_pin(wheel), sha256="0" * 64), extra=offline)
+    assert files() == [] and ins.installed() == {}
+    assert [p.name for p in ext.plugins_dir().iterdir() if p.name.startswith(".download-")] == []
+
+
+def test_pinned_install_rejects_unhashed_or_conflicting_requirements(tmp_path, offline):
+    wheel = build_wheel(tmp_path / "wheels")
+    other = "0.0.1" if metadata.version("typer") != "0.0.1" else "0.0.2"
+    with pytest.raises(ins.InstallError):
+        ins.install_pinned("testplug", _pin(wheel, requirements=[f"typer=={other} --hash=sha256:{'1' * 64}"]),
+                           extra=offline)
+    assert files() == [] and ins.installed() == {}
+
+
+def test_pinned_install_must_match_catalog_id_and_version(tmp_path, offline):
+    wheel = build_wheel(tmp_path / "wheels")
+    with pytest.raises(ins.InstallError, match="provides testplug"):
+        ins.install_pinned("other", _pin(wheel), extra=offline)
+    with pytest.raises(ins.InstallError, match="is version 0.1"):
+        ins.install_pinned("testplug", _pin(wheel, version="0.2"), extra=offline)
+    assert files() == [] and ins.installed() == {}
+
+
+def test_catalog_plugin_updates_to_newest_catalog_version(tmp_path, offline):
+    first = build_wheel(tmp_path / "wheels")
+    second = build_wheel(tmp_path / "wheels", version="0.2")
+    ins.install_pinned("testplug", _pin(first), extra=offline)
+    index = tmp_path / "index.json"
+    index.write_text(json.dumps({"schema_version": 1, "plugins": [
+        {"id": "testplug", "title": "T", "kinds": ["viewer"], "alfrd_api": ">=1",
+         "versions": [_pin(first), _pin(second, version="0.2")]}]}))
+    ext.state_file().parent.mkdir(parents=True, exist_ok=True)
+    ext.state_file().write_text(json.dumps({"catalog_url": index.as_uri()}))
+    assert ins.update("testplug", extra=offline)[0]["version"] == "0.2"
+    assert ins.installed()["testplug"]["sha256"] == _sha(second)
+    ins.remove("testplug")
+    assert files() == []

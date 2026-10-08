@@ -13,7 +13,7 @@ error and goes on. ``ALFRD_NO_PLUGINS=1`` (``--safe-mode``) skips them all.
 Where things live (resolved per call, so XDG changes in tests apply):
 ``plugins_dir()/site`` (installed plugins, after site-packages on ``sys.path``),
 ``themes_dir()/<id>/theme.css`` (drop-in themes), ``state_file()``
-(``{"disabled": [...], "theme": "obsidian-orbit"}``).
+(``{"disabled": [...], "theme": "obsidian-orbit", "catalog_url": ..., "gui_install": true}``).
 """
 
 from __future__ import annotations
@@ -169,18 +169,35 @@ def state_file() -> Path:
     return Path(user_config_dir("alfrd")) / "plugins.json"
 
 
-def read_state() -> dict[str, Any]:
-    """``{"disabled": [ids], "theme": id}``; a missing or broken file gives the defaults."""
-    state: dict[str, Any] = {"disabled": [], "theme": DEFAULT_THEME}
+def _raw_state() -> dict[str, Any]:
     try:
         data = json.loads(state_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return state
-    if isinstance(data, dict):
-        if isinstance(data.get("disabled"), list):
-            state["disabled"] = sorted({str(x) for x in data["disabled"]})
-        if isinstance(data.get("theme"), str) and THEME_ID.match(data["theme"]):
-            state["theme"] = data["theme"]
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def catalog_url_ok(url: Any) -> bool:
+    """Only ``https://`` and ``file://`` catalogs; there is no default URL."""
+    return isinstance(url, str) and url.lower().startswith(("https://", "file://")) and len(url) <= 2048
+
+
+def read_state() -> dict[str, Any]:
+    """``{"disabled": [ids], "theme": id, "catalog_url": url | None, "gui_install": bool}``.
+
+    A missing or broken file (or key) gives the defaults; a catalog URL that is
+    not https/file is ignored.
+    """
+    state: dict[str, Any] = {"disabled": [], "theme": DEFAULT_THEME, "catalog_url": None, "gui_install": True}
+    data = _raw_state()
+    if isinstance(data.get("disabled"), list):
+        state["disabled"] = sorted({str(x) for x in data["disabled"]})
+    if isinstance(data.get("theme"), str) and THEME_ID.match(data["theme"]):
+        state["theme"] = data["theme"]
+    if catalog_url_ok(data.get("catalog_url")):
+        state["catalog_url"] = data["catalog_url"]
+    if isinstance(data.get("gui_install"), bool):
+        state["gui_install"] = data["gui_install"]
     return state
 
 
@@ -199,22 +216,25 @@ def write_state(state: dict[str, Any]) -> None:
         raise
 
 
+def _update_state(**changes: Any) -> dict[str, Any]:
+    # Rewrite only the changed keys: hand-edited ones (catalog_url, gui_install,
+    # even unknown or invalid values) stay exactly as the user wrote them.
+    data = _raw_state()
+    data.update(changes)
+    write_state(data)
+    return read_state()
+
+
 def set_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
-    state = read_state()
-    disabled = set(state["disabled"])
+    disabled = set(read_state()["disabled"])
     (disabled.discard if enabled else disabled.add)(plugin_id)
-    state["disabled"] = sorted(disabled)
-    write_state(state)
-    return state
+    return _update_state(disabled=sorted(disabled))
 
 
 def set_theme(theme_id: str) -> dict[str, Any]:
     if not THEME_ID.match(theme_id or ""):
         raise ValueError(f"invalid theme id {theme_id!r}")
-    state = read_state()
-    state["theme"] = theme_id
-    write_state(state)
-    return state
+    return _update_state(theme=theme_id)
 
 
 def add_site() -> None:

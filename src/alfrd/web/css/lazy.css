@@ -261,3 +261,19 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 .plug-theme input:checked ~ .plug-theme-check { visibility: visible; }
 @media (max-width: 559px) { .plug-theme-grid { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .plug-switch::before { transition: none; } }
+/* Plugins catalog and install dialogs reuse the Settings theme tokens. */
+.plug-tabs,.plug-browse-bar,.plug-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.plug-tabs { margin:12px 0; }
+.plug-tabs [aria-selected=true] { border-color:var(--accent); color:var(--accent); }
+.plug-browse-bar input { flex:1; min-width:120px; width:auto; }
+.plug-browse-bar select { width:auto; }
+.plug-trust { display:block; }
+.plug-letter { width:28px; height:28px; display:grid; place-items:center; background:var(--muted-bg); border-radius:5px; }
+.plug-actions { justify-content:flex-end; max-width:150px; }
+.plug-facts { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px 16px; }
+.plug-facts dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+.plug-facts [data-wheel] { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.plug-job pre { max-height:14em; overflow:auto; white-space:pre-wrap; }
+.plug-failure { color:var(--fail-text); overflow-wrap:anywhere; }
+[data-browse] pre,[data-policy] pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+@media(max-width:479px) { .plug-facts { grid-template-columns:1fr; gap:4px; } .plug-facts dd { margin-bottom:8px; } }

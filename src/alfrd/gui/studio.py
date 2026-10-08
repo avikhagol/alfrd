@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, jsonify, request, send_file, send_from_directory
@@ -74,6 +75,8 @@ def studio_session():
         default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"),
         projects=current_app.config.get("STUDIO_PROJECTS"),
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
+        # Settings → Plugins "Restart now": `alfrd serve` re-executes itself (not under --debug).
+        can_restart=bool(current_app.config.get("STUDIO_RESTART")) and mutations_enabled(),
         # Import → Connect → Browse… lists server folders (loopback + CSRF, like mutations).
         can_browse=mutations_enabled(),
         # Folders without alfrd.yaml can be connected with the default manifest.
@@ -1212,6 +1215,59 @@ def studio_quit():
         return _json_error(RuntimeError("this server was not started by `alfrd serve`; stop it where it runs"), 501)
     threading.Timer(0.3, shutdown).start()
     return jsonify(stopping=True)
+
+
+# Restart waits for mutations in flight (POST/PUT/PATCH/DELETE; reads are retried by the Studio).
+_INFLIGHT = {"count": 0}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+@studio_api.before_app_request
+def _count_mutation():
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.endpoint != "studio_api.studio_restart":
+        with _INFLIGHT_LOCK:
+            _INFLIGHT["count"] += 1
+        request.environ["alfrd.counted"] = True
+
+
+@studio_api.teardown_app_request
+def _uncount_mutation(_error=None):
+    if request.environ.pop("alfrd.counted", False):
+        with _INFLIGHT_LOCK:
+            _INFLIGHT["count"] -= 1
+
+
+def _restart_when_idle(restart, wait: float = 10.0) -> None:
+    import time
+
+    deadline = time.monotonic() + wait
+    while _INFLIGHT["count"] > 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.3)  # let the 202 reach the browser
+    restart()
+
+
+@studio_api.post("/studio/restart")
+def studio_restart():
+    """Restart `alfrd serve` (loopback + CSRF) with the same token and session secret.
+
+    The reply (202) is sent first; the server stops once mutations in flight have
+    finished (at most 10 s) and re-executes itself, so the Studio reconnects as
+    the same logged-in user and loads plugins anew.
+    """
+    from alfrd.extensions import jobs
+    from alfrd.gui.security import require_local_csrf
+
+    require_local_csrf()
+    restart = current_app.config.get("STUDIO_RESTART")
+    if not restart:
+        return _json_error(RuntimeError("this server cannot restart itself (started with --debug or not by "
+                                        "`alfrd serve`); restart it where it runs"), 409)
+    if jobs.runner.running():
+        return _json_error(RuntimeError("a plugin job is running; restart when it has finished"), 409,
+                           job=jobs.runner.running())
+    threading.Thread(target=_restart_when_idle, args=(restart,), daemon=True, name="studio-restart").start()
+    return jsonify(restarting=True), 202
 
 
 def _default_manifest_available() -> bool:

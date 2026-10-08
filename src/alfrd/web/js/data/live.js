@@ -85,6 +85,7 @@ export function createLive(hooks) {
   }
 
   function event(ev) {
+    if (ev.type === "plugin_job") { server.pluginJob = ev.job; window.dispatchEvent(new CustomEvent("plugin-job", { detail: ev.job })); hooks.onPluginJob?.(ev.job); return; }
     const key = ev.key;
     const prev = live.known[key];
     if (prev && prev.epoch === ev.epoch && ev.version <= prev.version) return; // already seen
@@ -112,7 +113,7 @@ export function createLive(hooks) {
       set("live", "event stream");
       hello(data.state);
     });
-    ["tree", "runtime", "alfrd"].forEach((type) => es.addEventListener(type, (e) => { try { event(JSON.parse(e.data)); } catch { /* ignore */ } }));
+    ["tree", "runtime", "alfrd", "plugin_job"].forEach((type) => es.addEventListener(type, (e) => { try { event(JSON.parse(e.data)); } catch { /* ignore */ } }));
     es.addEventListener("reset", () => hooks.projects().forEach((p) => hooks.onResync?.(p)));
     es.onerror = () => {
       // EventSource hides HTTP status and reconnects automatically. Close it
@@ -211,7 +212,6 @@ export function createLive(hooks) {
       if (hooks.available && !hooks.available()) { set("unavailable", "this server has live updates off"); return; }
       const projects = hooks.projects();
       live.watching = projects.join(",");
-      if (!projects.length) { set("off", "no project"); return; }
       if (live.transport === "sse" && typeof EventSource === "function") connectSse(projects);
       else startPolling("polling for changes");
     } else {

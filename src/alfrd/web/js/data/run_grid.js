@@ -239,11 +239,11 @@ function runGroup(project, name, grid, g, runLabel) {
 // Plan statuses mapped onto the grid's status filter.
 const PLAN_GRID = { finished: "completed", failed: "failed", running: "running", cancelled: "cancelled", paused: "interrupted", interrupted: "interrupted" };
 
-/** runs: [{id, status}] (plan list, newest first) → the rows the Search / Status / Run filters keep. */
-export function filterHistory(runs, filters = FILTERS_DEFAULT, runLabel = (s) => s) {
+/** runs: [{id, status}] (plan list, newest first) → the rows the Search / Status / Run filters keep (and only target's runs when given). */
+export function filterHistory(runs, filters = FILTERS_DEFAULT, runLabel = (s) => s, target = null) {
   const f = { ...FILTERS_DEFAULT, ...filters };
   const q = f.search.trim().toLowerCase();
-  return runs.filter((r) => (f.run === "all" || r.id === f.run) && (f.status === "all" || PLAN_GRID[r.status] === f.status)
+  return runs.filter((r) => (!target || (r.targets || [r.target]).includes(target)) && (f.run === "all" || r.id === f.run) && (f.status === "all" || PLAN_GRID[r.status] === f.status)
     && (!q || `run ${r.id} ${runLabel(r.status)} ${r.status} ${(r.targets || [r.target]).filter(Boolean).join(" ")}`.toLowerCase().includes(q)));
 }
 
@@ -264,7 +264,7 @@ export function historyEmpty(reason, project, error = "", setup = false) {
  * Progress, Runtime, Open run, View results) and the step grid of the run chosen in the
  * Run filter (the latest by default; each run keeps its own step columns).
  * runs: [{id, status}] newest first; summary(id) → runSummary | null (not read yet).
- * opts: {runLabel, error, index, page, size, showProject}.
+ * opts: {runLabel, error, index, page, size, showProject, target (header target name), targetOnly}.
  */
 export function renderRunHistory(project, name, full, grid, runs, summary, filters = FILTERS_DEFAULT, opts = {}) {
   const runLabel = opts.runLabel || ((s) => s);
@@ -274,15 +274,18 @@ export function renderRunHistory(project, name, full, grid, runs, summary, filte
   const head = `<h3 class="rg-title" id="${id}">${esc(name)} <span class="muted small">· ${runs.length} run${runs.length === 1 ? "" : "s"}</span></h3>`;
   const wrap = (body) => `<section class="rg" data-rg-section="${p}" aria-labelledby="${id}">${head}${body}</section>`;
   if (full.empty && full.empty !== "nomatch" && !runs.length) return wrap(historyEmpty(full.empty === "unavailable" ? "none" : full.empty, project, opts.error, opts.setup));
-  const shown = filterHistory(runs, f, runLabel);
+  const t = opts.target, only = Boolean(opts.targetOnly && t);
+  const pool = only ? filterHistory(runs, {}, runLabel, t) : runs; // the Run filter's choices
+  const shown = filterHistory(runs, f, runLabel, only ? t : null);
   const size = opts.size || 25;
   const pages = Math.max(1, Math.ceil(shown.length / size));
   const page = Math.min(Math.max(0, opts.page || 0), pages - 1);
   const rows = shown.slice(page * size, page * size + size);
   const toolbar = `<div class="rg-toolbar" role="group" aria-label="Filter runs of ${esc(name)}">
+      <div class="seg" role="group" aria-label="Runs shown"><button data-rg-scope="${p}" data-scope="all" class="${only ? "" : "on"}" aria-pressed="${!only}" title="Runs of every target">All targets</button><button data-rg-scope="${p}" data-scope="target" class="${only ? "on" : ""}" aria-pressed="${only}" ${t ? "" : "disabled"} title="${t ? `Only runs of ${esc(t)} (selected in the header)` : "Select a target in the header"}">Target only</button></div>
       <label class="search"><input type="search" data-rg-search="${p}" value="${esc(f.search)}" placeholder="Search runs…" aria-label="Search runs of ${esc(name)}"></label>
       <label class="select-wrap"><select data-rg-status="${p}" aria-label="Status filter for ${esc(name)}"><option value="all">All statuses</option>${[...new Set(Object.values(PLAN_GRID))].map((k) => `<option value="${k}" ${f.status === k ? "selected" : ""}>${esc(GRID_STATUS[k].label)}</option>`).join("")}</select></label>
-      <label class="select-wrap"><select data-rg-run="${p}" aria-label="Run filter for ${esc(name)}"><option value="all">All runs (${runs.length})</option>${runs.map((r) => `<option value="${esc(r.id)}" ${f.run === r.id ? "selected" : ""}>Run ${esc(r.id)}</option>`).join("")}</select></label>
+      <label class="select-wrap"><select data-rg-run="${p}" aria-label="Run filter for ${esc(name)}"><option value="all">All runs (${pool.length})</option>${pool.map((r) => `<option value="${esc(r.id)}" ${f.run === r.id ? "selected" : ""}>Run ${esc(r.id)}</option>`).join("")}</select></label>
       <button class="btn sm" data-rg-reset="${p}" ${filtersActive(f) ? "" : "disabled"}>Clear filters</button>
     </div>`;
   const row = (r) => {
@@ -327,7 +330,7 @@ export function cellDetail(projectName, found, logHtml = "", now = Date.now()) {
   </dl>${logHtml ? `<div class="row gap">${logHtml}</div>` : cell.status === "na" ? "" : '<p class="muted small">No log recorded for this step yet.</p>'}`;
 }
 
-/** Tasks of an agent-loop project (own turn count and worktree) above its run history. */
+/** Tasks of an agent-loop project (own turn count and worktree) above its run history. active: the header target's name; a click selects that target. */
 export function renderTaskStrip(project, name, got, active, runLabel = (s) => s) {
   const tasks = got?.tasks || [];
   if (!got?.max_iterations || !tasks.length) return "";
@@ -336,7 +339,7 @@ export function renderTaskStrip(project, name, got, active, runLabel = (s) => s)
     const ws = t.workspace;
     const tip = [`${t.iterations ?? "?"} of at most ${got.max_iterations} ${unit}`, ws ? `worktree ${ws.branch}${ws.changed ? `, ${ws.changed} uncommitted changes` : ""}` : null,
       `${t.runs || 0} run${t.runs === 1 ? "" : "s"}`, t.error].filter(Boolean).join(" · ");
-    return `<button class="task-chip${active === t.name ? " on" : ""}" data-rg-task="${esc(project)}" data-task="${esc(t.name)}" aria-pressed="${active === t.name}" title="${esc(tip)}">
+    return `<button class="task-chip${active === t.name ? " on" : ""}" data-rg-task="${esc(project)}" data-task="${esc(t.name)}" aria-pressed="${active === t.name}" title="${esc(`${tip} · select in the header`)}">
       <b>${esc(t.name)}</b><span class="muted small">${t.iterations ?? "?"}/${got.max_iterations}</span>${t.over_limit ? `<span class="badge tone-warn">over max</span>` : ""}
       ${ws ? `<span class="mono small">${icon("split")}${esc(ws.branch || "")}${ws.changed ? ` · ${ws.changed}` : ""}</span>` : ""}
       ${t.latest ? `<span class="small">${esc(runLabel(t.latest.status))}</span>` : `<span class="muted small">no runs</span>`}</button>`;

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import abort, jsonify, request, send_from_directory
+from flask import abort, current_app, jsonify, request, send_from_directory
 from werkzeug.exceptions import NotFound
 
 from alfrd import extensions
@@ -71,18 +71,142 @@ def _themes() -> list[dict]:
     return out
 
 
+def gui_install(state: dict | None = None) -> bool:
+    """Studio installs are on unless ``alfrd serve --no-gui-install`` or ``"gui_install": false``."""
+    state = state or extensions.read_state()
+    return bool(current_app.config.get("PLUGINS_GUI_INSTALL", True) and state["gui_install"])
+
+
 @studio_api.get("/studio/plugins")
 def plugins_list():
     """Installed plugins, their state and browser files, and the selectable themes."""
+    from alfrd.extensions import jobs
+
     state = extensions.read_state()
+    from alfrd.extensions import installer
+    inventory = installer.installed()
     disabled = set(state["disabled"])
-    return jsonify(plugins=[_entry(r, disabled) for r in _records()], theme=state["theme"], themes=_themes(),
-                   safe_mode=extensions.safe_mode())
+    # ``job``: the running (or last) plugin job, so a reloaded Studio can show its progress.
+    job = jobs.runner.get(jobs.runner.last) if jobs.runner.last else None
+    return jsonify(plugins=[{**_entry(r, disabled), "managed": r.id in inventory} for r in _records()], theme=state["theme"], themes=_themes(),
+                   safe_mode=extensions.safe_mode(), gui_install=gui_install(state), job=job)
+
+
+@studio_api.get("/studio/plugins/catalog")
+def plugins_catalog():
+    """The Browse tab: the catalog (``?refresh=1`` refetches) merged with what is installed.
+    ``user`` is who plugins run as (the install dialog's trust note)."""
+    import getpass
+
+    from alfrd.extensions import catalog, installer
+
+    state = extensions.read_state()
+    got = catalog.get(refresh=request.args.get("refresh") == "1")
+    try:
+        inventory = installer.installed()
+    except installer.InstallError as exc:
+        inventory, got["error"] = {}, got["error"] or str(exc)
+    return jsonify(catalog_url=got["url"], fetched_at=catalog.fetched_iso(got["fetched_at"]), stale=got["stale"],
+                   error=got["error"], name=(got["catalog"] or {}).get("name"),
+                   plugins=catalog.merged(got["catalog"], inventory), gui_install=gui_install(state),
+                   user=getpass.getuser())
+
+
+def _job_event(hub):
+    """``notify`` for a plugin job: a ``plugin_job`` live event every Studio tab receives."""
+    if hub is None:
+        return None
+    return lambda job: hub.broadcast("plugin_job", job=job)
+
+
+def _gate(command: str):
+    """CSRF, then the install policy: None when a job may start, else the 403 reply."""
+    require_local_csrf()
+    if not gui_install():
+        return _json_error(PermissionError(f"Studio installs are turned off; use: {command}"), 403,
+                           reason="gui_install", command=command)
+    return None
+
+
+def _start_job(action: str, payload: dict):
+    """One job at a time (409 with the running job), else the started job (202)."""
+    from alfrd.extensions import jobs
+    from alfrd.gui.studio import live_hub
+
+    try:
+        job = jobs.runner.start(action, payload, _job_event(live_hub()))
+    except jobs.JobBusy as exc:
+        return _json_error(exc, 409, job=jobs.runner.running())
+    return jsonify(job=job), 202
+
+
+@studio_api.post("/studio/plugins/install")
+def plugins_install():
+    """``{"id", "version"?}``: a catalog version, hash-pinned (newest without ``version``).
+    ``{"source", "confirm_id"}``: an advanced source; the job aborts unless it provides ``confirm_id``."""
+    from alfrd.extensions import catalog, jobs
+
+    body = request.get_json(silent=True) or {}
+    advanced = body.get("source") is not None
+    source = str(body.get("source") or "").strip()
+    plugin_id = str(body.get("id") or "")
+    denied = _gate(f"alfrd plugin install {source or '<wheel URL>'}")
+    if denied:
+        return denied
+    if advanced:
+        confirm = str(body.get("confirm_id") or "")
+        if not source or source.startswith("-"):
+            return _json_error(ValueError("specify a package name, URL or local wheel"), 400)
+        if not jobs.ID_RE.match(confirm):
+            return _json_error(ValueError("type the plugin id this source provides to confirm"), 400)
+        return _start_job("install", {"source": source, "confirm_id": confirm})
+    try:
+        _, version = catalog.find(catalog.get()["catalog"], plugin_id, body.get("version"))
+    except catalog.CatalogError as exc:
+        return _json_error(exc, 404)
+    return _start_job("install-pinned", {"id": plugin_id, "version": version})
+
+
+@studio_api.get("/studio/plugins/jobs/<job_id>")
+def plugins_job(job_id: str):
+    """A job's log since ``?offset=`` (``X-Offset`` says where to continue) and its state (``X-Job-Status``)."""
+    from alfrd.extensions import jobs
+
+    job = jobs.runner.get(job_id) if jobs.JOB_ID_RE.match(job_id) else None
+    if job is None:
+        return _json_error(LookupError(f"no plugin job {job_id!r}"), 404)
+    try:
+        offset = int(request.args.get("offset") or 0)
+        text, end = jobs.read_log(job_id, offset)
+    except ValueError:
+        return _json_error(ValueError("offset must be an integer"), 400)
+    except FileNotFoundError as exc:
+        return _json_error(exc, 404)
+    response = current_app.response_class(text, mimetype="text/plain")
+    response.headers["X-Offset"] = str(end)
+    response.headers["X-Job-Status"] = job["status"]
+    response.headers["X-Restart-Required"] = "1" if job["restart_required"] else "0"
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @studio_api.post("/studio/plugins/<plugin_id>/<action>")
 def plugins_toggle(plugin_id: str, action: str):
-    """``enable`` / ``disable``. The reply says when only a restart finishes the change."""
+    """``enable`` / ``disable``. The reply says when only a restart finishes the change.
+    ``update`` / ``remove``: a background job (202) for a plugin alfrd installed."""
+    if action in ("update", "remove"):
+        from alfrd.extensions import installer
+
+        denied = _gate(f"alfrd plugin {action} {plugin_id}")
+        if denied:
+            return denied
+        try:
+            known = plugin_id in installer.installed()
+        except installer.InstallError as exc:
+            return _json_error(exc, 500)
+        if not known:
+            return _json_error(LookupError(f"{plugin_id!r} was not installed by alfrd"), 404)
+        return _start_job(action, {"id": plugin_id})
     require_local_csrf()
     if action not in ("enable", "disable"):
         abort(404)
@@ -163,4 +287,5 @@ def plugin_convert(project_name: str):
     return response
 
 
-__all__ = ["plugin_convert", "plugin_file", "plugins_list", "plugins_toggle", "theme_set"]
+__all__ = ["plugin_convert", "plugin_file", "plugins_install", "plugins_job", "plugins_list", "plugins_toggle",
+           "theme_set"]

@@ -30,99 +30,142 @@ def get_project_dir() -> Path:
 ALFRD_DIR = get_alfrd_dir()
 PROJ_DIR = get_project_dir()
 
-from alfrd.plugins import (  # noqa: E402
-    REGISTERED_STEPS,
-    VALIDATE_AFTER,
-    VALIDATE_BEFORE,
-    VALIDATORS,
-    List,
-    PipelineRun,
-    register,
-    validate,
-    validator,
-)
-from alfrd.util import B, X, c  # noqa: E402
+# The public API loads on first use (PEP 562), so ``import alfrd`` stays cheap: runners,
+# shims and the CLI start in a fraction of a second instead of importing pandas and SQLAlchemy.
+_LAZY = {
+    "alfrd.plugins": (
+        "REGISTERED_STEPS",
+        "VALIDATE_AFTER",
+        "VALIDATE_BEFORE",
+        "VALIDATORS",
+        "List",
+        "PipelineRun",
+        "register",
+        "validate",
+        "validator",
+    ),
+    "alfrd.util": (
+        "B",
+        "X",
+        "c",
+    ),
+    "alfrd.core.pipeline": (
+        "ArtifactRef",
+        "append_step_result_csv",
+        "BatchResult",
+        "ColName",
+        "CrashSnapshotAdapter",
+        "DatasetFinished",
+        "DatasetStarted",
+        "PipelineContext",
+        "PipelineCore",
+        "PipelineStepBase",
+        "PipelineStepValidatorBase",
+        "PipelineStepValidatorResult",
+        "ResultCSVAdapter",
+        "RunFinished",
+        "RunStarted",
+        "StepFailed",
+        "StepResult",
+        "StepSkipped",
+        "StepStarted",
+        "StepSucceeded",
+        "write_crash_snapshot",
+    ),
+    "alfrd.core.artifacts": (
+        "ArtifactError",
+        "ArtifactPathError",
+        "ArtifactTemplateError",
+        "KNOWN_ARTIFACT_KINDS",
+        "ResolvedArtifact",
+        "resolve_declared_artifacts",
+        "resolve_within_root",
+    ),
+    "alfrd.core.viewers": (
+        "ArtifactViewerError",
+        "render_artifact",
+        "render_directory",
+        "render_file",
+        "render_gallery",
+        "render_html",
+        "render_image",
+        "render_json",
+        "render_log",
+        "render_table",
+        "render_text",
+        "render_yaml",
+    ),
+    "alfrd.core.logframe": (
+        "LogFrame",
+        "LogFrameAdapter",
+        "LogFrameEventSink",
+    ),
+    "alfrd.core.project": (
+        "Project",
+    ),
+    "alfrd.core.workflow": (
+        "Workflow",
+    ),
+    "alfrd.config": (
+        "BaseConfig",
+        "CONFIG_MAPPING",
+        "Config",
+    ),
+    "alfrd.manifest": (
+        "ArtifactDefinition",
+        "Entrypoint",
+        "ManifestError",
+        "ManifestNotFoundError",
+        "ProjectManifest",
+        "ProjectSchema",
+        "SchemaDefinition",
+        "discover_manifest",
+        "load_manifest",
+        "parse_manifest",
+        "validate_manifest",
+    ),
+    "alfrd.repository": (
+        "Repository",
+        "RepositoryNotFoundError",
+        "RepositoryRecord",
+        "RepositoryService",
+        "add_repository",
+        "inspect_repository",
+        "sync_repository",
+    ),
+}
+_EXPORTS = {name: module for module, names in _LAZY.items() for name in names}
 
-import warnings as _warnings  # noqa: E402
 
-with _warnings.catch_warnings():
-    # The module-level singleton is a documented compatibility surface;
-    # only warn when *user* code constructs PipelineRun directly.
-    _warnings.simplefilter("ignore", DeprecationWarning)
-    Pipeline = PipelineRun()
+def __getattr__(name: str):
+    import importlib
 
-from alfrd.core.pipeline import (  # noqa: E402
-    ArtifactRef,
-    append_step_result_csv,
-    BatchResult,
-    ColName,
-    CrashSnapshotAdapter,
-    DatasetFinished,
-    DatasetStarted,
-    PipelineContext,
-    PipelineCore,
-    PipelineStepBase,
-    PipelineStepValidatorBase,
-    PipelineStepValidatorResult,
-    ResultCSVAdapter,
-    RunFinished,
-    RunStarted,
-    StepFailed,
-    StepResult,
-    StepSkipped,
-    StepStarted,
-    StepSucceeded,
-    write_crash_snapshot,
-)
-from alfrd.core.artifacts import (  # noqa: E402
-    ArtifactError,
-    ArtifactPathError,
-    ArtifactTemplateError,
-    KNOWN_ARTIFACT_KINDS,
-    ResolvedArtifact,
-    resolve_declared_artifacts,
-    resolve_within_root,
-)
-from alfrd.core.viewers import (  # noqa: E402
-    ArtifactViewerError,
-    render_artifact,
-    render_directory,
-    render_file,
-    render_gallery,
-    render_html,
-    render_image,
-    render_json,
-    render_log,
-    render_table,
-    render_text,
-    render_yaml,
-)
-from alfrd.core.logframe import LogFrame, LogFrameAdapter, LogFrameEventSink  # noqa: E402
-from alfrd.core.project import Project  # noqa: E402
-from alfrd.core.workflow import Workflow  # noqa: E402
-from alfrd.config import BaseConfig, CONFIG_MAPPING, Config  # noqa: E402
-from alfrd.manifest import (  # noqa: E402
-    ArtifactDefinition,
-    Entrypoint,
-    ManifestError,
-    ManifestNotFoundError,
-    ProjectManifest,
-    ProjectSchema,
-    SchemaDefinition,
-    discover_manifest,
-    load_manifest,
-    parse_manifest,
-    validate_manifest,
-)
-from alfrd.repository import (  # noqa: E402
-    Repository,
-    RepositoryNotFoundError,
-    RepositoryRecord,
-    RepositoryService,
-    add_repository,
-    inspect_repository,
-    sync_repository,
-)
+    if name == "Pipeline":
+        import warnings
+
+        from alfrd.plugins import PipelineRun
+
+        with warnings.catch_warnings():
+            # The module-level singleton is a documented compatibility surface;
+            # only warn when *user* code constructs PipelineRun directly.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            value = PipelineRun()
+    elif name in _EXPORTS:
+        value = getattr(importlib.import_module(_EXPORTS[name]), name)
+    else:
+        try:  # submodules, as eager imports used to set them (alfrd.core, alfrd.manifest, ...)
+            return importlib.import_module(f"{__name__}.{name}")
+        except ModuleNotFoundError as exc:
+            if exc.name != f"{__name__}.{name}":
+                raise
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
     "ALFRD_CACHE_DIR",

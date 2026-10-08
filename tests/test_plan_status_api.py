@@ -71,10 +71,13 @@ def _wait(predicate, timeout=30.0):
 
 
 def _snapshot(root: Path) -> dict[str, str]:
-    """Hash of every file ALFRD keeps for plans, plus the plan CSV."""
+    """Hash of every file ALFRD keeps for plans, plus the plan CSV.
+
+    Leaves out logs/: the command outlives the killed runner and keeps writing its own
+    log, .child and usage files (slowly under a loaded parallel run)."""
     out = {}
     for path in sorted([*(root / ".alfrd").rglob("*"), root / "alfrd.plan.csv"]):
-        if path.is_file() and "runner.lock" not in path.name:
+        if path.is_file() and "runner.lock" not in path.name and path.parent.name != "logs":
             out[str(path.relative_to(root))] = hashlib.sha1(path.read_bytes()).hexdigest()
     return out
 

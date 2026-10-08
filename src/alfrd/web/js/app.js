@@ -104,6 +104,7 @@ export const ctx = {
   switchProject: (project, opts) => switchProject(project, opts),
   owner: (project) => owner(project),
   state,
+  isDirty,
   get VERSION() { return VERSION; },
   /** Mutate state via fn(state) and re-render. */
   update(fn) {
@@ -1260,6 +1261,15 @@ function rememberTarget() {
   storage.set("ui:app.targets", { ...targets, [state.selectedProject]: state.selectedTarget });
 }
 
+/** Make id the header target (as the Target picker does). */
+function selectTarget(id) {
+  state.selectedTarget = chooseTarget(ctx.scopedTargets(), id);
+  rememberTarget();
+  history.replaceState(null, "", routeHash(state.view, state.selectedProject, state.selectedTarget));
+  scheduleRender();
+}
+ctx.selectTarget = selectTarget;
+
 function goTo(view) {
   rememberTarget();
   const url = routeHash(view, state.selectedProject, state.selectedTarget);
@@ -1440,6 +1450,7 @@ const live = createLive({
   onTree: (project, diff) => queueRefresh(project, diff),
   onLogs: liveLogs,
   onRuntime: liveRuntime,
+  onPluginJob: () => renderJobs(),
   onAlfrd: (project, events) => handleNotifications(ctx, project, events).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server")),
   onResync: (project) => queueRefresh(project, { full: true }),
   onStatus: (status) => { state.liveStatus = status; renderLiveBadge(); },
@@ -1691,12 +1702,7 @@ function renderShell() {
     const b = e.target.closest("[data-ws-open]");
     if (b) switchProject(b.dataset.wsOpen, { restoreView: false });
   });
-  pickers.target = mountPicker($("#pick-target"), { label: "Target", empty: "No targets", onChange: (value) => {
-    state.selectedTarget = chooseTarget(ctx.scopedTargets(), value);
-    rememberTarget();
-    history.replaceState(null, "", routeHash(state.view, state.selectedProject, state.selectedTarget));
-    scheduleRender();
-  } });
+  pickers.target = mountPicker($("#pick-target"), { label: "Target", empty: "No targets", onChange: selectTarget });
   $("#foot-logs").addEventListener("click", () => {
     state.consoleOpen = !state.consoleOpen;
     renderConsole();
@@ -1796,10 +1802,12 @@ function renderJobs() {
   const b = $("#btn-jobs");
   if (!b) return;
   const jobs = activeJobs();
-  b.hidden = state.mode !== "server" || !jobs.length;
+  const plugin = server.pluginJob?.status === "running";
+  b.hidden = state.mode !== "server" || (!jobs.length && !plugin);
   const labels = jobs.map((j) => jobLabel(j.status));
+  if (plugin) labels.push("Running");
   const running = labels.filter((l) => l === "Running").length, waiting = labels.filter((l) => l === "Waiting").length;
-  $("#jobs-label").textContent = `Jobs · ${running} running${waiting ? ` · ${waiting} waiting` : ""}${jobs.length - running - waiting ? ` · ${jobs.length - running - waiting} other` : ""}`;
+  $("#jobs-label").textContent = `Jobs · ${running} running${waiting ? ` · ${waiting} waiting` : ""}${labels.length - running - waiting ? ` · ${labels.length - running - waiting} other` : ""}`;
   const changes = [];
   jobs.forEach((j, i) => {
     const k = `${j.project}\u0000${j.status.plan.id}`;
@@ -1812,6 +1820,7 @@ function renderJobs() {
   if (changes.length) $("#jobs-live").textContent = changes.join(". ");
 }
 ctx.jobLabel = jobLabel;
+ctx.refreshJobs = renderJobs;
 
 function renderConsole() {
   const el = $("#console");

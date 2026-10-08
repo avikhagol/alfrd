@@ -62,13 +62,16 @@ def _write_inventory(data: dict) -> None:
 
 
 def build_command(spec: str, *, site: Path, constraints: Path, upgrade: bool = False,
-                  extra: tuple[str, ...] = ()) -> list[str]:
+                  extra: tuple[str, ...] = (), requirements: Path | None = None) -> list[str]:
+    """With ``requirements`` (a hashed requirements file) the install is ``--require-hashes --no-deps -r`` it."""
     uv = shutil.which("uv")
     command = ([uv, "pip", "install", "--target", str(site), "--python", sys.executable]
                if uv else [sys.executable, "-m", "pip", "install", "--target", str(site)])
     command += ["--constraint", str(constraints)]
     if upgrade:
         command.append("--upgrade")
+    if requirements is not None:
+        return command + list(extra) + ["--require-hashes", "--no-deps", "-r", str(requirements)]
     return command + list(extra) + [spec]
 
 
@@ -218,7 +221,9 @@ def _promote(stage: Path, inventory: dict) -> None:
     shutil.rmtree(backup, ignore_errors=True)
 
 
-def _install(spec: str, inventory: dict, *, upgrade: bool, extra: tuple[str, ...]) -> list[dict]:
+def _install(spec: str, inventory: dict, *, upgrade: bool, extra: tuple[str, ...],
+             requirements: Path | None = None, pinned: dict | None = None,
+             expect_id: str | None = None) -> list[dict]:
     site = site_dir()
     previously_owned = {name for r in inventory.values() for name in r.get("dists", [])}
     with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir()) as work:
@@ -230,7 +235,8 @@ def _install(spec: str, inventory: dict, *, upgrade: bool, extra: tuple[str, ...
             stage.mkdir()
         before = {name: _fingerprint(d) for name, d in _distributions(stage).items()}
         constraints = write_constraints(root / "constraints.txt")
-        command = build_command(spec, site=stage, constraints=constraints, upgrade=upgrade, extra=extra)
+        command = build_command(spec, site=stage, constraints=constraints, upgrade=upgrade, extra=extra,
+                                requirements=requirements)
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=600)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -272,13 +278,28 @@ def _install(spec: str, inventory: dict, *, upgrade: bool, extra: tuple[str, ...
                 records.append(record)
         if not records:
             raise InstallError("Package has no alfrd.plugins entry point; nothing was installed")
+        if expect_id is not None and [r["id"] for r in records] != [expect_id]:
+            # Advanced Studio installs: the user typed the id they expect this source to provide.
+            raise InstallError(f"This package provides {', '.join(r['id'] for r in records)}, "
+                               f"not {expect_id!r}; nothing was installed")
+        if pinned is not None:
+            # A catalog install must be the plugin the catalog names; record where it came from.
+            if [r["id"] for r in records] != [pinned["id"]]:
+                raise InstallError(f"The catalog wheel for {pinned['id']!r} provides "
+                                   f"{', '.join(r['id'] for r in records)}; nothing was installed")
+            records[0].update(source=f"catalog:{pinned['id']}", wheel=pinned["wheel"], sha256=pinned["sha256"])
+            if records[0]["version"] != pinned["version"]:
+                raise InstallError(f"The catalog wheel for {pinned['id']} {pinned['version']} "
+                                   f"is version {records[0]['version']}; nothing was installed")
         retained = {name for r in inventory.values() for name in r.get("dists", [])}
         _delete_dists(stage, previously_owned - retained, retained)
         _promote(stage, inventory)
         return records
 
 
-def install(spec: str, *, extra: tuple[str, ...] = (), upgrade: bool = False) -> list[dict]:
+def install(spec: str, *, extra: tuple[str, ...] = (), upgrade: bool = False,
+            expect_id: str | None = None) -> list[dict]:
+    """``expect_id``: abort before anything changes unless the package provides exactly that plugin."""
     if not spec or spec.startswith("-"):
         raise InstallError("Specify a package name, URL, or local wheel")
     try:
@@ -287,9 +308,60 @@ def install(spec: str, *, extra: tuple[str, ...] = (), upgrade: bool = False) ->
         if source.exists():
             spec = str(source.resolve())
         with install_lock():
-            return _install(spec, installed(), upgrade=upgrade, extra=extra)
+            return _install(spec, installed(), upgrade=upgrade, extra=extra, expect_id=expect_id)
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         raise InstallError(str(exc)) from exc
+
+
+#: Catalog wheels are downloaded (and hash-checked) by us before uv sees them.
+MAX_WHEEL = 200 * 1024 * 1024
+
+
+def _download(url: str, sha256: str, folder: Path) -> Path:
+    from .catalog import CatalogError, open_url
+
+    name = Path(url.rsplit("/", 1)[-1].split("?", 1)[0]).name
+    if not name.endswith(".whl") or name.startswith("."):
+        raise InstallError(f"Catalog wheel URL must end in a .whl file name: {url}")
+    dest, digest, size = folder / name, hashlib.sha256(), 0
+    try:
+        with open_url(url, MAX_WHEEL, timeout=60) as source, dest.open("wb") as out:
+            while chunk := source.read(1 << 20):
+                size += len(chunk)
+                if size > MAX_WHEEL:
+                    raise InstallError(f"Catalog wheel is larger than {MAX_WHEEL >> 20} MiB: {url}")
+                digest.update(chunk)
+                out.write(chunk)
+    except (CatalogError, OSError, ValueError) as exc:
+        raise InstallError(f"Cannot download {url}: {exc}") from exc
+    if digest.hexdigest() != sha256:
+        raise InstallError(f"Hash mismatch for {name}: the catalog says sha256 {sha256}, "
+                           f"the download is {digest.hexdigest()}; nothing was installed")
+    return dest
+
+
+def install_pinned(plugin_id: str, version: dict, *, extra: tuple[str, ...] = ()) -> list[dict]:
+    """Install one catalog version: the wheel pinned to its sha256 plus its hashed ``requirements``.
+
+    ``version`` is a catalog version entry (``version``, ``wheel``, ``sha256``,
+    optional ``requirements``). Host dependencies (alfrd, flask, …) come from
+    alfrd's environment, so the install runs ``--no-deps``.
+    """
+    try:
+        with install_lock():
+            return _install_pinned(plugin_id, version, installed(), extra)
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+        raise InstallError(str(exc)) from exc
+
+
+def _install_pinned(plugin_id: str, version: dict, inventory: dict, extra: tuple[str, ...]) -> list[dict]:
+    with tempfile.TemporaryDirectory(prefix=".download-", dir=plugins_dir()) as work:
+        wheel = _download(version["wheel"], version["sha256"], Path(work))
+        req = Path(work) / "requirements.txt"
+        lines = [f"{wheel} --hash=sha256:{version['sha256']}", *version.get("requirements", [])]
+        req.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+        pinned = {"id": plugin_id, **{k: version[k] for k in ("version", "wheel", "sha256")}}
+        return _install(str(wheel), inventory, upgrade=True, extra=extra, requirements=req, pinned=pinned)
 
 
 def remove(plugin_id: str) -> None:
@@ -324,6 +396,16 @@ def update(plugin_id: str | None = None, *, extra: tuple[str, ...] = ()) -> list
             for ident in ids:
                 if ident not in inventory:
                     raise InstallError(f"Plugin {ident!r} was not installed by alfrd")
+                if str(inventory[ident].get("source", "")).startswith("catalog:"):
+                    # Catalog installs update to the newest catalog version, pinned again.
+                    from . import catalog
+
+                    try:
+                        _, version = catalog.find(catalog.get()["catalog"], ident)
+                    except catalog.CatalogError as exc:
+                        raise InstallError(str(exc)) from exc
+                    out.extend(_install_pinned(ident, version, inventory, extra))
+                    continue
                 out.extend(_install(inventory[ident]["source"], inventory, upgrade=True, extra=extra))
             return out
     except (OSError, ValueError) as exc:

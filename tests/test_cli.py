@@ -236,6 +236,18 @@ def test_cli_no_token_disables_auth_on_loopback(monkeypatch, command, host):
 
 
 @pytest.mark.parametrize("command", ["serve", "gui"])
+@pytest.mark.parametrize("flag", [[], ["--no-gui-install"]])
+def test_cli_no_gui_install_reaches_app_config(monkeypatch, command, flag):
+    configs = []
+    monkeypatch.setattr("alfrd.gui.create_app", lambda config: configs.append(config) or object())
+    monkeypatch.setattr("alfrd.cli._reconcile_plans_later", lambda *args, **kwargs: None)
+    monkeypatch.setattr("alfrd.cli._serve_production", lambda *args: None)
+    result = runner.invoke(alfrd_cli, [command, "--port", "8765", "--no-browser", *flag])
+    assert result.exit_code == 0, result.output
+    assert configs[0]["PLUGINS_GUI_INSTALL"] is (not flag)
+
+
+@pytest.mark.parametrize("command", ["serve", "gui"])
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.1", "example.com"])
 def test_cli_no_token_rejects_non_loopback(monkeypatch, command, host):
     monkeypatch.setattr("alfrd.cli._runtime_service", lambda *args: pytest.fail("must reject before creating a database"))

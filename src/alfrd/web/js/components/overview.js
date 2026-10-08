@@ -11,9 +11,9 @@ import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from 
 import { scoped } from "../data/workspace.js";
 
 // Remembered in this browser until Settings → "Reset view state".
-const UI_FIELDS = ["search", "project", "status", "code", "preset", "mode", "collapsed", "hidden", "drawer", "groupBy"];
+const UI_FIELDS = ["search", "project", "status", "code", "preset", "mode", "collapsed", "hidden", "drawer", "groupBy", "targetOnly"];
 const saved = loadUi("overview", {
-  search: "", project: "all", status: "all", code: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project",
+  search: "", project: "all", status: "all", code: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project", targetOnly: false,
 });
 // Per project workspace (All projects has its own): filters, page, checked rows, drawer.
 const ui = scoped("overview", () => ({
@@ -656,7 +656,7 @@ function summaryOf(ctx, project, got, ref) {
   return known?.run || null;
 }
 
-// Tasks of an agent-loop project (own turn count and worktree); a click shows that task's runs.
+// Tasks of an agent-loop project (own turn count and worktree); a click selects that task as the header target.
 const taskLoads = new Map(); // project -> {at, tasks, max_iterations, iteration_unit}
 function taskStrip(ctx, project) {
   const got = taskLoads.get(project);
@@ -665,7 +665,13 @@ function taskStrip(ctx, project) {
     server.tasks(project).then((r) => { taskLoads.set(project, { ...r, at: Date.now() }); ctx.update(); },
       () => taskLoads.set(project, { tasks: [], at: Date.now() }));
   }
-  return runGridMod.renderTaskStrip(project, ctx.projectName(project), got, (runFilters.get(project)?.search || "").trim(), runLabel);
+  return runGridMod.renderTaskStrip(project, ctx.projectName(project), got, headerTarget(ctx, project), runLabel);
+}
+
+/** Name of the header's target when it belongs to project (loop tasks are targets). */
+function headerTarget(ctx, project) {
+  const t = ctx.target();
+  return t && t.project === project ? t.name : null;
 }
 
 function runSection(ctx, project, index) {
@@ -674,7 +680,8 @@ function runSection(ctx, project, index) {
   if (isLoopProject(ctx, project)) {
     const runs = runsOf(project);
     return taskStrip(ctx, project) + runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
-      { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all", setup: hasSetup(ctx, project) });
+      { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all", setup: hasSetup(ctx, project),
+        target: headerTarget(ctx, project), targetOnly: ui.targetOnly });
   }
   const shown = runGridMod.filterRunGrid(grid, f, runLabel);
   return runGridMod.renderRunGrid(project, ctx.projectName(project), grid, shown, f, { runLabel, error, index });
@@ -701,8 +708,13 @@ function bindRunGrids(el, ctx) {
   on(el, "click", "[data-rg-retry]", (e, b) => { runLoads.delete(b.dataset.rgRetry); fetchRuns(ctx, b.dataset.rgRetry); });
   on(el, "click", "[data-rg-cell]", (e, b) => openRunCell(ctx, b.dataset));
   on(el, "click", "[data-rg-task]", (e, b) => {
-    const project = b.dataset.rgTask, current = (runFilters.get(project)?.search || "").trim();
-    set(project, { search: current === b.dataset.task ? "" : b.dataset.task, run: "all" });
+    const t = ctx.state.targets.find((x) => x.project === b.dataset.rgTask && x.name === b.dataset.task);
+    if (t) ctx.selectTarget(t.id);
+  });
+  on(el, "click", "[data-rg-scope]", (e, b) => {
+    ui.targetOnly = b.dataset.scope === "target";
+    histPage.delete(b.dataset.rgScope);
+    remember(); renderGrid(el, ctx);
   });
 }
 

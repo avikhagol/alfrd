@@ -479,6 +479,30 @@ def test_command_gets_the_users_pythonpath_not_alfrds(project, monkeypatch):
     assert "PP=/user/lib\n" in (project / unit["log"]).read_text()
 
 
+def test_command_marker_names_the_plan_and_the_unit(project):
+    # Unit ids (0001-<target>-<step>) repeat across plans; usage counts processes by this marker.
+    (project / "alfrd.yaml").write_text(
+        "version: 1\nname: proj\ntemplate: avica\n"
+        "execution: {status_from: exit_code}\n"
+        "workflows:\n  - name: avica\n    steps:\n"
+        "      - {id: preprocess_fitsidi, cmd: [python3, -c, \"import os; print('UNIT=' + os.environ['ALFRD_UNIT'])\"]}\n"
+    )
+    _plan(project, targets=("T1",), steps=["preprocess_fitsidi"])
+    folder = scheduler.create_plan(project)
+    scheduler.Runner(project, folder.id).run()
+    (unit,) = folder.units()
+    assert f"UNIT={folder.id}/{unit['id']}\n" in (project / unit["log"]).read_text()
+
+
+def test_plans_made_in_the_same_second_keep_their_order(tmp_path):
+    root = tmp_path / "p"
+    for n, plan_id in enumerate(["b", "a", "c"]):  # ids don't sort in creation order
+        folder = scheduler.PlanDir(root, plan_id)
+        folder.path.mkdir(parents=True)
+        folder.save({"id": plan_id, "created": "2026-10-09T10:00:00", "created_ns": 1000 + n})
+    assert [p["id"] for p in scheduler.list_plans(root)] == ["c", "a", "b"]
+
+
 def test_fast_runner_is_not_mistaken_for_one_still_starting(tmp_path, monkeypatch):
     # A runner that records "started" before spawn_runner returns (in an earlier
     # second than a stamp taken after Popen) used to look "starting" for 30 s,

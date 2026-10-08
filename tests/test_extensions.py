@@ -148,18 +148,37 @@ def test_safe_mode_skips_every_plugin(fake_plugins, monkeypatch):
     assert rec.status == "skipped (safe mode)" and "good_panel" not in lg.PANELS
 
 
+DEFAULT_STATE = {"disabled": [], "theme": "obsidian-orbit", "catalog_url": None, "gui_install": True}
+
+
 def test_state_reads_tolerantly_and_writes_atomically():
-    assert ext.read_state() == {"disabled": [], "theme": "obsidian-orbit"}
+    assert ext.read_state() == DEFAULT_STATE
     ext.state_file().parent.mkdir(parents=True, exist_ok=True)
     ext.state_file().write_text("{not json")
     assert ext.read_state()["theme"] == "obsidian-orbit"
-    ext.state_file().write_text(json.dumps({"disabled": "x", "theme": "../evil"}))
-    assert ext.read_state() == {"disabled": [], "theme": "obsidian-orbit"}
+    ext.state_file().write_text(json.dumps({"disabled": "x", "theme": "../evil", "catalog_url": "http://x/i.json",
+                                            "gui_install": "no"}))
+    assert ext.read_state() == DEFAULT_STATE
     ext.set_theme("paper-light")
     assert ext.read_state()["theme"] == "paper-light"
     assert [p.name for p in ext.state_file().parent.iterdir() if p.name.startswith(".plugins.")] == []
     with pytest.raises(ValueError):
         ext.set_theme("Bad Theme")
+
+
+def test_state_keeps_catalog_settings_across_toggles():
+    ext.state_file().parent.mkdir(parents=True, exist_ok=True)
+    ext.state_file().write_text(json.dumps({"catalog_url": "file:///srv/index.json", "gui_install": False,
+                                            "note": "kept"}))
+    assert ext.read_state()["catalog_url"] == "file:///srv/index.json"
+    assert ext.read_state()["gui_install"] is False
+    ext.set_enabled("good", False)
+    ext.set_theme("paper-light")
+    raw = json.loads(ext.state_file().read_text())
+    assert raw == {"catalog_url": "file:///srv/index.json", "gui_install": False, "note": "kept",
+                   "disabled": ["good"], "theme": "paper-light"}
+    assert ext.catalog_url_ok("https://example.org/index.json")
+    assert not any(map(ext.catalog_url_ok, ("http://example.org/i.json", "ftp://x", "", None, 3)))
 
 
 def test_drop_in_themes_are_discovered():

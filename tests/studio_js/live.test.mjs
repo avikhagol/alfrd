@@ -126,3 +126,16 @@ test("live: enabled browser notifications can keep the server stream in a hidden
   listeners.visibilitychange.at(-1)(); assert.equal(live.es, stream); assert.equal(stream.closed, undefined);
   live.stop(); document.hidden = false;
 });
+
+test("plugin jobs arrive without project subscriptions and reach the hook and Studio event", () => {
+  const received = [], dispatched = [];
+  globalThis.CustomEvent = class { constructor(type, init) { this.type = type; this.detail = init.detail; } };
+  window.dispatchEvent = e => { dispatched.push(e); };
+  const live = createLive({ mode: () => "server", projects: () => [], onPluginJob: job => received.push(job) });
+  live.start();
+  const job = { id: "plugin-1", status: "running" };
+  FakeES.last.emit("plugin_job", { type: "plugin_job", job });
+  assert.deepEqual(received, [job]);
+  assert.equal(dispatched[0].type, "plugin-job"); assert.deepEqual(dispatched[0].detail, job);
+  live.stop();
+});

@@ -20,6 +20,11 @@ os.environ["TERM"] = "dumb"
 def isolated_alfrd_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Keep project files, imports, and registries local to each test."""
     monkeypatch.setenv("ALFRD_HOME", str(tmp_path / "alfrd-home"))
+    # Runner ticks: in this process, and in runners started as processes.
+    from alfrd.runtime import scheduler
+
+    monkeypatch.setattr(scheduler, "POLL", 0.05)
+    monkeypatch.setenv("ALFRD_RUNNER_POLL", "0.05")
     monkeypatch.chdir(tmp_path)
 
     registries = (REGISTERED_STEPS, VALIDATE_BEFORE, VALIDATE_AFTER, VALIDATORS)

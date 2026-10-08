@@ -123,6 +123,21 @@ test("history rows: filters, exact-run actions, two-line label, no results yet",
   assert.match(rg.renderRunHistory("p", "P", { groups: [] }, {}, runs, () => null, { status: "cancelled" }), /No runs match these filters/);
 });
 
+test("history: All targets / Target only follows the header target", () => {
+  const runs = [{ id: "r2", status: "finished", targets: ["task-b"] }, { id: "r1", status: "finished", target: "task-a" }];
+  assert.deepEqual(rg.filterHistory(runs, {}, undefined, "task-a").map((r) => r.id), ["r1"]);
+  assert.deepEqual(rg.filterHistory(runs, {}, undefined, null).map((r) => r.id), ["r2", "r1"]);
+  const only = rg.renderRunHistory("p", "P", { groups: [] }, { groups: [] }, runs, () => null, {}, { target: "task-b", targetOnly: true });
+  assert.match(only, /data-scope="target" class="on" aria-pressed="true"/);
+  assert.match(only, /data-rh-run="r2"/);
+  assert.doesNotMatch(only, /data-rh-run="r1"/);
+  const none = rg.renderRunHistory("p", "P", { groups: [] }, { groups: [] }, runs, () => null, {}, { target: null, targetOnly: true });
+  assert.match(none, /data-scope="target" class="" aria-pressed="false" disabled/);
+  assert.match(none, /data-rh-run="r1"/, "no header target: every run");
+  const strip = rg.renderTaskStrip("p", "P", { max_iterations: 4, tasks: [{ name: "task-a" }, { name: "task-b" }] }, "task-b");
+  assert.match(strip, /class="task-chip on"[^>]*data-task="task-b" aria-pressed="true"/);
+});
+
 test("Open run loads that run even while another read is in flight", async () => {
   const ctx = { state: { mode: "server", trees: { q: { provider: "server" } } }, update() {}, log() {}, showError() {}, clearError() {} };
   const old = server.planStatus;

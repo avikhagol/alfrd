@@ -3,8 +3,10 @@ import { runInNewContext } from "node:vm";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const source = readFileSync(new URL("../../src/alfrd/web/js/components/settings_plugins.js", import.meta.url), "utf8")
-  .replace(/^import .*;\n/gm, "").replace(/export /g, "");
+const source = ["settings_plugins_view.js", "settings_plugins.js"].map(name =>
+  readFileSync(new URL(`../../src/alfrd/web/js/components/${name}`, import.meta.url), "utf8")
+    .replace(/^(?:import|export \{).*;\n/gm, "").replace('import("./plugins_browse.js")', 'Promise.resolve({enhance: () => ({click() {}})})').replace(/export /g, "")
+).join("\n");
 const sample = () => ({ plugins: [
   { id: "markdown", title: "Markdown", version: "1.0", status: "ok", enabled: true, active: true, kinds: ["viewer"], web: { js: "index.js" }, description: "Read notes" },
   { id: "off", title: "Off plugin", status: "disabled", enabled: false, active: false, kinds: [] },
@@ -20,6 +22,7 @@ function setup(list = sample()) {
   const sandbox = { server, pluginErrors: [], reportServerErrors() {}, fetchPlugins: async () => structuredClone(list),
     applyTheme: (_, next) => { swaps.push(next); return () => swaps.push("undo"); },
     $: (s, el) => el.querySelector(s), esc: (s) => String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;"), icon: () => "<svg></svg>",
+    window: { addEventListener() {}, removeEventListener() {} },
     copyText: async (s) => { copied.push(s); return true; }, location: { href: "/studio/" }, encodeURIComponent };
   runInNewContext(`${source};globalThis.api = { renderPlugins, mountPlugins };`, sandbox);
   return { ...sandbox.api, sandbox, ctx, root, panel, live, inputs, toasts, calls, copied, swaps, server };
@@ -66,7 +69,7 @@ test("restart banner persists when Settings is opened again", async () => {
   f.server.mutate = async () => ({ plugin: { enabled: false, active: false }, restart_required: true });
   await f.panel.onchange({ target: toggle("markdown", false) });
   assert.match(f.panel.innerHTML, /Restart <code>alfrd serve/);
-  await f.mountPlugins(f.ctx, f.root); assert.match(f.panel.innerHTML, /Markdown changes take effect after a restart/);
+  await f.mountPlugins(f.ctx, f.root); assert.match(f.panel.innerHTML, /Restart <code>alfrd serve/);
 });
 
 test("successful web toggle offers explicit Reload, never reloads automatically", async () => {

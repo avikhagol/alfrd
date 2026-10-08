@@ -89,7 +89,7 @@ export function openSettings(ctx, app) {
     };
     const select = (id) => {
       tabs.forEach((b) => { const on = b.dataset.tab === id; b.classList.toggle("on", on); b.setAttribute("aria-selected", on); b.tabIndex = on ? 0 : -1; });
-      root.querySelectorAll("[role=tabpanel]").forEach((p) => { p.hidden = p.id !== `set-panel-${id}`; });
+      root.querySelectorAll(".set-panel").forEach((p) => { p.hidden = p.id !== `set-panel-${id}`; });
       ui.section = id;
       saveUi("settings", ui, ["section"]);
       if (id === "plugins") mountPlugins();

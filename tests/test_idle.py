@@ -49,6 +49,7 @@ def test_bad_idle_config(project, section, value):
         load_execution(project)
 
 
+@pytest.mark.serial  # 0.4 s margin around the idle threshold
 @pytest.mark.parametrize("periods", [1, 2])
 def test_silent_agent_reports_once_per_quiet_period(project, periods):
     set_turns(project, 1)

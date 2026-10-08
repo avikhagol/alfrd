@@ -38,6 +38,7 @@ def test_review_finish_and_a_dead_webhook(project, monkeypatch):
         {"via": "command", "on": on, "argv": [sys.executable, "-c", RECORD, str(inbox)]},
     ]}))
     monkeypatch.setattr(notify, "BATCH_WINDOW", 0.1)
+    monkeypatch.setattr(notify, "BACKOFF", (0.5, 1.0, 2.0))  # still retrying when turn 2 starts; the runner's exit waits less
     folder = scheduler.create_plan(project)
     seen = {}
 
@@ -60,7 +61,7 @@ def test_review_finish_and_a_dead_webhook(project, monkeypatch):
     message = next(m for m in received(inbox) if "review.pending" in m["kinds"])
     assert message["link"].startswith("/studio/#/workflow?project=") and f"unit={unit['id']}" in message["link"]
     assert "awaiting" not in json.dumps(message)  # event text never travels
-    # A7 3: the next turn starts at once, although the webhook is still being retried (1 + 2 + 4 s backoff)
+    # A7 3: the next turn starts at once, although the webhook is still being retried (0.5 + 1 + 2 s backoff)
     started = next(e for e in events(folder) if e["kind"] == "turn.started" and e["turn"] == 2)
     assert datetime.fromisoformat(started["at"]).timestamp() - seen["approved"] < 3
     assert folder.load()["status"] == "finished"

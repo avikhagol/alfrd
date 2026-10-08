@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import venv
@@ -13,6 +14,8 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+UV = shutil.which("uv")  # cached build env and package cache: seconds instead of a minute
+pytestmark = pytest.mark.slow
 
 
 def _project_version() -> str:
@@ -43,14 +46,21 @@ EXPECTED_WHEEL_PATHS = {
     "alfrd/web/css/themes/obsidian-orbit/theme.json",
     "alfrd/web/css/themes/daylight-orbit/theme.css",
     "alfrd/web/css/themes/daylight-orbit/theme.json",
+    "alfrd/schemas/plugin_catalog.v1.json",
     "alfrd/extensions/__init__.py",
+    "alfrd/extensions/catalog.py",
     "alfrd/extensions/convert.py",
     "alfrd/extensions/installer.py",
+    "alfrd/extensions/jobs.py",
     "alfrd/extensions/scaffold.py",
     "alfrd/extensions/themes.py",
     "alfrd/web/js/components/viewers.js",
     "alfrd/web/js/components/plugin_api.js",
     "alfrd/web/js/components/settings_plugins.js",
+    "alfrd/web/js/components/settings_plugins_view.js",
+    "alfrd/web/js/components/plugins_browse.js",
+    "alfrd/web/js/components/plugins_install_dialog.js",
+    "alfrd/web/js/components/plugin_jobs.js",
     "alfrd/web/js/vendor/purify.es.mjs",
     "alfrd/web/js/vendor/LICENSE-dompurify.txt",
     "alfrd/web/js/vendor/README.txt",
@@ -64,8 +74,9 @@ EXPECTED_WHEEL_PATHS = {
 @pytest.fixture(scope="module")
 def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     output_dir = tmp_path_factory.mktemp("wheel-dist")
+    command = [UV, "build", "--sdist", "--wheel", "--out-dir"] if UV else [sys.executable, "-m", "build", "--outdir"]
     subprocess.run(
-        [sys.executable, "-m", "build", "--outdir", str(output_dir)],
+        [*command, str(output_dir)],
         cwd=PROJECT_ROOT,
         check=True,
         capture_output=True,
@@ -98,20 +109,14 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     built_wheel: Path, tmp_path: Path
 ):
     environment = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=True).create(environment)
+    venv.EnvBuilder(with_pip=not UV).create(environment)
     bin_dir = environment / ("Scripts" if os.name == "nt" else "bin")
     python = bin_dir / ("python.exe" if os.name == "nt" else "python")
     alfrd_command = bin_dir / ("alfrd.exe" if os.name == "nt" else "alfrd")
 
+    install = [UV, "pip", "install", "--python", str(python)] if UV else [str(python), "-m", "pip", "install", "--disable-pip-version-check"]
     subprocess.run(
-        [
-            str(python),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            f"{built_wheel}[gui]",
-        ],
+        [*install, f"{built_wheel}[gui]"],
         cwd=tmp_path,
         check=True,
         capture_output=True,

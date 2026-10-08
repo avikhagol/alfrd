@@ -1,5 +1,4 @@
 from __future__ import annotations
-import numpy as np
 from pathlib import Path
 import os
 import subprocess, glob, shutil, time, json
@@ -99,12 +98,12 @@ def read_metafile(metafile):
     return meta
 
 def find_size(fitsfile):
-    size = np.round(Path(fitsfile).stat().st_size/(1024*1024),2)
+    size = round(Path(fitsfile).stat().st_size/(1024*1024),2)
     if size >= 1024.0 :
         size = size/1024
-        size = f"{np.round(size, 2)} GB"
+        size = f"{round(size, 2)} GB"
     else:
-        size = f"{np.round(size, 2)} MB"
+        size = f"{round(size, 2)} MB"
     return size
 
 def find_project(fitsfile):
@@ -196,7 +195,7 @@ def timeinmin(td):
         tds     =   td%60
     else:
         tds     =   td
-    ret_time    =   f"{int(tdm)}m{np.round(tds,1)}s"
+    ret_time    =   f"{int(tdm)}m{round(tds,1)}s"
 
     return ret_time
 

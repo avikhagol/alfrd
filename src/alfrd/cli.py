@@ -299,6 +299,24 @@ def _interrupt_self() -> None:
     os.kill(os.getpid(), signal.SIGINT)
 
 
+def _reexec_server(token: str, secret_key: str, no_token: bool) -> None:
+    """Settings → Plugins → Restart now: run the same command again in this process.
+
+    The token and session secret travel in the environment, so the new server
+    writes the same token file and the Studio's session cookie stays valid.
+    Sockets are not inherited (PEP 446), so the port is free again.
+    """
+    os.environ["ALFRD_SECRET_KEY"] = secret_key
+    if not no_token:
+        os.environ["ALFRD_TOKEN"] = token
+    argv = list(sys.orig_argv)
+    if "--no-browser" not in argv:  # the Studio tab is already open
+        argv.append("--no-browser")
+    print("Restarting alfrd serve…", flush=True)
+    sys.stderr.flush()
+    os.execv(sys.executable, argv)
+
+
 def _connect_startup_project(service, project: str | None) -> str | None:
     """Register the folder `alfrd serve` was started for (``--project`` or the cwd)."""
     from alfrd.manifest import ManifestError
@@ -363,7 +381,7 @@ def _startup_folder(project: str | None) -> Path:
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
                live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2,
-               token: str | None = None, no_token: bool = False) -> None:
+               token: str | None = None, no_token: bool = False, gui_install: bool = True) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -397,6 +415,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         # Live updates: seconds between checks of a busy project tree (0 turns them off).
         "STUDIO_LIVE_INTERVAL": max(0.0, float(live_interval)),
         "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
+        # --no-gui-install: Settings → Plugins can't install/update/remove (plugins.json may also say so).
+        "PLUGINS_GUI_INSTALL": gui_install,
     }
     from alfrd.manifest_default import local_manifest
 
@@ -450,6 +470,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         auth.write_server_file(port, f"{base}/studio/", None if no_token else token, secret_key)
     _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
+    restart = threading.Event()
     browser_thread = None
     if not no_browser and (loopback or host in {"0.0.0.0", "::"}) and serving:
         browser_thread = threading.Thread(
@@ -461,6 +482,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         if not debug and isinstance(config_map, dict):
             # Settings → Quit in the Studio: same as Ctrl+C in this terminal.
             config_map["STUDIO_SHUTDOWN"] = _interrupt_self
+            if os.name != "nt":  # Windows has no self-SIGINT to stop cleanly before the re-exec
+                config_map["STUDIO_RESTART"] = lambda: (restart.set(), _interrupt_self())
             if threading.current_thread() is threading.main_thread():
                 import signal
 
@@ -481,6 +504,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
             browser_thread.join(timeout=1)
         if serving:
             auth.remove_server_file(port)
+    if restart.is_set():
+        _reexec_server(token, secret_key, no_token)
 
 
 def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
@@ -534,13 +559,17 @@ def serve(
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
     safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
+    no_gui_install: bool = typer.Option(
+        False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
+    ),
 ):
     """Serve ALFRD Studio (default) and the dashboard, backed by the runtime database."""
 
     if safe_mode:
         os.environ["ALFRD_NO_PLUGINS"] = "1"  # also reaches the debug reloader's child
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
-               discover=discover, discover_depth=discover_depth, token=token, no_token=no_token)
+               discover=discover, discover_depth=discover_depth, token=token, no_token=no_token,
+               gui_install=not no_gui_install)
 
 
 @alfrd_cli.command()
@@ -555,12 +584,16 @@ def gui(
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
     safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
+    no_gui_install: bool = typer.Option(
+        False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
+    ),
 ):
     """Alias for ``alfrd serve``."""
 
     if safe_mode:
         os.environ["ALFRD_NO_PLUGINS"] = "1"
-    _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token)
+    _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token,
+               gui_install=not no_gui_install)
 
 
 @alfrd_cli.command()
