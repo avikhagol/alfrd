@@ -87,9 +87,7 @@ test("live: stream errors fall back to polling", () => {
   const { es, live } = harness();
   globalThis.fetch = async () => ({ ok: true, headers: { get: () => "application/json" }, json: async () => ({ state: {}, events: [], reset: [] }) });
   es.onerror();
-  assert.equal(live.status.state, "reconnecting");
-  es.readyState = FakeES.CLOSED;
-  es.onerror();
+  assert.ok(es.closed, "close automatic reconnects so polling can inspect the HTTP status");
   assert.equal(live.status.state, "polling");
   live.stop();
 });

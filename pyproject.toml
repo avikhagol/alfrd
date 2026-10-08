@@ -61,6 +61,7 @@ where = ["src"]
 "alfrd.schemas" = ["*.json"]
 "alfrd.gui" = [
   "templates/dashboard/*.htm",
+  "templates/auth/*.htm",
   "static/*.css",
   "model/*.sql",
 ]

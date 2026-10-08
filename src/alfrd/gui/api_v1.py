@@ -20,6 +20,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 from importlib import resources
 from pathlib import Path
 
@@ -135,8 +136,22 @@ def plan(selector: str, plan_id: str):
 
 @api_v1.get("/projects/<selector>/plans/<plan_id>/events")
 def plan_events(selector: str, plan_id: str):
-    """SSE: one ``event: started|finished|plan`` per plan event; ``id:`` is the resume cursor (Last-Event-ID)."""
+    """SSE: one ``event: started|finished|plan`` per plan event; ``id:`` is the resume cursor (Last-Event-ID).
+
+    ``?since=<integer seq>`` instead returns the structured events (events.jsonl) as JSON.
+    """
     root, info = _project(selector)
+    seq = request.args.get("since") or ""
+    if re.fullmatch(r"[0-9]+", seq):
+        try:
+            doc = api.structured_events(root, _plan_id(plan_id), since=int(seq), limit=request.args.get("limit", type=int))
+        except api.StatusNotFound as error:
+            return _error(404, str(error))
+        except ValueError as error:
+            return _error(400, str(error))
+        response = jsonify(doc)
+        response.headers["Cache-Control"] = "no-store"
+        return response
     since = request.args.get("since") or request.headers.get("Last-Event-ID") or None
     timeout = _float("timeout", 3600.0, 24 * 3600.0)
     try:

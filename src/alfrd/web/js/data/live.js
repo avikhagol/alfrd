@@ -38,7 +38,6 @@ export function createLive(hooks) {
     prints: {}, // browser mode: project -> fingerprint
     es: null,
     transport: "sse",
-    errors: 0,
     timer: null,
     retryTimer: null,
     interval: 2,
@@ -106,7 +105,6 @@ export function createLive(hooks) {
     const es = new EventSource(server.eventsUrl(projects));
     live.es = es;
     es.addEventListener("hello", (e) => {
-      live.errors = 0;
       const data = JSON.parse(e.data);
       live.interval = data.interval || live.interval;
       live.idle = data.idle || live.idle;
@@ -116,12 +114,12 @@ export function createLive(hooks) {
     ["tree", "runtime"].forEach((type) => es.addEventListener(type, (e) => { try { event(JSON.parse(e.data)); } catch { /* ignore */ } }));
     es.addEventListener("reset", () => hooks.projects().forEach((p) => hooks.onResync?.(p)));
     es.onerror = () => {
-      live.errors += 1;
-      if (es.readyState === EventSource.CLOSED || live.errors >= 3) {
-        es.close();
-        if (live.es === es) live.es = null;
-        startPolling("event stream unavailable — polling");
-      } else set("reconnecting", "connection lost, retrying");
+      // EventSource hides HTTP status and reconnects automatically. Close it
+      // and use polling to distinguish a lost connection from a 401.
+      es.close();
+      if (live.es !== es) return;
+      live.es = null;
+      if (!server.authRequired) startPolling("event stream unavailable — polling");
     };
   }
 
@@ -197,13 +195,14 @@ export function createLive(hooks) {
 
   // -- lifecycle ---------------------------------------------------------------
   function running() {
-    return live.enabled && !document.hidden;
+    return live.enabled && !server.authRequired && !document.hidden;
   }
 
   function restart() {
     clear();
     live.gen += 1;
     live.lastChange = Date.now(); // start busy: the reader just arrived
+    if (server.authRequired) { set("auth-required", "access link needed"); return; }
     if (!live.enabled) { set("off", "live updates are off"); return; }
     if (document.hidden) { set("paused", "tab hidden"); return; }
     if (hooks.mode() === "server") {
@@ -223,6 +222,11 @@ export function createLive(hooks) {
     else restart();
   });
   window.addEventListener("pagehide", clear);
+  server.onAuthRequired(() => {
+    clear();
+    live.gen += 1;
+    set("auth-required", "access link needed");
+  });
 
   Object.assign(live, {
     started: false,

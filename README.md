@@ -256,7 +256,7 @@ alfrd plan pause | resume [--retry-failed] | cancel
 
 With `execution.concurrency` above 1, rows run in parallel unless they conflict: the avica template serializes rows that share a FITS file name (`execution.serialize_on: [files]`), since those write the same files; the same target with other FITS files runs in parallel.
 
-To follow a plan from a script or an AI assistant, use `alfrd plan status|wait|events|log --json` or `GET /api/v1/projects/<p>/plans/latest` on `alfrd serve`: a read-only, versioned document with a one-line summary, failures with reasons and a resume cursor. See [docs/status-api.md](docs/status-api.md).
+To follow a plan from a script or an AI assistant, use `alfrd plan status|wait|events|log --json` or `GET /api/v1/projects/<p>/plans/latest` on `alfrd serve`: a read-only, versioned document with a one-line summary, failures with reasons and a resume cursor. HTTP requests need `Authorization: Bearer <token>` with the server's access token (see [Opening the Studio](docs/studio-guide.md#opening-the-studio-access-token) and `alfrd url`); other hosts use `ALFRD_API_TOKEN`. See [docs/status-api.md](docs/status-api.md).
 
 In the Studio (`alfrd serve`), open **Workflow → Run…**. The **Schedule** tab shows the targets × steps grid and the execution order (running, queued with ETAs, failed, done). The graph and list show the plan's progress.
 

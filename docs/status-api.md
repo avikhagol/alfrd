@@ -42,9 +42,28 @@ GET /api/v1/projects/<p>/plans/<id|latest>/log?target=&step=&unit=&lines=
 ```
 
 `<p>` is the project identifier or a unique project name. `wait=N` (≤ 60 s)
-long-polls: it returns as soon as the plan changes after `since`. Loopback
-only; to serve other hosts set `ALFRD_API_TOKEN` and send
-`Authorization: Bearer <token>`.
+long-polls: it returns as soon as the plan changes after `since`.
+
+Access:
+
+- **Loopback** (scripts on the same machine): send the server's access token,
+  `Authorization: Bearer <token>`. `alfrd url --port <port>` prints it in the
+  link (`…?token=<token>`), and it is the `token` field of
+  `<config dir>/alfrd/server-<port>.json` (mode 0600; `~/.config/alfrd` on
+  Linux). A pinned token (`alfrd serve --token …` / `ALFRD_TOKEN`) stays the
+  same across restarts. A Bearer equal to `ALFRD_API_TOKEN` also works here.
+- **Other hosts**: set `ALFRD_API_TOKEN` on the server and send
+  `Authorization: Bearer <ALFRD_API_TOKEN>`. This token is valid for
+  `/api/v1/*` only, not for the Studio or its data routes. Without
+  `ALFRD_API_TOKEN` the status API answers 403 to other hosts.
+
+Without a token the API answers 401 with `WWW-Authenticate: Bearer`; more than
+10 wrong tokens per minute from one address get 429 with `Retry-After`.
+
+```bash
+T=$(python -c 'import json,platformdirs,pathlib;print(json.loads((pathlib.Path(platformdirs.user_config_dir("alfrd"))/"server-5000.json").read_text())["token"])')
+curl -H "Authorization: Bearer $T" http://127.0.0.1:5000/api/v1/projects
+```
 
 ## The document
 

@@ -73,6 +73,14 @@ def create_app(config=None):
 
         app.config["SECRET_KEY"] = secrets.token_hex(32)
 
+    from alfrd.gui.auth import AlfrdSessionInterface, new_token
+
+    # Access stays on by default: without a configured token one is generated
+    # (nobody knows it, so only the public endpoints answer).
+    if not app.config.get("ACCESS_TOKEN"):
+        app.config["ACCESS_TOKEN"] = new_token()
+    app.session_interface = AlfrdSessionInterface()
+
     from alfrd.gui.routes import api, control, dashboard, system
     from alfrd.gui.studio import studio, studio_api
     import alfrd.gui.studio_plans  # noqa: F401  (adds the plan routes to studio_api)
@@ -117,6 +125,10 @@ def create_app(config=None):
         runtime_enabled,
     )
 
+    from alfrd.gui.auth import require_access
+
+    # Order matters: an unauthenticated POST gets 401 before the CSRF check's 403.
+    app.before_request(require_access)
     app.before_request(protect_mutation)
 
     @app.context_processor
@@ -130,12 +142,15 @@ def create_app(config=None):
     @app.errorhandler(HTTPException)
     def api_http_error(error):
         if request.path.startswith("/api/"):
-            return (
-                jsonify(
-                    error={"code": error.code, "message": error.description}
-                ),
-                error.code,
+            response = jsonify(
+                error={"code": error.code, "message": error.description}
             )
+            response.status_code = error.code
+            # Keep WWW-Authenticate (401), Retry-After (429), Allow (405).
+            for key, value in error.get_headers():
+                if key.lower() != "content-type":
+                    response.headers[key] = value
+            return response
         return error
 
     return app

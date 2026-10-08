@@ -226,6 +226,24 @@ def _cursor(events: Sequence[Mapping[str, Any]], digest: str = "") -> str:
     return f"c1.{at}|{','.join(seen)}~{digest}"
 
 
+def structured_events(root: str | Path, plan: str | None = None, *, since: int = 0,
+                      limit: int | None = None) -> dict[str, Any]:
+    """The plan's structured events (events.jsonl) with ``seq > since``, oldest first.
+
+    ``seq`` is the last one returned (or ``since``): pass it back as the next ``since``.
+    """
+    from alfrd.events import EVENTS_FILE, READ_LIMIT, EventLog
+
+    base = Path(root).resolve()
+    plan_id = _plan(base, plan)["id"]
+    if since < 0:
+        raise ValueError("since must be a non-negative integer")
+    limit = READ_LIMIT if limit is None else max(1, min(int(limit), READ_LIMIT))
+    events = EventLog(sch.PlanDir(base, plan_id).path / EVENTS_FILE).read_since(since, limit)
+    return {"schema": "alfrd.plan_events/1", "plan": plan_id, "events": events,
+            "seq": events[-1]["seq"] if events else since}
+
+
 def events_since(events: Sequence[Mapping[str, Any]], cursor: str | None) -> list[dict[str, Any]]:
     key, _digest = parse_cursor(cursor)
     if key is None:

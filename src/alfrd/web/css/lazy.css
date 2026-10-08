@@ -124,6 +124,9 @@
 .rm-status:empty, .rm-alert:empty { display: none; }
 .rm-status, .rm-alert { margin: 0; }
 .rm-alert { color: var(--fail-text); }
+.rm-dlg .rm-msgs { padding-top: 0; padding-bottom: 0; }
+.rm-dlg .rm-msgs:not(:has(p:not(:empty))) { display: none; }
+.rm-sure-title { color: var(--fail-text); }
 .rm-f { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .rm-f .btn.danger:disabled, .rm-f .btn:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 600px) { .rm-dlg .rm-h, .rm-dlg .rm-b, .rm-dlg .rm-f { padding: 16px; } }
@@ -218,3 +221,7 @@ details.yf-group .yf-group { margin: 6px 0; }
 .yf-field .check { font-weight: 500; }
 .yf-add { margin: 6px 0 2px; }
 details.yf-group > summary .icon-btn { margin-left: 4px; }
+
+.fits-suggestions { max-height: 14rem; overflow: auto; border: 1px solid var(--border); border-radius: 6px; margin-top: 4px; background: var(--surface); }
+.fits-suggestions [role=option] { padding: 6px 10px; cursor: pointer; font-family: var(--mono); overflow-wrap: anywhere; }
+.fits-suggestions [aria-selected=true], .fits-suggestions [role=option]:hover { background: var(--accent-bg); color: var(--text); }

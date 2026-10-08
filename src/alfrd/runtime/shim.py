@@ -94,12 +94,13 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, forward)
     signal.signal(signal.SIGINT, forward)
     stream_error = {"message": None}
-    reader = None
+    reader = stream = None
     if args.claude_stream:
-        def consume():
-            from alfrd.agent_io import ClaudeStream
+        from alfrd.agent_io import ClaudeStream
 
-            stream = ClaudeStream(Path(args.stdout_file), exit_file)
+        stream = ClaudeStream(Path(args.stdout_file), exit_file)
+
+        def consume():
             try:
                 for line in iter(child.stdout.readline, b""):
                     stream.feed(line.decode("utf-8", errors="replace"))
@@ -110,7 +111,12 @@ def main(argv: list[str] | None = None) -> int:
                 child.stdout.close()
         reader = threading.Thread(target=consume, daemon=True)
         reader.start()
-    code, rusage, usage, reaped_cpu = _wait(child, exit_file, env)
+    settled = (lambda: stream.settled_at) if stream is not None else None
+    code, rusage, usage, reaped_cpu, idle_stop = _wait(child, exit_file, env, settled)
+    if idle_stop and stream is not None and not stream.metadata["error"]:
+        # Claude delivered its final result but did not exit (seen with finished background agents).
+        print(f"\n[alfrd] Claude gave its final result but stayed open; stopped it after {IDLE_GRACE:.0f} s.", flush=True)
+        code = 0
     if reader:
         reader.join(timeout=5)
         if reader.is_alive():
@@ -168,13 +174,18 @@ LOST = 255  # the child was reaped elsewhere: its exit status is unknown
 
 
 ORPHAN_GRACE = 2.0  # seconds to keep reaping re-parented ranks after the command itself ended
+IDLE_GRACE = float(os.environ.get("ALFRD_CLAUDE_EXIT_GRACE") or 30)  # seconds a finished Claude may linger
+KILL_GRACE = 10.0  # seconds between SIGTERM and SIGKILL for a lingering Claude
 
 
-def _wait(child: subprocess.Popen, exit_file: Path, env: dict) -> tuple[int, object, object, float]:
+def _wait(child: subprocess.Popen, exit_file: Path, env: dict,
+          settled=None) -> tuple[int, object, object, float, bool]:
     """Wait for the command, sampling its resource usage (alfrd.runtime.usage) meanwhile.
 
     The shim is a child subreaper, so it also reaps descendants that daemonized
-    (MPI ranks); their CPU time is summed into the last value.
+    (MPI ranks); their CPU time is summed into the last value. ``settled`` returns
+    the monotonic time the command delivered its final result (or None); a command
+    still running IDLE_GRACE seconds later is stopped, and the last value says so.
     """
     try:
         interval = float(os.environ.get("ALFRD_USAGE_INTERVAL", "5") or 0)
@@ -190,17 +201,18 @@ def _wait(child: subprocess.Popen, exit_file: Path, env: dict) -> tuple[int, obj
     except Exception:  # noqa: BLE001
         sampler = None
     if not hasattr(os, "wait4"):  # pragma: no cover - not POSIX
-        return child.wait(), None, sampler, 0.0
+        return child.wait(), None, sampler, 0.0, False
     reaped_cpu = 0.0
     result: tuple[int, object] | None = None
     ended_at = 0.0
+    stopped: list[int] = []
     while True:
         try:
             pid, status, rusage = os.wait4(-1, os.WNOHANG)
         except ChildProcessError:  # nothing left to reap
             if result is None:
-                return (child.returncode if child.returncode is not None else LOST), None, sampler, reaped_cpu
-            return result[0], result[1], sampler, reaped_cpu
+                return (child.returncode if child.returncode is not None else LOST), None, sampler, reaped_cpu, bool(stopped)
+            return result[0], result[1], sampler, reaped_cpu, bool(stopped)
         except InterruptedError:
             continue
         if pid:
@@ -212,7 +224,17 @@ def _wait(child: subprocess.Popen, exit_file: Path, env: dict) -> tuple[int, obj
                 ended_at = time.time()
             continue  # reap everything that is ready before sleeping
         if result is not None and time.time() - ended_at >= ORPHAN_GRACE:
-            return result[0], result[1], sampler, reaped_cpu
+            return result[0], result[1], sampler, reaped_cpu, bool(stopped)
+        since = settled() if result is None and settled is not None else None
+        if since is not None:
+            quiet = time.monotonic() - since
+            sig = signal.SIGKILL if quiet >= IDLE_GRACE + KILL_GRACE else signal.SIGTERM if quiet >= IDLE_GRACE else None
+            if sig is not None and sig not in stopped:
+                stopped.append(sig)
+                try:
+                    child.send_signal(sig)
+                except OSError:
+                    pass
         now = time.time()
         if sampler is not None and sampler.due(now):
             try:

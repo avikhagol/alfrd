@@ -4,6 +4,14 @@ import { server } from "../data/server.js";
 import { addLogSource, dockLog, openFileFull } from "./logview.js";
 import { notesAt } from "../data/notes.js";
 
+async function attachFits(ctx, project, root) {
+  if (ctx.state.mode !== "server" || ctx.state.trees?.[project]?.defs?.template !== "avica") return;
+  try {
+    const [{ mountFileAutocomplete }, data] = await Promise.all([import("./file_autocomplete.js"), server.avicaFitsFiles(project)]);
+    if (root.isConnected) $$("#ar-files, [data-files]", root).forEach((input) => mountFileAutocomplete(input, data));
+  } catch (error) { ctx.log("warn", `FITS suggestions: ${error.message}`, "server"); }
+}
+
 const cache = new Map(); // project -> { status, fetched, error, loading }
 let pickerMod = null;
 
@@ -485,6 +493,7 @@ export async function openAddRowDialog(ctx, project) {
     </div>
     <footer class="modal-f row gap right"><button class="btn primary" id="ar-go" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine as alfrd serve'"}>${icon("plus")} Add</button></footer>`,
     (root, close) => {
+      attachFits(ctx, project, root);
       const go = $("#ar-go", root);
       const canWrite = !go.disabled;
       const sync = (ids) => {
@@ -584,6 +593,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
       <div id="run-preview" class="run-preview"></div>
     </div>
     <footer class="modal-f row gap right"><button class="btn" id="run-dry">${icon("list")} Preview commands</button>${dry ? "" : `<button class="btn primary" id="run-go" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("play")} Start run</button>`}</footer>`, (root, close) => {
+    attachFits(ctx, project, root);
     const go = $("#run-go", root);
     const canStart = go && !go.disabled;
     const picker = mountStepPicker($("#run-steps", root), {

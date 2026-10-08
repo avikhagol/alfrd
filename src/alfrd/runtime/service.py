@@ -213,6 +213,29 @@ class RuntimeService:
                 raise RuntimeNotFound(f"project name {selector!r} is ambiguous; use its identifier")
             return projects[0]
 
+    def get_project_by_root(self, root_path: str | Path, name: str | None = None) -> Project | None:
+        """The project registered for this folder (``name``'s row first, then the oldest), or None."""
+        root = str(Path(root_path).expanduser().resolve())
+        with self.store.session() as session:
+            rows = list(session.scalars(select(Project).where(Project.root_path == root).order_by(Project.created_at)))
+        return next((row for row in rows if row.name == name), rows[0] if rows else None)
+
+    def sync_project_manifest(self, selector: str, name: str, description: str | None = None) -> Project:
+        """Copy the manifest's ``name``/``description`` to the row; the identifier stays the stable key."""
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Project name is required")
+        with self.store.session() as session:
+            project = session.scalar(select(Project).where(Project.identifier == selector))
+            if project is None:
+                project = self.get_project_by_selector(selector)
+                project = session.get(Project, project.id)
+            if (project.name, project.description) != (name, description):
+                project.name, project.description = name, description
+                session.flush()
+                self._audit_entity(session, "project", project.id, "renamed")
+            session.expunge(project)
+            return project
+
     def register_manifest(
         self,
         manifest: ProjectManifest | str | Path,

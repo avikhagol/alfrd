@@ -122,6 +122,14 @@ def version():
     return {"version": __version__}
 
 
+@system.get("/login")
+def login():
+    """Public page telling a browser without the token how to get the access link."""
+    from alfrd.gui.auth import landing_page
+
+    return landing_page()
+
+
 @system.get("/")
 def root():
     """The client-side ALFRD Studio is the default UI; /dashboard/ remains."""
@@ -277,7 +285,12 @@ def connect_manifest_path(path: str):
     try:
         existing = service.get_project_by_identifier(identifier)
     except RuntimeNotFound:
-        existing = None
+        existing = service.get_project_by_root(root_path, manifest.name)
+        if existing is not None:  # renamed in alfrd.yaml: reuse the row, sync the name
+            description = manifest.extra.get("description")
+            existing = service.sync_project_manifest(existing.identifier, manifest.name,
+                                                     description if isinstance(description, str) else None)
+            identifier = existing.identifier
     if existing is None:
         try:
             service.register_manifest(manifest, root_path=root_path, create_root=False)

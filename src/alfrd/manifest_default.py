@@ -167,6 +167,11 @@ def register_project_folder(service, folder: str | Path, *, allow_default: bool 
         return service.get_project_by_identifier(project_identifier(base, manifest.name)), used_default
     except RuntimeNotFound:
         pass
+    existing = service.get_project_by_root(base, manifest.name)
+    if existing is not None:  # renamed in alfrd.yaml: keep the row (and its runs), sync the name
+        description = manifest.extra.get("description")
+        return service.sync_project_manifest(existing.identifier, manifest.name,
+                                             description if isinstance(description, str) else None), used_default
     project, _ = service.register_manifest(manifest, root_path=base, create_root=False)
     return project, used_default
 

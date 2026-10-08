@@ -30,6 +30,8 @@ EXPECTED_WHEEL_PATHS = {
     "alfrd/gui/templates/dashboard/index.htm",
     "alfrd/gui/templates/dashboard/layout.htm",
     "alfrd/gui/templates/dashboard/project_details.htm",
+    "alfrd/gui/templates/auth/landing.htm",
+    "alfrd/gui/auth.py",
     "alfrd/gui/static/alfrd.css",
     "alfrd/gui/model/schema.sql",
     "alfrd/gui/studio.py",
@@ -131,6 +133,7 @@ for item in (
     'templates/dashboard/index.htm',
     'templates/dashboard/layout.htm',
     'templates/dashboard/project_details.htm',
+    'templates/auth/landing.htm',
     'static/alfrd.css',
     'model/schema.sql',
 ):
@@ -143,7 +146,10 @@ app = create_app({'TESTING': True})
 client = app.test_client()
 assert client.get('/health').get_json() == {'status': 'ok'}
 assert client.get('/api/version').get_json() == {'version': __version__}
-assert client.get('/api/projects').get_json() == {'projects': []}
+assert client.get('/api/projects').status_code == 401
+assert client.get('/login').status_code == 200
+bearer = {'Authorization': 'Bearer ' + app.config['ACCESS_TOKEN']}
+assert client.get('/api/projects', headers=bearer).get_json() == {'projects': []}
 """
     environment_vars = os.environ.copy()
     environment_vars.pop("PYTHONPATH", None)

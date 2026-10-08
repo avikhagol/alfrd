@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -189,6 +190,8 @@ class ClaudeStream:
         self.metadata_path = exit_file.with_suffix(".agent.json")
         self.metadata = {"models": [], "result_seen": False, "error": None, "usage": None, "usage_source": "unavailable", "total_cost_usd": None}
         self.saw_deltas = False
+        self.pending_tasks: set[str] = set()  # background agents/shells Claude still waits on
+        self.settled_at: float | None = None  # monotonic time of a final result with nothing pending
 
     def feed(self, line: str):
         self.events.write(line)
@@ -207,6 +210,10 @@ class ClaudeStream:
             self.metadata["models"].append(model)
             self.metadata.setdefault("model", model)
             print(f"\n[claude] Model: {model}", flush=True)
+        if kind == "system" and event.get("subtype") == "background_tasks_changed":
+            self.pending_tasks = {str(t.get("task_id")) for t in event.get("tasks") or [] if isinstance(t, dict)}
+        elif kind in ("assistant", "stream_event") or event.get("subtype") == "task_started":
+            self.settled_at = None  # Claude is working again
         if kind == "stream_event":
             delta = (event.get("event") or {}).get("delta") or {}
             if delta.get("type") == "text_delta":
@@ -237,6 +244,8 @@ class ClaudeStream:
                 atomic_text(self.response, event["result"])
             else:
                 self.metadata["error"] = "Claude returned no final text"
+            if not self.pending_tasks and not self.metadata["error"]:
+                self.settled_at = time.monotonic()
             for name in (event.get("modelUsage") or {}):
                 if name not in self.metadata["models"]:
                     self.metadata["models"].append(name)

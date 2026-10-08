@@ -1,8 +1,4 @@
-// Pure helpers for Settings → All settings: alfrd.yaml as a form.
-//
-// Every key in the file becomes a field (checkbox, number, choice, text, list)
-// or a group; known keys that are not in the file show with their default.
-// An edit rewrites only the top-level section it belongs to.
+// Settings form helpers; edits replace only their top-level section.
 
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { replaceSection } from "./agent_settings.js";
@@ -187,4 +183,13 @@ export function applyFormEdit(text, path, value) {
   setIn(data, path, value);
   const top = path[0];
   return top in data ? replaceSection(text, top.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), dumpYaml({ [top]: data[top] })) : removeSection(text, top);
+}
+
+// Preview a template, preserving the current name and version.
+export function templateDraft(templateText, currentText, template) {
+  const data = parseYaml(templateText) || {};
+  let current = {};
+  try { current = parseYaml(currentText) || {}; } catch { /* an unparsable draft keeps nothing */ }
+  const { version: _v, name: _n, template: _t, ...rest } = data;
+  return dumpYaml({ version: current.version ?? 1, name: current.name ?? data.name ?? "", template, ...rest });
 }

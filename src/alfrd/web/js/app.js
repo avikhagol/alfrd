@@ -1,5 +1,5 @@
 
-import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi } from "./utils/dom.js";
+import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget } from "./utils/dom.js";
 import { stepParamsFromConfig } from "./data/avica.js";
 import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
@@ -125,14 +125,14 @@ export const ctx = {
   openRun(project, id = null) { canvas.showRun(ctx, project, id); },
   openLogs(opts = {}) { logs.showLogs(ctx, opts); },
   /** Pick a folder on the ALFRD server (never the viewer's machine) into `input`; Create project still decides. */
-  browseFolder(host, input) {
+  browseFolder(host, input, more) {
     const done = (path) => {
       b.destroy();
       if (path != null) { input.value = path; ["input", "change"].forEach((t) => input.dispatchEvent(new Event(t, { bubbles: true }))); }
       input.focus();
     };
     const b = mountFolderBrowser(host, { list: (path, opts) => server.listFolders(path, opts), start: input.value.trim(), select: true,
-      use: done, connect: async (paths) => done(paths[0]), close: () => done(null) });
+      use: done, close: () => done(null), ...more });
     return b;
   },
   navigate(view, params = {}) {
@@ -469,11 +469,8 @@ function resolveInitialProject() {
   switchProject(def && ids.includes(def) ? def : ids.length === 1 ? ids[0] : "all", { render: false });
 }
 
-/**
- * Switch the active project workspace: save the outgoing one (target, tab, scroll) without
- * submitting edits, change the explicit identifier, then restore the incoming workspace.
- */
-function switchProject(project, { render = true, restoreView = true } = {}) {
+// Keep each workspace's view, target and scroll when switching projects.
+function switchProject(project, { render = true, restoreView = true, syncUrl = true } = {}) {
   const next = project && project !== "all" ? project : "all";
   const before = state.selectedProject || "all";
   if (before !== next) {
@@ -486,7 +483,9 @@ function switchProject(project, { render = true, restoreView = true } = {}) {
   setActive(next);
   const incoming = wsMeta(next);
   const inScope = ctx.scopedTargets();
-  state.selectedTarget = inScope.some((t) => t.id === incoming.target) ? incoming.target : inScope[0]?.id || null;
+  state.selectedTarget = chooseTarget(inScope, storage.get("ui:app.targets", {})[next], incoming.target);
+  rememberTarget();
+  if (syncUrl) history.replaceState(null, "", routeHash(state.view, next, state.selectedTarget));
   if (before !== next && restoreView && incoming.view && incoming.view !== state.view) goTo(incoming.view);
   if (before !== next) {
     const top = incoming.scroll[incoming.view || state.view] || 0;
@@ -584,17 +583,18 @@ async function loadServer() {
       const bundle = await applyServerScan(p.name, scan, { runtimeRows: state.targets.filter((t) => t.project === p.name) });
       ctx.log("info", `${p.title || p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
     }
-    // Keep the user's explicit choice (a project, or All projects) across a reload or Re-scan.
+    // Restore the selected scope.
     if (keep.project && keep.project !== "all" && ctx.projects().some((p) => p.id === keep.project)) state.selectedProject = keep.project;
+    const url = parseRoute(location.hash);
+    if (url.project === "all" || ctx.projects().some((p) => p.id === url.project)) state.selectedProject = url.project;
     resolveInitialProject();
     setActive(state.selectedProject);
-    if (ctx.scopedTargets().some((t) => t.id === keep.target)) state.selectedTarget = keep.target;
-    const inScope = ctx.scopedTargets();
-    if (!inScope.some((t) => t.id === state.selectedTarget)) state.selectedTarget = inScope[0]?.id || null;
+    state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[state.selectedProject], keep.target, state.selectedTarget);
+    rememberTarget();
     workflowCache.clear();
     state.workflowProject = null;
     syncWorkflow();
-    // Every project's run state, so background jobs show in Jobs and keep polling while another project is open.
+    // Poll background runs too.
     data.projects.forEach((p) => plansAvailable(ctx, p.name) && loadPlan(ctx, p.name, { quiet: true }));
     applyAvicaParams(state.avica?.[ctx.target()?.project]);
     ctx.log("info", `Server: ${data.projects.length} project(s), ${state.targets.length} target(s).`, "server");
@@ -616,6 +616,7 @@ async function loadServer() {
  */
 async function applyServerScan(project, scan, { runtimeRows = null, live: isLive = false } = {}) {
   state.scans[project] = scan;
+  syncName(project, scan.project_name);
   const manifest = scan.files?.find((f) => /(^|\/)\.?alfrd\.ya?ml$/.test(f.rel))?.text;
   await ensureTemplatesFor(manifest);
   const entries = entriesFromScanBundle(scan);
@@ -630,6 +631,10 @@ async function applyServerScan(project, scan, { runtimeRows = null, live: isLive
   return bundle;
 }
 
+/** alfrd.yaml `name:` (synced to the DB by the server) → header picker and Settings list labels. */
+function syncName(project, name) {
+  if (name && state.projectNames[project] !== name) state.projectNames[project] = state.projectTitles[project] = name;
+}
 
 function keepWorkflow(project, bundle) {
   const before = state.trees?.[project]?.manifestText;
@@ -847,12 +852,50 @@ async function importEntries(entries, { replace = true, folder = null } = {}) {
 }
 
 
+/** Every project in scope, from scratch (palette: Reload all projects). */
+async function reloadAll() {
+  server.clearFitsCache();
+  state.avica = {};
+  clearWorkdirCache();
+  if (await loadServer()) ctx.toast("Reloaded all projects", "ok");
+}
+
+// Refresh the selected project.
+async function rescanServerProject(project) {
+  const title = ctx.projectName(project);
+  try {
+    const runtime = await server.loadProjectRuntime({ name: project, title });
+    runtime.messages.forEach((m) => ctx.log(m.level, m.text, "server"));
+    const scan = await server.projectScan(project);
+    const keep = state.selectedTarget;
+    if (state.avica) delete state.avica[project];
+    clearWorkdirCache(project);
+    server.clearFitsCache(project);
+    workflowCache.delete(project);
+    state.serverWorkflows = [...(state.serverWorkflows || []).filter((w) => w.project !== project), ...runtime.workflows];
+    const bundle = await applyServerScan(project, scan, { runtimeRows: runtime.targets });
+    ctx.log("info", `${title}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root} (Re-scan).`, "server");
+    if (ctx.scopedTargets().some((t) => t.id === keep)) state.selectedTarget = keep;
+    else if (!ctx.scopedTargets().some((t) => t.id === state.selectedTarget)) state.selectedTarget = ctx.scopedTargets()[0]?.id || null;
+    if (state.workflowProject === project) state.workflowProject = null;
+    syncWorkflow();
+    if (plansAvailable(ctx, project)) loadPlan(ctx, project, { quiet: true });
+    applyAvicaParams(state.avica?.[ctx.target()?.project]);
+    scheduleRender();
+    live?.sync();
+    ctx.toast(`Re-scanned ${title}`, "ok");
+  } catch (error) {
+    ctx.log("error", `Re-scan of ${title} failed: ${error.message}`, "server");
+    ctx.toast(`Re-scan of ${title} failed: ${error.message}`, "fail");
+  }
+}
+
 async function rescan() {
   if (state.mode === "server") {
-    state.avica = {};
-    clearWorkdirCache();
-    await loadServer();
-    ctx.toast("Re-scanned server projects", "ok");
+    const project = activeProject();
+    // Only the opened project; with All projects selected there is none, so reload them all.
+    if (project && state.trees?.[project]?.provider === "server") await rescanServerProject(project);
+    else await reloadAll();
     return;
   }
   const project = state.selectedProject !== "all" ? state.selectedProject : ctx.target()?.project || ctx.projects()[0]?.id;
@@ -975,7 +1018,7 @@ async function saveManifest(project, text, { force = false } = {}) {
   const info = manifestToWorkflows(parseYaml(text), tree.manifestFile || "alfrd.yaml");
   if (state.mode === "server" && tree.provider === "server") {
     const base = tree.manifestDefault || tree.manifestText == null ? {} : (await sha256(tree.manifestText)) ? { base_hash: await sha256(tree.manifestText) } : { base_text: tree.manifestText };
-    await server.saveManifest(project, text, { ...base, ...(force ? { force: true } : {}) });
+    syncName(project, (await server.saveManifest(project, text, { ...base, ...(force ? { force: true } : {}) }))?.project_name);
   } else if (state.folders[project] || (await loadFolderHandle(project))) {
     const folder = state.folders[project] || (await loadFolderHandle(project));
     await writeFileToHandle(folder, tree.manifestFile || "alfrd.yaml", text);
@@ -1052,7 +1095,9 @@ async function writeAvicaConfig(project, changes) {
 // ---------------------------------------------------------------------------
 // Modal + menus
 
+let clearModalKeys;
 function modal(html, setup, cls = "") {
+  clearModalKeys?.();
   const previousFocus = document.activeElement;
   const host = $("#modal-host");
   host.innerHTML = `<div class="modal-back" data-close></div><div class="modal ${cls}" role="dialog" aria-modal="true">${html}</div>`;
@@ -1074,6 +1119,7 @@ function modal(html, setup, cls = "") {
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
   };
   document.addEventListener("keydown", esc_);
+  clearModalKeys = () => document.removeEventListener("keydown", esc_);
   host.onclick = (e) => {
     if (e.target.closest("[data-close]")) close();
   };
@@ -1111,20 +1157,21 @@ ctx.menu = menu;
 async function openSettings() {
   try {
     lazy.settings ||= import("./components/settings_dialog.js");
-    (await lazy.settings).openSettings(ctx, { live, setLive, newProject, quitServer, loadServer, loadDemo, switchProject, removeWorkspace, resetAttachments, forgetFolderHandles });
+    (await lazy.settings).openSettings(ctx, { live, setLive, newProject, openProject, quitServer, loadServer, loadDemo, switchProject, removeWorkspace, resetAttachments, forgetFolderHandles });
   } catch (error) { lazy.settings = null; ctx.toast(`Settings: ${error.message}`, "fail"); }
 }
 
-async function newProject() {
-  try {
-    const { openCreateProject } = await import("./components/agent_dialog.js");
-    await openCreateProject(ctx, async (project, template) => {
-      await loadServer();
-      switchProject(project.identifier, { restoreView: false });
-      ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
-    });
-  } catch (error) { ctx.toast(error.message, "fail"); }
+const showProject = async (project, template) => {
+  await loadServer();
+  switchProject(project.identifier, { restoreView: false });
+  ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
+};
+// Create (path: prefilled folder) and Open (a folder with alfrd.yaml) live in agent_dialog.js.
+async function newProject(path, open) {
+  try { await (await import("./components/agent_dialog.js"))[open ? "openProject" : "openCreateProject"](ctx, showProject, path, newProject); }
+  catch (error) { ctx.toast(error.message, "fail"); }
 }
+const openProject = () => newProject("", 1);
 
 /** After removal: drop only that project's workspace, run polling and Log Stream tabs. */
 function removeWorkspace(project) {
@@ -1166,8 +1213,15 @@ function openAliasRules() {
 }
 
 
+function rememberTarget() {
+  if (!state.selectedProject || !state.selectedTarget) return;
+  const targets = storage.get("ui:app.targets", {});
+  storage.set("ui:app.targets", { ...targets, [state.selectedProject]: state.selectedTarget });
+}
+
 function goTo(view) {
-  const url = `#/${view}`;
+  rememberTarget();
+  const url = routeHash(view, state.selectedProject, state.selectedTarget);
   if (location.hash !== url) location.replace(url);
 }
 ctx.openAliasRules = openAliasRules;
@@ -1176,6 +1230,7 @@ ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) 
 ctx.views = VIEWS.map(({ id, label, icon: ic }) => ({ id, label, icon: ic }));
 ctx.goTo = goTo;
 ctx.rescan = () => rescan();
+ctx.reloadAll = () => reloadAll();
 ctx.setLive = (on) => setLive(on);
 
 ctx.openNotes = async (project, where = {}, opts = {}) => {
@@ -1496,7 +1551,7 @@ function renderShell() {
       <span class="vsep"></span>
       <label class="picker" title="Project">${icon("folder")}<span class="picker-l">Project:</span><select id="pick-project" aria-label="Project"></select></label>
       <button class="btn sm jobs-btn" id="btn-jobs" aria-haspopup="dialog" hidden>${icon("play")} <span id="jobs-label">Jobs</span></button><span class="sr-only" id="jobs-live" aria-live="polite"></span>
-      <button class="btn sm" id="btn-new-project" aria-describedby="new-project-help" title="Create a project" hidden>${icon("plus")} New project</button><span id="new-project-help" class="muted small" hidden>Project creation needs a browser on the server machine.</span>
+      <button class="btn sm" id="btn-new-project" aria-describedby="new-project-help" title="Create a project" hidden>${icon("plus")} New project</button><button class="btn sm" id="btn-open-project" title="Open a folder with alfrd.yaml" hidden>${icon("folder")} Open project…</button><span id="new-project-help" class="muted small" hidden>Project creation needs a browser on the server machine.</span>
       <label class="picker" title="Target">${icon("target")}<span class="picker-l">Target:</span><select id="pick-target" aria-label="Target"></select></label>
       <span class="grow"></span>
       <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (Ctrl+K)">${icon("search")}</button>
@@ -1509,7 +1564,7 @@ function renderShell() {
     </header>
     <nav class="rail" aria-label="Workspace">
       <div class="rail-head"><span class="rail-label">Workspace</span></div>
-      <div class="rail-links" id="rail-links">${VIEWS.map((v) => `<a href="#/${v.id}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
+      <div class="rail-links" id="rail-links">${VIEWS.map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
       <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
     <main id="main" tabindex="-1">${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
@@ -1544,7 +1599,8 @@ function renderShell() {
   $("#btn-rail").addEventListener("click", () => setSidebar(!shellUi.sidebarCollapsed));
   setSidebar(shellUi.sidebarCollapsed);
   $("#btn-import").addEventListener("click", () => openImport());
-  $("#btn-new-project").addEventListener("click", newProject);
+  $("#btn-new-project").addEventListener("click", () => newProject());
+  $("#btn-open-project").addEventListener("click", openProject);
   $("#btn-rescan").addEventListener("click", () => rescan());
   $("#btn-live").addEventListener("click", onLiveBadge);
   $("#btn-palette").addEventListener("click", () => ctx.openPalette());
@@ -1566,7 +1622,9 @@ function renderShell() {
     if (b) switchProject(b.dataset.wsOpen, { restoreView: false });
   });
   $("#pick-target").addEventListener("change", (e) => {
-    state.selectedTarget = e.target.value;
+    state.selectedTarget = chooseTarget(ctx.scopedTargets(), e.target.value);
+    rememberTarget();
+    history.replaceState(null, "", routeHash(state.view, state.selectedProject, state.selectedTarget));
     scheduleRender();
   });
   $("#foot-logs").addEventListener("click", () => {
@@ -1578,11 +1636,14 @@ function renderShell() {
 }
 
 function renderHeader() {
+  VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); });
   const badge = $("#mode-badge");
   const live = state.mode === "server";
   const create = $("#btn-new-project");
   create.hidden = !live;
   create.disabled = !server.session?.mutations_enabled;
+  const open = $("#btn-open-project");
+  open.hidden = !live; open.disabled = create.disabled || !server.canBrowse();
   $("#new-project-help").hidden = !live || !create.disabled;
   create.title = create.disabled ? "Project creation needs a browser on the server machine" : "Create a project";
   badge.className = `mode-badge ${live ? "live" : ""}`;
@@ -1590,6 +1651,9 @@ function renderHeader() {
   if (quit) quit.hidden = !(live && server.session?.can_quit);
   badge.innerHTML = `<i></i>${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}`;
   badge.title = live ? "alfrd: projects come from the runtime database; re-queue runs through the runtime API." : "Everything runs in this browser; no pipeline code is executed.";
+
+  const rescanBtn = $("#btn-rescan");
+  if (rescanBtn) rescanBtn.title = live ? (activeProject() ? `Re-scan ${ctx.projectName(activeProject())}` : "Re-scan all projects") : "Re-read the whole project folder now (live updates only re-read what changed)";
 
   const projects = ctx.projects();
   const projectOptions = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.title || p.name)}${isDirty(p.id) ? " · Unsaved changes" : ""}</option>`).join("")}`;
@@ -1831,7 +1895,13 @@ function renderAll() {
 }
 
 function route() {
-  const id = (location.hash.match(/^#\/(\w+)/) || [])[1];
+  const url = parseRoute(location.hash);
+  const id = url.view;
+  if (url.project && (url.project === "all" || ctx.projects().some((p) => p.id === url.project))) {
+    if (state.selectedProject !== url.project) switchProject(url.project, { render: false, restoreView: false, syncUrl: false });
+    state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[url.project], state.selectedTarget);
+    rememberTarget();
+  }
   const next = VIEWS.some((v) => v.id === id) ? id : "overview";
   if (next !== state.view) VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
   state.view = next;
@@ -1848,7 +1918,7 @@ async function boot() {
     const a = e.target.closest('a[href^="#/"]');
     if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
-    goTo(a.getAttribute("href").slice(2));
+    goTo(parseRoute(a.getAttribute("href")).view);
   });
   route();
   await loadTemplate("avica", parseYaml);
@@ -1856,6 +1926,7 @@ async function boot() {
   await ensureTemplatesFor(storage.get("workflow")?.text);
 
   const session = await server.detect();
+  if (server.authRequired) return;
   if (session?.version) VERSION = session.version;
   ctx.log("info", `Studio ${VERSION} started (${location.protocol === "file:" ? "file" : location.origin}).`);
   state.demoEnabled = Boolean(session?.demo) || new URLSearchParams(location.search).has("demo");
@@ -1863,6 +1934,7 @@ async function boot() {
     state.mode = "server";
     ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();
+    if (server.authRequired) return;
     if (session.default_project) ctx.log("info", `Opened project ${ctx.projectName(session.default_project)}.`, "server");
     if (!data || !data.targets.length) {
       if (state.demoEnabled) await loadDemo({ quiet: true });
@@ -1889,7 +1961,12 @@ async function boot() {
 
 window.alfrdStudio = { ctx, loadDemo, loadServer, applyBundle, rescan, importEntries };
 
+// Use the server-rendered recovery page so startup and expired sessions show
+// exactly the same instructions, including the port, without exposing data.
+server.onAuthRequired(() => location.replace("/login"));
+
 boot().catch((error) => {
+  if (server.authRequired) return;
   console.error(error);
   const el = document.getElementById("app");
   el.insertAdjacentHTML("afterbegin", `<p class="fatal">Studio failed to start: ${esc(error.message)}</p>`);

@@ -257,3 +257,21 @@ export function icon(name, cls = "") {
 }
 
 export const LOGO = `<img class="logo" src="assets/favicon.svg" alt="" width="36" height="36">`;
+
+// Project and target links.
+export function parseRoute(hash) {
+  const [path, query = ""] = hash.replace(/^#\//, "").split("?");
+  const params = new URLSearchParams(query);
+  return { view: path, project: params.get("p"), target: params.get("t") };
+}
+
+export function routeHash(view, project, target) {
+  const params = new URLSearchParams();
+  if (project) params.set("p", project);
+  if (target) params.set("t", target);
+  return `#/${view}${params.size ? `?${params}` : ""}`;
+}
+
+export function chooseTarget(targets, ...preferred) {
+  return preferred.find((id) => targets.some((t) => t.id === id)) || targets[0]?.id || null;
+}

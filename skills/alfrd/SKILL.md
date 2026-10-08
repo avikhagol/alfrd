@@ -185,8 +185,11 @@ GET /api/studio/projects/<p>/plans/<id>/turns                            # per-t
 GET /api/studio/projects/<p>/quickstart                                  # template setup forms + current values
 ```
 
-Same document as the CLI. Other hosts need `ALFRD_API_TOKEN` +
-`Authorization: Bearer …`. Studio writes (notes, targets, alfrd.yaml) need
+Same document as the CLI. Every route except `/api/health` needs
+`Authorization: Bearer <token>`: on loopback the server's access token (the
+`token` in `~/.config/alfrd/server-<port>.json`, or the `?token=` in
+`alfrd url --port <port>`); other hosts use `ALFRD_API_TOKEN`, which works for
+`/api/v1/*` only. Studio writes (notes, targets, alfrd.yaml) need
 loopback + a CSRF token: use the Python calls or CLI instead of POSTing.
 
 ## Where things live

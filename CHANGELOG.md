@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+- **`alfrd serve` needs an access token.** Every route except `/api/health`, `/version`, `/login` and the Studio's static files now needs the server's token, also on loopback: any local account could previously read plans, logs and handoffs and start plans. `alfrd serve` prints and opens `…/studio/?token=…`; the first visit trades the token for an `HttpOnly; SameSite=Strict` session cookie (`Secure` over https) and removes it from the address bar. Scripts send `Authorization: Bearer <token>`. Without it: 401 (browsers get a page saying how to get the link), and more than 10 wrong tokens per minute per address get 429.
+- The token and session key are in `~/.config/alfrd/server-<port>.json` (mode 0600, removed on exit). **`alfrd url [--port]`** prints the link again. `--token` / `ALFRD_TOKEN` pins a token for proxies and scripts; `--no-token` turns the check off and is refused for non-loopback `--host`. A non-loopback `--host` warns that the token travels in clear text without TLS (use an https reverse proxy or `ssh -L`).
+- **Status API:** loopback scripts now send the access token too; `ALFRD_API_TOKEN` keeps working as the Bearer for other hosts and is valid for `/api/v1/*` only. See [docs/status-api.md](docs/status-api.md).
+- Studio: when the server answers 401 (e.g. after a restart with a new token), the Studio opens the access page once, stops further requests and the live-update stream instead of falling back to browser mode or retrying. The session cookie is named per port, so servers on different ports keep separate logins.
+
 ## [0.2.2]
 
 - **Agent sequences.** `repeat.sequence: [claude, claude, codex, …]` sets the order of turns; `iterations` is now the **total number of turns** (custom passes and `passes:` also accepted). New agent-loop projects use it; older projects (`repeat.iterations` + `steps`) keep counting passes unchanged.

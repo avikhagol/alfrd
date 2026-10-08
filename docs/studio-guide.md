@@ -36,6 +36,36 @@ alfrd studio --export site/          # copy the static files (any web host)
 
 Open it over HTTP. `file://` does not work (browser rule for ES modules).
 
+### Opening the Studio (access token)
+
+`alfrd serve` creates a random access token, prints the link with it and opens it:
+
+```
+ALFRD Studio: http://127.0.0.1:5000/studio/?token=…
+```
+
+The first visit trades the token for a session cookie and removes it from the address bar. Without it the server answers 401 and shows a page saying how to get the link. Lost the link, or opening it in another browser?
+
+```bash
+alfrd url                  # link for the server on port 5000
+alfrd url --port 5055      # another port
+```
+
+The token is in `~/.config/alfrd/server-<port>.json` (readable only by you, removed when the server stops). A restart makes a new token, so open the new link; the Studio shows the access page instead of stale data. Scripts send `Authorization: Bearer <token>` (see [status-api.md](status-api.md)).
+
+| Option | |
+|---|---|
+| `--token TEXT` / `ALFRD_TOKEN` | Pin the token (the same across restarts; for reverse proxies and scripts) |
+| `--no-token` | No token check. Only allowed on loopback (`127.0.0.1`, `::1`, `localhost`) and prints a warning: any program or account on this machine can then read your projects and start plans |
+
+**Other machines.** With a non-loopback `--host` the token stays required, but plain HTTP sends it in clear text, and `alfrd serve` warns about it. Prefer an SSH tunnel and keep the server on loopback:
+
+```bash
+ssh -L 5000:127.0.0.1:5000 user@server    # then open the alfrd url link on your machine
+```
+
+or put an https reverse proxy in front. The cookie is marked `Secure` when the request arrives over https. A proxy that terminates TLS forwards plain HTTP, so there the cookie is not marked `Secure` (the proxy's `X-Forwarded-Proto` is not read yet).
+
 ---
 
 ## Two modes

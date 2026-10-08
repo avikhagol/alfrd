@@ -52,6 +52,7 @@ except ImportError:  # pragma: no cover - Windows
 PLANS_DIR = Path(".alfrd") / "plans"
 ACTIVE = ("running", "paused")
 POLL = 1.0
+NOTIFY_DRAIN = 15.0  # seconds a stopping runner waits for queued notifications
 
 
 def now_iso() -> str:
@@ -1011,6 +1012,7 @@ class Live:
     last_progress: float = 0.0
     killed_at: float | None = None
     reason: str | None = None
+    idle_activity: float | None = None  # last activity at the time turn.idle was reported
 
 
 class Runner:
@@ -1024,6 +1026,8 @@ class Runner:
         self._cfg: ExecutionConfig | None = None
         self._cfg_key: tuple | None = None
         self.delayed: list[dict[str, Any]] = []  # rows whose next step waits for its ``after`` delay
+        self.limit_reported = False  # limit.reached sent for the plan's total runtime
+        self.notifier = None  # alfrd.notify.Dispatcher while _run delivers notifications
 
     # -- helpers ---------------------------------------------------------
     def log(self, text: str) -> None:
@@ -1065,13 +1069,43 @@ class Runner:
         self.plan = current
         self.folder.save(current)
 
-    def event(self, text: str) -> None:
-        current = self.folder.load()
-        history = (current.get("history") or [])[-199:]
-        history.append({"at": now_iso(), "event": text})
-        current["history"] = history
-        self.plan = current
-        self.folder.save(current)
+    def event(self, kind: str, text: str | None = None, *, history: bool = True,
+              unit: Mapping[str, Any] | None = None, **data: Any) -> None:
+        """Record a plan event: ``text`` in plan.json ``history`` (as before), and a structured line in events.jsonl.
+
+        ``history=False`` writes only the structured line (events that never had history text).
+        Writing events.jsonl never stops the runner; a failure is logged to runner.log.
+        """
+        from alfrd.events import EVENT_KINDS
+
+        if kind not in EVENT_KINDS:
+            if os.environ.get("PYTEST_CURRENT_TEST"):
+                raise ValueError(f"unknown event kind {kind!r}")
+            self.log(f"warning: unknown event kind {kind!r}")
+        if history and text is not None:
+            current = self.folder.load()
+            entries = (current.get("history") or [])[-199:]
+            entries.append({"at": now_iso(), "event": text})
+            current["history"] = entries
+            self.plan = current
+            self.folder.save(current)
+        try:
+            from alfrd.events import EVENTS_FILE, EventLog
+
+            unit = unit or {}
+            record = {
+                "at": now_iso(), "kind": kind, "plan": self.folder.id, "project": str(self.folder.root),
+                "target": unit.get("target") or self.plan.get("target") or None, "unit": unit.get("id"),
+                "turn": unit.get("iteration"), "turns": (self.plan.get("loop") or {}).get("iterations"),
+                "agent": unit.get("agent"), "roles": list(unit.get("roles") or (unit.get("handoff") or {}).get("roles") or []),
+                "text": text, "data": data,
+            }
+            seq = EventLog(self.folder.path / EVENTS_FILE).append(record)
+        except Exception as exc:  # noqa: BLE001 - events are best effort
+            self.log(f"warning: cannot write event {kind}: {exc}")
+            return
+        if self.notifier is not None:
+            self.notifier.submit({"seq": seq, **record})
 
     # -- main loop -------------------------------------------------------
     def run(self) -> int:
@@ -1133,7 +1167,18 @@ class Runner:
             "pid": os.getpid(), "host": self.host, "proc_start": proc_start(os.getpid()),
             "started": now_iso(), "heartbeat": now_iso(), "stopped": None,
         })
-        self.event(f"runner {os.getpid()} on {self.host} started")
+        from alfrd.notify import start_for
+
+        self.notifier = start_for(self.folder.path, self.cfg.settings.get("notify_routes"), log=self.log)
+        try:
+            return self._main(stop)
+        finally:
+            if self.notifier is not None:
+                self.notifier.stop(deadline=NOTIFY_DRAIN)
+                self.notifier = None
+
+    def _main(self, stop: dict[str, bool]) -> int:
+        self.event("plan.started", f"runner {os.getpid()} on {self.host} started", pid=os.getpid(), host=self.host)
         self.log(f"plan {self.folder.id}: {self.csv_file} mode={self.plan['mode']} concurrency={self.plan['concurrency']}")
         self.adopt()
         beat = float(self.plan.get("heartbeat") or 10)
@@ -1158,6 +1203,9 @@ class Runner:
             if deadline and created and (datetime.now() - created).total_seconds() >= deadline:
                 self.stop_new = True
                 self.save_plan(error="total runtime limit reached")
+                if not self.limit_reported:
+                    self.limit_reported = True
+                    self.event("limit.reached", "total runtime limit reached", history=False, limit="max_runtime", seconds=deadline)
                 for live in self.live.values():
                     if not live.killed_at:
                         self.kill(live, "total runtime limit reached")
@@ -1177,7 +1225,9 @@ class Runner:
             time.sleep(POLL)
         counts = self.counts()
         self.save_plan(status=final, counts=counts, waiting=[], runner={"stopped": now_iso(), "heartbeat": now_iso()})
-        self.event(f"runner stopped: {final} ({', '.join(f'{k} {v}' for k, v in counts.items() if v)})")
+        kind = {"finished": "plan.finished", "failed": "plan.failed", "cancelled": "plan.cancelled"}.get(final, "plan.interrupted")
+        self.event(kind, f"runner stopped: {final} ({', '.join(f'{k} {v}' for k, v in counts.items() if v)})",
+                   status=final, counts=counts, **({"paused": True} if final == "paused" else {}))
         self.log(f"stopped: {final}")
         return 0
 
@@ -1198,7 +1248,7 @@ class Runner:
             self.save_plan(started_at=now_iso() if start is not None else self.plan.get("created") or now_iso(),
                            start_at=None, waiting=[])
             if start is not None:
-                self.event("scheduled start reached")
+                self.event("plan.started", "scheduled start reached", scheduled=True)
         return False
 
     def counts(self) -> dict[str, int]:
@@ -1431,7 +1481,7 @@ class Runner:
 
                 argv = list(agent_command(argv, fallback, adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
                 unit.update(requested_model=fallback)
-                self.event(f"{unit['id']}: retrying with fallback model {fallback}")
+                self.event("turn.fallback_model", f"{unit['id']}: retrying with fallback model {fallback}", unit=unit, model=fallback)
             if step and step.manual:
                 argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
         except (ExecutionError, OSError, ValueError) as exc:
@@ -1439,6 +1489,7 @@ class Runner:
                         outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
             self.folder.save_unit(unit)
             self.log(f"{unit['id']}: cannot start: {exc}")
+            self.event("turn.failed", history=False, unit=unit, status="failed", error=str(exc), cannot_start=True)
             first = spec.steps[0]
             self.set_cells({(r.key, first): pc.FAILED for r in cells_rows}, only_if={(r.key, first): {pc.TODO} for r in cells_rows})
             self.after_failure(spec.rows, first)
@@ -1510,6 +1561,7 @@ class Runner:
                 unit.update(status="failed", error=str(exc), finished=now_iso(),
                             outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
                 self.folder.save_unit(unit)
+                self.event("turn.failed", history=False, unit=unit, status="failed", error=str(exc), cannot_start=True)
                 first = spec.steps[0]
                 self.set_cells({(r.key, first): pc.FAILED for r in cells_rows})
                 self.after_failure(spec.rows, first)
@@ -1520,6 +1572,10 @@ class Runner:
         self.set_cells({(r.key, first): pc.RUNNING for r in cells_rows}, only_if={(r.key, first): {pc.TODO} for r in cells_rows})
         self.live[unit["id"]] = Live(unit=unit, process=process)
         self.log(f"{unit['id']}: started pid {process.pid}: {' '.join(argv)}")
+        attempt = int(unit.get("attempt_number") or 1)
+        if attempt > 1:
+            self.event("turn.retrying", history=False, unit=unit, attempt=attempt, retry_of=unit.get("retry_of"))
+        self.event("turn.started", history=False, unit=unit, steps=list(spec.steps), attempt=attempt)
         return 1
 
     def _workdir_path(self, spec: UnitSpec) -> str | None:
@@ -1561,17 +1617,23 @@ class Runner:
             return False
         review, approval = exit_path.with_suffix(".review.json"), exit_path.with_suffix(".approval.json")
         rejection = exit_path.with_suffix(".rejection.json")
+        # agent_metadata may have set review_status already; review_event marks the decision's event as sent.
         if approval.exists():
-            if unit.get("review_status") != "approved":
-                unit.update(review_status="approved")
+            if not unit.get("review_event"):
+                history = unit.get("review_status") != "approved"
+                unit.update(review_status="approved", review_event=True)
                 self.folder.save_unit(unit)
-                self.event(f"review approved: {unit['id']}")
+                self.event("review.approved", f"review approved: {unit['id']}", history=history, unit=unit)
             return False
         if rejection.exists():
             decision = _read_json(rejection, {}) or {}
             live.reason = "rejected in review" + (f": {decision['reason']}" if decision.get("reason") else "")
-            unit.update(review_status="rejected", outcome="rejected", outcome_reason=decision.get("reason") or "rejected in review")
+            sent = unit.get("review_event")
+            unit.update(review_status="rejected", outcome="rejected", outcome_reason=decision.get("reason") or "rejected in review",
+                        review_event=True)
             self.folder.save_unit(unit)
+            if not sent:
+                self.event("review.rejected", history=False, unit=unit, reason=decision.get("reason"))
             return False
         try:
             step = self.cfg.step(unit["steps"][0])
@@ -1592,8 +1654,30 @@ class Runner:
             _write_json(review, {"status": "pending", "hash": sha256(text)})
             unit.update(review_status="pending", human_review=True)
             self.folder.save_unit(unit)
-            self.event(f"awaiting human review: {unit['id']}")
+            self.event("review.pending", f"awaiting human review: {unit['id']}", unit=unit)
         return True
+
+    def _check_idle(self, live: Live) -> None:
+        """Report each quiet period once, re-arming when any activity file changes."""
+        unit = live.unit
+        idle_after = self.cfg.settings["idle_after"]
+        if not idle_after or unit.get("manual") or unit.get("review_status") == "pending" or live.killed_at:
+            return
+        log = self.folder.root / unit["log"]
+        activity = []
+        for path in (log, log.with_suffix(".events.jsonl"), log.with_suffix(".usage.jsonl")):
+            try:
+                activity.append(path.stat().st_mtime)
+            except OSError:
+                pass  # streams may not exist yet or may have been removed
+        started = _parse_stamp(unit.get("started"))
+        latest = max(activity) if activity else started.timestamp() if started else live.started
+        if live.idle_activity is not None and latest > live.idle_activity:
+            live.idle_activity = None
+        quiet_for = max(0.0, time.time() - latest)
+        if quiet_for > idle_after and live.idle_activity is None:
+            self.event("turn.idle", history=False, unit=unit, quiet_for=quiet_for)
+            live.idle_activity = latest
 
     def poll(self) -> None:
         for unit_id, live in list(self.live.items()):
@@ -1606,9 +1690,12 @@ class Runner:
                 started = _parse_stamp(live.unit.get("started"))
                 if started and (datetime.now() - started).total_seconds() > float(timeout):
                     self.kill(live, f"timed out after {float(timeout):.0f} s")
+                    self.event("limit.reached", f"{unit_id}: timed out after {float(timeout):.0f} s", history=False,
+                               unit=live.unit, limit="timeout", seconds=float(timeout))
             if alive and live.killed_at and time.time() - live.killed_at > float(self.plan.get("kill_grace") or 30):
                 self._signal(live, signal.SIGKILL)
             if alive:
+                self._check_idle(live)
                 if len(live.unit["steps"]) > 1 and time.time() - live.last_progress > 10:
                     live.last_progress = time.time()
                     self.progress(live)
@@ -1714,7 +1801,7 @@ class Runner:
                 self.live[unit["id"]] = live
                 running_rows.update(unit.get("rows") or [unit.get("row")])
                 self.log(f"{unit['id']}: re-adopted pid {unit.get('pid')}")
-                self.event(f"re-adopted {unit['id']}")
+                self.event("turn.started", f"re-adopted {unit['id']}", unit=unit, readopted=True)
             else:
                 self.finalize(unit, process=None, reason="cancelled" if self.folder.control() == "cancel" else None, adopted=True)
         # Cells left "running" by a runner that died before writing a unit.
@@ -1767,7 +1854,8 @@ class Runner:
             try:
                 unit["artifact"] = publish(self.folder.root, unit["handoff"], plan_id=self.folder.id,
                                            unit_id=unit["id"], iteration=unit["iteration"], agent=unit["agent"])
-                self.event(f"handoff published: {unit['id']} → {unit['artifact']['path']}")
+                self.event("handoff.published", f"handoff published: {unit['id']} → {unit['artifact']['path']}",
+                           unit=unit, path=unit["artifact"]["path"])
                 outcome = ("accepted", None)
             except ResponseValidationError as exc:
                 reason = f"invalid handoff: {exc}"
@@ -1858,13 +1946,16 @@ class Runner:
                 if blocked:
                     self.set_cells(blocked, only_if={k: {pc.BLOCKED} for k in blocked})
                 failed_step = None
-                self.event(f"{unit['id']}: failed on its model; next attempt uses a fallback model")
+                self.event("turn.fallback_model", f"{unit['id']}: failed on its model; next attempt uses a fallback model",
+                           unit=unit, next_attempt=True)
         if isinstance(exit_data, dict) and isinstance(exit_data.get("usage"), dict):
             unit["usage"] = exit_data["usage"]  # peak memory, CPU s, cores, I/O, wall (alfrd.runtime.usage)
         if adopted:
             unit["note"] = "finalized after a runner restart"
         self.folder.save_unit(unit)
         self.log(f"{unit['id']}: {status} (exit {exit_code})")
+        self.event("turn.failed" if status == "failed" else "turn.finished", history=False, unit=unit, status=status,
+                   exit_code=exit_code, error=error, outcome=unit.get("outcome"), adopted=adopted)
         if status == "failed" and failed_step:
             rows = [r for r in (self.table().row(k) for k in unit.get("rows") or [unit["row"]]) if r]
             self.after_failure(rows, failed_step)
@@ -1897,7 +1988,7 @@ class Runner:
         policy = self.plan.get("on_failure") or "stop_target"
         if policy == "stop_plan":
             self.stop_new = True
-            self.event(f"stopping the plan after {step} failed")
+            self.event("turn.failed", f"stopping the plan after {step} failed", step=step, stop_plan=True)
             return
         if policy != "stop_target":
             return
@@ -1964,7 +2055,8 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
         runner.adopt()  # stale "running" cells → interrupted
         status = "paused" if plan.get("status") == "paused" or action == "pause" else "interrupted"
         runner.save_plan(status=status, counts=runner.counts())
-        runner.event(f"runner not running; plan marked {status}")
+        runner.event("plan.interrupted", f"runner not running; plan marked {status}", status=status,
+                     **({"paused": True} if status == "paused" else {}))
         actions.append({"plan": plan["id"], "action": status})
     return actions
 

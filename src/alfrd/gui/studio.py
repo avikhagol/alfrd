@@ -144,6 +144,28 @@ def _project_root(project_name: str) -> Path:
     return root
 
 
+def _sync_project_name(project_name: str, root: Path) -> str | None:
+    """Copy alfrd.yaml's ``name``/``description`` to the runtime row (identifier unchanged); the synced name."""
+    import yaml
+
+    from alfrd.gui.routes import _SAFE_PROJECT_NAME
+    from alfrd.manifest_default import local_manifest
+    from alfrd.runtime import RuntimeNotFound
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    path = local_manifest(root)
+    if service is None or path is None:
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        name, description = data.get("name"), data.get("description")
+        if not isinstance(name, str) or _SAFE_PROJECT_NAME.fullmatch(name) is None:
+            return None
+        return service.sync_project_manifest(project_name, name, description if isinstance(description, str) else None).name
+    except (OSError, UnicodeError, yaml.YAMLError, AttributeError, RuntimeNotFound, ValueError):
+        return None
+
+
 def _json_error(error: Exception, status: int, **extra):
     """``{"error": {"code", "message", **extra}}``; e.g. ``reason="permission"`` tells
     a filesystem 403 apart from the session/CSRF 403s raised by ``require_local_csrf``."""
@@ -155,6 +177,47 @@ def avica_layout(project_name: str):
     from alfrd.avica_layout import scan_layout
 
     return jsonify(scan_layout(_project_root(project_name)))
+
+
+@studio_api.get("/studio/avica/<project_name>/fits-files")
+def avica_fits_files(project_name: str):
+    """Suggest basenames from configured FITS storage, never a caller-supplied path."""
+    import os
+    import stat
+    from alfrd.avica_layout import resolve_config, resolve_dir
+    from alfrd.gui.security import require_local_csrf
+
+    if "dir" in request.args:
+        return _json_error(ValueError("dir is not supported; use folder_for_fits"), 400)
+    root = _project_root(project_name).resolve()
+    try:
+        value = resolve_config(root).get("folder_for_fits")
+        if value is None:
+            return jsonify(files=[], truncated=False, note="folder_for_fits is unset")
+        if "$" in str(value):
+            return jsonify(files=[], truncated=False, note="folder_for_fits contains an unresolved variable")
+        folder = (resolve_dir(root, value) or root).resolve()
+        if not folder.is_relative_to(root):
+            require_local_csrf()
+        if not stat.S_ISDIR(folder.stat().st_mode):
+            raise FileNotFoundError(f"FITS folder {folder} not found")
+        files = set()
+        def fail(error):
+            raise error
+        for directory, dirs, names in os.walk(folder, followlinks=False, onerror=fail):
+            depth = len(Path(directory).relative_to(folder).parts)
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".")) if depth < 3 else []
+            for name in sorted(names):
+                lower = name.lower()
+                if not name.startswith(".") and (lower.endswith("fits") or ".idi" in lower):
+                    files.add(name)
+                    if len(files) > 2000:
+                        return jsonify(files=sorted(files)[:2000], truncated=True)
+        return jsonify(files=sorted(files), truncated=False)
+    except PermissionError as error:
+        return _json_error(error, 403)
+    except FileNotFoundError as error:
+        return _json_error(error, 404)
 
 
 @studio_api.post("/studio/avica/<project_name>/summary")
@@ -218,10 +281,13 @@ def project_scan(project_name: str):
         hub = live_hub()
         if hub is not None:
             live_state = hub.touch(project_name)  # the version this scan is at least as new as
+    root = _project_root(project_name)
     try:
-        data = collect_studio_files(_project_root(project_name), log_tail=0, only=only)
+        data = collect_studio_files(root, log_tail=0, only=only)
     except FileNotFoundError as error:
         return _json_error(error, 404)
+    if only is None:
+        data["project_name"] = _sync_project_name(project_name, root)
     if live_state:
         data["live"] = {"epoch": live_state["epoch"], "version": live_state["version"]}
     return jsonify(data)
@@ -417,7 +483,7 @@ def project_manifest_save(project_name: str):
     except Exception as error:  # yaml errors, missing name, OS errors
         return _json_error(error, 400)
     _poke(project_name)
-    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
+    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, project_name=_sync_project_name(project_name, root), hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
 
 
 @studio_api.get("/studio/projects/<project_name>/quickstart")
@@ -524,7 +590,12 @@ def _project_active_jobs(row, active_run_ids=()) -> list[dict]:
     return jobs
 
 
-def _removal_preview(service, project_name: str) -> dict:
+def _removal_preview(service, project_name: str, *, scope: bool = True, measure: bool = False) -> dict:
+    """Counts, active jobs and permission for removing a project.
+
+    ``scope=False`` skips the folder inspection (Forget and Delete only need the
+    permission checks); ``measure=True`` also walks the folder for its size.
+    """
     from alfrd.gui.security import mutations_enabled
 
     row = service.get_project_by_selector(project_name)
@@ -534,12 +605,11 @@ def _removal_preview(service, project_name: str) -> dict:
     reason = None if writable else REMOVAL_READONLY_REASON
     if writable and active:
         reason = REMOVAL_ACTIVE_REASON
-    scope = _delete_scope(service, row)
     return {
         "identifier": row.identifier, "name": row.name, "root_path": row.root_path,
         "counts": counts, "active_jobs": active, "active_job_count": len(active),
-        "can_remove": reason is None, "reason": reason,
-        "mutations_enabled": writable, "delete_scope": scope, "delete_reason": None,
+        "can_remove": reason is None, "reason": reason, "mutations_enabled": writable,
+        "delete_scope": _delete_scope(service, row, measure=measure) if scope else None, "delete_reason": None,
     }
 
 
@@ -590,18 +660,39 @@ def _alfrd_files(root: Path, database: Path | None) -> list[Path]:
     return sorted(found)
 
 
-def _delete_scope(service, row) -> dict:
+def _measure_folder(root: Path) -> dict:
+    """File count and total size of a folder (symlinks not followed), capped at ``DELETE_FILE_CAP`` files."""
+    import os
+
+    out = {"files": 0, "bytes": 0, "truncated": False}
+    for folder, _dirs, files in os.walk(root, followlinks=False):
+        for name in files:
+            out["files"] += 1
+            try:
+                out["bytes"] += (Path(folder) / name).lstat().st_size
+            except OSError:
+                pass
+        if out["files"] >= DELETE_FILE_CAP:
+            out["truncated"] = True
+            break
+    return out
+
+
+def _delete_scope(service, row, *, measure: bool = False) -> dict:
     """What Delete would remove, in both modes.
 
     Default: ALFRD's files (``alfrd_files``) and the database entry; the folder and its
     other files stay. ``all_files``: the whole folder, refused for a symlinked folder, a
     top-level folder, the home folder or one containing it, the folder holding the
     runtime database, and a folder containing another registered project.
-    """
-    import os
 
+    The folder's size (``files``/``bytes``/``truncated``) needs a full walk, so when the
+    whole folder may be deleted it is filled in only with ``measure=True``; without it
+    those are None and ``measured`` is False.
+    """
     out = {"path": row.root_path, "exists": False, "alfrd_files": [], "files": 0, "bytes": 0, "truncated": False,
-           "git_repository": False, "allowed": True, "all_files_allowed": False, "all_files_reason": None}
+           "measured": True, "git_repository": False, "allowed": True, "all_files_allowed": False,
+           "all_files_reason": None}
     if not row.root_path:
         out["all_files_reason"] = "This project has no folder on record."
         return out
@@ -637,16 +728,10 @@ def _delete_scope(service, row) -> dict:
     out["all_files_allowed"] = reason is None
     if reason is None:
         out["git_repository"] = (root / ".git").exists()
-        for folder, _dirs, files in os.walk(root, followlinks=False):
-            for name in files:
-                out["files"] += 1
-                try:
-                    out["bytes"] += (Path(folder) / name).lstat().st_size
-                except OSError:
-                    pass
-            if out["files"] >= DELETE_FILE_CAP:
-                out["truncated"] = True
-                break
+        if measure:
+            out.update(_measure_folder(root))
+        else:
+            out.update(files=None, bytes=None, truncated=None, measured=False)
     return out
 
 
@@ -675,10 +760,31 @@ def project_removal_preview(project_name: str):
     service = current_app.config.get("RUNTIME_SERVICE")
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
+    measure = request.args.get("size", "").lower() in ("1", "true", "yes")
     try:
-        return jsonify(_removal_preview(service, project_name))
+        return jsonify(_removal_preview(service, project_name, measure=measure))
     except RuntimeNotFound as error:
         return _json_error(error, 404)
+
+
+@studio_api.get("/studio/projects/<project_name>/removal-size")
+def project_removal_size(project_name: str):
+    """Size of the project folder for "Delete all files and folders" (read-only; walks the folder).
+
+    Only measured when deleting the whole folder is allowed; ``measured`` is False otherwise.
+    """
+    from alfrd.runtime import RuntimeNotFound
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(RuntimeError("no runtime database"), 404)
+    try:
+        row = service.get_project_by_selector(project_name)
+    except RuntimeNotFound as error:
+        return _json_error(error, 404)
+    scope = _delete_scope(service, row, measure=True)
+    return jsonify({k: scope[k] for k in ("path", "exists", "files", "bytes", "truncated", "measured",
+                                          "git_repository", "all_files_allowed")})
 
 
 @studio_api.post("/studio/projects/<project_name>/delete")
@@ -697,7 +803,7 @@ def project_delete(project_name: str):
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
     try:
-        preview = _removal_preview(service, project_name)
+        preview = _removal_preview(service, project_name, scope=False)
         row = service.get_project_by_selector(project_name)
     except RuntimeNotFound as error:
         return _json_error(error, 404)
@@ -709,7 +815,7 @@ def project_delete(project_name: str):
     if payload.get("confirm") != row.name:
         return _json_error(ValueError("Type the project name exactly to confirm deletion."), 400)
     all_files = payload.get("all_files") is True
-    scope = _delete_scope(service, row)
+    scope = _delete_scope(service, row, measure=all_files)  # the only walk: for the reported size
     if all_files and not scope["all_files_allowed"]:
         return _json_error(PermissionError(scope["all_files_reason"]), 409)
     root = Path(scope["path"]) if scope["path"] else None
@@ -765,7 +871,7 @@ def project_forget(project_name: str):
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
     try:
-        preview = _removal_preview(service, project_name)
+        preview = _removal_preview(service, project_name, scope=False)
         if not preview["mutations_enabled"]:
             return _json_error(PermissionError(REMOVAL_READONLY_REASON), 403)
         if preview["active_jobs"]:

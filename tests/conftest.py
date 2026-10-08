@@ -42,6 +42,40 @@ def isolated_alfrd_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """`alfrd serve` writes its token file under the config dir: never the real one."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    # setenv first so teardown restores the original state even when
+    # `alfrd serve --debug` exports these into os.environ during a test.
+    for name in ("ALFRD_TOKEN", "ALFRD_SECRET_KEY"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
+def authenticated_test_client(monkeypatch: pytest.MonkeyPatch):
+    """`app.test_client()` sends the app's access token as a Bearer header.
+
+    Tests of the unauthenticated behaviour build ``flask.testing.FlaskClient(app)``
+    directly (see tests/test_access_tokens.py).
+    """
+    try:
+        from flask import Flask
+        from flask.testing import FlaskClient
+    except ImportError:  # the gui extra is optional
+        return
+
+    class AuthenticatedClient(FlaskClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            token = self.application.config.get("ACCESS_TOKEN")
+            if token:
+                self.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+
+    monkeypatch.setattr(Flask, "test_client_class", AuthenticatedClient)
+
+
+@pytest.fixture(autouse=True)
 def no_real_web_server(monkeypatch: pytest.MonkeyPatch):
     """`alfrd serve` in tests: the (fake) app's run() stands in for waitress, which would block."""
     monkeypatch.setattr("alfrd.cli._serve_production",

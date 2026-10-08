@@ -62,7 +62,7 @@ LAZY_MODULES = {
     "js/components/palette.js", "js/data/fuzzy.js", "js/components/usage_view.js",
     "js/components/search_view.js", "js/components/notes_panel.js", "js/data/entities.js",
     "js/components/panels.js", "js/components/metadata_avica.js",
-    "js/components/removal_dialog.js",
+    "js/components/removal_dialog.js", "js/components/file_autocomplete.js",
     "js/data/run_grid.js", "js/components/jobs_tray.js",
     "js/components/folder_create.js", "js/components/settings_dialog.js", "js/utils/keep_view.js",
     "js/data/run_history.js",
@@ -101,7 +101,12 @@ def test_startup_payload_under_178kb_compressed():
     # PM approved 177 KiB (181,248 bytes); measured startup was 180,249 bytes.
     # 0.2.2: agent sequences, multi-line YAML strings and the Set up entry points: 178 KiB
     # (182,272 bytes); measured 181,815.
-    assert total < 178 * 1024, f"{total} bytes gzip"
+    # UI batch T4/T5 (Settings template preview, Re-scan of the opened project only): 179 KiB
+    # (183,296 bytes); measured 182,621. PM approved (t004-claude, 2026-10-07).
+    # T9 Open vs Create (Open project… button, folder browser Open / Create project here /
+    # Open instead) and T8 name sync: PM approved 180 KiB (184,320 bytes); measured 183,629
+    # (t004-claude, 2026-10-07; also closes the T4/T5 179 KiB step).
+    assert total < 180 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_payload_under_106kb_compressed():
@@ -125,7 +130,12 @@ def test_lazy_payload_under_106kb_compressed():
     # Setup fields inline in Settings → Settings fields: 106 KiB (108,544 bytes); measured 107,609.
     # Settings → All settings (form), every alfrd.yaml key as a field (yaml_form.js x2, ~6.7 KiB):
     # 113 KiB (115,712 bytes); measured 114,184 (Settings fields and inline setup forms removed).
-    assert total < 113 * 1024, f"{total} bytes gzip"
+    # UI batch T2/T3 (removal dialog opens at once, size loads after, styled delete-all warning)
+    # and the template draft helper: 114 KiB (116,736 bytes); measured 116,217.
+    # PM approved (t004-claude, 2026-10-07).
+    # T9 Open vs Create (Open project dialog, Create's 409 → Open it instead, Settings button):
+    # PM approved 115 KiB (117,760 bytes); measured 117,188 (t004-claude, 2026-10-07).
+    assert total < 115 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

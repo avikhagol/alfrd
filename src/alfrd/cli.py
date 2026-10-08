@@ -1,12 +1,14 @@
 from alfrd.agent_loop import DEFAULT_ITERATIONS, MAX_ITERATIONS
 from pathlib import Path
 import os
+import secrets
 import shutil
 import subprocess
 import sys
 import webbrowser
 import ipaddress
 import threading
+from urllib.parse import urlencode
 from typing import Optional, Annotated
 
 import typer
@@ -259,8 +261,12 @@ def _serve_production(app, host: str, port: int) -> None:
           connection_limit=200, asyncore_use_poll=True, ident="alfrd", _quiet=True)
 
 
-def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
-    """Open once the local HTTP server responds; stop if serving exits early."""
+def _open_dashboard_when_ready(url: str, stopped: threading.Event, probe_url: str | None = None) -> None:
+    """Open ``url`` once the local HTTP server responds; stop if serving exits early.
+
+    ``probe_url`` is the readiness check (the public ``/api/health``), so the
+    access token in ``url`` is not spent on a probe.
+    """
     from urllib.error import URLError
     from urllib.request import ProxyHandler, build_opener
 
@@ -269,7 +275,7 @@ def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
         if stopped.wait(0.1):
             return
         try:
-            with opener.open(url, timeout=0.25) as response:
+            with opener.open(probe_url or url, timeout=0.25) as response:
                 ready = response.status == 200
         except (OSError, URLError):
             continue
@@ -356,7 +362,8 @@ def _startup_folder(project: str | None) -> Path:
 
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
-               live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2) -> None:
+               live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2,
+               token: str | None = None, no_token: bool = False) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -372,6 +379,12 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         loopback = host.lower() == "localhost"
     if debug and not loopback:
         raise typer.BadParameter("Debug mode is only available on a loopback interface.")
+    if no_token and not loopback:
+        raise typer.BadParameter("--no-token is only available on a loopback interface.")
+    if no_token:
+        typer.echo("Warning: --no-token disables access-token protection; any local user can access this server.", err=True)
+    elif not loopback:
+        typer.echo("Warning: without TLS, the access token travels in clear text. Use an HTTPS reverse proxy or ssh -L.", err=True)
     database = Path(runtime_db).expanduser().resolve() if runtime_db else _default_runtime_db().resolve()
     service = _runtime_service(str(database))
     config = {
@@ -408,19 +421,39 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         print(f"Also remembered in {database}: {', '.join(others)} (show them with --all-projects; remove with `alfrd projects forget NAME`).")
     elif not scope and others:
         print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
+    from alfrd.gui import auth
+
+    # One token and session secret per server. Under --debug the reloader
+    # re-runs this function in a child process: the environment carries both
+    # over, so the printed link and the cookies stay valid.
+    token = token or os.environ.get("ALFRD_TOKEN") or auth.new_token()
+    secret_key = os.environ.get("ALFRD_SECRET_KEY") or secrets.token_hex(32)
+    if debug:
+        os.environ["ALFRD_TOKEN"] = token
+        os.environ["ALFRD_SECRET_KEY"] = secret_key
+    config["ACCESS_TOKEN"] = token
+    config["ACCESS_TOKEN_REQUIRED"] = not no_token
+    config["SECRET_KEY"] = secret_key
+    # Cookies ignore the port: two servers on one host need different names.
+    config["SESSION_COOKIE_NAME"] = f"alfrd-session-{port}"
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     authority = f"[{browser_host}]" if ":" in browser_host else browser_host
-    url = f"http://{authority}:{port}/studio/"
+    base = f"http://{authority}:{port}"
+    query = "" if no_token else "?" + urlencode({"token": token})
+    url = f"{base}/studio/{query}"
     print(f"ALFRD Studio: {url}")
-    print(f"ALFRD dashboard: http://{authority}:{port}/dashboard/")
+    print(f"ALFRD dashboard: {base}/dashboard/{query}")
     app = create_app(config)
+    # Only the process that serves writes the token file (not the reloader parent).
+    serving = not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    if serving:
+        auth.write_server_file(port, f"{base}/studio/", None if no_token else token, secret_key)
     _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
     browser_thread = None
-    if (not no_browser and (loopback or host in {"0.0.0.0", "::"})
-            and (not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true")):
+    if not no_browser and (loopback or host in {"0.0.0.0", "::"}) and serving:
         browser_thread = threading.Thread(
-            target=_open_dashboard_when_ready, args=(url, stopped), daemon=True,
+            target=_open_dashboard_when_ready, args=(url, stopped, f"{base}/api/health"), daemon=True,
         )
         browser_thread.start()
     try:
@@ -446,6 +479,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         stopped.set()
         if browser_thread is not None:
             browser_thread.join(timeout=1)
+        if serving:
+            auth.remove_server_file(port)
 
 
 def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
@@ -496,11 +531,13 @@ def serve(
     discover_depth: int = typer.Option(
         2, "--discover-depth", min=0, help="How many folder levels --discover searches below the start folder.",
     ),
+    token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
+    no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
 ):
     """Serve ALFRD Studio (default) and the dashboard, backed by the runtime database."""
 
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
-               discover=discover, discover_depth=discover_depth)
+               discover=discover, discover_depth=discover_depth, token=token, no_token=no_token)
 
 
 @alfrd_cli.command()
@@ -512,10 +549,25 @@ def gui(
         None, help="Path to the runtime SQLite database that backs matrix routes."
     ),
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the dashboard in a browser."),
+    token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
+    no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
 ):
     """Alias for ``alfrd serve``."""
 
-    _serve_web(host, port, debug, runtime_db, no_browser)
+    _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token)
+
+
+@alfrd_cli.command()
+def url(port: int = typer.Option(5000, min=1, max=65535, help="Port of the running server.")):
+    """Print the access link for a running alfrd serve."""
+    from alfrd.gui.auth import read_server_file
+
+    data = read_server_file(port)
+    if not data or not isinstance(data.get("url"), str) or not data["url"]:
+        typer.echo(f"No alfrd serve found on port {port}", err=True)
+        raise typer.Exit(1)
+    token = data.get("token")
+    typer.echo(data["url"] + ("?" + urlencode({"token": token}) if token else ""))
 
 
 def _studio_handler(directory: Path):

@@ -193,7 +193,7 @@ async function act(ctx, st, action, run, path) {
   if (action === "image") return lightbox(ctx, st, run, path);
   let text;
   try {
-    const res = await fetch(url(st, run, path), { credentials: "same-origin" });
+    const res = await server.request(url(st, run, path));
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     text = await res.text();
   } catch (error) { ctx.toast(error.message, "fail"); return; }

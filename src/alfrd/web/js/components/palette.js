@@ -61,7 +61,8 @@ function builtIns(ctx) {
     if (ctx.state.mode === "server") add("action", { label: "Search file contents…", detail: "action · logs, CSVs, alfrd.yaml, notes (or start with ?)", icon: "search", key: "search", run: () => ctx.openSearch("") });
     if (ctx.state.mode === "server") add("action", { label: "alfrd.yaml history", detail: "action · versions, diff, restore", icon: "clock", run: () => ctx.openHistory(p) });
   }
-  add("action", { label: "Re-scan", detail: "action · re-read the project folder", icon: "sync", run: () => ctx.rescan() });
+  add("action", { label: "Re-scan", detail: ctx.state.mode === "server" && ctx.activeProject?.() ? `action · re-read ${ctx.projectName(ctx.activeProject())} only` : "action · re-read the project folder", icon: "sync", run: () => ctx.rescan() });
+  if (ctx.state.mode === "server") add("action", { label: "Reload all projects", detail: "action · re-read every project in scope", icon: "sync", run: () => ctx.reloadAll() });
   add("action", { label: ctx.state.prefs.live !== false ? "Turn live updates off" : "Turn live updates on", detail: "action", icon: "power", key: "live",
     run: () => ctx.setLive(ctx.state.prefs.live === false) });
   add("action", { label: "Settings", detail: "action · project settings (alfrd.yaml)", icon: "gear", run: () => ctx.goTo("config") });
