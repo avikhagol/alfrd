@@ -909,6 +909,10 @@ select { text-overflow: ellipsis; }
 /* Setup and recovery share a quiet, accessible layout. */
 .setup-card { margin: var(--s-3); padding: var(--s-5); }
 .setup-card h2 { margin: 0 0 var(--s-2); font-size: 18px; }
+.setup-head { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-2); }
+.setup-head h2 { margin: 0; }
+.setup-card.folded { padding-block: var(--s-3); }
+.setup-card.folded .setup-head { margin-bottom: 0; }
 .setup-list { list-style: none; padding: 0; display: grid; gap: var(--s-3); }
 .setup-list li { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
 .tab-error { margin: var(--s-3); gap: var(--s-2); }
