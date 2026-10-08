@@ -85,18 +85,18 @@ class EventLog:
         """Write ``record`` with the next ``seq``; returns that seq."""
         seq = self.last_seq() + 1
         line = json.dumps({"seq": seq, **{k: v for k, v in record.items() if k != "seq"}},
-                          ensure_ascii=False, default=str)
+                          ensure_ascii=False, default=str).encode("utf-8") + b"\n"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             size = self.path.stat().st_size
         except OSError:
             size = 0
-        if size and size + len(line) + 1 > self.max_bytes:
+        if size and size + len(line) > self.max_bytes:
             os.replace(self.path, self.rotated)
         with open(self.path, "ab") as fh:
             if fh.tell() and not self._ends_with_newline():
                 fh.write(b"\n")  # close a torn line so this record parses on its own
-            fh.write(line.encode("utf-8") + b"\n")
+            fh.write(line)
             fh.flush()
         return seq
 

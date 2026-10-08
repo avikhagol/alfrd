@@ -1026,3 +1026,11 @@ select:disabled, select:not(.picker select, .select-wrap select):disabled, selec
   select:focus-visible, .picker:focus-within, .select-wrap:focus-within { outline-color: Highlight; }
   select:disabled { color: GrayText; border-color: GrayText; }
 }
+
+.run-switch { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s-2); margin-bottom:var(--s-2); }
+.run-switch-list { display:flex; flex-wrap:wrap; gap:var(--s-2); list-style:none; padding:0; margin:0; }
+.run-chip { cursor:pointer; max-width:100%; white-space:normal; text-align:left; }
+.run-chip:hover { border-color:var(--border-strong); }
+.run-chip[aria-current="true"] { background:var(--accent-bg); border-color:var(--accent-border); color:var(--accent-text); }
+
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }

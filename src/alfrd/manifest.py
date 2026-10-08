@@ -181,8 +181,14 @@ def validate_manifest(data: Mapping[str, Any]) -> None:
     if version != MANIFEST_VERSION:
         raise ManifestError(f"Unsupported manifest version: {version!r}")
 
+    data = dict(data)
+    notify = data.get("notify")
+    if isinstance(notify, Mapping) and isinstance(notify.get("routes"), list):
+        from alfrd.notify import yaml_on_key
+
+        data["notify"] = {**notify, "routes": [yaml_on_key(r) for r in notify["routes"]]}
     errors = sorted(
-        Draft202012Validator(get_manifest_schema(version)).iter_errors(dict(data)),
+        Draft202012Validator(get_manifest_schema(version)).iter_errors(data),
         key=lambda error: tuple(str(part) for part in error.absolute_path),
     )
     if errors:

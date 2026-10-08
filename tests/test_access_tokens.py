@@ -163,6 +163,14 @@ def test_cookie_is_secure_over_https(app):
     assert "Secure" in response.headers["Set-Cookie"]
 
 
+@pytest.mark.parametrize("trust", ["", "1"])
+def test_forwarded_https_only_counts_with_trust_proxy(tmp_path, monkeypatch, trust):
+    monkeypatch.setenv("ALFRD_TRUST_PROXY", trust)
+    response = anon(_app(tmp_path)).get(f"/studio/?token={TOKEN}", headers={"X-Forwarded-Proto": "https"})
+    assert response.status_code == 302
+    assert ("Secure" in response.headers["Set-Cookie"]) == bool(trust)
+
+
 def test_wrong_token_in_url_is_401(app):
     client = anon(app)
     response = client.get("/studio/?token=wrong", headers={"Accept": "text/html"})
@@ -228,6 +236,21 @@ def test_throttle_window_clears(tmp_path):
 
     time.sleep(0.1)
     assert client.get("/api/studio/session", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
+
+
+def test_throttle_memory_is_bounded(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(auth.time, "monotonic", lambda: clock[0])
+    throttle = auth._Throttle(max_addresses=100)
+    for i in range(1000):
+        throttle.fail(f"10.0.{i // 256}.{i % 256}", 60)
+    assert len(throttle.failures) == 100 and "10.0.3.231" in throttle.failures  # the newest are kept
+    for _ in range(10):
+        throttle.fail("10.0.3.231", 60)
+    assert throttle.retry_after("10.0.3.231", 10, 60) > 0  # still throttled after the others were dropped
+    clock[0] += 61
+    throttle.fail("192.0.2.1", 60)
+    assert list(throttle.failures) == ["192.0.2.1"]  # entries older than the window are pruned
 
 
 def test_requests_without_a_token_are_not_counted(app):

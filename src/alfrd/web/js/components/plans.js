@@ -53,6 +53,31 @@ export const RUN_MODE = { step: "One step at a time (all targets)", target: "One
 export const RUN_FAILURE = { stop_target: "Stop that target, continue others", continue: "Keep going", stop_plan: "Stop the whole run" };
 export const RUN_STATUS = { running: "Running", paused: "Needs attention", finished: "Done", failed: "Failed", cancelled: "Skipped", interrupted: "Needs attention" };
 export const RUN_PHASE = { done: "Done", failed: "Failed", running: "Running", awaiting_response: "Needs attention", awaiting_review: "Needs attention", ready: "Queued" };
+export const ACTIVITY_PHASE = {
+  running: { label: "Running", tone: "run", icon: "sync" },
+  review: { label: "Review pending", tone: "warn", icon: "eye" },
+  manual: { label: "Needs response", tone: "warn", icon: "edit" },
+  scheduled: { label: "Scheduled", tone: "muted", icon: "clock" },
+  waiting: { label: "Waiting", tone: "muted", icon: "clock" },
+  paused: { label: "Paused", tone: "muted", icon: "pause" },
+};
+const isActive = (p) => ["running", "paused"].includes(p?.status);
+export function phaseLabel(p, now = new Date()) {
+  const label = ACTIVITY_PHASE[p.phase]?.label || RUN_STATUS[p.status] || p.status;
+  if (p.phase !== "scheduled" || !p.start_at) return label;
+  const d = new Date(p.start_at);
+  if (!Number.isFinite(d.getTime())) return label;
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${label} ${d.toDateString() === now.toDateString() ? "" : d.toLocaleDateString("en", { month: "short", day: "numeric" }) + " "}${time}`;
+}
+export function runSwitcher(s) {
+  const runs = (s.plans || []).filter(isActive).sort((a, b) => Number(b.working) - Number(a.working) || String(b.created || b.id).localeCompare(String(a.created || a.id)));
+  if (runs.length < 2) return "";
+  return `<nav class="run-switch" aria-label="Active runs"><span class="small">${runs.length} active runs</span><ul class="run-switch-list" role="list">${runs.slice(0, 6).map((p) => {
+    const phase = ACTIVITY_PHASE[p.phase] || { tone: "muted", icon: "info" };
+    return `<li><button class="chip run-chip tone-${phase.tone}" data-plan-pick-id="${esc(p.id)}" ${p.id === s.plan?.id ? 'aria-current="true"' : ""}>${icon(p.id === s.plan?.id ? "check" : phase.icon)}<b>${esc(p.target || p.id)}</b> · ${esc(phaseLabel(p))}${p.turn ? ` · <span class="tabular">turn ${esc(p.turn)}/${esc(p.turns || "?")}</span>` : ""}</button></li>`;
+  }).join("")}${runs.length > 6 ? `<li><button class="chip" data-plan-more>+${runs.length - 6} more</button></li>` : ""}</ul></nav>`;
+}
 const PLAN_TONE = { running: "run", paused: "warn", finished: "ok", failed: "fail", cancelled: "muted", interrupted: "warn" };
 
 
@@ -103,16 +128,30 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
   usageCtx = ctx;
   const entry = cache.get(project) || {};
   // Explicit run selection wins over in-flight reads.
-  if (id && entry.status?.plan?.id !== id) { entry.want = id; entry.status = null; entry.error = null; }
+  if (id && entry.pinned !== id) { entry.pinned = id; entry.pinActive = false; }
+  if (id && (entry.loading || entry.status?.plan?.id !== id)) { entry.want = id; entry.status = null; entry.error = null; }
   cache.set(project, entry);
-  if (entry.loading) return entry.status;
+  if (entry.loading) return new Promise((resolve) => (entry.waiters ||= []).push(resolve));
   const before = JSON.stringify([entry.status, entry.error]);
   entry.loading = true;
-  const asked = entry.want || id || entry.status?.plan?.id || null;
+  const asked = entry.want || entry.pinned || null;
   try {
     const status = await server.planStatus(project, asked);
     if (entry.want && status.plan?.id !== entry.want) throw Object.assign(new Error("stale"), { stale: asked !== entry.want, status: 404 });
     delete entry.want;
+    if (entry.pinned && entry.pinActive && !isActive(status.plan) && (status.plans || []).some((p) => p.id !== entry.pinned && p.working)) {
+      entry.releasedTarget = status.plan?.target || entry.pinned;
+      delete entry.pinned;
+      entry.pinActive = false;
+      entry.loading = false;
+      return await loadPlan(ctx, project, { quiet });
+    }
+    if (entry.pinned) entry.pinActive = isActive(status.plan);
+    if (entry.releasedTarget) {
+      const shown = (status.plans || []).find((p) => p.id === status.plan?.id) || status.plan;
+      ctx.toast?.(`Run ${entry.releasedTarget} finished, now showing ${shown?.target || shown?.id} (${phaseLabel(shown || {})})`, "info");
+      delete entry.releasedTarget;
+    }
     const run = status.plan?.id, key = `plan:${project}`;
     if (status.plan?.status === "failed") {
       // Only viewed failures raise a banner.
@@ -132,6 +171,7 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
     if (!error.stale) {
       entry.error = entry.want && error.status === 404 ? "This run is no longer available. Refresh run history." : error.message;
       delete entry.want;
+      if (error.status === 404 && asked === entry.pinned) { delete entry.pinned; entry.pinActive = false; }
       if (!quiet) ctx.log("warn", `Plans: ${error.message}`, "plan");
     }
   } finally {
@@ -140,6 +180,7 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
   if (entry.want) return loadPlan(ctx, project, { quiet });
   schedulePoll(ctx, project);
   if (before !== JSON.stringify([entry.status, entry.error])) ctx.update();
+  (entry.waiters || []).splice(0).forEach((resolve) => resolve(entry.status));
   return entry.status;
 }
 
@@ -148,7 +189,7 @@ function schedulePoll(ctx, project) {
   clearTimeout(pollTimers.get(project));
   pollTimers.delete(project);
   const s = planOf(project);
-  const busy = s?.plan && (s.plan.status === "running" || s.running?.length || s.runner?.alive);
+  const busy = s?.plan && (isActive(s.plan) || s.plans?.some(isActive) || s.running?.length || s.runner?.alive);
   if (!busy) return;
   const timer = setTimeout(() => {
     if (document.hidden) { schedulePoll(ctx, project); return; }
@@ -281,8 +322,9 @@ export function renderSchedule(box, ctx, project) {
   rememberSections(box);
   keepScroll(box, () => { box.innerHTML = `
     ${entry.error ? `<div class="callout fail" role="alert"><span>${esc(entry.error)}</span><button class="btn sm" data-plan="refresh">Retry</button><button class="btn sm" data-plan="dismiss-error">Dismiss</button></div>` : ""}
+    ${runSwitcher(s)}
     <div class="sched-h">
-      <select class="input sm" data-plan-pick aria-label="Run">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(x.start_at ? "Scheduled" : RUN_STATUS[x.status] || x.status)}</option>`).join("")}</select>
+      <select class="input sm" data-plan-pick aria-label="Run">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(phaseLabel(x) + (x.working ? " · working" : ""))}</option>`).join("")}</select>
       ${p.start_at ? "" : `<span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(RUN_STATUS[p.status] || p.status)}</span>`}
       ${p.start_at ? `<span class="badge tone-warn" title="The runner waits until then (alfrd plan start-now runs it at once)">${icon("clock")}Scheduled · starts ${esc(p.start_at.replace("T", " ").slice(0, 16))}</span>${canAct ? `<button class="btn sm primary" data-plan="start-now">${icon("play")} Run now</button>` : ""}` : ""}
       <div class="plan-bar" title="${pct}% of planned cells done"><i style="width:${pct}%"></i></div><span class="tabular small">${tot.done || 0}/${all}</span>
@@ -687,4 +729,26 @@ function loopElapsed(units) {
   if (!current?.started) return "not started";
   const seconds = Math.max(0, Math.floor(((current.finished ? Date.parse(current.finished) : Date.now()) - Date.parse(current.started)) / 1000));
   return Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed` : "";
+}
+
+
+export async function openLinkedRun(ctx, project, plan, unit = null) {
+  const status = await loadPlan(ctx, project, { id: plan });
+  if (ctx.state.selectedProject && ctx.state.selectedProject !== project) return;
+  if (status?.plan?.id !== plan) { ctx.toast?.("This run is no longer available. Refresh run history.", "warn"); return; }
+  if (!unit) return;
+  const item = status.units?.find((u) => u.id === unit);
+  if (!item) { ctx.toast?.("This turn is no longer available.", "warn"); return; }
+  if (item.handoff) {
+    const { openHandoffs } = await import("./agent_dialog.js");
+    await openHandoffs(ctx, project, plan, { unit });
+  } else if (item.log) await openLog(ctx, project, item.log);
+}
+
+export function releasePlanPin(project) {
+  const entry = cache.get(project);
+  if (!entry) return;
+  delete entry.pinned;
+  delete entry.want;
+  entry.pinActive = false;
 }

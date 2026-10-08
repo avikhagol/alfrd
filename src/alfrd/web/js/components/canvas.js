@@ -253,6 +253,8 @@ export function mount(el, ctx) {
     planAct(ctx, wfProject(ctx), b.dataset.plan, b, { only, onStarted: toSchedule });
   });
   on(el, "click", "td[data-cell]", (e, td) => cellMenu(ctx, wfProject(ctx), td));
+  on(el, "click", "[data-plan-pick-id]", (e, b) => loadPlan(ctx, wfProject(ctx), { id: b.dataset.planPickId }));
+  on(el, "click", "[data-plan-more]", () => $("[data-plan-pick]", el)?.focus());
   on(el, "change", "[data-plan-pick]", (e, sel) => loadPlan(ctx, wfProject(ctx), { id: sel.value }));
   on(el, "click", "[data-tab]", (e, b) => { ui.tab = b.dataset.tab; remember(); renderInspector(el, ctx); });
   on(el, "click", "[data-fold=inspector]", () => { ui.inspector = !ui.inspector; remember(); ctx.update(); requestAnimationFrame(() => drawViewport(el)); });

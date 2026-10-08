@@ -1169,7 +1169,8 @@ class Runner:
         })
         from alfrd.notify import start_for
 
-        self.notifier = start_for(self.folder.path, self.cfg.settings.get("notify_routes"), log=self.log)
+        self.notifier = start_for(self.folder.path, self.cfg.settings.get("notify_routes"), log=self.log,
+                                  root=self.folder.root)
         try:
             return self._main(stop)
         finally:
@@ -2061,14 +2062,64 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
     return actions
 
 
+def plan_activity(root: str | Path, plan: Mapping[str, Any]) -> dict[str, Any]:
+    """What an active plan is doing: ``working``, ``phase``, ``turn``, ``turns``, ``agent`` (reads its units).
+
+    Working = a running unit with a live process, a review pending, or a manual turn waiting for a person.
+    """
+    if plan.get("status") not in ACTIVE:
+        return {"working": False, "phase": plan.get("status"), "turn": None, "turns": None, "agent": None}
+    units = PlanDir(Path(root).resolve(), plan["id"]).units()
+    running = [u for u in units if u.get("status") == "running"]
+    review = [u for u in units if u.get("review_status") == "pending"]
+    manual = [u for u in running if u.get("manual")]
+    live = [u for u in running if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"))]
+    if review:
+        phase = "review"
+    elif manual:
+        phase = "manual"
+    elif live:
+        phase = "running"
+    elif plan.get("status") == "paused":
+        phase = "paused"
+    elif plan.get("start_at"):
+        phase = "scheduled"
+    else:
+        phase = "waiting"
+    current = (review or manual or live or running or [u for u in units if u.get("iteration")] or [{}])[-1]
+    return {"working": bool(review or manual or live), "phase": phase, "turn": current.get("iteration"),
+            "turns": (plan.get("loop") or {}).get("iterations"), "agent": current.get("agent")}
+
+
+def default_plan_id(root: str | Path, plans: Sequence[Mapping[str, Any]] | None = None,
+                    activity: Mapping[str, Mapping[str, Any]] | None = None) -> str | None:
+    """The run to show when none is chosen (D7).
+
+    The newest working plan (see :func:`plan_activity`), else the newest active plan that isn't
+    waiting for its start time, else the newest scheduled one, else the newest plan.
+    ``plans`` is :func:`list_plans` (newest first); ``activity`` caches :func:`plan_activity` by id.
+    """
+    plans = list_plans(root) if plans is None else plans
+    active = [p for p in plans if p.get("status") in ACTIVE]
+    for plan in active:
+        info = activity.get(plan["id"]) if activity is not None else None
+        if (info or plan_activity(root, plan))["working"]:
+            return plan["id"]
+    pick = (next((p for p in active if not p.get("start_at")), None) or next(iter(active), None)
+            or next(iter(plans), None))
+    return pick["id"] if pick else None
+
+
 def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 200) -> dict[str, Any]:
-    """Everything the CLI / Studio shows for one plan (default: the latest)."""
+    """Everything the CLI / Studio shows for one plan (default: :func:`default_plan_id`)."""
     base = Path(root).resolve()
     plans = list_plans(base)
+    activity = {p["id"]: plan_activity(base, p) for p in plans if p.get("status") in ACTIVE}
+    selected = "id" if plan_id is not None else "default"
     if plan_id is None:
         if not plans:
-            return {"plan": None, "plans": []}
-        plan_id = plans[0]["id"]
+            return {"plan": None, "plans": [], "selected": selected}
+        plan_id = default_plan_id(base, plans, activity)
     folder = PlanDir(base, plan_id)
     plan = folder.load()
     all_units = folder.units()
@@ -2104,8 +2155,20 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
                        [u for u in all_units if u.get("status") == "running"]),
         "durations": durations,
         "waiting": waiting,
-        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"), "target": p.get("target"), "targets": p.get("targets"), "start_at": p.get("start_at")} for p in plans[:20]],
+        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"),
+                   "target": p.get("target"), "targets": p.get("targets"), "start_at": p.get("start_at"),
+                   **(activity.get(p["id"]) or {"working": False, "phase": p.get("status"), "turn": None,
+                                                "turns": None, "agent": None})}
+                  for p in _listed(plans, plan_id)],
+        "selected": selected,
     }
+
+
+def _listed(plans: Sequence[Mapping[str, Any]], plan_id: str, limit: int = 20) -> list[Mapping[str, Any]]:
+    """The newest ``limit`` plans plus every active one and the shown one (so the switcher sees them all)."""
+    head = list(plans[:limit])
+    ids = {p["id"] for p in head}
+    return head + [p for p in plans[limit:] if p["id"] not in ids and (p.get("status") in ACTIVE or p["id"] == plan_id)]
 
 
 def waiting_rows(plan: Mapping[str, Any], table: pc.PlanTable, units: Sequence[Mapping[str, Any]],

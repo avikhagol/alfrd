@@ -93,9 +93,10 @@ export function createLive(hooks) {
     if (ev.type === "runtime") { hooks.onRuntime?.(); return; }
     if (prev && (prev.epoch !== ev.epoch || ev.version !== prev.version + 1)) {
       hooks.onResync?.(key); // missed some: re-read the project
-      return;
+      if (ev.type !== "alfrd") return;
     }
     live.lastChange = Date.now();
+    if (ev.type === "alfrd") { hooks.onAlfrd?.(key, ev.events || []); return; }
     if ((ev.changed || []).length || (ev.removed || []).length) hooks.onTree?.(key, { changed: ev.changed || [], removed: ev.removed || [] });
     if (ev.logs && Object.keys(ev.logs).length) hooks.onLogs?.(key, ev.logs);
   }
@@ -111,7 +112,7 @@ export function createLive(hooks) {
       set("live", "event stream");
       hello(data.state);
     });
-    ["tree", "runtime"].forEach((type) => es.addEventListener(type, (e) => { try { event(JSON.parse(e.data)); } catch { /* ignore */ } }));
+    ["tree", "runtime", "alfrd"].forEach((type) => es.addEventListener(type, (e) => { try { event(JSON.parse(e.data)); } catch { /* ignore */ } }));
     es.addEventListener("reset", () => hooks.projects().forEach((p) => hooks.onResync?.(p)));
     es.onerror = () => {
       // EventSource hides HTTP status and reconnects automatically. Close it
@@ -195,7 +196,7 @@ export function createLive(hooks) {
 
   // -- lifecycle ---------------------------------------------------------------
   function running() {
-    return live.enabled && !server.authRequired && !document.hidden;
+    return live.enabled && !server.authRequired && (!document.hidden || hooks.watchHidden?.());
   }
 
   function restart() {
@@ -204,7 +205,7 @@ export function createLive(hooks) {
     live.lastChange = Date.now(); // start busy: the reader just arrived
     if (server.authRequired) { set("auth-required", "access link needed"); return; }
     if (!live.enabled) { set("off", "live updates are off"); return; }
-    if (document.hidden) { set("paused", "tab hidden"); return; }
+    if (document.hidden && !hooks.watchHidden?.()) { set("paused", "tab hidden"); return; }
     if (hooks.mode() === "server") {
       if (hooks.available && !hooks.available()) { set("unavailable", "this server has live updates off"); return; }
       const projects = hooks.projects();
@@ -218,7 +219,8 @@ export function createLive(hooks) {
   }
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { clear(); if (live.enabled) set("paused", "tab hidden"); }
+    if (hooks.watchHidden?.() && live.es) return; // keep notification delivery continuous
+    if (document.hidden && !hooks.watchHidden?.()) { clear(); if (live.enabled) set("paused", "tab hidden"); }
     else restart();
   });
   window.addEventListener("pagehide", clear);

@@ -106,7 +106,10 @@ def test_startup_payload_under_178kb_compressed():
     # T9 Open vs Create (Open project… button, folder browser Open / Create project here /
     # Open instead) and T8 name sync: PM approved 180 KiB (184,320 bytes); measured 183,629
     # (t004-claude, 2026-10-07; also closes the T4/T5 179 KiB step).
-    assert total < 180 * 1024, f"{total} bytes gzip"
+    # Notifications N5 (Settings → Notifications, browser notifications, alfrd live events, deep
+    # links) and the active-run switcher / D8 pin: PM approved 185 KiB (189,440 bytes); measured
+    # 188,922 (task-notify-finish t004-claude, 2026-10-08). Next step: lazy-load the Settings panel.
+    assert total < 185 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_payload_under_106kb_compressed():

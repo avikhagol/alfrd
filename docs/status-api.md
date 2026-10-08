@@ -44,6 +44,12 @@ GET /api/v1/projects/<p>/plans/<id|latest>/log?target=&step=&unit=&lines=
 `<p>` is the project identifier or a unique project name. `wait=N` (≤ 60 s)
 long-polls: it returns as soon as the plan changes after `since`.
 
+`…/events?since=<seq>` with digits only (e.g. `since=0`) is not the SSE stream:
+it returns the plan's structured events (`events.jsonl`) with a larger `seq`,
+`{"schema": "alfrd.plan_events/1", "plan", "events": […], "seq"}`; pass `seq`
+back as the next `since` (`&limit=` caps the count). Kinds and fields:
+[notifications.md](notifications.md).
+
 Access:
 
 - **Loopback** (scripts on the same machine): send the server's access token,

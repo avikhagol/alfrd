@@ -262,7 +262,7 @@ export const LOGO = `<img class="logo" src="assets/favicon.svg" alt="" width="36
 export function parseRoute(hash) {
   const [path, query = ""] = hash.replace(/^#\//, "").split("?");
   const params = new URLSearchParams(query);
-  return { view: path, project: params.get("p"), target: params.get("t") };
+  return { view: path, project: params.get("p") || params.get("project"), target: params.get("t"), plan: params.get("plan"), unit: params.get("unit") };
 }
 
 export function routeHash(view, project, target) {

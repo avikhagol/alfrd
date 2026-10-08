@@ -216,6 +216,11 @@ by an agent. It survives runner loss (a held turn needs a runner, not a
 process), and waiting counts toward the total runtime limit. Pause retains the
 checkpoint; approval finishes the turn, and Resume starts subsequent work.
 
+To hear about a pending review (or a failed, finished or silent turn) without
+watching the Studio, add a notification route: `notify.routes` in alfrd.yaml
+or `~/.config/alfrd/notify.json`, and `notify.idle_after` for `turn.idle`. See
+[notifications.md](notifications.md).
+
 ### Delays between steps
 
 `after: "+1h"` (also `90m`, `2h30m`, seconds; at most 7 days) on a workflow step,

@@ -174,9 +174,10 @@ def _unauthorized(message: str):
 class _Throttle:
     """Failed token attempts per client address within a sliding window."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_addresses: int = 10_000) -> None:
         self.lock = threading.Lock()
         self.failures: dict[str, deque[float]] = {}
+        self.max_addresses = max_addresses
 
     def _recent(self, address: str, now: float, window: float) -> deque[float]:
         times = self.failures.setdefault(address, deque())
@@ -198,7 +199,14 @@ class _Throttle:
     def fail(self, address: str, window: float) -> None:
         now = time.monotonic()
         with self.lock:
-            self._recent(address, now, window).append(now)
+            times = self._recent(address, now, window)
+            times.append(now)
+            self.failures[address] = self.failures.pop(address)  # keep the dict ordered by last failure
+            # oldest first: drop addresses whose last failure left the window, and the oldest beyond the cap
+            for key in list(self.failures):
+                if len(self.failures) <= self.max_addresses and self.failures[key][-1] > now - window:
+                    break
+                del self.failures[key]
 
 
 def _throttle() -> _Throttle:

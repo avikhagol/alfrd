@@ -61,6 +61,15 @@ def create_app(config=None):
 
     app = Flask(__name__)
 
+    import os
+
+    if os.environ.get("ALFRD_TRUST_PROXY", "").strip().lower() in ("1", "true", "yes"):
+        # Behind one reverse proxy: take the client address, scheme, host and prefix from its
+        # X-Forwarded-* headers (so the cookie gets Secure over https and loopback checks see the real client).
+        from werkzeug.middleware.proxy_fix import ProxyFix
+
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
     from alfrd.gui.config import DefaultConfig
 
     DefaultConfig.apply(app)

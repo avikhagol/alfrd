@@ -64,10 +64,10 @@ def test_route_schema_and_warnings(tmp_path):
     for bad in ("x", [{"on": ["plan.*"]}], [{"via": "desktop"}], [{"via": "desktop", "on": []}], [{"via": "desktop", "on": [1]}]):
         with pytest.raises(notify.RouteError):
             notify.validate_routes(bad)
-    for via in ("webhook", "command"):
+    for via, options in (("webhook", {"url": "https://x"}), ("command", {"argv": ["true"]})):
         with pytest.raises(notify.RouteError, match="only allowed in the user"):
-            notify.validate_routes([{"via": via, "on": ["*"]}])
-        assert notify.validate_routes([{"via": via, "on": ["*"]}], user=True)[0]["via"] == via
+            notify.validate_routes([{"via": via, "on": ["*"], **options}])
+        assert notify.validate_routes([{"via": via, "on": ["*"], **options}], user=True)[0]["via"] == via
 
 
 def test_project_routes_come_before_user_routes(tmp_path):
@@ -103,6 +103,17 @@ def test_manifest_and_execution_check_routes(project):
     configure(project, notify={"routes": [{"via": "command", "on": ["*"]}]})
     with pytest.raises(ExecutionError, match="only allowed in the user"):
         load_execution(project)
+
+
+def test_bare_yaml_on_key_is_accepted(project):
+    # YAML 1.1 reads an unquoted ``on:`` key as true; the plan's own example writes it that way
+    routes = yaml.safe_load("- via: desktop\n  on: [review.pending, plan.*]\n")
+    assert True in routes[0]
+    assert notify.validate_routes(routes) == [{"via": "desktop", "on": ["review.pending", "plan.*"]}]
+    base = yaml.safe_load((project / "alfrd.yaml").read_text())
+    validate_manifest({**base, "notify": {"routes": routes}})
+    configure(project, notify={"routes": routes})
+    assert load_execution(project).settings["notify_routes"] == [{"via": "desktop", "on": ["review.pending", "plan.*"]}]
 
 
 # -- messages -----------------------------------------------------------------

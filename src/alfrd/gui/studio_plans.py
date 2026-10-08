@@ -683,3 +683,71 @@ def plan_cells(project_name: str, plan_id: str):
 
 
 __all__: list[str] = []
+
+
+def _notification_routes(root):
+    from alfrd import notify
+    try:
+        from alfrd.execution import merged_manifest
+        config = merged_manifest(root).get("notify") or {}
+        if not isinstance(config, dict):
+            raise ValueError("notify must be a mapping")
+        project = notify.validate_routes(config.get("routes"))
+        problems = []
+    except (ExecutionError, ValueError, OSError) as error:
+        project, problems = [], [str(error)]
+    routes, warnings = notify.load_routes(project)
+    return routes, problems + warnings, len(project)
+
+
+def _redacted_route(route, index, project_count):
+    from urllib.parse import urlsplit, urlunsplit
+    options = {}
+    for key, value in route.items():
+        if key in ("via", "on", "secret"):
+            continue
+        if key == "url":
+            parsed = urlsplit(value)
+            host = parsed.hostname or ""
+            if ":" in host:
+                host = f"[{host}]"
+            if parsed.port:
+                host += f":{parsed.port}"
+            options[key] = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+        elif key == "argv":
+            options[key] = f"{value[0]} ({len(value) - 1} args)"
+        else:
+            options[key] = "(configured)"
+    return {"via": route["via"], "on": route["on"], "options": options,
+            "source": "project" if index < project_count else "user", "index": index}
+
+
+@studio_api.get("/studio/projects/<project_name>/notify")
+def notification_routes(project_name):
+    from alfrd import notify
+    routes, warnings, count = _notification_routes(_project_root(project_name))
+    try:
+        listed = [_redacted_route(route, i, count) for i, route in enumerate(routes)]
+    except ValueError:
+        return _json_error(ValueError("Invalid notification route URL"), 400)
+    return jsonify(routes=listed, warnings=warnings, user_file=str(notify.user_config_file()))
+
+
+@studio_api.post("/studio/projects/<project_name>/notify/test")
+def notification_test(project_name):
+    from alfrd import notify
+    root = _project_root(project_name)
+    routes, _, _ = _notification_routes(root)
+    payload = request.get_json(silent=True) or {}
+    index = payload.get("index")
+    if type(index) is not int or not 0 <= index < len(routes):
+        return _json_error(ValueError("Unknown notification route index"), 400)
+    route = routes[index]
+    sender = notify.SENDERS.get(route["via"])
+    if sender is None:
+        return jsonify(ok=False, skipped="Notifier is unavailable")
+    ref = notify.project_ref(root)
+    message = notify.build_message([{"kind": "plan.finished", "project": str(root), "plan": "", "target": ref.get("name")}], project=ref)
+    message.update(title="ALFRD test notification", body="This is a test notification from Studio.")
+    error, skipped = notify._call_with_timeout(sender, (route, message, 10.0), 10.0)
+    return jsonify({"ok": error is None, **({"skipped" if skipped else "error": error} if error else {})})

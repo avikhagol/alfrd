@@ -151,6 +151,12 @@ export const server = {
   planPreview(project, payload) {
     return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/preview`, payload);
   },
+  notificationRoutes(project) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/notify`);
+  },
+  notificationTest(project, index) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/notify/test`, { index });
+  },
   planStatus(project, id = null) {
     return getJson(`/studio/projects/${encodeURIComponent(project)}/plans${id ? `?id=${encodeURIComponent(id)}` : ""}`);
   },

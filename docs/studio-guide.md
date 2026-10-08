@@ -64,7 +64,7 @@ The token is in `~/.config/alfrd/server-<port>.json` (readable only by you, remo
 ssh -L 5000:127.0.0.1:5000 user@server    # then open the alfrd url link on your machine
 ```
 
-or put an https reverse proxy in front. The cookie is marked `Secure` when the request arrives over https. A proxy that terminates TLS forwards plain HTTP, so there the cookie is not marked `Secure` (the proxy's `X-Forwarded-Proto` is not read yet).
+or put an https reverse proxy in front. The cookie is marked `Secure` when the request arrives over https. A proxy that terminates TLS forwards plain HTTP: start the server with **`ALFRD_TRUST_PROXY=1`** so it reads the proxy's `X-Forwarded-For`, `-Proto`, `-Host` and `-Prefix` (one proxy hop). Then the cookie is `Secure`, links keep the proxy's host and prefix, and the client address is the real one, so loopback-only actions are refused to remote browsers. Set it only behind a proxy that overwrites these headers; otherwise any client could fake them.
 
 ---
 
@@ -103,7 +103,9 @@ No need to click **Re-scan**. The **● Live** badge (top bar) shows the state. 
 - **Browser mode (Chrome/Edge):** the opened folder is checked every 5 s (30 s when quiet).
 - **Logs:** an open log that is on screen, and the full-screen log, follow the file as it grows. Only the new bytes are fetched. At most 3 logs at a time. Scroll up to pause on a spot; **↓ New output** jumps back. **Follow** in full screen does the same.
 - **Log Stream tabs:** the `>_` button on a log (or **Minimize to Log Stream** in full screen) docks it in the Log Stream panel at the bottom, like a terminal tab in VS Code. Switch to Overview or Workflow and it keeps following. Up to 6 tabs, remembered after a reload; **×** stops following, **—** hides the panel (the footer shows “N followed”). Drag the panel's top edge (or focus it and use ↑/↓) to resize.
-- **Hidden tab:** nothing runs. Back on the tab, the Studio catches up.
+- **Hidden tab:** nothing runs. Back on the tab, the Studio catches up. (With browser notifications on, the server stream stays open so they still arrive.)
+- **Which run:** Workflow opens on the newest working run (a turn running, or waiting for review or a response), else the newest active one, else a scheduled one, not just the newest run. With more than one active run, an "N active runs" switcher appears above the runs; scheduled runs read "Scheduled HH:MM". A run you pick stays shown; when it ends while another works, the Studio switches and says so.
+- **Notifications:** ⚙ Settings → Notifications lists the notification routes with **Send test**, and *Show browser notifications* (asks for permission on click) shows reviews, failed/finished runs and idle turns while a tab is open. Links such as `#/workflow?project=<id>&plan=<run>&unit=<turn>` open that run and turn. See [notifications.md](notifications.md).
 - Your place is kept: selection, open groups and logs, scroll, the field you are typing in. Unsaved workflow edits are never replaced.
 
 | Badge | Meaning |

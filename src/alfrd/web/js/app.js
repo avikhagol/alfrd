@@ -1,3 +1,4 @@
+import { handleNotifications, browserEnabled } from "./components/notifications.js";
 
 import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget } from "./utils/dom.js";
 import { stepParamsFromConfig } from "./data/avica.js";
@@ -21,7 +22,7 @@ import * as metadata from "./components/metadata.js";
 import * as results from "./components/results.js";
 import * as config from "./components/alfrd_config.js";
 import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace } from "./data/workspace.js";
-import { forgetPlan, activeJobs, loadPlan, plansAvailable } from "./components/plans.js";
+import { forgetPlan, releasePlanPin, activeJobs, loadPlan, plansAvailable, openLinkedRun } from "./components/plans.js";
 
 export let VERSION = "standalone";
 
@@ -112,13 +113,20 @@ export const ctx = {
     renderFooter();
     if (state.consoleOpen) renderConsole();
   },
-  toast(text, tone = "info") {
+  toast(text, tone = "info", { sticky = false, link = null } = {}) {
     const host = $("#toasts");
     const el = document.createElement("div");
     el.className = `toast toast-${tone}`;
     el.setAttribute("role", "status");
     el.innerHTML = `${icon(tone === "fail" ? "xCircle" : tone === "ok" ? "checkCircle" : tone === "warn" ? "alert" : "info")}<span>${esc(text)}</span>`;
+    if (link) {
+      const a = document.createElement("a"); a.className = "btn sm"; a.href = link; a.textContent = "View run"; el.appendChild(a);
+    }
+    if (sticky) {
+      const close = document.createElement("button"); close.className = "icon-btn sm"; close.setAttribute("aria-label", "Dismiss notification"); close.innerHTML = icon("close"); close.onclick = () => el.remove(); el.appendChild(close);
+    }
     host.appendChild(el);
+    if (sticky) return;
     setTimeout(() => el.classList.add("out"), tone === "fail" || tone === "warn" ? 8000 : 3600);
     setTimeout(() => el.remove(), tone === "fail" || tone === "warn" ? 8400 : 4000);
   },
@@ -454,6 +462,7 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   if (render) scheduleRender();
 }
 
+let linkedRoute = "";
 const workflowCache = new Map(); // project -> {workflow, workflowFile}
 
 function activeProject() {
@@ -474,6 +483,8 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
   const next = project && project !== "all" ? project : "all";
   const before = state.selectedProject || "all";
   if (before !== next) {
+    linkedRoute = "";
+    releasePlanPin(before);
     const out = wsMeta(before);
     out.target = state.selectedTarget;
     out.view = state.view;
@@ -596,6 +607,7 @@ async function loadServer() {
     syncWorkflow();
     // Poll background runs too.
     data.projects.forEach((p) => plansAvailable(ctx, p.name) && loadPlan(ctx, p.name, { quiet: true }));
+    if (url.plan && url.project === state.selectedProject) applyRunLink(url);
     applyAvicaParams(state.avica?.[ctx.target()?.project]);
     ctx.log("info", `Server: ${data.projects.length} project(s), ${state.targets.length} target(s).`, "server");
     scheduleRender();
@@ -1388,6 +1400,7 @@ function liveRuntime() {
 
 const live = createLive({
   mode: () => state.mode,
+  watchHidden: () => state.mode === "server" && browserEnabled(),
   available: () => server.session?.live?.enabled !== false,
   projects: projectsFollowed,
   folders: () => (state.mode === "server" ? [] : Object.entries(state.folders).filter(([p, h]) => h && state.trees?.[p]).map(([project, handle]) => ({ project, handle }))),
@@ -1398,6 +1411,7 @@ const live = createLive({
   onTree: (project, diff) => queueRefresh(project, diff),
   onLogs: liveLogs,
   onRuntime: liveRuntime,
+  onAlfrd: (project, events) => handleNotifications(ctx, project, events).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server")),
   onResync: (project) => queueRefresh(project, { full: true }),
   onStatus: (status) => { state.liveStatus = status; renderLiveBadge(); },
 });
@@ -1894,6 +1908,13 @@ function renderAll() {
   listeners.forEach((fn) => fn(state));
 }
 
+function applyRunLink(url) {
+  if (!url.plan || !url.project || !plansAvailable(ctx, url.project)) return;
+  const key = JSON.stringify([url.project, url.plan, url.unit]);
+  if (linkedRoute === key) return;
+  linkedRoute = key;
+  openLinkedRun(ctx, url.project, url.plan, url.unit).catch((error) => ctx.toast(error.message, "warn"));
+}
 function route() {
   const url = parseRoute(location.hash);
   const id = url.view;
@@ -1905,6 +1926,8 @@ function route() {
   const next = VIEWS.some((v) => v.id === id) ? id : "overview";
   if (next !== state.view) VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
   state.view = next;
+  if (!url.plan) linkedRoute = "";
+  applyRunLink(url);
   scheduleRender();
 }
 
@@ -1918,7 +1941,9 @@ async function boot() {
     const a = e.target.closest('a[href^="#/"]');
     if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
-    goTo(parseRoute(a.getAttribute("href")).view);
+    const href = a.getAttribute("href"), url = parseRoute(href);
+    if (url.plan || url.project) { location.hash = href; route(); }
+    else goTo(url.view);
   });
   route();
   await loadTemplate("avica", parseYaml);
