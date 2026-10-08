@@ -14,7 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
+from flask import Blueprint, abort, current_app, jsonify, request, send_file, send_from_directory
 
 from alfrd import __version__
 from alfrd.web import MIME_TYPES, web_root
@@ -41,6 +41,19 @@ def studio_index():
 
 @studio.get("/<path:filename>")
 def studio_asset(filename: str):
+    if filename == "theme.css":
+        from alfrd.extensions.themes import css_path, current_theme
+        from werkzeug.exceptions import NotFound
+
+        path = css_path(current_theme())
+        try:
+            response = send_from_directory(path.parent, path.name, mimetype="text/css", max_age=0)
+        except (NotFound, OSError):
+            # A theme may disappear between resolution and send (e.g. uninstall).
+            response = current_app.response_class(":root { color-scheme: dark; }\n", mimetype="text/css")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
     if filename.endswith((".py", ".pyc")) or "__pycache__" in filename:
         abort(404)
     return _send(filename)
@@ -315,6 +328,29 @@ def _allowed_cached(root: Path, rel: str) -> Path:
     return path
 
 
+#: Types ``/file?raw=1`` serves as bytes (the image and PDF viewers); never HTML or SVG.
+RAW_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+             ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf"}
+
+
+def _project_file_raw(project_name: str, rel: str):
+    mimetype = RAW_TYPES.get(Path(rel).suffix.lower())
+    if mimetype is None:
+        return _json_error(ValueError("raw=1 serves images and PDF only"), 415)
+    try:
+        path = _allowed_cached(_project_root(project_name), rel)
+    except ValueError as error:
+        return _json_error(error, 400)
+    except PermissionError as error:
+        return _json_error(error, 403)
+    except FileNotFoundError as error:
+        return _json_error(error, 404)
+    response = send_file(path, mimetype=mimetype, conditional=True, max_age=0)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @studio_api.get("/studio/projects/<project_name>/file")
 def project_file(project_name: str):
     """One log declared in alfrd.yaml (step logs or log artifacts).
@@ -328,6 +364,8 @@ def project_file(project_name: str):
     from alfrd.studio_defs import read_range
 
     rel = request.args.get("path", "")
+    if request.args.get("raw") == "1":
+        return _project_file_raw(project_name, rel)
     raw = request.args.get("offset")
     try:
         offset = int(raw) if raw not in (None, "") else None

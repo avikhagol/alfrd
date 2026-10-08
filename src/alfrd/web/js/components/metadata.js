@@ -145,5 +145,6 @@ function renderGeneric(el, ctx, t, head, main) {
     ? `<div class="card"><p class="callout info small">${icon("info")}<span>No work folder is attached to <b>${esc(t.name)}</b> (nothing under <code>${esc(index.targetDir || "target_dir")}/</code> names it).</span> <button class="btn sm" data-attach>${icon("link")} Attach folder…</button></p></div>`
     : "";
   show(main, attach + ui.view.html, scope);
+  panels?.mountViewers(main, t.project);
   ctx.setFooterRight(`${esc(t.name)} · views.metadata`);
 }

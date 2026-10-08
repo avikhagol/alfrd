@@ -102,6 +102,14 @@ def create_app(config=None):
 
     from alfrd.gui.api_v1 import api_v1
 
+    try:  # plugins (panels …) register before the first request; a broken one never stops the app
+        from alfrd import extensions
+
+        app.extensions["alfrd_plugins"] = extensions.load()
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning("plugins not loaded: %s", exc)
+        app.extensions["alfrd_plugins"] = []
+
     app.register_blueprint(studio)
     app.register_blueprint(studio_api)
     app.register_blueprint(api_v1)

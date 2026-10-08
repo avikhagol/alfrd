@@ -34,7 +34,7 @@
       "type": "object",
       "required": ["panel"],
       "properties": {
-        "panel": {"enum": ["file_status", "files", "json_fields", "csv_table", "text", "image", "avica_config", "avica_inputs"]},
+        "panel": {"type": "string", "minLength": 1, "description": "A built-in or plugin panel kind; layout_generic.validate checks it against the registry."},
         "title": {"type": "string"},
         "scope": {"type": "string"},
         "source": {"type": "string"},
@@ -50,9 +50,10 @@
       "allOf": [
         {"if": {"properties": {"panel": {"const": "file_status"}}}, "then": {"required": ["files"]}},
         {"if": {"properties": {"panel": {"enum": ["files", "json_fields", "csv_table", "text", "image"]}}}, "then": {"required": ["source"]}},
-        {"if": {"properties": {"panel": {"const": "json_fields"}}}, "then": {"required": ["fields"]}}
-      ],
-      "additionalProperties": false
+        {"if": {"properties": {"panel": {"const": "json_fields"}}}, "then": {"required": ["fields"]}},
+        {"if": {"properties": {"panel": {"enum": ["file_status", "files", "json_fields", "csv_table", "text", "image", "avica_config", "avica_inputs"]}}},
+         "then": {"propertyNames": {"enum": ["panel", "title", "scope", "source", "base", "files", "fields", "columns", "limit"]}}}
+      ]
     }
   }
 }

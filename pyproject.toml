@@ -48,7 +48,7 @@ polars = ["polars"]
 all = ["alfrd[google,polars]"]
 
 [project.scripts]
-alfrd = "alfrd.cli:alfrd_cli"
+alfrd = "alfrd.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -67,7 +67,10 @@ where = ["src"]
 ]
 "alfrd.web" = [
   "*.html",
+  "*.css",
   "css/*.css",
+  "css/themes/*/theme.css",
+  "css/themes/*/theme.json",
   "js/*.js",
   "js/components/*.js",
   "js/data/*.js",

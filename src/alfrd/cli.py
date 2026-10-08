@@ -533,9 +533,12 @@ def serve(
     ),
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
 ):
     """Serve ALFRD Studio (default) and the dashboard, backed by the runtime database."""
 
+    if safe_mode:
+        os.environ["ALFRD_NO_PLUGINS"] = "1"  # also reaches the debug reloader's child
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
                discover=discover, discover_depth=discover_depth, token=token, no_token=no_token)
 
@@ -551,9 +554,12 @@ def gui(
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the dashboard in a browser."),
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
 ):
     """Alias for ``alfrd serve``."""
 
+    if safe_mode:
+        os.environ["ALFRD_NO_PLUGINS"] = "1"
     _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token)
 
 
@@ -1569,5 +1575,208 @@ def plan_runner(plan_id: str, root: str = _ROOT_OPT):
     raise typer.Exit(code=scheduler.Runner(root, plan_id).run())
 
 
-if __name__ == "__main__":
+plugin_cli = typer.Typer(help="Manage trusted plugins and Studio themes.", no_args_is_help=True)
+alfrd_cli.add_typer(plugin_cli, name="plugin")
+
+
+def _plugin_call(function, *args, **kwargs):
+    """Report operational failures without a CLI traceback."""
+    try:
+        return function(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary, Ctrl-C still propagates
+        _plugin_fail(str(exc))
+
+
+def _plugin_fail(message: str):
+    typer.echo(f"alfrd plugin: {message}", err=True)
+    raise typer.Exit(code=1) from None
+
+
+def _plugin_records():
+    from alfrd import extensions
+
+    records = _plugin_call(extensions.load, force=True)
+    core = _core_command_names(alfrd_cli)
+    for record in records:
+        if record.status == "ok" and record.plugin and record.plugin.cli is not None and record.id in core:
+            record.status, record.error = "error", f"command name {record.id!r} is taken by alfrd"
+    return records
+
+
+def _plugin_find(plugin_id: str, *, load: bool = False):
+    from alfrd import extensions
+
+    if not load:
+        _plugin_call(extensions.add_site)
+    records = _plugin_records() if load else _plugin_call(extensions.discover)
+    record = next((record for record in records if record.id == plugin_id), None)
+    if record is None:
+        _plugin_fail(f"unknown plugin {plugin_id!r}; known: {', '.join(r.id for r in records) or '(none)'}")
+    return record
+
+
+def _plugin_restart():
+    typer.echo("restart `alfrd serve` to apply")
+
+
+@plugin_cli.command("list")
+def plugin_list():
+    """List installed plugins and themes, including disabled or broken plugins."""
+    rows = [("ID", "VERSION", "KINDS", "ENABLED", "STATUS", "SOURCE PACKAGE")]
+    rows += [(r.id, r.version or "-", ",".join(r.kinds) or "-", "yes" if r.enabled else "no", r.status,
+              r.dist or r.source) for r in _plugin_records()]
+    widths = [max(len(str(row[i])) for row in rows) for i in range(6)]
+    for row in rows:
+        typer.echo("  ".join(str(value).ljust(width) for value, width in zip(row, widths)).rstrip())
+
+
+@plugin_cli.command("info")
+def plugin_info(plugin_id: str):
+    """Show a manifest, its contributions and the most recent loading error."""
+    import json
+
+    record = _plugin_find(plugin_id, load=True)
+    data = record.to_dict()
+    if record.plugin:
+        data.update(requires_bin=list(record.plugin.requires_bin), web=record.plugin.web,
+                    theme=record.plugin.theme, cli=record.plugin.cli is not None)
+    typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _plugin_enable(plugin_id: str, enabled: bool):
+    from alfrd import extensions
+
+    record = _plugin_find(plugin_id)
+    if record.source != "entry_point":
+        _plugin_fail("select a theme with `alfrd plugin theme <id>`")
+    _plugin_call(extensions.set_enabled, plugin_id, enabled)
+    typer.echo(f"{plugin_id}: {'enabled' if enabled else 'disabled'}")
+    _plugin_restart()
+
+
+@plugin_cli.command("enable")
+def plugin_enable(plugin_id: str):
+    """Enable a plugin on the next server start."""
+    _plugin_enable(plugin_id, True)
+
+
+@plugin_cli.command("disable")
+def plugin_disable(plugin_id: str):
+    """Disable a plugin on the next server start."""
+    _plugin_enable(plugin_id, False)
+
+
+@plugin_cli.command("install")
+def plugin_install(spec: str, yes: bool = typer.Option(False, "--yes", help="Trust this package without a prompt.")):
+    """Install a trusted Python package, local wheel or source package."""
+    import getpass
+    from alfrd.extensions import installer
+
+    typer.echo(f"Plugins run as {getpass.getuser()} with access to your files and projects. Install only packages you trust.")
+    if not yes and not typer.confirm(f"Trust and install {spec!r}?", default=False):
+        raise typer.Exit(code=1)
+    for record in _plugin_call(installer.install, spec):
+        typer.echo(f"installed {record['id']} {record['version']}")
+    _plugin_restart()
+
+
+@plugin_cli.command("remove")
+def plugin_remove(plugin_id: str, yes: bool = typer.Option(False, "--yes", help="Remove without a prompt.")):
+    """Remove a package installed with `alfrd plugin install`."""
+    from alfrd.extensions import installer
+
+    if not yes and not typer.confirm(f"Remove plugin {plugin_id!r}?", default=False):
+        raise typer.Exit(code=1)
+    _plugin_call(installer.remove, plugin_id)
+    typer.echo(f"removed {plugin_id}")
+    _plugin_restart()
+
+
+@plugin_cli.command("update")
+def plugin_update(plugin_id: Optional[str] = typer.Argument(None, help="Plugin to update (default: all installed plugins).")):
+    """Update from each plugin's recorded installation source."""
+    from alfrd.extensions import installer
+
+    for record in _plugin_call(installer.update, plugin_id):
+        typer.echo(f"updated {record['id']} {record['version']}")
+    _plugin_restart()
+
+
+@plugin_cli.command("theme")
+def plugin_theme(theme_id: Optional[str] = typer.Argument(None, help="Theme to select (default: list themes).")):
+    """List Studio themes or select a theme, then reload Studio to apply."""
+    from alfrd import extensions
+
+    records = [r for r in _plugin_records() if "theme" in r.kinds and r.enabled and r.status == "ok"]
+    if theme_id is None:
+        current = extensions.read_state()["theme"]
+        for record in records:
+            typer.echo(f"{'*' if record.id == current else ' '} {record.id}  {record.title or record.id}")
+        typer.echo(f"Drop-in themes: {extensions.themes_dir()}")
+        return
+    if theme_id not in {r.id for r in records}:
+        typer.echo(f"alfrd plugin: unknown theme {theme_id!r}; available: {', '.join(r.id for r in records) or '(none)'}", err=True)
+        raise typer.Exit(code=1)
+    _plugin_call(extensions.set_theme, theme_id)
+    typer.echo(f"theme: {theme_id}")
+    typer.echo("reload Studio to apply")
+
+
+@plugin_cli.command("new")
+def plugin_new(
+    plugin_id: str,
+    kind: str = typer.Option("viewer", "--kind", help="viewer | converter | theme | panel"),
+    directory: Path = typer.Option(Path("."), "--dir", help="Parent folder for the scaffold."),
+):
+    """Create an editable plugin package or drop-in theme."""
+    from alfrd.extensions.scaffold import create
+
+    target = _plugin_call(create, plugin_id, kind=kind, directory=directory)
+    typer.echo(f"created {target}")
+    typer.echo(f"See {target / 'README.md'} for installation and test commands.")
+
+
+def _core_command_names(app: typer.Typer) -> set[str]:
+    mounted = getattr(app, "_alfrd_plugin_commands", {})
+    names = {c.name or (c.callback.__name__.replace("_", "-") if c.callback else "") for c in app.registered_commands}
+    return names | {g.name for g in app.registered_groups if mounted.get(g.name) is not g.typer_instance}
+
+
+def mount_plugin_commands(app: typer.Typer = alfrd_cli) -> list:
+    """Load the plugins and add each ok plugin's ``cli`` Typer as ``alfrd <id> …`` (core names win)."""
+    from alfrd import extensions
+
+    core = _core_command_names(app)
+    mounted = getattr(app, "_alfrd_plugin_commands", {})
+    app._alfrd_plugin_commands = mounted
+    records = extensions.load()
+    for rec in records:
+        if rec.status != "ok" or rec.plugin is None or rec.plugin.cli is None:
+            continue
+        if rec.id in core:
+            rec.status, rec.error = "error", f"command name {rec.id!r} is taken by alfrd"
+            continue
+        if rec.id in mounted:
+            continue
+        app.add_typer(rec.plugin.cli, name=rec.id)
+        mounted[rec.id] = rec.plugin.cli
+        core.add(rec.id)
+    return records
+
+
+def main() -> None:
+    """The ``alfrd`` console script: plugin commands, then the CLI. Plugin failures never stop it."""
+    from alfrd.extensions import safe_mode
+
+    # `alfrd plugin …` must work while a plugin is broken, and must not hold plugin files open.
+    argv = sys.argv[1:]
+    if "--safe-mode" not in argv and argv[:1] != ["plugin"] and not safe_mode():
+        try:
+            mount_plugin_commands()
+        except Exception as exc:  # noqa: BLE001
+            print(f"alfrd: plugins not loaded ({exc})", file=sys.stderr)
     alfrd_cli()
+
+
+if __name__ == "__main__":
+    main()

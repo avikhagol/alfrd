@@ -45,11 +45,21 @@ def isolated_alfrd_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def isolated_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """`alfrd serve` writes its token file under the config dir: never the real one."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))  # plugins/ and themes/
+    monkeypatch.setenv("ALFRD_NO_PLUGINS", "")  # `serve --safe-mode` exports it: restored at teardown
+    monkeypatch.delenv("ALFRD_NO_PLUGINS")
     # setenv first so teardown restores the original state even when
     # `alfrd serve --debug` exports these into os.environ during a test.
     for name in ("ALFRD_TOKEN", "ALFRD_SECRET_KEY"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
+    from alfrd import extensions
+
+    extensions.reset()
+    path_before = list(sys.path)
+    yield
+    extensions.reset()  # plugin panels never leak into the next test
+    sys.path[:] = path_before
 
 
 @pytest.fixture(autouse=True)
