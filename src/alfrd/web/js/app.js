@@ -1,6 +1,8 @@
 import { handleNotifications, browserEnabled } from "./components/notifications.js";
 
 import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget } from "./utils/dom.js";
+import { projectLabels } from "./utils/text_fit.js";
+import { mountPicker } from "./components/picker.js";
 import { stepParamsFromConfig } from "./data/avica.js";
 import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
@@ -8,7 +10,6 @@ import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
 import { canPickDirectory, pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle, forgetFolderHandles, ensureReadPermission, readFileFromHandle, readWholeFromHandle, readFileRange, writeFileToHandle } from "./data/folder_scan.js";
 import { createLive } from "./data/live.js";
-import { demoBundle, DEMO_ALFRD_PROJECT } from "./data/demo.js";
 import { server } from "./data/server.js";
 import { mountFolderBrowser } from "./components/folder_browser.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
@@ -23,6 +24,7 @@ import * as results from "./components/results.js";
 import * as config from "./components/alfrd_config.js";
 import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace } from "./data/workspace.js";
 import { forgetPlan, releasePlanPin, activeJobs, loadPlan, plansAvailable, openLinkedRun } from "./components/plans.js";
+const DEMO_ALFRD_PROJECT = "avica-demo"; // data/demo.js's key; the demo data itself loads on demand
 
 export let VERSION = "standalone";
 
@@ -558,6 +560,7 @@ async function loadDemo({ quiet = false } = {}) {
     ctx.toast("Demo data is only available with `alfrd serve --demo` (or ?demo=1)", "warn");
     return;
   }
+  const { demoBundle } = await import("./data/demo.js");
   const bundle = demoBundle();
   state.projectTitles = { [DEMO_ALFRD_PROJECT]: "AVICA demo reductions" };
   state.projectNames = {};
@@ -574,6 +577,7 @@ async function loadServer() {
     state.serverWorkflows = data.workflows;
     state.projectTitles = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.description || p.name]));
     state.projectNames = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.manifest_name || p.name]));
+    state.projectRoots = Object.fromEntries(data.projects.map((p) => [p.name, p.root_path || ""]));
     applyBundle({ targets: data.targets, messages: data.messages, aliases: [], configs: [], logs: [], files: [] }, { replace: true, source: "server", provider: "server" });
     if (data.workflows.length) {
       const wf = data.workflows[0];
@@ -1556,6 +1560,43 @@ ctx.palette.register(() => (matchMedia("(min-width: 1280px)").matches ? [{
   run: () => setSidebar(!shellUi.sidebarCollapsed),
 }] : []));
 
+const pickers = {};
+const PROJECTS_LOCAL = "Creating or opening a project needs a browser on the server machine (loopback).";
+
+/** The Projects button: New project (with Open… inside); browser mode just lists projects. */
+function projectsAction() {
+  if (state.mode !== "server") { pickers.project.open(); return; }
+  if (!server.session?.mutations_enabled) {
+    modal(`<header class="modal-h"><h2>${icon("folder")} Projects</h2><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+      <div class="modal-b"><p class="callout warn small">${icon("alert")}<span>${esc(PROJECTS_LOCAL)}</span></p><p class="muted small">Switch between the projects already open with the project list next to this button.</p></div>`);
+    return;
+  }
+  newProject();
+}
+
+/** Import / Export menu (header) and the palette: import first, then every export. */
+function dataItems() {
+  return [
+    { label: "Import…", icon: "upload", hint: "results, configuration, snapshot", run: () => openImport() },
+    "-",
+    // Agent loops export run history (same exporter as the Overview), never a target-shaped file.
+    ...(overview.loopOnly(ctx) ? [] : [
+      { label: "Overview CSV (visible rows)", icon: "download", run: () => exportOverviewCsv(false) },
+      { label: "Stage details CSV", icon: "download", run: () => exportOverviewCsv(true) }]),
+    ...overview.historyItems(ctx),
+    { label: "Workflow YAML (with edits)", icon: "file", run: exportWorkflowYaml },
+    { label: "Studio snapshot (JSON)", icon: "database", hint: "re-importable", run: exportSnapshot },
+  ];
+}
+ctx.dataItems = dataItems;
+ctx.palette.register(() => [
+  ...(state.mode === "server" && server.session?.mutations_enabled ? [
+    { id: "project:new", group: "action", icon: "plus", label: "New project…", detail: "action · create a project", run: () => newProject() },
+    ...(server.canBrowse() ? [{ id: "project:open", group: "action", icon: "folder", label: "Open project…", detail: "action · a folder with alfrd.yaml", run: openProject }] : [])] : []),
+  { id: "project:switch", group: "action", icon: "folder", label: "Switch project…", detail: "action · project list", run: () => pickers.project?.open() },
+  ...dataItems().filter((it) => it !== "-").map((it) => ({ id: `data:${it.label}`, group: "action", icon: it.icon, label: /^(Import|Export)/.test(it.label) ? it.label : `Export ${it.label}`, detail: "action · Import / Export", run: it.run })),
+]);
+
 function renderShell() {
   $("#app").dataset.sidebar = shellUi.sidebarCollapsed === true ? "collapsed" : "expanded";
   $("#app").innerHTML = `
@@ -1563,16 +1604,17 @@ function renderShell() {
       <div class="brand">${LOGO}<h1>ALFRD Studio</h1></div>
       <span class="mode-badge" id="mode-badge"></span>
       <span class="vsep"></span>
-      <label class="picker" title="Project">${icon("folder")}<span class="picker-l">Project:</span><select id="pick-project" aria-label="Project"></select></label>
+      <div class="picker split" role="group" aria-label="Project">
+        <button class="picker-head" id="btn-projects" title="New project or open a project">${icon("folder")}<span class="picker-l">Projects</span></button>
+        <button class="picker-btn" id="pick-project"><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button>
+      </div>
+      <div class="picker"><button class="picker-btn" id="pick-target">${icon("target")}<span class="picker-l">Target</span><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button></div>
       <button class="btn sm jobs-btn" id="btn-jobs" aria-haspopup="dialog" hidden>${icon("play")} <span id="jobs-label">Jobs</span></button><span class="sr-only" id="jobs-live" aria-live="polite"></span>
-      <button class="btn sm" id="btn-new-project" aria-describedby="new-project-help" title="Create a project" hidden>${icon("plus")} New project</button><button class="btn sm" id="btn-open-project" title="Open a folder with alfrd.yaml" hidden>${icon("folder")} Open project…</button><span id="new-project-help" class="muted small" hidden>Project creation needs a browser on the server machine.</span>
-      <label class="picker" title="Target">${icon("target")}<span class="picker-l">Target:</span><select id="pick-target" aria-label="Target"></select></label>
       <span class="grow"></span>
       <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (Ctrl+K)">${icon("search")}</button>
       <button class="live-badge live-off" id="btn-live" aria-pressed="false"><i></i><span>Live off</span></button>
-      <button class="btn" id="btn-rescan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")} Re-scan</button>
-      <button class="btn" id="btn-import">${icon("upload")} Import</button>
-      <button class="btn" id="btn-export">${icon("download")} Export</button>
+      <button class="icon-btn" id="btn-rescan" aria-label="Re-scan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")}</button>
+      <button class="icon-btn" id="btn-data" aria-label="Import / Export" aria-haspopup="menu" title="Import / Export">${icon("transfer")}</button>
       <button class="icon-btn" id="btn-settings" aria-label="Studio settings" title="Studio settings">${icon("gear")}</button>
       <button class="icon-btn" id="btn-quit" aria-label="Quit alfrd" title="Quit alfrd" hidden>${icon("power")}</button>
     </header>
@@ -1612,35 +1654,24 @@ function renderShell() {
 
   $("#btn-rail").addEventListener("click", () => setSidebar(!shellUi.sidebarCollapsed));
   setSidebar(shellUi.sidebarCollapsed);
-  $("#btn-import").addEventListener("click", () => openImport());
-  $("#btn-new-project").addEventListener("click", () => newProject());
-  $("#btn-open-project").addEventListener("click", openProject);
+  $("#btn-projects").addEventListener("click", projectsAction);
   $("#btn-rescan").addEventListener("click", () => rescan());
   $("#btn-live").addEventListener("click", onLiveBadge);
   $("#btn-palette").addEventListener("click", () => ctx.openPalette());
-  $("#btn-export").addEventListener("click", (e) => menu(e.currentTarget, [
-    // Agent loops export run history (same exporter as the Overview), never a target-shaped file.
-    ...(overview.loopOnly(ctx) ? [] : [
-      { label: "Overview CSV (visible rows)", icon: "download", run: () => exportOverviewCsv(false) },
-      { label: "Stage details CSV", icon: "download", run: () => exportOverviewCsv(true) }]),
-    ...overview.historyItems(ctx),
-    "-",
-    { label: "Workflow YAML (with edits)", icon: "file", run: exportWorkflowYaml },
-    { label: "Studio snapshot (JSON)", icon: "database", hint: "re-importable", run: exportSnapshot },
-  ]));
+  $("#btn-data").addEventListener("click", (e) => menu(e.currentTarget, dataItems()));
   $("#btn-settings").addEventListener("click", openSettings);
   $("#btn-quit").addEventListener("click", quitServer);
-  $("#pick-project").addEventListener("change", (e) => switchProject(e.target.value));
+  pickers.project = mountPicker($("#pick-project"), { label: "Project", onChange: (value) => switchProject(value) });
   $("#main").addEventListener("click", (e) => {
     const b = e.target.closest("[data-ws-open]");
     if (b) switchProject(b.dataset.wsOpen, { restoreView: false });
   });
-  $("#pick-target").addEventListener("change", (e) => {
-    state.selectedTarget = chooseTarget(ctx.scopedTargets(), e.target.value);
+  pickers.target = mountPicker($("#pick-target"), { label: "Target", empty: "No targets", onChange: (value) => {
+    state.selectedTarget = chooseTarget(ctx.scopedTargets(), value);
     rememberTarget();
     history.replaceState(null, "", routeHash(state.view, state.selectedProject, state.selectedTarget));
     scheduleRender();
-  });
+  } });
   $("#foot-logs").addEventListener("click", () => {
     state.consoleOpen = !state.consoleOpen;
     renderConsole();
@@ -1653,34 +1684,25 @@ function renderHeader() {
   VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); });
   const badge = $("#mode-badge");
   const live = state.mode === "server";
-  const create = $("#btn-new-project");
-  create.hidden = !live;
-  create.disabled = !server.session?.mutations_enabled;
-  const open = $("#btn-open-project");
-  open.hidden = !live; open.disabled = create.disabled || !server.canBrowse();
-  $("#new-project-help").hidden = !live || !create.disabled;
-  create.title = create.disabled ? "Project creation needs a browser on the server machine" : "Create a project";
+  $("#btn-projects").title = live ? (server.session?.mutations_enabled ? "New project or open a project" : PROJECTS_LOCAL) : "Choose a project";
   badge.className = `mode-badge ${live ? "live" : ""}`;
   const quit = $("#btn-quit");
   if (quit) quit.hidden = !(live && server.session?.can_quit);
-  badge.innerHTML = `<i></i>${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}`;
-  badge.title = live ? "alfrd: projects come from the runtime database; re-queue runs through the runtime API." : "Everything runs in this browser; no pipeline code is executed.";
+  const modeText = `${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}`;
+  badge.innerHTML = `<i></i><span>${modeText}</span>`;
+  badge.title = `${modeText}: ${live ? "projects come from the runtime database; re-queue runs through the runtime API." : "everything runs in this browser; no pipeline code is executed."}`;
 
   const rescanBtn = $("#btn-rescan");
   if (rescanBtn) rescanBtn.title = live ? (activeProject() ? `Re-scan ${ctx.projectName(activeProject())}` : "Re-scan all projects") : "Re-read the whole project folder now (live updates only re-read what changed)";
 
   const projects = ctx.projects();
-  const projectOptions = `<option value="all">All Projects (${projects.length})</option>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.title || p.name)}${isDirty(p.id) ? " · Unsaved changes" : ""}</option>`).join("")}`;
-  const targets = ctx.scopedTargets();
-  const targetOptions = targets.length
-    ? targets.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}${state.selectedProject === "all" ? ` · ${esc(state.projectTitles[t.project] || ctx.projectName(t.project))}` : ""}</option>`).join("")
-    : `<option value="">No targets</option>`;
-
-  for (const [id, html, value] of [["pick-project", projectOptions, state.selectedProject || "all"], ["pick-target", targetOptions, state.selectedTarget]]) {
-    const select = $(`#${id}`);
-    if (select.dataset.options !== html) { select.innerHTML = html; select.dataset.options = html; }
-    select.value = value || "";
-  }
+  const labels = projectLabels(projects.map((p) => ({ id: p.id, label: p.title || p.name, root: state.projectRoots?.[p.id] || "" })));
+  pickers.project.set([{ value: "all", label: `All projects (${projects.length})` }, ...projects.map((p) => ({
+    value: p.id, label: labels[p.id], detail: state.projectRoots?.[p.id] || "", badge: isDirty(p.id) ? "unsaved" : "",
+  }))], state.selectedProject || "all");
+  pickers.target.set(ctx.scopedTargets().map((t) => ({
+    value: t.id, label: t.name, detail: state.selectedProject === "all" ? state.projectTitles[t.project] || ctx.projectName(t.project) : "",
+  })), state.selectedTarget);
   $$(".rail a").forEach((a) => {
     a.classList.toggle("active", a.dataset.view === state.view);
     if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");

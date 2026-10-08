@@ -81,7 +81,7 @@ What you get:
 No server? Use browser mode:
 
 ```bash
-alfrd studio        # opens http://127.0.0.1:8080/, then Import → Open project folder
+alfrd studio        # opens http://127.0.0.1:8080/, then ⇅ Import / Export → Import… → Open project folder
 ```
 
 Full guide: [docs/studio-guide.md](https://github.com/avialxee/alfrd/blob/HEAD/docs/studio-guide.md)
@@ -134,7 +134,7 @@ Or in the Studio: **⚙ Settings → Known projects → Forget**. Forgot one by 
 
 No `alfrd.yaml` in an AVICA folder (`avica.inp`, `avica.logs/`, `reductions/`)? `alfrd serve` uses the built-in default (an AVICA manifest, `name` = folder name). `alfrd manifest default -o alfrd.yaml` writes it so you can edit it.
 
-Connect more projects: **Import → ALFRD server → Browse…** walks the server's folders (not your laptop's), marks folders with an `alfrd.yaml`, and connects one or all of them. A folder without `alfrd.yaml` connects too, with the default one.
+Connect more projects: **⇅ Import / Export → Import… → ALFRD server → Browse…** walks the server's folders (not your laptop's), marks folders with an `alfrd.yaml`, and connects one or all of them. A folder without `alfrd.yaml` connects too, with the default one.
 
 Stop the server: **Ctrl+C**, or the **⏻ Quit** button (top right, same machine only). Quit also closes the tab when the browser allows it (the tab `alfrd serve` opened).
 

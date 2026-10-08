@@ -377,7 +377,7 @@ function act(el, ctx, name, button) {
       break;
     case "more":
       ctx.menu(button, [
-        { label: "Export workflow YAML", icon: "download", run: () => document.querySelector("#btn-export").click() },
+        { label: "Export workflow YAML", icon: "download", run: () => ctx.dataItems().find((it) => it.label?.startsWith("Workflow YAML"))?.run() },
         { label: "Clear simulation", icon: "reset", run: () => { resetSimulation(); ctx.update(); } },
         ...(plansAvailable(ctx, wfProject(ctx)) ? [{ label: "Simulate in the browser (nothing runs)", icon: "play", run: () => toggleSim(ctx) }] : []),
         { label: "Open log stream", icon: "log", run: () => ctx.renderConsole() },

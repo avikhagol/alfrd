@@ -324,7 +324,7 @@ export function renderSchedule(box, ctx, project) {
     ${entry.error ? `<div class="callout fail" role="alert"><span>${esc(entry.error)}</span><button class="btn sm" data-plan="refresh">Retry</button><button class="btn sm" data-plan="dismiss-error">Dismiss</button></div>` : ""}
     ${runSwitcher(s)}
     <div class="sched-h">
-      <select class="input sm" data-plan-pick aria-label="Run">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(phaseLabel(x) + (x.working ? " · working" : ""))}</option>`).join("")}</select>
+      <select class="input sm" data-plan-pick aria-label="Run" title="${esc(`Run ${p.id} · ${phaseLabel(p)}`)}">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(phaseLabel(x) + (x.working ? " · working" : ""))}</option>`).join("")}</select>
       ${p.start_at ? "" : `<span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(RUN_STATUS[p.status] || p.status)}</span>`}
       ${p.start_at ? `<span class="badge tone-warn" title="The runner waits until then (alfrd plan start-now runs it at once)">${icon("clock")}Scheduled · starts ${esc(p.start_at.replace("T", " ").slice(0, 16))}</span>${canAct ? `<button class="btn sm primary" data-plan="start-now">${icon("play")} Run now</button>` : ""}` : ""}
       <div class="plan-bar" title="${pct}% of planned cells done"><i style="width:${pct}%"></i></div><span class="tabular small">${tot.done || 0}/${all}</span>

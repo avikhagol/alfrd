@@ -193,7 +193,7 @@ export function mount(el, ctx) {
     { label: "Import results…", icon: "upload", run: () => ctx.openImport() },
   ]));
   on(el, "click", "#ov-export", (e, b) => ctx.menu(b, [
-    ...(loopOnly(ctx) ? [] : [{ label: "Overview CSV (visible rows)", icon: "download", run: () => document.querySelector("#btn-export").click() }]),
+    ...(loopOnly(ctx) ? [] : [{ label: "Overview CSV (visible rows)", icon: "download", run: () => ctx.dataItems().find((it) => it.label?.startsWith("Overview CSV"))?.run() }]),
     ...historyItems(ctx),
   ]));
   // Run history rows act on that exact run, never the newest by default.

@@ -115,19 +115,47 @@ h5 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px
   height: 100dvh;
 }
 .topbar {
-  grid-area: top; display: flex; align-items: center; gap: 12px; padding: 0 18px;
+  grid-area: top; display: flex; align-items: center; gap: 12px; padding: 0 18px; min-height: var(--top);
   background: var(--surface); border-bottom: 1px solid var(--border); min-width: 0;
 }
-.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex-shrink: 0; }
 .brand h1 { font-size: 17px; font-weight: 650; white-space: nowrap; }
 .mode-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--subtle); border: 1px solid var(--border); font-size: 12px; color: var(--text-2); white-space: nowrap; }
 .mode-badge i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 .mode-badge.live { background: var(--accent-bg); border-color: var(--accent-border); color: var(--accent-text); }
 .mode-badge.live i { background: var(--accent); box-shadow: 0 0 0 3px rgba(99, 102, 241, .18); }
-.picker { display: inline-flex; align-items: center; gap: 6px; padding: 0 4px 0 10px; height: 34px; border: 1px solid var(--border); background: var(--subtle); border-radius: var(--r); color: var(--text-2); font-size: 13px; min-width: 0; }
-.picker select { border: 0; background: transparent; font-weight: 500; color: var(--text); padding: 4px 4px; max-width: 220px; cursor: pointer; }
-.picker select:focus { outline: none; }
-.picker:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(99, 102, 241, .15); }
+.mode-badge { flex-shrink: 0; }
+.picker { display: inline-flex; align-items: stretch; height: 34px; border: 1px solid var(--border); background: var(--subtle); border-radius: var(--r); color: var(--text-2); font-size: 13px; min-width: 0; flex-shrink: 0; overflow: hidden; }
+/* Header pickers (components/picker.js): the closed name is shortened in the middle to its max-width. */
+.picker-head, .picker-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; background: transparent; color: var(--text-2); font: inherit; cursor: pointer; min-width: 0; white-space: nowrap; }
+.picker.split .picker-head { border-right: 1px solid var(--border); }
+.picker-head:hover, .picker-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.picker-head:focus-visible, .picker-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.picker-btn:disabled { cursor: default; opacity: .7; }
+.picker-val { display: block; overflow: hidden; white-space: nowrap; font-weight: 500; color: var(--text); }
+#pick-project .picker-val { max-width: 240px; }
+#pick-target .picker-val { max-width: 200px; }
+.picker-chev { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-3); }
+.picker-pop { max-width: min(480px, calc(100vw - 16px)); }
+.picker-filter { width: 100%; margin-bottom: 6px; }
+.picker-list { max-height: 60vh; overflow: auto; outline: none; }
+.picker-list [role=option] { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.picker-list .active { background: var(--subtle); }
+.picker-opt-l { color: var(--text); overflow-wrap: anywhere; }
+.picker-list [aria-selected=true] .picker-opt-l { font-weight: 600; }
+.picker-opt-d { grid-column: 1; color: var(--text-3); font: 11px/16px var(--mono); white-space: nowrap; overflow: hidden; }
+.picker-check { grid-column: 2; grid-row: 1; width: 14px; height: 14px; align-self: center; color: var(--accent-text); }
+.picker-badge { color: var(--warn-text); font-weight: 400; }
+.picker-none { padding: 8px 10px; margin: 0; }
+@media (max-width: 1439px) {
+  .mode-badge span { display: none; }
+  .mode-badge { padding: 7px; }
+}
+@media (max-width: 1279px) {
+  .picker-l { display: none; }
+  #pick-project .picker-val { max-width: 180px; }
+  #pick-target .picker-val { max-width: 150px; }
+}
 
 .rail { grid-area: rail; display: flex; flex-direction: column; gap: 6px; padding: 12px 8px; background: var(--surface); border-right: 1px solid var(--border); }
 .rail a { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 4px; border-radius: var(--r); color: var(--text-2); text-decoration: none; font-size: 12px; font-weight: 500; }
@@ -510,7 +538,7 @@ tr:hover .path .icon-btn { visibility: visible; }
 #modal-host { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; }
 .modal-back { position: absolute; inset: 0; background: rgba(15, 23, 42, .35); }
 .modal { position: relative; width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-lg); border: 1px solid var(--border); }
-.modal-h { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.modal-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
 .modal-h h2 { font-size: 17px; }
 .modal-b { padding: 16px 20px 20px; }
 .modal-b h3 { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; }
@@ -592,8 +620,8 @@ body.console-open .toasts { bottom: calc(var(--console-h, 280px) + 50px); }
   :root { --rail: 0px; }
   .app { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr) auto var(--foot); grid-template-areas: "top" "banner" "main" "rail" "foot"; }
   .topbar { flex-wrap: wrap; padding: 8px 16px; gap: 8px; }
-  .picker select { max-width: 120px; }
-  .picker-l, .mode-badge, .topbar .vsep { display: none; }
+  .mode-badge, .topbar .vsep { display: none; }
+  #pick-project .picker-val, #pick-target .picker-val { max-width: 110px; }
   .rail { flex-direction: row; justify-content: space-around; padding: 4px; border-right: 0; border-top: 1px solid var(--border); }
   .rail a { padding: 6px; font-size: 11px; }
   .view { padding: 12px 16px; }
@@ -825,6 +853,9 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .loop-results { min-width: 0; }
 .loop-results .loop-run { min-width: 0; max-width: 100%; }
 .loop-run select { min-width: 0; width: 100%; max-width: 100%; }
+/* Native selects: a long chosen name ends in an ellipsis (the open list shows it in full; the title too). */
+select { text-overflow: ellipsis; }
+[data-plan-pick] { max-width: 340px; min-width: 0; }
 .loop-results > .mono, .loop-results .kpis { overflow-wrap: anywhere; }
 .loop-result-table .tbl { min-width: 620px; }
 /* Loop KPIs: as many columns as fit, values wrap instead of overflowing into the table below.
@@ -835,17 +866,14 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .loop-results .kpis span, .loop-results .kpis small { white-space: normal; overflow-wrap: anywhere; }
 .loop-results .loop-result-table { min-width: 0; max-width: 100%; overflow-x: auto; }
 .ps-grid > .card { min-width: 0; }
-#new-project-help { max-width: 230px; }
 .footbar #foot-mode { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #foot-logs { flex-shrink: 0; }
 @media (max-width: 1280px) {
   .app { grid-template-rows: auto auto minmax(0, 1fr) var(--foot); }
-  .topbar { flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; }
-  .picker select { max-width: 150px; min-width: 0; }
 }
 @media (max-width: 767px) {
   .app { grid-template-rows: auto auto minmax(0, 1fr) auto var(--foot); }
-  .picker select { max-width: 120px; }
+  .topbar { flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; }
   .loop-run { width: 100%; }
 }
 

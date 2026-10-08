@@ -8,7 +8,7 @@ a run selector. Use **Read responses / handoffs** to expand a response, load mor
 or copy it. No results CSV import is needed. Connect through `alfrd serve` to read
 these records.
 
-Create a project with **+ New project** beside the header project picker.
+Create a project with **Projects** (the folder icon at the left of the header project picker); its **Open existing project…** opens a folder that already has `alfrd.yaml`. The picker itself switches projects: long names are shortened in the middle, and the list shows them in full with their folder.
 In **Project settings**, use **All settings** to edit every key in `alfrd.yaml` as a
 form (checkboxes, choices, numbers, lists; known keys that are not set show their
 defaults, and ↺ removes a key so its default applies), or **Edit YAML file** for raw
@@ -87,7 +87,7 @@ Server writes need a browser on the same machine (loopback) plus a CSRF token.
 - **One project:** start `alfrd serve` in its folder (or `--project DIR`).
 - **Several projects under one folder:** start it in the parent. Every sub-folder with its own `alfrd.yaml` / `.alfrd.yaml` is opened (2 levels deep; `--discover-depth N`, `--no-discover`). Skipped: `*.ms`, `raw/`, `tmp_*`, `calibration_tables`, dot-folders, and the inside of a project. The walk stops after 2000 folders (a note is printed).
 - **No `alfrd.yaml`?** An AVICA folder (`avica.inp`, `avica.logs/`, `reductions/`) opens with the built-in default manifest (`name` = folder name; `ALFRD_DEFAULT_MANIFEST=/file.yaml` picks another). Project settings shows *default — not saved*; **Save** writes a local `alfrd.yaml`. Discovery only counts local files.
-- **Connect more:** Import → ALFRD server → **Browse…** lists the server's folders (not your laptop's — right for an SSH tunnel). Projects get a badge with their name. **Connect**, **Connect all projects here**, **Connect this folder** (no `alfrd.yaml`: uses the default; a parent's `alfrd.yaml` is never used), or **Use this folder** to fill the path. Keys: ↑/↓ move, Enter opens, Backspace goes up, Esc closes. Loopback browser only (CSRF-checked); hidden otherwise.
+- **Connect more:** ⇅ Import / Export → Import… → ALFRD server → **Browse…** lists the server's folders (not your laptop's — right for an SSH tunnel). Projects get a badge with their name. **Connect**, **Connect all projects here**, **Connect this folder** (no `alfrd.yaml`: uses the default; a parent's `alfrd.yaml` is never used), or **Use this folder** to fill the path. Keys: ↑/↓ move, Enter opens, Backspace goes up, Esc closes. Loopback browser only (CSRF-checked); hidden otherwise.
 - **Forget / Rediscover:** ⚙ Settings → Known projects. *Forget* removes a project from the list (files stay). **↻ Rediscover** brings back the serve folder, the projects found under it, and anything forgotten since the server started.
 - **Delete permanently:** the Remove dialog, after you type the project name exactly, deletes ALFRD's files — `alfrd.yaml` (and `.bak`), the plan, targets and notes files, `.alfrd/` (plans, history, locks), task bookkeeping (`<task>/.alfrd-task.json`) and runtime-run state (`runs/<id>/.alfrd`) — and forgets the project. Your task files, handoffs, worktrees, results and data stay. Tick **Delete all files and folders** (off by default) to delete the whole project folder instead; that is refused for a symlinked folder, a top-level folder, your home folder (or one containing it), the folder holding the runtime database, or a folder containing another registered project, and the dialog shows the size and warns about a git repository first. Both are refused while runs are active.
 - **Setup wizard:** a template can declare a setup wizard (`quickstart:` in alfrd.yaml). Overview → Get started → *Open the setup wizard* opens it as a dialog: the AVICA template fills in `avica.inp`, the agent-loop template the agents' commands, models, sequence and review in `alfrd.yaml`. Path fields have a Browse… button for server folders.
@@ -122,7 +122,7 @@ Slow or huge tree? A check never takes more than 1/20 of the time: a check that 
 
 ## Open a project (browser mode)
 
-1. Click **Import → Open project folder**.
+1. Click **⇅ Import / Export → Import… → Open project folder**.
 2. Pick the folder with `alfrd.yaml`.
 
 - **Chrome / Edge:** reads only what `alfrd.yaml` points to. Fast. Remembers the folder for **Re-scan** and live updates.
@@ -281,7 +281,7 @@ alfrd avica scan ROOT --bundle scan.json
 
 - Browser mode: `localStorage` of that site. **Settings → Clear saved Studio data** removes it.
 - **Settings → Reset view state** forgets filters, zoom and folded panels.
-- **Export → Studio snapshot** moves a session to another machine.
+- **⇅ Import / Export → Studio snapshot** moves a session to another machine.
 
 ---
 

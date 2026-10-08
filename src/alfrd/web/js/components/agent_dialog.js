@@ -20,7 +20,8 @@ async function openPath(ctx, onOpened, close, alert, path) {
 
 /** Open project…: server folders; projects show Open, other folders Create project here (never the default manifest). */
 export function openProject(ctx, onOpened, path, create) {
-  ctx.modal(`<header class="modal-h"><h2>Open project</h2></header><div class="modal-b"><div id="open-folders"></div><p id="create-error" class="callout fail" role="alert" hidden></p></div>`, (root, close) => {
+  ctx.modal(`<header class="modal-h"><h2>Open project</h2><span class="grow"></span><button class="btn sm" id="open-new">${icon("plus")} New project…</button><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header><div class="modal-b"><div id="open-folders"></div><p id="create-error" class="callout fail" role="alert" hidden></p></div>`, (root, close) => {
+    root.querySelector("#open-new").onclick = () => { close(); create(""); };
     const browser = mountFolderBrowser(root.querySelector("#open-folders"), { list: (p, o) => server.listFolders(p, o), start: path, close,
       connect: (paths) => openPath(ctx, onOpened, close, root.querySelector("#create-error"), paths[0]),
       create: (folder) => { close(); create(folder); } });
@@ -30,7 +31,8 @@ export function openProject(ctx, onOpened, path, create) {
 
 export async function openCreateProject(ctx, onCreated, path = "") {
   const { templates } = await server.projectTemplates();
-  ctx.modal(`<header class="modal-h"><h2>New project</h2><button class="btn" data-close>Close</button></header>
+  const canOpen = server.canBrowse();
+  ctx.modal(`<header class="modal-h"><h2>New project</h2><span class="grow"></span>${canOpen ? `<button class="btn sm" id="create-open" title="Open a folder that already has alfrd.yaml">${icon("folder")} Open existing project…</button>` : ""}<button class="btn" data-close>Close</button></header>
     <form id="create-project"><div class="modal-b">
     <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project" value="${esc(path)}"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
     <label class="field"><span>Name</span><input class="input" name="name" placeholder="Folder name"></label>
@@ -42,6 +44,7 @@ export async function openCreateProject(ctx, onCreated, path = "") {
     <p id="create-error" class="callout fail" role="alert" hidden></p></div><footer class="modal-f"><button class="btn primary" type="submit">Create project</button></footer></form>`, (root, close) => {
     let browser;
     const alert = root.querySelector("#create-error");
+    root.querySelector("#create-open")?.addEventListener("click", () => { close(); openProject(ctx, onCreated, "", (folder) => openCreateProject(ctx, onCreated, folder)); });
     const open = (folder) => openPath(ctx, onCreated, close, alert, folder);
     root.querySelector("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder(root.querySelector("#create-folders"), root.querySelector('[name="path"]'), { connect: (paths) => open(paths[0]) }); };
     root.addEventListener("beforeclose", () => browser?.destroy());

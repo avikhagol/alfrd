@@ -18,7 +18,11 @@ const avicaTemplate = parseYaml(readFileSync(path.join(root, "src/alfrd/web/asse
 defsMod.registerTemplate("avica", avicaTemplate);
 const AVICA_STEPS = Object.keys(avicaTemplate.steps).filter((k) => avicaTemplate.steps[k]?.skip !== true); // phaseshift: skipped by default
 const { parseResultCsv, buildBundle } = await import(path.join(web, "data/importers.js"));
-const { demoBundle } = await import(path.join(web, "data/demo.js"));
+const { demoBundle, DEMO_ALFRD_PROJECT } = await import(path.join(web, "data/demo.js"));
+
+test("demo: app.js keeps the demo project key without loading the demo data", () => {
+  assert.match(readFileSync(path.join(web, "app.js"), "utf8"), new RegExp(`const DEMO_ALFRD_PROJECT = "${DEMO_ALFRD_PROJECT}";`));
+});
 
 test("yaml: example manifests parse and round-trip", () => {
   for (const f of ["examples/avica_0.3/alfrd.yaml", "examples/proposed_0_2_1/alfrd.yaml"]) {
