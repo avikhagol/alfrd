@@ -54,6 +54,7 @@ _PHRASES = {
     "review.rejected": ("review rejected", "reviews rejected"),
     "handoff.published": ("handoff published", "handoffs published"),
     "limit.reached": ("limit reached", "limits reached"),
+    "plugin.hook_failed": ("plugin hook failed", "plugin hooks failed"),
 }
 
 

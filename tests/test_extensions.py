@@ -149,7 +149,7 @@ def test_safe_mode_skips_every_plugin(fake_plugins, monkeypatch):
 
 
 DEFAULT_STATE = {"disabled": [], "theme": "obsidian-orbit", "catalog_url": None, "gui_install": True,
-                 "autostart": []}
+                 "plugin_actions": True, "autostart": []}
 
 
 def test_state_reads_tolerantly_and_writes_atomically():

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alfrd-gsheet"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.10"
+# The host provides alfrd, PyYAML and typer. Do not install a second alfrd.
+dependencies = ["google-auth[requests]==2.61.0", "requests==2.32.5"]
+
+[project.entry-points."alfrd.plugins"]
+gsheet = "alfrd_gsheet:plugin"
+
+[tool.setuptools.packages.find]
+include = ["alfrd_gsheet*"]
+
+[tool.setuptools.package-data]
+alfrd_gsheet = ["web/*.js", "web/*.css"]

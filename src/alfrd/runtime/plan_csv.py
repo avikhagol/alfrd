@@ -18,6 +18,7 @@ import io
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Sequence
@@ -170,12 +171,24 @@ def atomic_write(path: str | Path, text: str) -> None:
 
 
 @contextlib.contextmanager
-def locked(lock_path: str | Path) -> Iterator[None]:
+def locked(lock_path: str | Path, *, timeout: float | None = None) -> Iterator[None]:
     path = Path(lock_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as handle:
         if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            if timeout is None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            else:
+                deadline = time.monotonic() + timeout
+                while True:
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("plan CSV lock timed out") from None
+                        time.sleep(min(0.05, remaining))
         try:
             yield
         finally:
@@ -186,14 +199,17 @@ def locked(lock_path: str | Path) -> Iterator[None]:
 def update(path: str | Path, lock_path: str | Path, steps: Sequence[str],
            cells: Mapping[tuple[str, str], str] | None = None,
            fills: Mapping[tuple[str, str], str] | None = None,
-           *, only_if: Mapping[tuple[str, str], set[str]] | None = None, **columns: str) -> PlanTable:
+           *, only_if: Mapping[tuple[str, str], set[str]] | None = None,
+           lock_timeout: float | None = None, **columns: str) -> PlanTable:
     """Set ``cells[(row_key, step)]`` and fill empty ``fills[(row_key, column)]``.
 
     ``only_if`` limits a cell change to cells whose current (normalized) value
     is in the given set, so a user's edit made meanwhile is never overwritten.
     Columns named in ``fills`` that the file lacks are not added.
+    ``lock_timeout`` optionally bounds lock acquisition (seconds); existing
+    callers keep the blocking lock. A timeout leaves the file untouched.
     """
-    with locked(lock_path):
+    with locked(lock_path, timeout=lock_timeout):
         table = read(path, steps, **columns)
         changed = False
         by_key = {r.key: r for r in table.rows}

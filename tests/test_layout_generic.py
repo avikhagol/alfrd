@@ -164,3 +164,55 @@ def test_from_steps_base_defaults_to_meta_dir():
     assert [f["path"] for f in lg._files_from_steps(spec)] == ["{meta_dir}/{target}.json"]
     assert [f["path"] for f in lg._files_from_steps(spec, "{chip_dir}/")] == ["{chip_dir}/{target}.json"]
     assert [f["path"] for f in lg._files_from_steps(spec, ".")] == ["./{target}.json"]
+
+
+def test_project_scope_evaluates_once_without_merging_folder_rows(monkeypatch):
+    """A project summary must stay one table even when the selected target spans two chips."""
+    spec = lg.spec_for(IMAGING)
+    spec["views"]["metadata"] = [{"panel": "project_summary", "scope": "project"}]
+    monkeypatch.setattr(lg, "spec_for", lambda _: spec)
+    calls = []
+
+    def evaluate(root, panel, values, _spec):
+        calls.append(dict(values))
+        return {"rows": [{"step": "reduce"}], "total": 1}
+
+    lg.register_panel("project_summary", evaluate, client=True)
+    try:
+        result = lg.view(IMAGING, {"target": "M31"})
+        assert len(result["panels"][0]["instances"]) == 1
+        assert result["panels"][0]["instances"][0] == {"where": {}, "rows": [{"step": "reduce"}], "total": 1}
+        assert calls == [{}]
+    finally:
+        lg.unregister_panel("project_summary")
+
+
+def test_auto_panels_append_once_and_ignore_failures(monkeypatch):
+    """``auto(root)`` adds a plugin panel without a views.metadata entry; listed kinds aren't added twice."""
+    spec = lg.spec_for(IMAGING)
+    listed = list(spec["views"].get("metadata") or [])
+    monkeypatch.setattr(lg, "spec_for", lambda _: spec)
+    roots = []
+
+    def auto(root):
+        roots.append(root)
+        return {"title": "Sheet", "scope": "project"} if (root / "alfrd.yaml").exists() else None
+
+    lg.register_panel("sheet_status", lambda *a: {"rows": []}, auto=auto)
+    lg.register_panel("broken_auto", lambda *a: {}, auto=lambda root: 1 / 0)
+    try:
+        result = lg.view(IMAGING, {"target": "M31"})
+        auto_panels = [p for p in result["panels"] if p.get("auto")]
+        assert [(p["panel"], p["title"], p["scope"]) for p in auto_panels] == [("sheet_status", "Sheet", "project")]
+        assert auto_panels[0]["index"] == len(listed) and auto_panels[0]["instances"] == [{"where": {}, "rows": []}]
+        assert roots == [IMAGING.resolve()]
+        assert all(not p.get("auto") for p in lg.view(IMAGING, {"target": "M31"}, name="other")["panels"])
+        spec["views"]["metadata"] = [*listed, {"panel": "sheet_status", "scope": "project", "title": "Mine"}]
+        panels = lg.view(IMAGING, {"target": "M31"})["panels"]
+        assert [p["title"] for p in panels if p["panel"] == "sheet_status"] == ["Mine"]
+    finally:
+        lg.unregister_panel("sheet_status")
+        lg.unregister_panel("broken_auto")
+    assert "sheet_status" not in lg.AUTO_PANELS and "broken_auto" not in lg.AUTO_PANELS
+    with pytest.raises(ValueError, match="auto is not callable"):
+        lg.register_panel("bad_auto", lambda *a: {}, auto="nope")

@@ -32,6 +32,7 @@ described in [status-api.md](status-api.md)).
 | `review.pending`, `review.approved`, `review.rejected` | human review of a handoff |
 | `handoff.published` | a handoff was accepted |
 | `limit.reached` | `max_runtime` or a timeout was hit |
+| `plugin.hook_failed` | a plugin's step hook raised or timed out (the step itself is unaffected) |
 
 The runner delivers them:
 

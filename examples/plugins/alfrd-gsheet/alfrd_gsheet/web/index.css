@@ -1,0 +1,53 @@
+.gsheet-summary { color: var(--text); }
+.gsheet-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.gsheet-chip { display: inline-flex; align-items: baseline; gap: 4px; border: 1px solid var(--border-strong); border-radius: var(--r); padding: 2px 7px; background: var(--surface-2); color: var(--text); }
+/* Keep text at the theme's AA contrast; status tokens accent only the border. */
+.gsheet-chip.tone-ok { border-color: var(--ok-text); }
+.gsheet-chip.tone-warn { border-color: var(--warn-text); }
+.gsheet-chip.tone-fail { border-color: var(--fail-text); }
+.gsheet-chip.tone-muted { border-color: var(--border-strong); }
+.gsheet-sheet { overflow-wrap: anywhere; margin-right: 8px; }
+.gsheet-summary a { color: var(--text); text-decoration: underline; }
+.gsheet-table caption { text-align: left; color: var(--text); font-weight: 600; padding: 8px 0; }
+.gsheet-table { min-width: 620px; }
+.gsheet-table th[scope="row"] { text-align: left; font-weight: 500; text-transform: none; letter-spacing: normal; }
+.gsheet-table th[scope="row"], .gsheet-table td:nth-child(2) { white-space: nowrap; }
+.gsheet-scroll-hint { display: none; }
+@media (max-width: 640px) { .gsheet-scroll-hint { display: block; } }
+.gsheet-command { user-select: all; overflow-wrap: anywhere; }
+.gsheet-error { color: var(--text); border-left: 3px solid var(--fail-text); padding-left: 10px; }
+.gsheet-summary :focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.gsheet-summary [hidden] { display: none; }
+/* Project card and dialogs (project_ui.js). Tokens only; status colours accent borders, text stays --text. */
+.gs-card { display: grid; gap: 10px; color: var(--text); }
+.gs-line { align-items: center; margin: 0; }
+.gs-card a { color: var(--text); text-decoration: underline; }
+.gs-chip { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r); padding: 2px 7px; background: var(--surface-2); color: var(--text); }
+.gs-validate ul, .gs-summary ul { margin: 4px 0 0; padding-left: 18px; }
+.gs-steps { display: flex; gap: 16px; list-style: decimal inside; padding: 0; margin: 0 0 12px; color: var(--text); }
+.gs-steps li[aria-current="step"] { font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+.gs-step, .gs-group { border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; margin: 0 0 12px; min-width: 0; }
+.gs-step legend, .gs-group legend { padding: 0 4px; font-weight: 600; color: var(--text); }
+.gs-num { width: 7rem; }
+.gs-scroll { overflow-x: auto; }
+.gs-rules { min-width: 900px; }
+.gs-rules caption, .gs-cells caption { text-align: left; color: var(--text); font-weight: 600; padding: 6px 0; }
+.gs-rules td { vertical-align: top; }
+.gs-rules td:nth-child(-n+3) .input { min-width: 9rem; }
+.gs-rules .input { width: 100%; }
+.gs-letter { margin-top: 4px; }
+.gs-actions { white-space: nowrap; }
+.gs-when summary { cursor: pointer; white-space: nowrap; }
+.gs-when-list { display: grid; gap: 2px; padding: 4px 0; }
+.gs-err { color: var(--text); border-left: 3px solid var(--fail-text); padding-left: 6px; margin: 4px 0 0; }
+.gs-editor [aria-invalid="true"] { border-color: var(--fail-text); box-shadow: 0 0 0 1px var(--fail-text); }
+.gs-summary:not(:empty) { border-left: 3px solid var(--fail-text); padding-left: 10px; margin-top: 8px; color: var(--text); }
+.gs-summary .link-btn { text-align: left; }
+.gs-cells del { text-decoration: line-through; }
+.gs-cells del.gs-empty { text-decoration: none; font-style: italic; }
+.gs-cells th[scope="row"] { background: none; text-align: left; font-weight: 500; text-transform: none; letter-spacing: normal; }
+.gs-choice { align-items: flex-start; margin: 6px 0; }
+.gs-editor :focus-visible, .gs-attach :focus-visible, .gs-card :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.gs-editor [hidden], .gs-attach [hidden] { display: none; }
+/* 1024 px: the template column gives way first. */
+@media (max-width: 1100px) { .gs-rules { min-width: 820px; } .gs-template .input { min-width: 7rem; } }
