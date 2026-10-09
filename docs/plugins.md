@@ -1,3 +1,5 @@
+<img src="brand/alfrd-mark.svg" alt="ALFRD" width="44" align="right">
+
 # Plugins and themes
 
 A plugin is a normal Python package that adds Studio themes, metadata panels,

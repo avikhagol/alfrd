@@ -1,3 +1,5 @@
+<img src="brand/alfrd-mark.svg" alt="ALFRD" width="44" align="right">
+
 # ALFRD Studio guide
 
 Results counts waiting turns by their latest attempt, keeps refreshing during manual responses and reviews, and offers **CSV results / collections** for imported results. Archived reply links open and scroll to the selected turn. Header controls wrap in narrow windows; remote browsers see why project creation is disabled.

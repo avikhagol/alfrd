@@ -1,3 +1,5 @@
+<img src="brand/alfrd-mark.svg" alt="ALFRD" width="44" align="right">
+
 # Full-text search
 
 Studio: Ctrl+K, then type `?` and the words (or press Tab), or the palette's

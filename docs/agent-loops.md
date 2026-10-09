@@ -1,3 +1,5 @@
+<img src="brand/alfrd-mark.svg" alt="ALFRD" width="44" align="right">
+
 # Project creation and agent loops (0.2.2)
 
 Create a project without starting an agent:

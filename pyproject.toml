@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfrd"
-version = "0.3.0.0"
+version = "0.3.1.0"
 description = "Automated Logical FRamework for Dynamic script execution (ALFRD)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -75,6 +75,9 @@ where = ["src"]
   "js/utils/*.js",
   "js/vendor/*",
   "assets/*.svg",
+  "assets/*.png",
+  "assets/*.ico",
+  "assets/*.webmanifest",
   "assets/templates/*.yaml",
   "assets/defaults/*.yaml",
 ]
