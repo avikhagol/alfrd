@@ -294,3 +294,11 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 .notify-blocked { display: flex; gap: 12px; align-items: flex-start; }
 .notify-blocked > div { flex: 1; line-height: 1.5; }
 .notify-blocked .btn { flex: none; }
+
+/* Project plugin slots and the single-modal confirmation footer. */
+.plug-section-toggle { font: inherit; color: var(--text); white-space: normal; text-align: left; }
+.plug-section-toggle::before { content: "▾"; margin-right: 8px; }
+.plug-section-toggle[aria-expanded="false"]::before { content: "▸"; }
+.plug-section-body { margin-top: 12px; }
+.plug-dialog-footer { justify-content: flex-end; }
+.plug-confirm { width: 100%; }

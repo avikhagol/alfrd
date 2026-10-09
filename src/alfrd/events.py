@@ -17,6 +17,7 @@ EVENT_KINDS: frozenset[str] = frozenset({
     "turn.started", "turn.finished", "turn.failed", "turn.retrying", "turn.fallback_model", "turn.idle",
     "review.pending", "review.approved", "review.rejected",
     "handoff.published", "limit.reached",
+    "plugin.hook_failed",
 })
 
 EVENTS_FILE = "events.jsonl"

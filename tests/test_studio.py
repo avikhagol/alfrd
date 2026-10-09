@@ -70,7 +70,7 @@ LAZY_MODULES = {
     "js/components/yaml_form.js", "js/data/yaml_form.js", "js/data/demo.js",
     "js/data/folder_scan.js",
     "js/components/settings_plugins_view.js", "js/components/plugin_jobs.js", "js/components/plugins_install_dialog.js", "js/components/plugins_browse.js", "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
-    "js/components/plugin_config.js",
+    "js/components/plugin_config.js", "js/components/plugin_dialogs.js",
 }
 
 
@@ -167,7 +167,10 @@ def test_lazy_payload_under_106kb_compressed():
     # Settings → Plugins → Configure (plugin settings form, Test, background services: plugin_config.js
     # and its CSS), loaded on the first Configure click: +2.1 KiB, measured 168,912 → 166 KiB.
     # Startup cap unchanged.
-    assert total < 166 * 1024, f"{total} bytes gzip"
+    # Project actions UI: single-modal dialog/confirmation helpers and CSS load with the
+    # plugin API; +2.5 KiB on demand, measured 171,379 bytes. Section registry is small
+    # and shared with Overview; startup stays within its existing 185 KiB cap.
+    assert total < 169 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

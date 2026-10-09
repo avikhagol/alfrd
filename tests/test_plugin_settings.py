@@ -8,11 +8,11 @@ import time
 from pathlib import Path
 
 import pytest
+from test_plugin_routes import _csrf, plugin_pkgs  # noqa: F401  (fixture)
+from test_studio import studio_app  # noqa: F401  (fixture)
 
 from alfrd import extensions
 from alfrd.extensions import Plugin, Service, SettingField, services, settings
-from test_plugin_routes import _csrf, plugin_pkgs  # noqa: F401  (fixture)
-from test_studio import studio_app  # noqa: F401  (fixture)
 
 TOKEN = "123456:SECRET-value-never-shown"
 PLUGIN = Plugin(id="demo", version="1", settings=[
@@ -262,3 +262,56 @@ def test_service_routes_start_restart_on_save_autostart_and_disable(confy):
     assert client.post("/api/studio/plugins/confy/services/nope/start", headers=csrf).status_code == 404
     client.post("/api/studio/plugins/confy/disable", headers=csrf)
     assert services.supervisor.running("confy") == []
+
+
+def test_project_check_contract_and_gates(studio_app, plugin_pkgs, tmp_path, monkeypatch):  # noqa: F811
+    from alfrd.gui import studio as studio_module
+
+    app, _ = studio_app
+    plugin_pkgs("projectcheck", '''
+from alfrd.extensions import Plugin, SettingField
+def check(root, values):
+    return "warn", "2 problems: first\\nsecond " + "x" * 200
+plugin = Plugin(id="projectcheck", version="1", check_project=check,
+                settings=[SettingField("token", required=True)])
+''')
+    plugin_pkgs("plain", "from alfrd.extensions import Plugin\nplugin = Plugin(id='plain', version='1')\n")
+    extensions.load(force=True)
+    client = app.test_client()
+    csrf = _csrf(client)
+    calls = []
+    monkeypatch.setattr(studio_module, "_project_root", lambda name: calls.append(name) or tmp_path)
+    url = "/api/studio/projects/example/plugins/projectcheck/check"
+    assert client.post(url).status_code == 403
+    assert client.post(url, headers=csrf, environ_base={"REMOTE_ADDR": "10.0.0.5"}).status_code == 403
+    assert calls == []
+    assert client.post("/api/studio/projects/example/plugins/plain/check", headers=csrf).status_code == 404
+    result = client.post(url, headers=csrf).get_json()
+    assert result["level"] == "warn" and result["text"].startswith("2 problems: first second")
+    assert len(result["text"]) == 120 and calls == ["example"]
+    # Settings missing is left to the callback (off mappings don't need credentials).
+    assert "Fill in" not in result["text"]
+    extensions.set_enabled("projectcheck", False)
+    assert client.post(url, headers=csrf).status_code == 404
+    monkeypatch.setenv("ALFRD_NO_PLUGINS", "1")
+    extensions.load(force=True)
+    assert client.post(url, headers=csrf).status_code == 404
+
+
+def test_project_check_unexpected_errors_hide_secrets(studio_app, plugin_pkgs, tmp_path, monkeypatch):  # noqa: F811
+    from alfrd.gui import studio as studio_module
+
+    app, _ = studio_app
+    plugin_pkgs("unsafecheck", '''
+from alfrd.extensions import Plugin
+def check(root, values):
+    raise RuntimeError("SECRET-CREDENTIAL")
+plugin = Plugin(id="unsafecheck", version="1", check_project=check)
+''')
+    extensions.load(force=True)
+    monkeypatch.setattr(studio_module, "_project_root", lambda _: tmp_path)
+    client = app.test_client()
+    result = client.post("/api/studio/projects/example/plugins/unsafecheck/check", headers=_csrf(client)).get_json()
+    assert result == {"level": "fail", "text": "The check failed (RuntimeError)."}
+    with pytest.raises(TypeError, match="check_project"):
+        Plugin(id="bad", version="1", check_project="not a function")

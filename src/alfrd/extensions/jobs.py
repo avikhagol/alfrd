@@ -51,10 +51,11 @@ def log_path(job_id: str) -> Path:
 
 
 def audit(action: str, plugin_id: str | None, *, source: str | None = None, version: str | None = None,
-          sha256: str | None = None, result: str, error: str | None = None) -> None:
-    """Append ``{time, user, action, id, source, version, sha256, result, error}`` to ``plugins/audit.jsonl``."""
-    line = json.dumps({"time": datetime.now(timezone.utc).isoformat(), "user": getpass.getuser(), "action": action,
-                       "id": plugin_id, "source": source, "version": version, "sha256": sha256,
+          sha256: str | None = None, result: str, error: str | None = None, **extra: str | None) -> None:
+    """Append ``{time, user, action, id, source, version, sha256, result, error}`` (plus ``extra``, e.g. a
+    project action's ``action_id`` and ``project``) to ``plugins/audit.jsonl``."""
+    line = json.dumps({**extra, "time": datetime.now(timezone.utc).isoformat(), "user": getpass.getuser(),
+                       "action": action, "id": plugin_id, "source": source, "version": version, "sha256": sha256,
                        "result": result, "error": error}, sort_keys=True)
     plugins_dir().mkdir(parents=True, exist_ok=True)
     # One short O_APPEND write per line: concurrent writers never interleave.

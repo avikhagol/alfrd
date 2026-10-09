@@ -62,7 +62,7 @@ commands, so you can always disable or remove a broken plugin.
 | `~/.local/share/alfrd/plugins/installed.json` | id, distribution, version, source, sha256 (local files), install time, owned distributions |
 | `~/.local/share/alfrd/plugins/.install.lock` | one install/remove/update at a time |
 | `~/.local/share/alfrd/themes/<id>/` | drop-in themes |
-| `~/.config/alfrd/plugins.json` | `disabled`, `theme`, `catalog_url`, `gui_install`, `autostart` |
+| `~/.config/alfrd/plugins.json` | `disabled`, `theme`, `catalog_url`, `gui_install`, `plugin_actions`, `autostart` |
 | `~/.config/alfrd/plugin-settings.json` | each plugin's settings, secrets included (mode 0600; never in `alfrd.yaml`) |
 | `~/.local/share/alfrd/plugins/services/<id>-<service>.log` | output of a plugin service started by `alfrd serve` (cut to 512 KiB past 1 MiB) |
 | `~/.local/share/alfrd/plugins/catalog.json` | validated catalog cache, normally valid for 24 hours |
@@ -134,7 +134,7 @@ Manifest fields (`alfrd.extensions.Plugin`, plugin API version `1`):
 | `version`, `title`, `description` | shown by `list` / `info` |
 | `alfrd_api` | supported plugin API versions, e.g. `">=1,<2"` (`>= <= > < == !=`, comma-separated) |
 | `requires_bin` | programs that must be on `PATH` (e.g. `["gs"]`) |
-| `panels` | `PanelSpec(kind, evaluate=None, client=False, title="")`: a `views.metadata` panel kind; `evaluate(root, panel, values, spec)` runs on the server |
+| `panels` | `PanelSpec(kind, evaluate=None, client=False, title="", auto=None)`: a `views.metadata` panel kind; `evaluate(root, panel, values, spec)` runs on the server; `auto(root)` adds it to a project on its own (see [Automatic panels](#automatic-panels)) |
 | `cli` | a `typer.Typer`, mounted as `alfrd <id> …` (core command names win; a clash is reported in `list`) |
 | `theme` | package-relative path of a `theme.css` |
 | `web`, `viewers` | package folder with `index.js`, and the viewer ids it registers (loaded by the Studio) |
@@ -142,12 +142,90 @@ Manifest fields (`alfrd.extensions.Plugin`, plugin API version `1`):
 | `settings` | `SettingField(key, label, kind="text"\|"number"\|"secret"\|"bool", required=False, help="", pattern="", placeholder="")`: a form in Settings → Plugins → **Configure** (see below) |
 | `services` | `Service(id, command=("myplugin", "run"), title="", description="")`: a long-running `alfrd <command…>` that `alfrd serve` can run as a child process |
 | `check` | `check(values) -> str`: the form's **Test** button; return a short result, raise `ValueError` with a message safe to show |
+| `check_project` | `check_project(root, values) -> (level, text)`: an explicit Studio project check; `level` is `ok`, `warn` or `fail`. Return safe plain text; `ValueError` messages may be shown, other exceptions show only their type. |
+| `step_hooks` | `StepHooks(before=None, after=None, timeout=30.0)`: called by the plan runner around each launched unit (see [Step hooks](#step-hooks)) |
+| `project_actions` | `ProjectAction(id, run, mutating=False, timeout=30.0)`: Studio calls on one project that return data or write project files (see [Project actions](#project-actions)) |
 
 A panel kind registered by a plugin is accepted in `views.metadata`
 (see [template-views.md](template-views.md)) and may take its own keys; the
 built-in kinds stay strictly validated. An unknown kind is reported with the
 list of known kinds. An evaluator that raises shows `{"error": "<kind>: …"}`
 in that panel only.
+
+Use `scope: project` for a summary independent of the selected target: its evaluator
+runs once per view request and its rows are not merged across target work folders.
+
+Project checks use `POST /studio/projects/<project>/plugins/<id>/check` through
+`fetchJSON`. The host requires authentication, loopback and CSRF before resolving
+the connected project or calling the plugin. Disabled and safe-mode plugins cannot
+run checks. The callback receives the catalog-resolved root and saved settings;
+the client cannot supply a path or override credentials. The reply is `{level, text}`,
+with whitespace collapsed and text limited to 120 characters. Unlike Settings Test,
+the callback decides whether missing settings matter (an off mapping may need none).
+
+### Automatic panels
+
+`PanelSpec(kind, …, auto=fn)` lets a panel appear without a `views.metadata`
+entry. For each metadata view, the Studio calls `auto(root)` with the project
+folder. When it returns a dict, that dict is the panel instance, e.g.
+`{"title": "Google Sheet", "scope": "project"}`. The panel is then added after the
+listed panels, as if the project's `alfrd.yaml` listed it, and its view entry
+carries `"auto": true`. `None` adds nothing. Rules:
+
+- A kind the manifest already lists is not added a second time (the listed one wins).
+- `auto` must be cheap: read the filesystem only, with no network calls. It runs on every view request.
+- An exception is logged and ignored. The rest of the view still renders.
+- A disabled plugin (also before the restart) and safe mode add nothing.
+
+### Project actions
+
+A project action is a server call that the plugin's browser code makes for one
+project. It can return structured data or write project files, unlike the
+read-only `check_project`:
+
+```python
+from alfrd.extensions import Plugin, ProjectAction
+
+def state(root, values, payload):     # root: the project folder; values: saved settings
+    return {"attached": (root / "my.yaml").exists()}
+
+def save(root, values, payload):
+    if not isinstance(payload.get("text"), str):
+        raise ValueError("Nothing to save.")          # shown to the user
+    (root / "my.yaml").write_text(payload["text"])
+    return {"saved": True}
+
+plugin = Plugin(id="myplugin", version="1", project_actions=[
+    ProjectAction("state", state),
+    ProjectAction("save", save, mutating=True, timeout=60),
+])
+```
+
+The browser calls `POST /studio/projects/<project>/plugins/<id>/actions/<action>`
+with a JSON object as the body (the `payload`, at most 256 KiB).
+
+- **Gates.** Authentication, loopback and CSRF come first, then an enabled and
+  loaded plugin (not safe mode), then a known action id. For mutating actions,
+  the `plugin_actions` policy is checked as well. Only after all of these does
+  the server resolve the project. Before that point, no plugin code runs.
+- **Results.** `run` returns a JSON-safe dict, and the reply is `{"ok": true, "data": {…}}`.
+  A `ValueError` gives `{"ok": false, "error": "<its message>"}` (HTTP 200), so its
+  text must be safe to show. Any other exception, or a result that isn't a JSON-safe
+  dict, gives `{"ok": false, "error": "The action failed (<ExcType>)."}`, and its text is never shown.
+  A reply over 2 MiB becomes `{"ok": false, "error": "The action result is too large."}`.
+- **Timeout.** `run` runs in a worker thread for at most `timeout` seconds (0 < t ≤ 600).
+  Past that, the reply is HTTP 504. Python can't stop the thread, so it finishes on
+  its own and its result is dropped. Keep your own per-request deadlines.
+- **Policy.** `"plugin_actions": false` in `plugins.json`, or `alfrd serve --no-plugin-actions`,
+  refuses every *mutating* action with HTTP 403 (`reason: "plugin_actions"`).
+  Read-only actions still run. `GET /studio/plugins` reports the effective policy as `plugin_actions`.
+  This is separate from `gui_install`, which covers installs only.
+- **Audit.** Every mutating call appends to `audit.jsonl`:
+  `action: "project_action"`, `id` (plugin), `action_id`, `project`, and
+  `result` (`ok`, `failed`, `timeout` or `refused`), plus `error`. Payload values are never recorded.
+
+Never write a project's `alfrd.yaml` from an action. Saving it stops an active plan.
+Keep plugin state in your own files.
 
 ### Settings and services
 
@@ -195,6 +273,76 @@ for cards, paging and the saved selection file.
 
 Test a plugin without the installer: `uv pip install -e alfrd-myviewer` into
 alfrd's environment, then `alfrd plugin info myviewer`.
+
+### Step hooks
+
+`step_hooks` lets a plugin act around each unit the plan runner launches (a unit
+is one step of one target, several steps in `target` mode, or several rows in
+`batch` mode):
+
+```python
+from alfrd.extensions import Plugin, StepContext, StepHooks
+
+def before(ctx: StepContext):
+    return {"snapshot": ...}          # any object; passed to after()
+
+def after(ctx: StepContext, state):
+    print(ctx.unit_id, ctx.status, ctx.cells)
+
+plugin = Plugin(id="mysync", version="1", step_hooks=StepHooks(before=before, after=after, timeout=20))
+```
+
+**When they run**
+
+- `before(ctx)` runs after the unit is recorded and its first step's plan
+  cells are `running`, right before the command is spawned. **It delays the
+  launch by at most `timeout` seconds.** Its return value is the state
+  passed to `after`.
+- `after(ctx, state)` runs after the finished unit is saved (and after its
+  `turn.finished` / `turn.failed` event). `state` is `None` when `before`
+  failed or timed out. It is also `None` for a unit that an earlier runner
+  launched and this runner re-adopted after a restart (`ctx.readopted` is
+  true then).
+- A unit that never launches gets **no call**. This covers a cell set to
+  `skip` or empty, a `blocked` cell, a step skipped after an earlier step
+  failed, and a unit whose command couldn't be built. If spawning fails
+  after `before` ran, `after` still runs, with `status == "failed"`.
+- The plan runner is the only runner path that calls hooks. The older
+  `alfrd runtime start|execute` workflow worker (runtime database, no plan
+  CSV) does not. A runner restarted by the Studio (`reconcile`) may run the
+  `after` of a re-adopted unit in the `alfrd serve` process.
+
+**Isolation.** Each call runs in a worker thread. An exception (even
+`SystemExit`) or a timeout is never raised into the runner. The runner writes
+one line to `runner.log`
+(`<unit>: plugin <id> before hook failed: <Error>: <message>`, no traceback)
+and a `plugin.hook_failed` event (`data`: `plugin`, `phase`, `error`). A
+hook that times out is abandoned: its thread keeps running in the background,
+so make your calls time out themselves. A hook never changes a step's status.
+Hooks run one plugin after another, and an `after` blocks the runner loop for
+up to its `timeout`. Keep hooks short.
+
+Safe mode (`ALFRD_NO_PLUGINS=1`, `--safe-mode`) and a disabled plugin give no
+calls. The runner re-reads the disabled list for each unit, so disabling applies
+from the next unit without restarting the plan.
+
+**`StepContext`** is a frozen, JSON-friendly view (`ctx.to_dict()`). Each
+call gets its own copy.
+
+| field | `before` | `after` | meaning |
+|---|---|---|---|
+| `project_root`, `plan_id`, `unit_id` | ✓ | ✓ | absolute project folder, plan id, unit id |
+| `mode` | ✓ | ✓ | `step`, `target` or `batch` |
+| `steps` | ✓ | ✓ | step ids the unit covers |
+| `rows` | ✓ | ✓ | `[{key, target, code, workdir}]`; `key` is the plan-CSV row key |
+| `status`, `exit_code`, `error` | | ✓ | unit outcome: `done` / `failed` / `cancelled` / `interrupted` |
+| `started`, `finished`, `duration_s` | | ✓ | ISO times and seconds |
+| `log_path` | | ✓ | absolute path of the unit's log |
+| `usage` | | ✓ | peak memory, CPU, cores, I/O, wall (`alfrd.runtime.usage.summary` keys) |
+| `agent_usage`, `total_cost_usd`, `model`, `outcome` | | ✓ | agent steps only (else `None`) |
+| `results` | | ✓ | result-CSV rows found per row key |
+| `cells` | | ✓ | `{row_key: {step: cell}}`: plan-CSV cells of the unit's rows and steps after the unit |
+| `readopted` | | ✓ | no `before` ran for this unit in this runner |
 
 ## Themes
 
@@ -351,8 +499,14 @@ function escapeText(text) {
 | `registerViewer({id, match, render})` | `match` contains file extensions, MIME types or wildcards such as `image/*`; `render(file, host)` writes DOM and may return a Promise. Newest matching registration wins. |
 | `registerPanel(kind, render)` | Register a client panel renderer `render(inst, ctx, target, extra) → HTML or Promise<HTML>`; `extra` contains `view`, `panel`, `id`, `formatFile`. Declare `PanelSpec(kind, client=True)` in Python. |
 | `registerCommand({id, label, run, ...})` | Adds a command under Plugins in the command palette; a repeated id replaces its earlier registration. |
+| `registerProjectSection({id, title, order=100, render})` | Collapsible card after Latest run on the project home (also available for loop projects). `render(project, host, ctx)` writes DOM and may return a Promise; runs on mount and project changes. Ids use `[a-z0-9_-]+`; repeated ids replace registrations. Collapse is remembered per id. All projects has no sections. Errors stay in the section and are logged under Plugins. |
+| `action(project, pluginId, actionId, payload={})` | POST a project action; resolves to its `data` or throws its safe error. HTTP errors retain the host's access, CSRF and policy handling. |
+| `dialog({title, body, actions, wide=false})` | `body` must be an HTMLElement (appended directly); `actions` are `{label, tone, run(handle)}`. Tones: `primary`, `danger`, default. Returns `{close, root, footer, setDirty, setBusy}`. Async actions disable footer buttons and block closure; failures toast. Mark a saved draft with `setDirty(false)` before `close()`. A close requested during an action runs when it finishes. Escape/backdrop/Close ask before discarding dirty edits. |
+| `confirm(text, {tone="default", confirmLabel="Confirm", cancelLabel="Cancel"}={})` | Resolves to a boolean. In an API dialog, temporarily replaces its footer with a confirmation strip and focuses Cancel. Escape/backdrop cancels that choice. Otherwise uses a small modal; no stacked modals. Text is inserted as textContent. |
 | `toast(text, tone, options?)` | Uses the Studio toast; tone examples: `ok`, `warn`, `fail`. |
 | `fetchJSON(path, {method="GET", body}={})` | Same-origin API path such as `/studio/plugins` or `/api/studio/plugins`; mutations retain loopback and CSRF checks. |
+| `project()` | Current selected project id, or the selected target's project in the All projects view; `null` when no project is selected. Read at command execution, so project switches are respected. |
+| `targets(project)` | Target names already loaded in the Studio for that project (no request); an empty list when none are loaded. |
 | `sanitize(html)` | Synchronous DOMPurify HTML sanitization; use it before inserting untrusted HTML. No sandbox is created. |
 | `convert(path, to="pdf", project?)` | Returns a Promise of a Blob; defaults to the selected project. Revoke object URLs you create when their content closes. |
 

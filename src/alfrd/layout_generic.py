@@ -23,9 +23,10 @@ else the folder name. ``{from: "avica.workdir"}`` takes a pattern list from the
 ``avica:`` block (so alfrd.yaml overrides keep working).
 
 Panel types (code): ``file_status``, ``json_fields``, ``csv_table``, ``text``,
-``image``. ``scope`` (a level name, or ``target``) decides where a panel is
+``image``. ``scope`` (a level name, ``target``, or ``project``) decides where a panel is
 evaluated: once per folder of that level, or once per target across all its
-folders (so e.g. bands are per target, not per project code).
+folders (so e.g. bands are per target, not per project code). Project summaries
+are evaluated once with no target/folder values and no row merging.
 
 JSON Schema of both blocks: ``alfrd/schemas/template_views.v1.json``.
 """
@@ -456,6 +457,8 @@ PANELS: dict[str, Evaluator | None] = {
 }
 _BUILTIN_PANELS = frozenset(PANELS)
 _KIND = re.compile(r"^[a-z][a-z0-9_]*$")
+#: Plugin panel kind -> ``auto(root) -> dict | None``: added to ``views.metadata`` without a manifest entry.
+AUTO_PANELS: dict[str, Callable[[Path], Mapping[str, Any] | None]] = {}
 
 
 def _sync_kinds() -> None:
@@ -467,10 +470,12 @@ def _sync_kinds() -> None:
 _sync_kinds()
 
 
-def register_panel(kind: str, evaluate: Evaluator | None = None, client: bool = False) -> None:
+def register_panel(kind: str, evaluate: Evaluator | None = None, client: bool = False,
+                   auto: Callable[[Path], Mapping[str, Any] | None] | None = None) -> None:
     """Add a panel kind: a server ``evaluate(root, panel, values, spec)``, or ``client=True`` (browser only).
 
-    Built-in kinds can't be replaced; registering a plugin kind again replaces it.
+    ``auto(root)`` returning a panel instance adds the panel to a project's metadata view without a
+    ``views.metadata`` entry. Built-in kinds can't be replaced; registering a plugin kind again replaces it.
     """
     if not isinstance(kind, str) or not _KIND.match(kind):
         raise ValueError(f"invalid panel kind {kind!r} (lowercase letters, digits, _)")
@@ -480,7 +485,12 @@ def register_panel(kind: str, evaluate: Evaluator | None = None, client: bool = 
         raise ValueError(f"panel {kind!r} needs an evaluate function or client=True")
     if evaluate is not None and not callable(evaluate):
         raise ValueError(f"panel {kind!r}: evaluate is not callable")
+    if auto is not None and not callable(auto):
+        raise ValueError(f"panel {kind!r}: auto is not callable")
     PANELS[kind] = evaluate
+    AUTO_PANELS.pop(kind, None)
+    if auto is not None:
+        AUTO_PANELS[kind] = auto
     _sync_kinds()
 
 
@@ -488,7 +498,27 @@ def unregister_panel(kind: str) -> None:
     """Drop a plugin panel kind (built-ins stay)."""
     if kind not in _BUILTIN_PANELS and kind in PANELS:
         del PANELS[kind]
+        AUTO_PANELS.pop(kind, None)
         _sync_kinds()
+
+
+def _auto_panels(root: Path, listed: Sequence[Any]) -> list[dict[str, Any]]:
+    """Panel instances that plugins add on their own; a kind the manifest already lists is not added twice."""
+    import logging
+
+    have = {p.get("panel") for p in listed if isinstance(p, Mapping)}
+    out = []
+    for kind, auto in list(AUTO_PANELS.items()):
+        if kind in have:
+            continue
+        try:
+            panel = auto(root)
+        except Exception:  # a plugin's auto never breaks the view
+            logging.getLogger(__name__).warning("auto panel %r failed", kind, exc_info=True)
+            continue
+        if isinstance(panel, Mapping):
+            out.append({**panel, "panel": kind, "auto": True})
+    return out
 
 
 def _evaluate(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -534,13 +564,22 @@ def view(root: str | Path, entity: Mapping[str, Any], *, name: str = "metadata")
         return out
 
     panels = []
-    for i, panel in enumerate((spec.get("views") or {}).get(name) or []):
+    listed = list((spec.get("views") or {}).get(name) or [])
+    if name == "metadata":
+        listed += _auto_panels(base, listed)
+    for i, panel in enumerate(listed):
         if not isinstance(panel, Mapping):
             continue
         scope = str(panel.get("scope") or ("workdir" if "workdir" in levels else levels[-1] if levels else "target"))
         item = {"index": i, "panel": panel.get("panel"), "title": panel.get("title") or str(panel.get("panel")),
                 "scope": scope, "instances": []}
-        if scope == "target" or scope not in levels:
+        if panel.get("auto") is True:
+            item["auto"] = True  # added by a plugin, not listed in views.metadata
+        if scope == "project":
+            # A project-wide plugin summary must not be evaluated per target folder
+            # or have its list rows concatenated by _merged.
+            item["instances"].append({"where": {}, **_evaluate(base, panel, {}, spec)})
+        elif scope == "target" or scope not in levels:
             where = {k: v for k, v in entity.items() if k != "project"}
             scoped = selected("workdir") if "workdir" in levels else selected(levels[-1]) if levels else []
             if panel.get("panel") == "csv_table" and str(panel.get("source")) == "result_csv":
