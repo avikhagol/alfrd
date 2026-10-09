@@ -1155,7 +1155,7 @@ function modal(html, setup, cls = "") {
   const esc_ = (e) => {
     if (e.key === "Escape") { close(); return; }
     if (e.key !== "Tab") return;
-    const fields = [...root.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter((el) => !el.disabled && el.getClientRects().length);
+    const fields = [...root.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter((el) => !el.disabled && !el.closest("[inert]") && el.getClientRects().length);
     const first = fields[0], last = fields.at(-1);
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }

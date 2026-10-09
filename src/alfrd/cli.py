@@ -165,7 +165,8 @@ def _startup_folder(project: str | None) -> Path:
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
                live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2,
-               token: str | None = None, no_token: bool = False, gui_install: bool = True) -> None:
+               token: str | None = None, no_token: bool = False, gui_install: bool = True,
+               plugin_actions: bool = True) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -201,6 +202,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
         # --no-gui-install: Settings → Plugins can't install/update/remove (plugins.json may also say so).
         "PLUGINS_GUI_INSTALL": gui_install,
+        # --no-plugin-actions: plugins' mutating project actions are refused (plugins.json may also say so).
+        "PLUGINS_ACTIONS": plugin_actions,
     }
     from alfrd.manifest_default import local_manifest
 
@@ -366,6 +369,9 @@ def serve(
     no_gui_install: bool = typer.Option(
         False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
     ),
+    no_plugin_actions: bool = typer.Option(
+        False, "--no-plugin-actions", help="Refuse plugin project actions that change files or external data.",
+    ),
 ):
     """Serve ALFRD Studio, backed by the runtime database."""
 
@@ -373,7 +379,7 @@ def serve(
         os.environ["ALFRD_NO_PLUGINS"] = "1"  # also reaches the debug reloader's child
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
                discover=discover, discover_depth=discover_depth, token=token, no_token=no_token,
-               gui_install=not no_gui_install)
+               gui_install=not no_gui_install, plugin_actions=not no_plugin_actions)
 
 
 @alfrd_cli.command()
@@ -391,13 +397,16 @@ def gui(
     no_gui_install: bool = typer.Option(
         False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
     ),
+    no_plugin_actions: bool = typer.Option(
+        False, "--no-plugin-actions", help="Refuse plugin project actions that change files or external data.",
+    ),
 ):
     """Alias for ``alfrd serve``."""
 
     if safe_mode:
         os.environ["ALFRD_NO_PLUGINS"] = "1"
     _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token,
-               gui_install=not no_gui_install)
+               gui_install=not no_gui_install, plugin_actions=not no_plugin_actions)
 
 
 @alfrd_cli.command()

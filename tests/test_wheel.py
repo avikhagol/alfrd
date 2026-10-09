@@ -111,7 +111,7 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
 
     install = [UV, "pip", "install", "--python", str(python)] if UV else [str(python), "-m", "pip", "install", "--disable-pip-version-check"]
     subprocess.run(
-        [*install, f"{built_wheel}[gui]"],
+        [*install, f"{built_wheel}"],
         cwd=tmp_path,
         check=True,
         capture_output=True,

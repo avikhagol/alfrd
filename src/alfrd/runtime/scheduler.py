@@ -1055,6 +1055,73 @@ class Runner:
         self.delayed: list[dict[str, Any]] = []  # rows whose next step waits for its ``after`` delay
         self.limit_reported = False  # limit.reached sent for the plan's total runtime
         self.notifier = None  # alfrd.notify.Dispatcher while _run delivers notifications
+        self.hook_states: dict[str, dict[str, Any]] = {}  # unit id → {plugin id: before() state}
+
+    # -- plugin step hooks -----------------------------------------------
+    def step_context(self, unit: Mapping[str, Any], *, after: bool) -> Any:
+        """The :class:`alfrd.extensions.StepContext` of ``unit`` (``after`` adds the outcome and cells)."""
+        from alfrd.extensions import StepContext
+
+        keys = list(unit.get("rows") or [unit.get("row")])
+        table = self.table()
+        rows = []
+        for key in keys:
+            row = table.row(key) if key else None
+            rows.append({"key": str(key or ""), "target": row.target if row else str(unit.get("target") or ""),
+                         "code": row.code if row else str(unit.get("code") or ""),
+                         "workdir": row.workdir if row else str(unit.get("workdir") or "")})
+        base = dict(project_root=str(self.folder.root), plan_id=self.folder.id, unit_id=str(unit["id"]),
+                    mode=str(unit.get("mode") or "step"), steps=list(unit.get("steps") or []), rows=rows)
+        if not after:
+            return StepContext(**base)
+        started, finished = _parse_stamp(unit.get("started")), _parse_stamp(unit.get("finished"))
+        cells = {}
+        for key in keys:
+            row = table.row(key) if key else None
+            if row is not None:
+                cells[row.key] = {s: row.cell(s) for s in unit.get("steps") or []}
+        return StepContext(
+            **base, status=unit.get("status"), exit_code=unit.get("exit_code"), error=unit.get("error"),
+            started=unit.get("started"), finished=unit.get("finished"),
+            duration_s=(finished - started).total_seconds() if started and finished else None,
+            log_path=str(self.folder.root / unit["log"]) if unit.get("log") else None,
+            usage=dict(unit.get("usage") or {}), agent_usage=unit.get("agent_usage"),
+            total_cost_usd=unit.get("total_cost_usd"), model=unit.get("model"), outcome=unit.get("outcome"),
+            results=dict(unit.get("results") or {}), cells=cells, readopted=unit["id"] not in self.hook_states,
+        )
+
+    def _hook_failures(self, unit: Mapping[str, Any], failures: Sequence[Any]) -> None:
+        for failure in failures:
+            self.log(failure.line(unit["id"]))
+            self.event("plugin.hook_failed", history=False, unit=unit, plugin=failure.plugin, phase=failure.phase,
+                       error=failure.error)
+
+    def run_before_hooks(self, unit: dict[str, Any], active: list) -> None:
+        """Plugins' ``before`` hooks for a unit about to spawn (each bounded by its timeout; never raises)."""
+        from alfrd.extensions.step_hooks import call_before
+
+        try:
+            states, failures = call_before(self.step_context(unit, after=False), active)
+        except Exception as exc:  # noqa: BLE001 - a hook never stops a launch
+            self.log(f"{unit['id']}: step hooks skipped: {exc}")
+            return
+        self.hook_states[unit["id"]] = states
+        self._hook_failures(unit, failures)
+
+    def run_after_hooks(self, unit: dict[str, Any]) -> None:
+        """Plugins' ``after`` hooks for a finished unit (``None`` state when this runner didn't launch it)."""
+        from alfrd.extensions.step_hooks import call_after, hooks
+
+        try:
+            active = hooks()
+            if not active:
+                return
+            ctx = self.step_context(unit, after=True)
+            failures = call_after(ctx, self.hook_states.pop(unit["id"], None), active)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"{unit['id']}: step hooks skipped: {exc}")
+            return
+        self._hook_failures(unit, failures)
 
     # -- helpers ---------------------------------------------------------
     def log(self, text: str) -> None:
@@ -1577,6 +1644,15 @@ class Runner:
         if "PYTHONPATH" in wanted:  # alfrd.yaml sets the command's PYTHONPATH itself
             process_env[ORIG_PYTHONPATH] = str(wanted["PYTHONPATH"])
         process_env = _alfrd_env(process_env)
+        from alfrd.extensions.step_hooks import hooks
+
+        active_hooks = hooks()
+        if active_hooks:
+            # Plugins see the unit recorded and its cells running before the command starts.
+            self.folder.save_unit(unit)
+            first = spec.steps[0]
+            self.set_cells({(r.key, first): pc.RUNNING for r in cells_rows}, only_if={(r.key, first): {pc.TODO} for r in cells_rows})
+            self.run_before_hooks(unit, active_hooks)
         with open(log_path, "a", encoding="utf-8") as log:
             log.write(f"# alfrd plan {self.folder.id} · {spec.target or 'batch'} · {', '.join(spec.steps)} · {now_iso()}\n")
             log.write(f"# cwd {cwd}\n$ {' '.join(argv)}\n")
@@ -1625,6 +1701,8 @@ class Runner:
                 self.event("turn.failed", history=False, unit=unit, status="failed", error=str(exc), cannot_start=True)
                 first = spec.steps[0]
                 self.set_cells({(r.key, first): pc.FAILED for r in cells_rows})
+                if unit["id"] in self.hook_states:  # before() ran: let the plugins see how it ended
+                    self.run_after_hooks(unit)
                 self.after_failure(spec.rows, first)
                 return 0
         unit.update(pid=process.pid, pgid=process.pid, proc_start=proc_start(process.pid))
@@ -2017,6 +2095,7 @@ class Runner:
         self.log(f"{unit['id']}: {status} (exit {exit_code})")
         self.event("turn.failed" if status == "failed" else "turn.finished", history=False, unit=unit, status=status,
                    exit_code=exit_code, error=error, outcome=unit.get("outcome"), adopted=adopted)
+        self.run_after_hooks(unit)
         if status == "failed" and failed_step:
             rows = [r for r in (self.table().row(k) for k in unit.get("rows") or [unit["row"]]) if r]
             self.after_failure(rows, failed_step)

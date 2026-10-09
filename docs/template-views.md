@@ -26,7 +26,15 @@ block (`{from: avica.workdir}`).
 
 `vars` are extra placeholders (a string pattern, or `{from: avica.x, prefix: …}`).
 Each panel has a `panel` type, a `title` and a `scope`: a hierarchy level (one
-instance per folder, shown as tabs) or `target` (one merged instance).
+instance per folder, shown as tabs), `target` (one merged instance), or `project`
+(one instance evaluated without target/folder values and without merging rows).
+Use `project` for plugin summaries such as Google Sheet sync history.
+
+A plugin may also add its panel on its own (`PanelSpec(auto=…)`, see
+[plugins.md](plugins.md#automatic-panels)). For example, the Google Sheet panel
+appears for every project that has an `alfrd.gsheet.yaml`. Listing it here is
+optional. If you do list it, your entry (title, scope) is used instead of the
+plugin's, and the panel is not added twice.
 
 | panel | shows | options |
 |---|---|---|

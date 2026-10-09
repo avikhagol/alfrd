@@ -8,6 +8,7 @@ import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
 import { openRunDialog, plansAvailable, planOf, loadPlan, RUN_STATUS } from "./plans.js";
 import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
+import { renderProjectSections } from "./project_sections.js";
 import { scoped } from "../data/workspace.js";
 
 // Remembered in this browser until Settings → "Reset view state".
@@ -376,9 +377,10 @@ export function renderHome(el, ctx) {
   // Setup/run summary only for the selected project; All projects never borrows one.
   const project = ctx.activeProject ? ctx.activeProject() : ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null;
   const box = $("#ov-home", el);
-  if (!project) { box.innerHTML = ""; return; }
+  const sectionFocus = globalThis.document?.activeElement?.closest?.("[data-plugin-section]") ? document.activeElement : null;
+  if (!project) { box.innerHTML = ""; renderProjectSections(box, null, ctx); return; }
   if (plansAvailable(ctx, project) && !homeAsked.has(project)) { homeAsked.add(project); loadPlan(ctx, project, { quiet: true }); }
-  if (isLoopProject(ctx, project)) { box.innerHTML = ""; return; } // its run history shows setup, latest and active runs
+  if (isLoopProject(ctx, project)) { box.innerHTML = ""; renderProjectSections(box, project, ctx); if (sectionFocus?.isConnected) sectionFocus.focus({ preventScroll: true }); return; } // its run history shows setup, latest and active runs
   const hasSteps = ctx.state.workflow.steps.length > 0, hasTargets = ctx.state.targets.some((t) => t.project === project);
   const run = planOf(project)?.plan;
   // Fold / dismiss only once the Overview has rows; before that the card is the way in.
@@ -395,6 +397,8 @@ export function renderHome(el, ctx) {
     <li>${hasTargets ? "✓" : "②"} <button class="link-btn" data-home-targets>Add targets</button></li>
     <li>${run ? "✓" : "③"} <button class="link-btn" data-home-run="${esc(project)}" ${hasSteps && hasTargets ? "" : "disabled"}>Start a run</button></li></ol></section>` : ""}
     ${run ? `<section class="card setup-card"><div class="row gap wrap"><h2>Latest run</h2><span class="mono">Run ${esc(run.id)}</span><span>${esc(run.start_at ? "Scheduled" : RUN_STATUS[run.status] || run.status)}</span><span class="grow"></span><button class="btn" data-home-open="${esc(project)}">Open run</button><a class="btn primary" href="#/results">View results</a></div></section>` : ""}`;
+  renderProjectSections(box, project, ctx);
+  if (sectionFocus?.isConnected) sectionFocus.focus({ preventScroll: true });
 }
 
 function renderHead(el, ctx) {

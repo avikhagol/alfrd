@@ -4,6 +4,9 @@ import { server } from "../data/server.js";
 import { registerViewer, setConverters, convertFile } from "./viewers.js";
 import { registerPanel } from "./panels.js";
 
+import { registerProjectSection } from "./project_sections.js";
+import { dialog, confirm } from "./plugin_dialogs.js";
+
 export const pluginErrors = [];
 const activated = new Set();
 const reported = new Set();
@@ -17,6 +20,13 @@ export async function fetchJSON(path, { method = "GET", body } = {}) {
   const result = await response.json();
   if (!response.ok) throw new Error(result?.error?.message || `${response.status} ${response.statusText}`);
   return result;
+}
+
+export async function action(project, pluginId, actionId, payload = {}) {
+  const parts = [project, pluginId, actionId].map(encodeURIComponent);
+  const result = await fetchJSON(`/studio/projects/${parts[0]}/plugins/${parts[1]}/actions/${parts[2]}`, { method: "POST", body: payload });
+  if (!result.ok) throw new Error(result.error || "The action failed.");
+  return result.data;
 }
 
 export const fetchPlugins = () => fetchJSON("/studio/plugins");
@@ -65,7 +75,17 @@ export function api(ctx, purify) {
   const commands = [];
   let provider = false;
   return {
-    registerViewer, registerPanel,
+    registerViewer, registerPanel, action,
+    registerProjectSection(spec) {
+      registerProjectSection(spec, (message) => {
+        const detail = `project section: ${message}`;
+        if (!pluginErrors.some((error) => error.id === spec.id && error.message === detail)) {
+          pluginErrors.push({ id: spec.id, title: spec.title, message: detail });
+        }
+      });
+    },
+    dialog: (options) => dialog(ctx, options),
+    confirm: (text, options) => confirm(ctx, text, options),
     registerCommand(command) {
       if (!command?.id || !command.label || typeof command.run !== "function") throw new TypeError("registerCommand({id,label,run})");
       const index = commands.findIndex((c) => c.id === command.id);
@@ -74,6 +94,9 @@ export function api(ctx, purify) {
       if (!provider) { ctx.palette.register(() => commands); provider = true; }
     },
     toast: (...args) => ctx.toast(...args), fetchJSON,
+    project: () => ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : ctx.target()?.project || null,
+    /** Target names already loaded for a project (no request). */
+    targets: (project) => (ctx.state.targets || []).filter((t) => t.project === project).map((t) => t.name).filter(Boolean),
     sanitize: (html) => purify.sanitize(html, { USE_PROFILES: { html: true } }),
     convert: (path, to = "pdf", project = ctx.state.selectedProject) => convertFile(project, path, to),
   };

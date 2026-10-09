@@ -1,5 +1,6 @@
-"""Studio plugin routes: the list, enable/disable, the theme, plugin browser files, and
-each plugin's settings and services (``/studio/plugins/<id>/config``).
+"""Studio plugin routes: the list, enable/disable, the theme, plugin browser files,
+each plugin's settings and services (``/studio/plugins/<id>/config``), and its project
+checks and actions (``/studio/projects/<project>/plugins/<id>/…``).
 
 Every route sits behind the access token (``studio_api`` / ``studio`` blueprints);
 the mutations also pass ``require_local_csrf`` (loopback + same origin + CSRF).
@@ -92,7 +93,8 @@ def plugins_list():
     # ``job``: the running (or last) plugin job, so a reloaded Studio can show its progress.
     job = jobs.runner.get(jobs.runner.last) if jobs.runner.last else None
     return jsonify(plugins=[{**_entry(r, disabled), "managed": r.id in inventory} for r in _records()], theme=state["theme"], themes=_themes(),
-                   safe_mode=extensions.safe_mode(), gui_install=gui_install(state), job=job)
+                   safe_mode=extensions.safe_mode(), gui_install=gui_install(state),
+                   plugin_actions=plugin_actions(state), job=job)
 
 
 @studio_api.get("/studio/plugins/catalog")
@@ -316,6 +318,133 @@ def plugin_check(plugin_id: str):
 _SERVICE_ACTIONS = ("start", "stop", "restart", "autostart-on", "autostart-off")
 
 
+@studio_api.post("/studio/projects/<project_name>/plugins/<plugin_id>/check")
+def plugin_project_check(project_name: str, plugin_id: str):
+    """Read-only project check, gated before resolving the project or calling plugin code."""
+    from alfrd.extensions import settings
+    from alfrd.gui.studio import _project_root
+
+    require_local_csrf()
+    plugin, denied = _configurable(plugin_id)
+    if denied:
+        return denied
+    if plugin.check_project is None:
+        return _json_error(LookupError(f"plugin {plugin_id!r} has no project check"), 404)
+    root = _project_root(project_name)
+    try:
+        level, text = plugin.check_project(root, settings.values(plugin_id))
+        if level not in ("ok", "warn", "fail") or not isinstance(text, str):
+            raise TypeError("invalid project check result")
+    except ValueError as exc:  # callback contract: ValueError messages are safe to show
+        level, text = "fail", str(exc)
+    except Exception as exc:  # noqa: BLE001 - never expose secrets in arbitrary library errors
+        level, text = "fail", f"The check failed ({type(exc).__name__})."
+    return jsonify(level=level, text=" ".join(text.split())[:120])
+
+
+#: Project actions: the request body (the payload) and the reply are capped.
+MAX_ACTION_PAYLOAD = 256 * 1024
+MAX_ACTION_RESULT = 2 * 1024 * 1024
+
+
+def plugin_actions(state: dict | None = None) -> bool:
+    """Mutating project actions are on unless ``alfrd serve --no-plugin-actions`` or ``"plugin_actions": false``."""
+    state = state or extensions.read_state()
+    return bool(current_app.config.get("PLUGINS_ACTIONS", True) and state["plugin_actions"])
+
+
+def _run_action(action: extensions.ProjectAction, root: Path, values: dict, payload: dict) -> tuple[bool, object]:
+    """``(finished, (data, error))``: ``action.run`` in a worker thread, waited for at most its timeout.
+
+    A timed-out worker can't be stopped; it finishes (or fails) on its own and its result is dropped.
+    """
+    import threading
+
+    box: dict = {}
+
+    def work() -> None:
+        try:
+            box["data"] = action.run(root, values, payload)
+        except BaseException as exc:  # noqa: BLE001 - reported to the caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=work, name=f"plugin-action-{action.id}", daemon=True)
+    worker.start()
+    worker.join(float(action.timeout))
+    if worker.is_alive():
+        return False, (None, None)
+    return True, (box.get("data"), box.get("error"))
+
+
+@studio_api.post("/studio/projects/<project_name>/plugins/<plugin_id>/actions/<action_id>")
+def plugin_project_action(project_name: str, plugin_id: str, action_id: str):
+    """Run a plugin's project action with the JSON body as payload: ``{ok, data}`` or ``{ok: false, error}``.
+
+    Gated (CSRF/loopback, an active plugin, a known action, the ``plugin_actions`` policy for mutating ones)
+    before the project is resolved or any plugin code runs. Mutating calls are audited, without payload values.
+    """
+    import json
+
+    from alfrd.extensions import settings
+    from alfrd.gui.studio import _project_root
+
+    require_local_csrf()
+    plugin, denied = _configurable(plugin_id)
+    if denied:
+        return denied
+    action = next((a for a in plugin.project_actions if a.id == action_id), None)
+    if action is None:
+        return _json_error(LookupError(f"plugin {plugin_id!r} has no project action {action_id!r}"), 404)
+
+    def audit(result: str, error: str | None = None) -> None:
+        if action.mutating:
+            from alfrd.extensions import jobs
+
+            try:
+                jobs.audit("project_action", plugin_id, result=result, error=error, action_id=action_id,
+                           project=project_name)
+            except OSError:
+                pass
+
+    if action.mutating and not plugin_actions():
+        audit("refused", "plugin actions are turned off")
+        return _json_error(PermissionError("Plugin actions that change files are turned off on this server."), 403,
+                           reason="plugin_actions")
+    raw = request.get_data(cache=False)
+    if len(raw) > MAX_ACTION_PAYLOAD:
+        return _json_error(ValueError(f"The request is larger than {MAX_ACTION_PAYLOAD // 1024} KiB."), 413)
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        return _json_error(ValueError("expected a JSON object"), 400)
+    root = _project_root(project_name)
+    finished, (data, error) = _run_action(action, root, settings.values(plugin_id), payload)
+    if not finished:
+        audit("timeout", f"timed out after {action.timeout:g} s")
+        return _json_error(TimeoutError(f"The action took longer than {action.timeout:g} s."), 504)
+    if error is None and not isinstance(data, dict):
+        error = TypeError("project action result must be a dict")
+    body = None
+    if error is None:
+        try:
+            body = json.dumps({"ok": True, "data": data}, allow_nan=False)
+        except (TypeError, ValueError) as exc:  # not JSON-safe: a plugin bug, never its text
+            error = TypeError(type(exc).__name__)
+    if error is None and len(body) > MAX_ACTION_RESULT:
+        message = "The action result is too large."
+    elif isinstance(error, ValueError):  # the contract: ValueError messages are safe to show
+        message = " ".join(str(error).split())[:500] or "The action failed."
+    elif error is not None:  # never expose secrets in arbitrary library errors
+        message = f"The action failed ({type(error).__name__})."
+    else:
+        audit("ok")
+        return current_app.response_class(body, mimetype="application/json")
+    audit("failed", message)
+    return jsonify(ok=False, error=message)
+
+
 @studio_api.post("/studio/plugins/<plugin_id>/services/<service_id>/<action>")
 def plugin_service(plugin_id: str, service_id: str, action: str):
     """Start, stop or restart a plugin service, or turn its start-with-the-server on or off."""
@@ -428,5 +557,6 @@ def plugin_convert(project_name: str):
     return response
 
 
-__all__ = ["plugin_check", "plugin_config", "plugin_config_save", "plugin_convert", "plugin_file", "plugin_service",
+__all__ = ["plugin_check", "plugin_config", "plugin_config_save", "plugin_convert", "plugin_file", "plugin_project_action", "plugin_project_check",
+           "plugin_service",
            "plugin_service_log", "plugins_install", "plugins_job", "plugins_list", "plugins_toggle", "theme_set"]
