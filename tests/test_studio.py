@@ -127,7 +127,10 @@ def test_lazy_payload_under_106kb_compressed():
     # history, notes, usage, step picker, panels) load here, not at startup.
     startup = _startup_files()
     # Agent/model/review and task editors add ~3 KiB on demand; startup cap unchanged.
-    total = sum(_gz(p) for p in _web_files() if p.resolve() not in startup)
+    # Raster icons (favicon PNG/ICO, touch and manifest icons) are fetched by the browser
+    # for tabs and home screens, not by the Studio code, so they are not part of this budget.
+    total = sum(_gz(p) for p in _web_files()
+                if p.resolve() not in startup and p.suffix not in {".png", ".ico"})
     # Loop result cards add ~2 KiB on demand. Run grids, the removal dialog and the
     # Jobs tray load here. PM approved 76 KiB for these required features;
     # the previous 72 KiB cap was exceeded by 2,741 bytes before final review.
