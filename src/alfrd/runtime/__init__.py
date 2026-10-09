@@ -6,7 +6,7 @@ _LAZY = {
     ".models": ("Artifact", "AuditEvent", "Dataset", "Project", "Run", "StepDefinition", "StepExecution", "WorkflowDefinition",),
     ".matrix": ("MATRIX_STATUSES", "Matrix", "MatrixCell", "MatrixQueryService", "MatrixReader", "MatrixRow", "MatrixSummary", "cell_detail", "export_matrix_csv", "export_matrix_details_csv",),
     ".protocols": ("RuntimeOperations", "StepWorker",),
-    ".service": ("DuplicateRunError", "InvalidTransition", "ParameterValidationError", "RuntimeNotFound", "RuntimeService", "Status",),
+    ".service": ("DuplicateRunError", "InvalidTransition", "ParameterValidationError", "ProjectFolderTaken", "RuntimeNotFound", "RuntimeService", "Status",),
     ".store": ("SCHEMA_VERSION", "RuntimeStore", "SchemaVersionError",),
     ".worker": ("LocalSubprocessWorker", "run_workflow",),
 }
@@ -48,6 +48,7 @@ __all__ = [
     "Project",
     "Run",
     "run_workflow",
+    "ProjectFolderTaken",
     "RuntimeNotFound",
     "RuntimeOperations",
     "RuntimeService",

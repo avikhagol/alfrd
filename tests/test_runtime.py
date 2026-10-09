@@ -17,7 +17,7 @@ from alfrd.runtime import (
     Status,
     run_workflow,
 )
-from alfrd.runtime.service import DuplicateRunError, ParameterValidationError
+from alfrd.runtime.service import DuplicateRunError, ParameterValidationError, ProjectFolderTaken
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def test_schema_and_complete_object_graph(runtime, tmp_path):
     dataset = service.create_dataset(project.id, "observation-1", uri="file:///input")
     run = service.create_run(workflow.id, dataset.id)
 
-    assert store.schema_version == 3
+    assert store.schema_version == 4
     assert run.status == Status.PENDING.value
     assert [step.step_definition.key for step in run.step_executions] == ["prepare", "finish"]
     manifest = json.loads((Path(run.working_directory) / ".alfrd" / "run.json").read_text())
@@ -99,10 +99,10 @@ def test_v1_database_migrates_project_identity(tmp_path):
     store = RuntimeStore(database)
     store.initialize()
     project = RuntimeService(store).get_project_by_name("legacy")
-    assert store.schema_version == 3
+    assert store.schema_version == 4
     assert project.identifier.endswith(".legacy-project.legacy")
-    renamed = RuntimeService(store).get_project_by_name("renamed")
-    assert renamed.identifier.endswith(".legacy-project.renamed")
+    # v1 let a renamed manifest register the folder twice; v4 keeps one row per folder.
+    assert [p.id for p in RuntimeService(store).list_projects()] == ["legacy-id"]
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -131,8 +131,65 @@ def test_v2_path_identifier_gains_manifest_name(tmp_path):
     store = RuntimeStore(database)
     store.initialize()
     project = RuntimeService(store).get_project_by_name("science")
-    assert store.schema_version == 3
+    assert store.schema_version == 4
     assert project.identifier.endswith(".project.science")
+
+
+def test_v3_folder_duplicates_merge_into_one_project(tmp_path):
+    database = tmp_path / "v3.sqlite"
+    root = tmp_path / "project"
+    store = RuntimeStore(database)
+    store.initialize()
+    service = RuntimeService(store)
+    old = service.create_project("old-name", root)
+    old_flow = service.create_workflow(old.id, "reduce", [{"key": "a", "command": ["true"]}])
+    service.create_dataset(old.id, "target-1")
+    store.close()
+    # Recreate a v3 database: no folder index, and a second row for the renamed manifest.
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP INDEX ux_runtime_projects_root_path")
+        connection.execute("UPDATE alfrd_schema_versions SET version = 3")
+    store = RuntimeStore(database)
+    service = RuntimeService(store)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO runtime_projects VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("new-id", old.identifier.replace("old-name", "new-name"), "new-name", str(root.resolve()), "renamed",
+             "2999-01-01 00:00:00", "2999-01-01 00:00:00"),
+        )
+    new_flow = service.create_workflow("new-id", "reduce", [{"key": "b", "command": ["true"]}])
+    service.create_dataset("new-id", "target-1")
+    service.create_dataset("new-id", "target-2")
+
+    store.initialize()
+    assert store.schema_version == 4
+    [project] = service.list_projects()
+    assert (project.id, project.name, project.description) == (old.id, "new-name", "renamed")
+    assert project.identifier.endswith(".project.new-name")
+    with sqlite3.connect(database) as connection:
+        versions = dict(connection.execute("SELECT id, version FROM workflow_definitions WHERE project_id = ?", (old.id,)))
+        datasets = sorted(r[0] for r in connection.execute("SELECT external_id FROM datasets WHERE project_id = ?", (old.id,)))
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert versions == {old_flow.id: 1, new_flow.id: 2}
+    assert datasets == ["target-1", "target-2"]
+    with pytest.raises(sqlite3.IntegrityError):
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "INSERT INTO runtime_projects VALUES ('x', 'x', 'x', ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                (str(root.resolve()),),
+            )
+
+
+def test_one_project_per_folder(runtime, tmp_path):
+    _, service = runtime
+    first = service.create_project("first", tmp_path / "shared")
+    with pytest.raises(ProjectFolderTaken) as error:
+        service.create_project("second", tmp_path / "shared")
+    assert error.value.existing.id == first.id
+    (tmp_path / "shared" / "alfrd.yaml").write_text("name: second\nentrypoint: []\n")
+    with pytest.raises(ProjectFolderTaken):
+        service.register_manifest(tmp_path / "shared" / "alfrd.yaml")
+    assert [p.name for p in service.list_projects()] == ["first"]
 
 
 def test_transitions_audit_artifact_and_manifest(runtime, tmp_path):

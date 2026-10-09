@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from alfrd.manifest import ProjectManifest, load_manifest as load_project_manifest, parse_manifest
 
@@ -46,6 +46,17 @@ class InvalidTransition(ValueError):
 
 class RuntimeNotFound(LookupError):
     pass
+
+
+class ProjectFolderTaken(ValueError):
+    """Raised when a folder that already holds a registered project is registered again."""
+
+    def __init__(self, existing: Project) -> None:
+        self.existing = existing
+        super().__init__(
+            f"{existing.root_path} already holds project {existing.name!r} ({existing.identifier}); "
+            "one folder holds one ALFRD project"
+        )
 
 
 class DuplicateRunError(RuntimeError):
@@ -138,12 +149,20 @@ class RuntimeService:
         root = Path(root_path).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         with self.store.session() as session:
+            self._claim_folder(session, root)
             project = Project(identifier=project_identifier(root, name), name=name, root_path=str(root), description=description)
             session.add(project)
             session.flush()
             self._audit_entity(session, "project", project.id, "created")
             session.expunge(project)
             return project
+
+    @staticmethod
+    def _claim_folder(session: Session, root: Path) -> None:
+        existing = session.scalar(select(Project).where(Project.root_path == str(root)))
+        if existing is not None:
+            session.expunge(existing)
+            raise ProjectFolderTaken(existing)
 
     def list_projects(self) -> list[Project]:
         with self.store.session() as session:
@@ -265,6 +284,7 @@ class RuntimeService:
         # One transaction: a failed workflow must not strand a partially
         # connected project that would be mistaken for an idempotent retry.
         with self.store.session() as session:
+            self._claim_folder(session, root)
             project = Project(
                 identifier=project_identifier(root, document.name), name=document.name, root_path=str(root),
                 description=description if isinstance(description, str) else None,
