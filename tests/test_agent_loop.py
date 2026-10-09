@@ -188,6 +188,26 @@ def test_pause_manual_response_and_resume(project):
     assert folder.load()["status"] == "finished"
 
 
+@pytest.mark.parametrize("action,status", [("resume", "running"), ("cancel", "cancelled")])
+def test_control_waits_out_a_runner_that_is_only_exiting(project, action, status):
+    fcntl = pytest.importorskip("fcntl")
+    import threading
+    folder = scheduler.create_plan(project)
+    plan = folder.load()
+    plan["status"] = "paused"
+    plan["runner"] = {**(plan.get("runner") or {}), "stopped": "now"}
+    folder.save(plan)
+    # The runner has saved its final status but still holds the lock while it exits.
+    lock = open(folder.lock_file, "a+")
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    exits = threading.Timer(.3, lock.close)
+    exits.start()
+    try:
+        assert scheduler.control(project, folder.id, action, spawn=False)["status"] == status
+    finally:
+        exits.join()
+
+
 def test_runner_death_keeps_prompt_and_handoff(project):
     (project / "hold").touch()
     folder = scheduler.create_plan(project)
