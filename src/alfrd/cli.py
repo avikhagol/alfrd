@@ -219,12 +219,11 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     # only those (unless --all-projects).
     scope = [i for i, _ in discovered] or ([config["STUDIO_DEFAULT_PROJECT"]] if config["STUDIO_DEFAULT_PROJECT"] else [])
     config["STUDIO_PROJECTS"] = None if all_projects or not scope else scope
-    # Identifiers are location keys; print the alfrd.yaml names.
-    others = [p.name for p in service.list_projects() if p.identifier not in scope]
-    if config["STUDIO_PROJECTS"] and others:
-        print(f"Also remembered in {database}: {', '.join(others)} (show them with --all-projects; remove with `alfrd projects forget NAME`).")
-    elif not scope and others:
-        print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
+    if not scope:
+        # Identifiers are location keys; print the alfrd.yaml names.
+        others = [p.name for p in service.list_projects()]
+        if others:
+            print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
     from alfrd.gui import auth
 
     # One token and session secret per server. Under --debug the reloader
