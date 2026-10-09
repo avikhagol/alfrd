@@ -923,6 +923,20 @@ def start_now(root: str | Path, plan_id: str) -> dict[str, Any]:
     return folder.load()
 
 
+def _runner_alive_settled(folder: PlanDir, timeout: float = 5.0) -> bool:
+    """``runner_alive``, but waits out a runner that has saved its final status and is only exiting.
+
+    Such a runner still holds the lock yet never reads the control file again, so a
+    resume or cancel sent in that window would otherwise be lost.
+    """
+    until = time.monotonic() + timeout
+    while folder.runner_alive():
+        if not (folder.load().get("runner") or {}).get("stopped") or time.monotonic() >= until:
+            return True
+        time.sleep(.05)
+    return False
+
+
 def control(root: str | Path, plan_id: str, action: str, *, retry_failed: bool = False, spawn: bool = True) -> dict[str, Any]:
     """pause / cancel / resume a plan. Resume starts a runner when none is alive."""
     folder = PlanDir(Path(root).resolve(), plan_id)
@@ -931,7 +945,8 @@ def control(root: str | Path, plan_id: str, action: str, *, retry_failed: bool =
         if retry_failed:
             reset_failed(load_execution(folder.root), folder.csv_path(plan))
         folder.set_control("run")
-        if not folder.runner_alive():
+        if not _runner_alive_settled(folder):
+            plan = folder.load()
             plan["status"] = "running"
             plan.setdefault("history", []).append({"at": now_iso(), "event": "resumed"})
             folder.save(plan)
@@ -940,7 +955,8 @@ def control(root: str | Path, plan_id: str, action: str, *, retry_failed: bool =
         return folder.load()
     if action in ("pause", "cancel"):
         folder.set_control(action)
-        if not folder.runner_alive():
+        if not _runner_alive_settled(folder):
+            plan = folder.load()
             if action == "cancel" and any(u.get("status") == "running" for u in folder.units()) and spawn:
                 spawn_runner(folder)  # it kills and finalizes what is still alive
             elif plan.get("status") in ACTIVE + ("interrupted",):
