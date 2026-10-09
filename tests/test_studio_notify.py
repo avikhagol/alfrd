@@ -3,6 +3,7 @@ import json
 
 import pytest
 from flask.testing import FlaskClient
+
 from alfrd import notify
 from alfrd.gui import create_app
 from alfrd.studio_live import AlfrdWatcher
@@ -20,7 +21,7 @@ def served(tmp_path, monkeypatch):
     user.write_text(json.dumps({"routes": [
         {"via": "webhook", "on": ["plan.*"], "url": "https://user:password@example.com/hook?token=hidden#fragment", "secret": "hidden", "headers": {"Authorization": "hidden"}},
         {"via": "command", "on": ["turn.idle"], "argv": ["program", "secret-arg"]}]}))
-    from alfrd.runtime import RuntimeStore, RuntimeService
+    from alfrd.runtime import RuntimeService, RuntimeStore
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     store.initialize()
     app = create_app({"RUNTIME_SERVICE": RuntimeService(store),"TESTING": True, "SECRET_KEY": "test", "ACCESS_TOKEN": "access", "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'catalog.db'}"})
@@ -68,6 +69,29 @@ def test_send_skip_is_not_retried(served, monkeypatch):
     monkeypatch.setitem(notify.SENDERS, "desktop", skip)
     assert client.post("/api/studio/projects/test/notify/test", json={"index": 0}, headers={"X-CSRF-Token": csrf}).get_json() == {"ok": False, "skipped": "no session"}
     assert len(calls) == 1
+
+
+def test_telegram_route_hides_token_and_chat_id_and_send_test_skips_cleanly(served, monkeypatch):
+    from test_telegram_notifier import FakeAPI
+
+    from alfrd import notifiers
+    _, client, csrf = served
+    token = "123456:FAKE-hidden-token"
+    notify.user_config_file().write_text(json.dumps({"routes": [
+        {"via": "telegram", "on": ["plan.*"], "token": token, "chat_id": "987654321",
+         "studio_url": "http://127.0.0.1:5122"}]}))
+    data = client.get("/api/studio/projects/test/notify").get_json()
+    route = data["routes"][1]
+    assert route["via"] == "telegram" and route["source"] == "user"
+    assert route["options"] == {"token": "(configured)", "chat_id": "(configured)", "studio_url": "(configured)"}
+    assert token not in json.dumps(data) and "987654321" not in json.dumps(data)
+    fake = FakeAPI([(401, {"ok": False, "description": "Unauthorized"})])
+    monkeypatch.setattr(notifiers.urllib.request, "build_opener", fake)
+    reply = client.post("/api/studio/projects/test/notify/test", json={"index": 1},
+                        headers={"X-CSRF-Token": csrf}).get_json()
+    assert reply["ok"] is False and "HTTP 401" in reply["skipped"] and token not in json.dumps(reply)
+    assert "\n\nOpen in Studio\nhttp://127.0.0.1:5122" in fake.calls[0]["body"]["text"]
+    assert fake.calls[0]["body"]["text"].startswith("ALFRD test notification\n\nThis is a test notification")
 
 
 def test_watcher_baseline_partial_utf8_rotation_and_finished_flush(tmp_path, monkeypatch):

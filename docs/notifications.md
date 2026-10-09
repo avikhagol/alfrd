@@ -164,6 +164,49 @@ python3 -c 'import json,sys; m=json.load(sys.stdin); print(m["title"]); print(m[
   curl -fsS -H "Title: ALFRD" -d @- "https://ntfy.sh/<your-topic>"
 ```
 
+### `telegram` (notify.json only)
+
+Sends the title, the body and (with `studio_url`) the Studio link as one plain
+text message through the Telegram Bot API. Options: `token` and `chat_id`,
+`studio_url` (optional, e.g. `http://127.0.0.1:5122`).
+
+With the `alfrd-telegram` plugin installed, leave out `token` and `chat_id`: the
+route then uses the values saved in Settings → Plugins → Telegram, so you paste
+the token once, in the Studio:
+
+```json
+{"routes": [{"via": "telegram", "on": ["review.pending", "plan.failed", "plan.finished"],
+             "studio_url": "http://127.0.0.1:5122"}]}
+```
+
+Without the plugin, put them in the route:
+
+1. In Telegram, talk to **@BotFather**, send `/newbot` and copy the token it gives you.
+2. Open a chat with your new bot and send it `/start` (a bot can't write to you first).
+3. Find your chat id: open `https://api.telegram.org/bot<token>/getUpdates` in a
+   browser and read `result[0].message.chat.id` (a group id starts with `-`).
+4. Add the route and keep the file private:
+
+```json
+{"routes": [{"via": "telegram", "on": ["review.pending", "plan.failed", "plan.finished"],
+             "token": "<token from BotFather>", "chat_id": "<your chat id>",
+             "studio_url": "http://127.0.0.1:5122"}]}
+```
+
+```sh
+chmod 600 ~/.config/alfrd/notify.json
+```
+
+Rules:
+
+- No `parse_mode` (no Markdown or HTML), link previews off; text over 4096
+  characters is shortened with `…`.
+- 400, 401, 403 and 404 (bad token, unknown chat, bot blocked) are skipped with
+  one line in `runner.log`; 429 and 5xx are retried.
+- The token is never written to `runner.log` or shown in the Studio.
+- The link only opens where that address reaches your Studio (the same machine,
+  or over a VPN or SSH tunnel).
+
 ## In the Studio
 
 Settings → **Notifications**:
@@ -186,12 +229,13 @@ selected), and that turn's handoff or log.
 ## Security
 
 - Notifications carry status only: no handoff text, prompts, event text or `data`.
-- `webhook` and `command` are refused in `alfrd.yaml`. A cloned project can't
-  make your machine run a command or post to an address.
-- Keep `notify.json` private (`chmod 600`); it may hold a webhook `secret`.
+- `webhook`, `command` and `telegram` are refused in `alfrd.yaml`. A cloned
+  project can't make your machine run a command or post to an address.
+- Keep `notify.json` private (`chmod 600`); it may hold a webhook `secret` or a
+  Telegram bot `token`.
 - Webhooks need https unless the host is loopback, and don't follow redirects.
-- The Studio's route list never shows `secret`, URL credentials or queries, or
-  command arguments. Send test is a protected change (access token, loopback,
+- The Studio's route list never shows `secret`, a Telegram `token` or `chat_id`,
+  URL credentials or queries, or command arguments. Send test is a protected change (access token, loopback,
   CSRF).
 
 ## Try it

@@ -1,4 +1,4 @@
-"""The built-in notifiers: ``desktop``, ``webhook`` and ``command`` (notifier plan A4).
+"""The built-in notifiers: ``desktop``, ``webhook``, ``command`` (notifier plan A4) and ``telegram``.
 
 Each is a :data:`alfrd.notify.Sender`: ``send(route, message, timeout)`` gets the route
 (options such as ``url``/``secret``/``argv`` sit next to ``via``/``on``) and one
@@ -15,9 +15,11 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlsplit
 
 from alfrd.notify import SENDERS, Skip
@@ -101,7 +103,7 @@ def is_loopback(host: str | None) -> bool:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """A redirect is an error: the payload must not follow it to another host."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -146,6 +148,122 @@ def command(route: Mapping[str, Any], message: Mapping[str, Any], timeout: float
         raise RuntimeError(_failure(proc))
 
 
-SENDERS.update(desktop=desktop, webhook=webhook, command=command)
+# -- telegram -----------------------------------------------------------------
+TELEGRAM_API = "https://api.telegram.org"
+TELEGRAM_LIMIT = 4096  # sendMessage text limit (counted here in UTF-16 units, which is stricter)
+_TELEGRAM_SKIP = (400, 401, 403, 404)  # bad chat, bad token, bot blocked: retrying can't help
 
-__all__ = ["command", "desktop", "desktop_env", "is_loopback", "signature", "webhook"]
+
+class TelegramError(RuntimeError):
+    """A Telegram Bot API call failed; ``status`` is the HTTP code (0 for a network error)."""
+
+    def __init__(self, text: str, status: int = 0) -> None:
+        super().__init__(text)
+        self.status = status
+
+
+def _scrub(text: str, token: str) -> str:
+    return text.replace(token, "<token>") if token else text
+
+
+def telegram_call(token: str, method: str, params: Mapping[str, Any], timeout: float) -> Any:
+    """POST ``params`` as JSON to Bot API ``method``; returns ``result``.
+
+    Raises :class:`TelegramError`, whose text never contains the token. Shared with the
+    ``alfrd-telegram`` bot plugin.
+    """
+    url = f"{TELEGRAM_API}/bot{token}/{method}"
+    body = json.dumps(params, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            reply = json.loads(response.read(1 << 20) or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = _scrub(str(json.loads(exc.read(65536) or b"{}").get("description") or ""), token)
+        except (ValueError, AttributeError, OSError):
+            detail = ""
+        text = f"telegram {method}: HTTP {exc.code}" + (f": {detail[:200]}" if detail else "")
+        raise TelegramError(_scrub(text, token), exc.code) from None
+    except (OSError, ValueError) as exc:  # URLError, timeouts, a non-JSON answer
+        reason = getattr(exc, "reason", exc)
+        raise TelegramError(_scrub(f"telegram {method}: {type(exc).__name__}: {reason}", token)) from None
+    if not isinstance(reply, dict) or not reply.get("ok"):
+        detail = _scrub(str(reply.get("description") or ""), token) if isinstance(reply, dict) else ""
+        raise TelegramError(_scrub(f"telegram {method}: not ok: {detail[:200]}", token))
+    return reply.get("result")
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _clip(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` UTF-16 units, ending with ``…`` when cut."""
+    if _utf16_len(text) <= limit:
+        return text
+    out, used = [], 1  # room for the ellipsis
+    for char in text:
+        used += _utf16_len(char)
+        if used > limit:
+            break
+        out.append(char)
+    return "".join(out).rstrip() + "…"
+
+
+def telegram_text(route: Mapping[str, Any], message: Mapping[str, Any]) -> str:
+    """Plain text: title line, body, then the Studio link when ``studio_url`` is set; ≤ 4096 units."""
+    title = " ".join(str(message.get("title") or "ALFRD").split()) or "ALFRD"
+    body = str(message.get("body") or "")
+    link = ""
+    studio, rel = str(route.get("studio_url") or "").rstrip("/"), str(message.get("link") or "")
+    if studio and rel:
+        link = studio + (rel if rel.startswith("/") else "/" + rel)
+    tail = f"\n\nOpen in Studio\n{link}" if link else ""
+    if _utf16_len(tail) >= TELEGRAM_LIMIT - 3:
+        raise Skip("telegram Studio link exceeds the message limit")
+    head = _clip(title, min(256, TELEGRAM_LIMIT - _utf16_len(tail) - 3))
+    room = TELEGRAM_LIMIT - _utf16_len(head) - _utf16_len(tail) - 2
+    return head + (f"\n\n{_clip(body, room)}" if body else "") + tail
+
+
+def telegram_settings() -> dict[str, Any]:
+    """The Telegram plugin's saved ``token`` / ``chat_id`` (``{}`` when there are none)."""
+    try:
+        from alfrd.extensions import settings
+
+        return settings.values("telegram")
+    except Exception:  # noqa: BLE001 - a broken settings file is the same as none
+        return {}
+
+
+def telegram(route: Mapping[str, Any], message: Mapping[str, Any], timeout: float) -> None:
+    """``sendMessage`` to ``chat_id`` with bot ``token``; 400/401/403/404 are skipped, 429/5xx retried.
+
+    A route without ``token`` / ``chat_id`` uses the values saved in Settings → Plugins → Telegram.
+    """
+    token, chat_id = route.get("token"), route.get("chat_id")
+    if token is None or chat_id is None:
+        saved = telegram_settings()
+        token = saved.get("token") if token is None else token
+        chat_id = saved.get("chat_id") if chat_id is None else chat_id
+    if not isinstance(token, str) or not token.strip():
+        raise Skip("telegram needs token (in notify.json or Settings → Plugins → Telegram)")
+    if isinstance(chat_id, bool) or not isinstance(chat_id, (str, int)) or not str(chat_id).strip():
+        raise Skip("telegram needs chat_id (in notify.json or Settings → Plugins → Telegram)")
+    params = {"chat_id": chat_id, "text": telegram_text(route, message),
+              "link_preview_options": {"is_disabled": True}}
+    try:
+        telegram_call(token.strip(), "sendMessage", params, timeout)
+    except TelegramError as exc:
+        if exc.status in _TELEGRAM_SKIP:
+            raise Skip(str(exc)) from None
+        raise
+
+
+SENDERS.update(desktop=desktop, webhook=webhook, command=command, telegram=telegram)
+
+__all__ = ["TelegramError", "command", "desktop", "desktop_env", "is_loopback", "signature", "telegram",
+           "telegram_call", "telegram_settings", "telegram_text", "webhook"]

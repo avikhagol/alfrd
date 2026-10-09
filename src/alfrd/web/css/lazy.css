@@ -279,6 +279,18 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 .plug-failure { color:var(--fail-text); overflow-wrap:anywhere; }
 [data-browse] pre,[data-policy] pre { white-space:pre-wrap; overflow-wrap:anywhere; }
 @media(max-width:479px) { .plug-facts { grid-template-columns:1fr; gap:4px; } .plug-facts dd { margin-bottom:8px; } }
+/* Settings → Plugins → Configure: settings form and background services. */
+.plug-config { grid-column: 1 / -1; min-width: 0; }
+.plug-form fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 10px; margin: 0 0 10px; min-width: 0; }
+.plug-form legend { font-weight: 600; padding: 0 4px; }
+.plug-form label { display: block; margin-top: 8px; }
+.plug-form fieldset > small { display: block; margin-top: 2px; }
+.plug-field { display: flex; gap: 8px; margin-top: 4px; }
+.plug-field input { flex: 1; min-width: 0; }
+.plug-form-actions, .plug-svc-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.plug-svc-actions label { margin: 0; }
+.plug-svc { padding: 6px 0; overflow-wrap: anywhere; }
+.plug-log { max-height: 16em; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
 .notify-blocked { display: flex; gap: 12px; align-items: flex-start; }
 .notify-blocked > div { flex: 1; line-height: 1.5; }
 .notify-blocked .btn { flex: none; }

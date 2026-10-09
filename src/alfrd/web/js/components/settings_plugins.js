@@ -4,8 +4,9 @@ import { server } from "../data/server.js";
 import { reportServerErrors, applyTheme, fetchPlugins } from "./plugin_api.js";
 import { restartTitles, key, title, renderPlugins, pluginProblems } from "./settings_plugins_view.js";
 export { renderPlugins, pluginProblems } from "./settings_plugins_view.js";
-let browse;
+let browse, config;
 const extend = (...args) => (browse ||= import("./plugins_browse.js")).then(m => m.enhance(...args));
+const configure = (...args) => (config ||= import("./plugin_config.js")).then(m => m.attach(...args));
 export async function mountPlugins(ctx, root) {
   const panel = $("#set-panel-plugins", root);
   if (!panel) return;
@@ -20,6 +21,7 @@ export async function mountPlugins(ctx, root) {
     panel.innerHTML = renderPlugins(list, canWrite);
     if (busy) panel.querySelectorAll("button,input").forEach((b) => { b.disabled = true; });
     if (browse || list.job || server.pluginJob || restartTitles.size) extend(ctx, panel, list, refresh, restartTitles);
+    if (config) configure(ctx, panel, canWrite).then((c) => c.restore());
     announce(message);
     if (focus) [...panel.querySelectorAll("input")].find((b) => b.dataset.plugToggle === focus || b.value === focus)?.focus();
   };
@@ -41,6 +43,8 @@ export async function mountPlugins(ctx, root) {
   panel.onclick = async (event) => {
     if (event.target.closest("[data-plug-open],[data-plug-more]")) return (await extend(ctx, panel, list, refresh, restartTitles)).click(event);
     if (event.target.closest("[data-plug-refresh]")) return refresh();
+    const cfg = event.target.closest("[data-plug-config]");
+    if (cfg) return (await configure(ctx, panel, canWrite)).toggle(cfg.dataset.plugConfig);
     const errorButton = event.target.closest("[data-plug-error]");
     if (errorButton) {
       const diag = $(".plug-diag", panel);

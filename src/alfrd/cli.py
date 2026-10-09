@@ -250,6 +250,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     serving = not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
     if serving:
         auth.write_server_file(port, f"{base}/studio/", None if no_token else token, secret_key)
+        _start_plugin_services(database)
     _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
     restart = threading.Event()
@@ -285,9 +286,30 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         if browser_thread is not None:
             browser_thread.join(timeout=1)
         if serving:
+            from alfrd.extensions import services
+
+            services.supervisor.stop_all()
             auth.remove_server_file(port)
     if restart.is_set():
         _reexec_server(token, secret_key, no_token)
+
+
+def _start_plugin_services(database: Path) -> None:
+    """Plugin services run against this server's database; start the ones set to start with it."""
+    from alfrd import extensions
+    from alfrd.extensions import services
+
+    services.supervisor.env["ALFRD_RUNTIME_DB"] = str(database)
+    if extensions.safe_mode():
+        return
+    try:
+        started = services.supervisor.autostart(
+            [(r.id, r.plugin) for r in extensions.loaded() if r.plugin is not None and extensions.active(r)])
+    except Exception as exc:  # noqa: BLE001 - a plugin service never stops the server
+        print(f"Plugin services not started: {exc}")
+        return
+    for key in started:
+        print(f"Started plugin service {key} (log: Settings → Plugins).")
 
 
 def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:

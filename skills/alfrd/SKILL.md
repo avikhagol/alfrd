@@ -138,7 +138,8 @@ notify:                    # alfrd.yaml: only `via: desktop` allowed here
 
 `webhook` (`url`, `secret`, `headers`; https unless loopback) and `command`
 (`argv`, message JSON on stdin) only in the user's `~/.config/alfrd/notify.json`
-(`{"routes": [...]}`, applies to all projects). `on` takes kinds or `plan.*`, `turn.*`, `*`.
+(`{"routes": [...]}`, applies to all projects).
+`telegram` (`token`, numeric `chat_id`, optional `studio_url`; plain text, link to Studio) is user-only too; without `token`/`chat_id` it uses Settings → Plugins → Telegram. `on` takes kinds or `plan.*`, `turn.*`, `*`.
 Routes are read when a runner starts: edits apply to new or restarted runners.
 Events of one plan within 20 s are batched; `notify.cursor` prevents resends.
 An unusable notifier (no desktop, SSH) is skipped with one warning in `runner.log`;
@@ -155,6 +156,8 @@ Themes: built-in `obsidian-orbit` (dark, default) and `daylight-orbit`; drop-in
 CSS themes in `~/.local/share/alfrd/themes/<id>/`. CLI theme selection needs a
 Studio reload; Settings applies at once. Scaffold: `alfrd plugin new <id>
 [--kind viewer|converter|theme|panel]`. Details: `docs/plugins.md`.
+Plugins may declare `settings` (form in Settings → Plugins → Configure; values in `~/.config/alfrd/plugin-settings.json`, 0600, read with `alfrd.extensions.settings.values(id)`), a `check` (Test) and `services` (`alfrd <cmd>` children of `alfrd serve`: Start/Stop, log, *Start with the Studio*; exit 2 = don't restart).
+Example `examples/plugins/alfrd-telegram`: token + allowed chat id in its settings; the bot runs as its service or `alfrd telegram run` (`/status /runs /log /help`, `/pause /resume` after Yes/No).
 
 Writing one (start from `alfrd plugin new`, don't hand-roll the layout):
 

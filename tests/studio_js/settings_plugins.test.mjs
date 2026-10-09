@@ -131,3 +131,11 @@ test("copy details writes plain text diagnostics and reports success", async () 
   await f.panel.onclick({ target: { closest: (s) => s === "[data-plug-copy]" ? { dataset: { plugCopy: "0" } } : null } });
   assert.equal(f.copied[0], "broken\n2\nerror\nbad\ntrace"); assert.equal(f.toasts[0][0], "Copied");
 });
+
+test("Configure appears only for configurable plugins and controls its own panel", () => {
+  const list = sample(); list.plugins[0].configurable = true;
+  const html = setup().renderPlugins(list, true);
+  assert.equal(html.match(/data-plug-config="/g)?.length, 1);
+  assert.match(html, /data-plug-config="markdown" aria-expanded="false" aria-controls="plug-config-markdown"/);
+  assert.match(html, /id="plug-config-markdown" data-plug-config-body="markdown" hidden/);
+});

@@ -148,7 +148,8 @@ def test_safe_mode_skips_every_plugin(fake_plugins, monkeypatch):
     assert rec.status == "skipped (safe mode)" and "good_panel" not in lg.PANELS
 
 
-DEFAULT_STATE = {"disabled": [], "theme": "obsidian-orbit", "catalog_url": None, "gui_install": True}
+DEFAULT_STATE = {"disabled": [], "theme": "obsidian-orbit", "catalog_url": None, "gui_install": True,
+                 "autostart": []}
 
 
 def test_state_reads_tolerantly_and_writes_atomically():

@@ -62,7 +62,9 @@ commands, so you can always disable or remove a broken plugin.
 | `~/.local/share/alfrd/plugins/installed.json` | id, distribution, version, source, sha256 (local files), install time, owned distributions |
 | `~/.local/share/alfrd/plugins/.install.lock` | one install/remove/update at a time |
 | `~/.local/share/alfrd/themes/<id>/` | drop-in themes |
-| `~/.config/alfrd/plugins.json` | `disabled`, `theme`, `catalog_url`, `gui_install` |
+| `~/.config/alfrd/plugins.json` | `disabled`, `theme`, `catalog_url`, `gui_install`, `autostart` |
+| `~/.config/alfrd/plugin-settings.json` | each plugin's settings, secrets included (mode 0600; never in `alfrd.yaml`) |
+| `~/.local/share/alfrd/plugins/services/<id>-<service>.log` | output of a plugin service started by `alfrd serve` (cut to 512 KiB past 1 MiB) |
 | `~/.local/share/alfrd/plugins/catalog.json` | validated catalog cache, normally valid for 24 hours |
 | `~/.local/share/alfrd/plugins/jobs/<id>.log` | Studio job output, retained after restart |
 | `~/.local/share/alfrd/plugins/audit.jsonl` | one record per finished Studio install/update/remove, including failures and timeouts |
@@ -137,12 +139,59 @@ Manifest fields (`alfrd.extensions.Plugin`, plugin API version `1`):
 | `theme` | package-relative path of a `theme.css` |
 | `web`, `viewers` | package folder with `index.js`, and the viewer ids it registers (loaded by the Studio) |
 | `converters` | `Converter(src=[".ps"], to="pdf", run=…)`; `run(src: Path, dest: Path, *, timeout: float)` writes `dest` or raises. The Studio runs it in a worker process with a timeout and caches the output in `<project>/.alfrd/cache/convert/` |
+| `settings` | `SettingField(key, label, kind="text"\|"number"\|"secret"\|"bool", required=False, help="", pattern="", placeholder="")`: a form in Settings → Plugins → **Configure** (see below) |
+| `services` | `Service(id, command=("myplugin", "run"), title="", description="")`: a long-running `alfrd <command…>` that `alfrd serve` can run as a child process |
+| `check` | `check(values) -> str`: the form's **Test** button; return a short result, raise `ValueError` with a message safe to show |
 
 A panel kind registered by a plugin is accepted in `views.metadata`
 (see [template-views.md](template-views.md)) and may take its own keys; the
 built-in kinds stay strictly validated. An unknown kind is reported with the
 list of known kinds. An evaluator that raises shows `{"error": "<kind>: …"}`
 in that panel only.
+
+### Settings and services
+
+A plugin with `settings` or `services` (`from alfrd.extensions import SettingField, Service`) gets a **Configure** button in
+Settings → Plugins. The form saves to `plugin-settings.json` (mode 0600) and
+the plugin reads its values with:
+
+```python
+from alfrd.extensions import settings
+values = settings.values("myplugin")   # {"token": "...", "chat_id": "..."}; {} before the first save
+```
+
+- A `secret` is write-only: the Studio shows *set* / *not set*, never the value;
+  saving with the field empty keeps it, and **Clear** removes it.
+- `pattern` (a Python regular expression for the whole value) and `required`
+  are checked on save. Error messages name the field, never the value.
+- Saving, Test, Start/Stop and *Start with the Studio* are protected changes
+  (loopback, access token, CSRF) and are recorded in `audit.jsonl` (setting
+  names only, no values).
+
+A **service** runs `python -m alfrd.cli <command…>` as a child of
+`alfrd serve`, in its own process session, with `ALFRD_RUNTIME_DB` set to the
+server's runtime database. Settings shows its state (`starting`, `running`,
+`restarting`, `failed`, `stopped`), the last exit code and the last log lines.
+
+- **Stop** sends SIGINT (your command gets `KeyboardInterrupt`), then SIGKILL
+  after 5 s. The server stops its services when it exits; on Linux they also die
+  with it if it is killed.
+- A service that exits on its own is restarted after 2, 5, 10, then 30 s, and
+  marked `failed` after 5 exits within 10 minutes. **Exit with code 2 when
+  retrying can't help** (bad settings): it is marked `failed` at once.
+- Saving the settings restarts a running service so it reads the new values.
+  Start is refused while a `required` setting is empty.
+- *Start with the Studio* (`autostart` in `plugins.json`) starts the service
+  with `alfrd serve`, unless the plugin isn't configured yet. A disabled
+  plugin's services stop; `--safe-mode` starts none.
+- A service runs only while `alfrd serve` does. For one that must always run,
+  use your init system (see the Telegram plugin's README for a systemd unit).
+
+The reference is `examples/plugins/alfrd-telegram` (a token, a chat id, a Test
+that calls `getMe`/`getChat`, and the bot as a service).
+Its `/status` picker remembers a project and one or more targets across restarts;
+see the [Telegram command reference](../examples/plugins/alfrd-telegram/README.md#commands)
+for cards, paging and the saved selection file.
 
 Test a plugin without the installer: `uv pip install -e alfrd-myviewer` into
 alfrd's environment, then `alfrd plugin info myviewer`.

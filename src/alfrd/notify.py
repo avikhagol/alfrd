@@ -26,8 +26,8 @@ from alfrd.events import EVENTS_FILE, EventLog, kind_matches
 
 CURSOR_FILE = "notify.cursor"
 USER_FILE = "notify.json"
-KNOWN_VIA = frozenset({"desktop", "webhook", "command"})
-USER_ONLY_VIA = frozenset({"webhook", "command"})  # may run code or carry secrets: never from alfrd.yaml
+KNOWN_VIA = frozenset({"desktop", "webhook", "command", "telegram"})
+USER_ONLY_VIA = frozenset({"webhook", "command", "telegram"})  # may run code or carry secrets: never from alfrd.yaml
 BATCH_WINDOW = 20.0
 MAX_AGE = 3600.0
 TIMEOUT = 10.0
@@ -77,7 +77,7 @@ def validate_routes(routes: Any, *, source: str = "notify.routes", user: bool = 
     """Check the schema of a route list; returns normalised copies (``on`` always a list).
 
     An unknown ``via`` is allowed here (it may come from a plugin later) and reported by
-    :func:`route_warnings`; ``webhook`` and ``command`` are refused outside the user file.
+    :func:`route_warnings`; ``webhook``, ``command`` and ``telegram`` are refused outside the user file.
     """
     if routes is None:
         return []
@@ -118,6 +118,17 @@ def _check_options(via: str, route: Mapping[str, Any], where: str) -> None:
         argv = route.get("argv")
         if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
             raise RouteError(f"{where}.argv must be a nonempty list of strings (no shell)")
+    elif via == "telegram":
+        # Leave out token and chat_id to use Settings → Plugins → Telegram (alfrd-telegram's saved settings).
+        if "token" in route and (not isinstance(route["token"], str) or not route["token"].strip()):
+            raise RouteError(f"{where}.token must be a nonempty string (from @BotFather)")
+        chat_id = route.get("chat_id")
+        if "chat_id" in route and (isinstance(chat_id, bool) or not isinstance(chat_id, (str, int))
+                                   or not str(chat_id).strip()):
+            raise RouteError(f"{where}.chat_id must be a nonempty string or an integer")
+        studio = route.get("studio_url")
+        if studio is not None and not (isinstance(studio, str) and studio.startswith(("http://", "https://"))):
+            raise RouteError(f"{where}.studio_url must be an http(s):// address")
 
 
 def route_warnings(routes: Iterable[Mapping[str, Any]]) -> list[str]:
@@ -526,4 +537,4 @@ __all__ = [
     "route_matches", "route_warnings", "start_for", "studio_link", "user_routes", "validate_routes",
 ]
 
-from alfrd import notifiers as _notifiers  # noqa: E402,F401 - registers desktop, webhook, command in SENDERS
+from alfrd import notifiers as _notifiers  # noqa: E402,F401 - registers desktop, webhook, command, telegram in SENDERS

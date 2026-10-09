@@ -13,7 +13,8 @@ error and goes on. ``ALFRD_NO_PLUGINS=1`` (``--safe-mode``) skips them all.
 Where things live (resolved per call, so XDG changes in tests apply):
 ``plugins_dir()/site`` (installed plugins, after site-packages on ``sys.path``),
 ``themes_dir()/<id>/theme.css`` (drop-in themes), ``state_file()``
-(``{"disabled": [...], "theme": "obsidian-orbit", "catalog_url": ..., "gui_install": true}``).
+(``{"disabled": [...], "theme": "obsidian-orbit", "catalog_url": ..., "gui_install": true,
+"autostart": ["<plugin>:<service>"]}``).
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ ALFRD_PLUGIN_API = 1
 GROUP = "alfrd.plugins"
 DEFAULT_THEME = "obsidian-orbit"
 _ID = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
+_KEY = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 THEME_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")  # `_` too: a plugin's id names its theme
 
 
@@ -76,6 +78,55 @@ class PanelSpec:
     title: str = ""
 
 
+#: Setting kinds: ``text`` and ``number`` are shown; a ``secret`` is write-only (never sent back to a browser).
+SETTING_KINDS = ("text", "number", "secret", "bool")
+
+
+@dataclass(frozen=True)
+class SettingField:
+    """One user setting of a plugin, edited in Settings → Plugins and read with :func:`alfrd.extensions.settings.values`.
+
+    ``pattern`` (a regular expression the whole value must match) and ``required`` are checked on save.
+    """
+
+    key: str
+    label: str = ""
+    kind: str = "text"
+    required: bool = False
+    help: str = ""
+    pattern: str = ""
+    placeholder: str = ""
+
+    def __post_init__(self) -> None:
+        if not _KEY.match(self.key):
+            raise ValueError(f"invalid setting key {self.key!r}")
+        if self.kind not in SETTING_KINDS:
+            raise ValueError(f"setting {self.key!r}: kind must be one of {', '.join(SETTING_KINDS)}")
+        if self.pattern:
+            re.compile(self.pattern)
+
+
+@dataclass(frozen=True)
+class Service:
+    """A long-running ``alfrd <command…>`` that ``alfrd serve`` starts as a child process on request.
+
+    ``command`` is the arguments after ``alfrd`` (usually the plugin's own CLI, e.g. ``("telegram", "run")``).
+    The child gets ``ALFRD_RUNTIME_DB`` (the server's runtime database) and is stopped with SIGINT.
+    """
+
+    id: str
+    command: tuple[str, ...]
+    title: str = ""
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "command", _tuple(self.command))
+        if not _KEY.match(self.id):
+            raise ValueError(f"invalid service id {self.id!r}")
+        if not self.command or not all(isinstance(a, str) and a for a in self.command):
+            raise ValueError(f"service {self.id!r}: command must be a non-empty list of strings")
+
+
 @dataclass(frozen=True)
 class Plugin:
     id: str
@@ -90,9 +141,12 @@ class Plugin:
     converters: tuple[Converter, ...] = ()
     theme: str | None = None  # package-relative theme.css
     cli: Any = None  # a typer.Typer, mounted as `alfrd <id> …`
+    settings: tuple[SettingField, ...] = ()  # Settings → Plugins form; values in settings.settings_file()
+    services: tuple[Service, ...] = ()  # child processes `alfrd serve` can run (Start/Stop in Settings)
+    check: Callable | None = None  # check(values) -> str: a "Test" button; raise ValueError with a safe message
 
     def __post_init__(self) -> None:
-        for name in ("requires_bin", "viewers", "panels", "converters"):
+        for name in ("requires_bin", "viewers", "panels", "converters", "settings", "services"):
             object.__setattr__(self, name, _tuple(getattr(self, name)))
 
     @property
@@ -108,6 +162,10 @@ class Plugin:
             out.append("theme")
         if self.cli is not None:
             out.append("cli")
+        if self.settings:
+            out.append("settings")
+        if self.services:
+            out.append("service")
         return out
 
 
@@ -183,12 +241,13 @@ def catalog_url_ok(url: Any) -> bool:
 
 
 def read_state() -> dict[str, Any]:
-    """``{"disabled": [ids], "theme": id, "catalog_url": url | None, "gui_install": bool}``.
+    """``{"disabled": [ids], "theme": id, "catalog_url": url | None, "gui_install": bool, "autostart": [keys]}``.
 
     A missing or broken file (or key) gives the defaults; a catalog URL that is
     not https/file is ignored.
     """
-    state: dict[str, Any] = {"disabled": [], "theme": DEFAULT_THEME, "catalog_url": None, "gui_install": True}
+    state: dict[str, Any] = {"disabled": [], "theme": DEFAULT_THEME, "catalog_url": None, "gui_install": True,
+                             "autostart": []}
     data = _raw_state()
     if isinstance(data.get("disabled"), list):
         state["disabled"] = sorted({str(x) for x in data["disabled"]})
@@ -198,6 +257,8 @@ def read_state() -> dict[str, Any]:
         state["catalog_url"] = data["catalog_url"]
     if isinstance(data.get("gui_install"), bool):
         state["gui_install"] = data["gui_install"]
+    if isinstance(data.get("autostart"), list):
+        state["autostart"] = sorted({str(x) for x in data["autostart"]})
     return state
 
 
@@ -229,6 +290,13 @@ def set_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
     disabled = set(read_state()["disabled"])
     (disabled.discard if enabled else disabled.add)(plugin_id)
     return _update_state(disabled=sorted(disabled))
+
+
+def set_autostart(key: str, on: bool) -> dict[str, Any]:
+    """Start the service ``"<plugin>:<service>"`` with ``alfrd serve`` (or not)."""
+    keys = set(read_state()["autostart"])
+    (keys.add if on else keys.discard)(key)
+    return _update_state(autostart=sorted(keys))
 
 
 def set_theme(theme_id: str) -> dict[str, Any]:
@@ -275,6 +343,8 @@ class Record:
             out["viewers"] = list(self.plugin.viewers)
             out["panels"] = [p.kind for p in self.plugin.panels]
             out["converters"] = [{"src": list(c.src), "to": c.to} for c in self.plugin.converters]
+            out["settings"] = [f.key for f in self.plugin.settings]
+            out["services"] = [s.id for s in self.plugin.services]
         return out
 
 
@@ -454,7 +524,8 @@ def reset() -> None:
 
 
 __all__ = [
-    "ALFRD_PLUGIN_API", "Converter", "DEFAULT_THEME", "GROUP", "PanelSpec", "Plugin", "Record", "active", "add_site",
-    "api_ok", "discover", "get", "load", "loaded", "module_dir", "plugins_dir", "read_state", "reset", "safe_mode", "set_enabled", "set_theme",
+    "ALFRD_PLUGIN_API", "Converter", "DEFAULT_THEME", "GROUP", "PanelSpec", "Plugin", "Record", "SETTING_KINDS", "Service",
+    "SettingField", "active", "add_site", "api_ok", "discover", "get", "load", "loaded", "module_dir", "plugins_dir",
+    "read_state", "reset", "safe_mode", "set_autostart", "set_enabled", "set_theme",
     "site_dir", "state_file", "themes_dir", "web_dir", "write_state",
 ]
