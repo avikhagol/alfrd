@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alfrd-telegram"
+version = "0.2.0"
+requires-python = ">=3.10"
+# alfrd itself is provided by the host (`--target` would install a second copy);
+# the manifest's `alfrd_api` declares compatibility.
+dependencies = []
+
+[project.entry-points."alfrd.plugins"]
+"telegram" = "alfrd_telegram:plugin"
+
+[tool.setuptools.packages.find]
+include = ["alfrd_telegram*"]
+
