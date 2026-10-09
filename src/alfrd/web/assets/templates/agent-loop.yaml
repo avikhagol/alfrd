@@ -32,7 +32,7 @@ entrypoint:
     output_capture: stdout
     # manual: true lets you copy the prompt into chat and paste a response.
   - name: codex
-    cmd: [codex, exec, --sandbox, workspace-write, --skip-git-repo-check, --output-last-message, "{response_file}", "-"]
+    cmd: [codex, exec, --ephemeral, --sandbox, workspace-write, --skip-git-repo-check, --output-last-message, "{response_file}", "-"]
     stdin_file: "{prompt_file}"
     output_file: "{response_file}"
     output_capture: file
