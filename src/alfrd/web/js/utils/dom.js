@@ -258,7 +258,35 @@ export function icon(name, cls = "") {
   return `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 }
 
-export const LOGO = `<img class="logo" src="assets/favicon.svg" alt="" width="36" height="36">`;
+// The alfrd mark (docs/brand/README.md). The lead run uses the theme's --accent, so the header
+// logo and the tab icon follow the active theme.
+const MARK_VIEW = "0.875 0.74 21.32 21.32";
+const NODES = "M5.5 2.6A3.4 3.4 0 1 1 5.5 9.4A3.4 3.4 0 1 1 5.5 2.6ZM4.3 4.8H6.7V7.2H4.3ZM4.3 10.4H6.7A2 2 0 0 1 8.7 12.4V14.8A2 2 0 0 1 6.7 16.8H4.3A2 2 0 0 1 2.3 14.8V12.4A2 2 0 0 1 4.3 10.4ZM4.3 12.4H6.7V14.8H4.3Z";
+const runDia = (cx, cy, size, paint) =>
+  `<rect x="${cx - size / 2}" y="${cy - size / 2}" width="${size}" height="${size}" rx="${(size * 0.16).toFixed(2)}" style="fill:${paint}" transform="rotate(45 ${cx} ${cy})"/>`;
+function markBody(ink, accent, stroke = 2.4) {
+  return `<path d="M5.5 9.2V10.6M5.5 16.6V20H10.84M15.76 20H18.5V16.07M18.5 9.33V5.2H18.1" style="fill:none;stroke:${ink}" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round"/>`
+    + `<path fill-rule="evenodd" style="fill:${ink}" d="${NODES}"/>`
+    + runDia(13.3, 20, 2.2, ink) + runDia(18.5, 12.7, 3.5, ink) + runDia(13.26, 5.2, 5.6, accent);
+}
+
+export const LOGO = `<svg class="logo" viewBox="${MARK_VIEW}" width="36" height="36" role="img" aria-label="alfrd">${markBody("var(--text)", "var(--accent)")}</svg>`;
+
+/** Redraw the tab icon with the current theme's --accent (falls back to the shipped favicon.svg). */
+export function syncBrandIcon() {
+  const link = document.querySelector('link[rel="icon"][type="image/svg+xml"]');
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+  if (!link || !/^#[0-9a-f]{3,8}$|^rgba?\(/i.test(accent)) return;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5.5" fill="#0E1116"/>`
+    + `<g transform="translate(12 12) scale(.86) translate(-11.535 -11.4)">${markBody("#F2F1EC", accent, 2.8)}</g></svg>`;
+  link.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+/** Keep the tab icon in step with theme switches: every stylesheet load re-reads --accent. */
+export function watchThemeAccent() {
+  syncBrandIcon();
+  document.addEventListener("load", (e) => { if (e.target instanceof HTMLLinkElement && e.target.rel === "stylesheet") syncBrandIcon(); }, true);
+}
 
 // Project and target links.
 export function parseRoute(hash) {

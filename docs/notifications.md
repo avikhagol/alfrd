@@ -1,3 +1,5 @@
+<img src="brand/alfrd-mark.svg" alt="ALFRD" width="44" align="right">
+
 # Notifications
 
 ALFRD tells you when a plan needs you or is done: a review is pending, a turn

@@ -1,3 +1,5 @@
+<img src="brand/alfrd-mark.svg" alt="ALFRD" width="44" align="right">
+
 # Plan status API (`alfrd.plan_status/1`)
 
 A stable, read-only way for Claude, scripts and other harnesses to follow a plan

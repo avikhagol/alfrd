@@ -63,6 +63,9 @@ EXPECTED_WHEEL_PATHS = {
     "alfrd/web/js/components/canvas.js",
     "alfrd/web/js/utils/yaml_parser.js",
     "alfrd/web/assets/templates/avica.yaml",
+    "alfrd/web/assets/favicon.ico",
+    "alfrd/web/assets/apple-touch-icon.png",
+    "alfrd/web/assets/site.webmanifest",
 }
 
 

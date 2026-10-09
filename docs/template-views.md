@@ -1,3 +1,5 @@
+<img src="brand/alfrd-mark.svg" alt="ALFRD" width="44" align="right">
+
 # Folder hierarchy and Metadata panels
 
 A template (`src/alfrd/web/assets/templates/*.yaml`) or a project's own

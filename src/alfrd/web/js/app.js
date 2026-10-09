@@ -1,6 +1,6 @@
 import { handleNotifications, browserEnabled } from "./components/notifications.js";
 
-import { $, $$, on, esc, icon, LOGO, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget } from "./utils/dom.js";
+import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget } from "./utils/dom.js";
 import { projectLabels } from "./utils/text_fit.js";
 import { mountPicker } from "./components/picker.js";
 import { stepParamsFromConfig } from "./data/avica.js";
@@ -30,6 +30,7 @@ import * as results from "./components/results.js";
 import * as config from "./components/alfrd_config.js";
 import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace } from "./data/workspace.js";
 import { forgetPlan, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
+watchThemeAccent(); // tab icon follows the theme accent
 const DEMO_ALFRD_PROJECT = "avica-demo"; // data/demo.js's key; the demo data itself loads on demand
 
 export let VERSION = "standalone";
@@ -1637,7 +1638,7 @@ function renderShell() {
   $("#app").dataset.sidebar = shellUi.sidebarCollapsed === true ? "collapsed" : "expanded";
   $("#app").innerHTML = `
     <header class="topbar">
-      <div class="brand">${LOGO}<h1>ALFRD Studio</h1></div>
+      <div class="brand">${LOGO}<h1>alfrd</h1></div>
       <span class="mode-badge" id="mode-badge"></span>
       <span class="vsep"></span>
       <div class="picker split" role="group" aria-label="Project">
