@@ -2,7 +2,6 @@
 
 import importlib.util
 import json
-import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -156,6 +155,7 @@ def test_new_package_is_importable_and_has_entry_point(tmp_path, kind):
     result = runner.invoke(alfrd_cli, ["plugin", "new", "my-example", "--kind", kind, "--dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     root = tmp_path / "alfrd-my-example"
+    tomllib = pytest.importorskip("tomllib")  # Python 3.11+
     data = tomllib.loads((root / "pyproject.toml").read_text())
     assert data["project"]["entry-points"]["alfrd.plugins"] == {"my-example": "alfrd_my_example:plugin"}
     assert data["project"]["dependencies"] == []  # host-provided alfrd is not reinstalled into --target
