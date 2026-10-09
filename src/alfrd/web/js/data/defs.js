@@ -390,17 +390,6 @@ export function msPathPatterns(defs) {
   return (Array.isArray(v) ? v : v ? [v] : []).map(normalizePattern);
 }
 
-/** Directory markers / listed paths → {target: [{rel, band, order}]}. */
-export function msPathsByTarget(paths) {
-  const out = {};
-  (paths || []).forEach((p) => {
-    if (!p?.target) return;
-    (out[p.target] ||= []).push(p);
-  });
-  Object.values(out).forEach((l) => l.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.band).localeCompare(String(b.band))));
-  return out;
-}
-
 export function firstWorkflow(data) {
   return Array.isArray(data.workflows) ? data.workflows[0] : Object.values(data.workflows || {})[0];
 }

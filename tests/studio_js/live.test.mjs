@@ -34,6 +34,7 @@ function harness(scanState = { ts: 100 }) {
     onTree: (p, d) => calls.push(["tree", p, d.changed, d.removed]),
     onLogs: (p, logs) => calls.push(["logs", p, Object.keys(logs)]),
     onRuntime: () => calls.push(["runtime"]),
+    onAlfrd: (p, events) => calls.push(["alfrd", p, events]),
     onResync: (p) => calls.push(["resync", p]),
     onStatus: () => {},
   });
@@ -87,9 +88,7 @@ test("live: stream errors fall back to polling", () => {
   const { es, live } = harness();
   globalThis.fetch = async () => ({ ok: true, headers: { get: () => "application/json" }, json: async () => ({ state: {}, events: [], reset: [] }) });
   es.onerror();
-  assert.equal(live.status.state, "reconnecting");
-  es.readyState = FakeES.CLOSED;
-  es.onerror();
+  assert.ok(es.closed, "close automatic reconnects so polling can inspect the HTTP status");
   assert.equal(live.status.state, "polling");
   live.stop();
 });
@@ -106,4 +105,37 @@ test("log text: carriage-return progress lines collapse, long text trims at a li
   const long = Array.from({ length: 80000 }, (_, i) => `line ${i}`).join("\n");
   const cut = _internals.trim(long);
   assert.ok(cut.length <= 400000 && cut.startsWith("line ") && cut.endsWith("line 79999"));
+});
+
+
+test("live: alfrd SSE shares the project cursor and duplicates do not toast twice", () => {
+  const { calls, es, live } = harness();
+  es.emit("hello", { state: { p: { epoch: "e", version: 0, baseline_ts: 99 } } });
+  const event = { type: "alfrd", key: "p", epoch: "e", version: 1, events: [{ kind: "review.pending" }] };
+  es.emit("alfrd", event); es.emit("alfrd", event);
+  assert.deepEqual(calls, [["alfrd", "p", event.events]]);
+  live.stop();
+});
+
+
+test("live: enabled browser notifications can keep the server stream in a hidden tab", () => {
+  document.hidden = true;
+  const live = createLive({ mode: () => "server", projects: () => ["p"], watchHidden: () => true });
+  live.start(); assert.ok(live.es); assert.equal(live.es.closed, undefined);
+  const stream = live.es;
+  listeners.visibilitychange.at(-1)(); assert.equal(live.es, stream); assert.equal(stream.closed, undefined);
+  live.stop(); document.hidden = false;
+});
+
+test("plugin jobs arrive without project subscriptions and reach the hook and Studio event", () => {
+  const received = [], dispatched = [];
+  globalThis.CustomEvent = class { constructor(type, init) { this.type = type; this.detail = init.detail; } };
+  window.dispatchEvent = e => { dispatched.push(e); };
+  const live = createLive({ mode: () => "server", projects: () => [], onPluginJob: job => received.push(job) });
+  live.start();
+  const job = { id: "plugin-1", status: "running" };
+  FakeES.last.emit("plugin_job", { type: "plugin_job", job });
+  assert.deepEqual(received, [job]);
+  assert.equal(dispatched[0].type, "plugin-job"); assert.deepEqual(dispatched[0].detail, job);
+  live.stop();
 });

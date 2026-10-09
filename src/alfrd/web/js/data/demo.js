@@ -31,12 +31,6 @@ workflows:
 `;
 const DEMO_STEPS = ["preprocess_fitsidi", "fits_to_ms", "phaseshift", "avica_avg", "avicameta_ms", "avica_snr", "avica_fill_input", "avica_split_ms", "rpicard"];
 
-export const DEMO_PROJECTS = {
-  BW112: "High-Band Astrometry Calibration Run (VLBA)",
-  BB049: "VLBA FX Correlator Processing",
-  BT085: "EVN Rapid Response Calibrations",
-};
-
 // Typical seconds per step (mean) used to jitter demo durations.
 const TYPICAL = [41, 72, 19, 22, 34, 62, 18, 45, 1500];
 

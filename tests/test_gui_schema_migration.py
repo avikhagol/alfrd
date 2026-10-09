@@ -1,7 +1,7 @@
 """Regression tests for GUI database schema initialization.
 
 These guard against the "no such column" schema-drift bug: a fresh
-database must produce a working /dashboard/, and an existing database
+database must produce a working catalog API, and an existing database
 created by an incompatible/older schema must not be blindly reused by
 ``db.create_all()`` (which is a no-op against an existing table of the
 same name, even if its columns disagree with the current ORM models).
@@ -19,7 +19,6 @@ CATALOG_AND_MATRIX_ROUTES = [
     "/api/health",
     "/api/version",
     "/api/projects",
-    "/dashboard/",
 ]
 
 
@@ -32,7 +31,7 @@ def _make_app(db_path: Path):
     )
 
 
-def test_fresh_database_boots_and_dashboard_routes_return_200(tmp_path: Path):
+def test_fresh_database_boots_and_catalog_routes_return_200(tmp_path: Path):
     """A brand-new database file must produce a fully working app: every
     catalog/matrix/system route responds 200, never a 500 from a missing
     column."""
@@ -53,7 +52,7 @@ def test_stale_incompatible_database_is_migrated_not_reused(tmp_path: Path):
     the app against it must not silently keep serving the broken table
     (``db.create_all()`` alone no-ops on an existing table name); it must
     detect the drift, move the legacy table aside, and (re)create the
-    current schema so /dashboard/ still returns 200 instead of a 500
+    current schema so /api/projects still returns 200 instead of a 500
     OperationalError for a missing column."""
     db_path = tmp_path / "legacy.db"
 
@@ -115,10 +114,9 @@ def test_stale_incompatible_database_is_migrated_not_reused(tmp_path: Path):
     assert "root_path" in columns
 
 
-def test_dashboard_project_details_route_returns_200_with_seed_data(tmp_path: Path):
-    """/dashboard/project/<name> is the other catalog+matrix-adjacent
-    template route; assert it also renders 200 against a fresh database
-    once a project row exists."""
+def test_project_details_api_returns_200_with_seed_data(tmp_path: Path):
+    """/api/projects/<name> reads every column of a project row; assert it
+    also returns 200 against a fresh database once a project row exists."""
     from alfrd.gui.model import db
     from alfrd.gui.model.tables import ProjectDB
 
@@ -129,5 +127,6 @@ def test_dashboard_project_details_route_returns_200_with_seed_data(tmp_path: Pa
         db.session.commit()
 
     client = app.test_client()
-    response = client.get("/dashboard/project/demo")
-    assert response.status_code == 200
+    for path in ("/api/projects/demo", "/api/projects/demo/manifest"):
+        response = client.get(path)
+        assert response.status_code == 200, (path, response.status_code, response.get_data())

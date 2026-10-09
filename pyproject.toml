@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfrd"
-version = "0.2.2.0"
+version = "0.3.0.0"
 description = "Automated Logical FRamework for Dynamic script execution (ALFRD)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1.2", "pytest>=7", "flask", "flask_sqlalchemy"]
+dev = ["build>=1.2", "pytest>=7", "pytest-xdist>=3.5", "flask", "flask_sqlalchemy"]
 google = [
   "google-api-python-client",
   "google-auth-httplib2",
@@ -48,7 +48,7 @@ polars = ["polars"]
 all = ["alfrd[google,polars]"]
 
 [project.scripts]
-alfrd = "alfrd.cli:alfrd_cli"
+alfrd = "alfrd.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -60,17 +60,20 @@ where = ["src"]
 [tool.setuptools.package-data]
 "alfrd.schemas" = ["*.json"]
 "alfrd.gui" = [
-  "templates/dashboard/*.htm",
-  "static/*.css",
+  "templates/auth/*.htm",
   "model/*.sql",
 ]
 "alfrd.web" = [
   "*.html",
+  "*.css",
   "css/*.css",
+  "css/themes/*/theme.css",
+  "css/themes/*/theme.json",
   "js/*.js",
   "js/components/*.js",
   "js/data/*.js",
   "js/utils/*.js",
+  "js/vendor/*",
   "assets/*.svg",
   "assets/templates/*.yaml",
   "assets/defaults/*.yaml",
@@ -78,3 +81,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Parallel by default (pytest-xdist); "serial" tests measure real time and run alone afterwards:
+#   pytest -n auto -m "not serial" && pytest -m serial
+markers = [
+  "slow: builds and installs the alfrd wheel (skip while iterating: -m 'not slow')",
+  "serial: depends on wall-clock timing; run without other tests competing for the CPU",
+]

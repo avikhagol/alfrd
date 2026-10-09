@@ -127,7 +127,7 @@ function renderGeneric(el, ctx, t, head, main) {
   const entity = { project: t.project, target: t.name, project_code: projectCode, workdir };
   const gen = `${workdirGeneration(t.project)}|${Object.keys(index?.codes || {}).length}|${ui.templateFolder[t.id] || ""}`;
   const scope = `${t.project}|${t.id}|${JSON.stringify(entity)}|${ui.templateFolder[t.id] || ""}`;
-  const key = `${scope}|${gen}`;
+  const key = `${scope}|${gen}|${panels?.rendererGeneration() || 0}`;
   if (ui.view.key !== key) {
     // A live update re-reads the same context: keep the current render until the new one is ready.
     ui.view = ui.view.scope === scope ? { ...ui.view, key } : { key, scope, html: `<div class="card empty">Reading ${esc(t.name)}…</div>` };
@@ -145,5 +145,6 @@ function renderGeneric(el, ctx, t, head, main) {
     ? `<div class="card"><p class="callout info small">${icon("info")}<span>No work folder is attached to <b>${esc(t.name)}</b> (nothing under <code>${esc(index.targetDir || "target_dir")}/</code> names it).</span> <button class="btn sm" data-attach>${icon("link")} Attach folder…</button></p></div>`
     : "";
   show(main, attach + ui.view.html, scope);
+  panels?.mountViewers(main, t.project);
   ctx.setFooterRight(`${esc(t.name)} · views.metadata`);
 }

@@ -66,24 +66,6 @@ def client(app):
     return client
 
 
-def test_matrix_page_renders_rows_and_summary(client, runtime):
-    _, project, workflow = runtime
-    response = client.get(f"/dashboard/project/demo/workflows/{workflow.name}/matrix")
-    assert response.status_code == 200
-    assert b"queued-1" in response.data
-    assert b"active-1" in response.data
-    assert b"prepare" in response.data
-    assert b"finish" in response.data
-
-
-def test_empty_matrix_cells_are_not_exposed_as_keyboard_buttons(client, runtime):
-    _, _, workflow = runtime
-    response = client.get(f"/dashboard/project/demo/workflows/{workflow.name}/matrix")
-
-    assert response.status_code == 200
-    assert b'data-execution-id="" tabindex="0" role="button"' not in response.data
-
-
 def test_matrix_json_endpoint_returns_statuses(client, runtime):
     _, project, workflow = runtime
     response = client.get(f"/api/projects/demo/workflows/{workflow.name}/matrix")
@@ -174,7 +156,6 @@ def test_matrix_dataset_csv_import_endpoint(client, runtime):
 def test_matrix_routes_are_read_only_except_import(client, runtime):
     _, project, workflow = runtime
     read_paths = [
-        f"/dashboard/project/demo/workflows/{workflow.name}/matrix",
         f"/api/projects/demo/workflows/{workflow.name}/matrix",
         f"/api/projects/demo/workflows/{workflow.name}/matrix.csv",
         f"/api/projects/demo/workflows/{workflow.name}/matrix-details.csv",

@@ -71,10 +71,13 @@ def _wait(predicate, timeout=30.0):
 
 
 def _snapshot(root: Path) -> dict[str, str]:
-    """Hash of every file ALFRD keeps for plans, plus the plan CSV."""
+    """Hash of every file ALFRD keeps for plans, plus the plan CSV.
+
+    Leaves out logs/: the command outlives the killed runner and keeps writing its own
+    log, .child and usage files (slowly under a loaded parallel run)."""
     out = {}
     for path in sorted([*(root / ".alfrd").rglob("*"), root / "alfrd.plan.csv"]):
-        if path.is_file() and "runner.lock" not in path.name:
+        if path.is_file() and "runner.lock" not in path.name and path.parent.name != "logs":
             out[str(path.relative_to(root))] = hashlib.sha1(path.read_bytes()).hexdigest()
     return out
 
@@ -275,6 +278,29 @@ def test_http_status_list_404_and_schema(server, project):
     events = client.get(f"/api/v1/projects/{pid}/plans/latest/events?timeout=1")
     body = events.get_data(as_text=True)
     assert events.mimetype == "text/event-stream" and "event: started" in body and body.rstrip().endswith("data: {}")
+
+
+def test_http_events_integer_since_returns_structured_json(server, project):
+    app, pid = server
+    client = app.test_client()
+    _plan(project, targets=("T1",))
+    folder = scheduler.create_plan(project)
+    scheduler.Runner(project, folder.id).run()
+    url = f"/api/v1/projects/{pid}/plans/latest/events"
+    doc = client.get(url + "?since=0").get_json()
+    assert doc["schema"] == "alfrd.plan_events/1" and doc["plan"] == folder.id
+    kinds = [e["kind"] for e in doc["events"]]
+    assert kinds[0] == "plan.started" and kinds[-1] == "plan.finished" and kinds.count("turn.started") == 3
+    assert doc["seq"] == doc["events"][-1]["seq"] == len(kinds)
+    page = client.get(url + "?since=1&limit=2").get_json()
+    assert [e["seq"] for e in page["events"]] == [2, 3] and page["seq"] == 3
+    assert client.get(url + f"?since={doc['seq']}").get_json()["events"] == []
+    assert client.get(f"/api/v1/projects/{pid}/plans/nope/events?since=0").status_code == 404
+    # Every other use keeps the SSE stream (and its errors).
+    sse = client.get(url + "?timeout=1&since=c1.~")
+    assert sse.mimetype == "text/event-stream" and "event: started" in sse.get_data(as_text=True)
+    assert client.get(url + "?since=-1").status_code == 400
+    assert client.get(url + "?since=bogus").status_code == 400
 
 
 def test_http_long_poll_returns_early_on_change(server, project):

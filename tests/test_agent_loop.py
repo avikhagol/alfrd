@@ -132,6 +132,8 @@ def test_five_cycles_feed_each_handoff_and_stop(project):
     assert [c["agent"] for c in calls] == ["claude", "codex"] * 5
     assert "Fix the widget" in calls[0]["prompt"]
     assert "first turn" in calls[0]["prompt"]
+    # A concrete task starts at once: the first turn no longer hands all implementation on.
+    assert "start doing it" in calls[0]["prompt"] and "leave implementation" not in calls[0]["prompt"]
     assert all("Agent: " + calls[i - 1]["agent"] in calls[i]["prompt"] for i in range(1, 10))
     assert "final turn" in calls[-1]["prompt"]
     assert folder.load()["status"] == "finished"
@@ -895,20 +897,6 @@ def test_rerunning_finished_task_resets_only_selected_row(service, tmp_path, pro
     assert next(row for row in table.rows if row.target == "task").cell(cfg.step_ids[0]) == pc.DONE
     assert next(row for row in table.rows if row.target == "short").cell(cfg.step_ids[0]) == pc.TODO
     assert len(response.get_json()["plan"]["steps"]) == 2
-
-
-
-def test_existing_plan_with_legacy_manifest_hash_runs(project):
-    manifest = project / "alfrd.yaml"
-    data = yaml.safe_load(manifest.read_text())
-    data["workflows"][0]["repeat"]["iterations"] = 1
-    manifest.write_text(yaml.safe_dump(data, sort_keys=False))
-    folder = scheduler.create_plan(project)
-    plan = folder.load()
-    plan["loop"]["manifest_sha256"] = scheduler.manifest_hash(project, legacy=True)
-    folder.save(plan)
-    scheduler.Runner(project, folder.id).run()
-    assert folder.load()["status"] == "finished"
 
 
 

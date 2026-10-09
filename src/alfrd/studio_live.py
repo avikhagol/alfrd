@@ -106,7 +106,7 @@ class Watcher:
         self.error: str | None = None
         self.events: deque[dict[str, Any]] = deque(maxlen=history)
         self._snapshot: Any = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -188,7 +188,9 @@ class Watcher:
             self.last_change = self.last_pass
             event = {"type": self.kind, "key": self.key, "epoch": self.epoch, "version": self.version, **diff}
             self.events.append(event)
-        self.publish(event)
+            # Companion event watchers share a cursor; publish under the cursor lock
+            # so subscribers always receive versions in the same order as history.
+            self.publish(event)
         return event
 
     def _run(self) -> None:
@@ -239,6 +241,91 @@ class TreeWatcher(Watcher):
         return {"project": self.key, **diff}
 
 
+class AlfrdWatcher(Watcher):
+    """Tail plan events by byte offset; initial contents are a baseline, never replayed."""
+
+    kind = "alfrd"
+
+    def __init__(self, key, root, publish, **kw):
+        super().__init__(key, publish, **kw)
+        self.root = Path(root)
+        self._tails = {}
+        self._ref = None
+
+    def _read(self, path, offset):
+        import json
+        records = []
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            while True:
+                start = stream.tell()
+                line = stream.readline()
+                if not line or not line.endswith(b"\n"):
+                    return records, start
+                try:
+                    record = json.loads(line)
+                    if isinstance(record, dict):
+                        records.append(record)
+                except (ValueError, UnicodeDecodeError):
+                    pass
+
+    def probe(self):
+        from alfrd import notify
+        from alfrd.runtime import scheduler
+        if self._ref is None:
+            self._ref = notify.project_ref(self.root)
+        plans = scheduler.list_plans(self.root)
+        active = {p["id"] for p in plans if p.get("status") in scheduler.ACTIVE}
+        out = []
+        for plan in plans:
+            ident = plan["id"]
+            if ident not in active and ident not in self._tails:
+                continue
+            path = self.root / ".alfrd" / "plans" / ident / "events.jsonl"
+            state = self._tails.get(ident)
+            try:
+                stat = path.stat()
+                inode = (stat.st_dev, stat.st_ino)
+                if state is None and self._snapshot is None:
+                    # Only complete lines form the initial baseline.
+                    records, offset = self._read(path, 0)
+                    seq = max((r.get("seq", 0) for r in records if type(r.get("seq")) is int), default=0)
+                    self._tails[ident] = (inode, offset, seq)
+                    continue
+                old_inode, offset, seq = state or (inode, 0, 0)
+                records = []
+                if old_inode != inode:
+                    rotated = path.with_name(path.name + ".1")
+                    try:
+                        st = rotated.stat()
+                        if (st.st_dev, st.st_ino) == old_inode:
+                            records, _ = self._read(rotated, offset)
+                    except OSError:
+                        pass
+                    offset = 0
+                elif stat.st_size < offset:
+                    offset = 0
+                more, offset = self._read(path, offset)
+                for record in records + more:
+                    number = record.get("seq")
+                    if type(number) is not int or number <= seq:
+                        continue
+                    seq = number
+                    brief = notify._brief(record, self._ref["identifier"])
+                    brief.update(plan=ident, target=record.get("target"), project=self.key)
+                    out.append(brief)
+                self._tails[ident] = (inode, offset, seq)
+            except OSError:
+                continue
+        # Keep finished tails: a runner may flush plan.finished after changing its status.
+        existing = {p["id"] for p in plans}
+        self._tails = {k: v for k, v in self._tails.items() if k in existing}
+        return out
+
+    def compare(self, old, new):
+        return {"events": new} if new else None
+
+
 class FileWatcher(Watcher):
     """Size/mtime of a few files, e.g. the runtime SQLite database and its WAL."""
 
@@ -284,6 +371,7 @@ class LiveHub:
         self.lease = lease
         self.enabled = interval > 0
         self._watchers: dict[str, Watcher] = {}
+        self._event_watchers: dict[str, AlfrdWatcher] = {}
         self._subs: set[Subscriber] = set()
         self._leases: dict[str, float] = {}
         self._lock = threading.RLock()
@@ -296,6 +384,10 @@ class LiveHub:
         for sub in subs:
             if event["key"] in sub.keys:
                 sub.put(event)
+
+    def broadcast(self, kind: str, **data: Any) -> None:
+        """An event for every subscriber (all of them hold the runtime key), e.g. ``plugin_job``."""
+        self._publish({"type": kind, "key": self.RUNTIME, **data})
 
     def watcher(self, key: str) -> Watcher | None:
         with self._lock:
@@ -313,6 +405,17 @@ class LiveHub:
                 w = TreeWatcher(key, root, self._publish, interval=self.interval, idle=self.idle)
             self._watchers[key] = w
             w.start()
+            if key != self.RUNTIME:
+                # Share the tree cursor/history so SSE and poll fallback have one ordered stream.
+                def forward(event, owner=w):
+                    with owner._lock:
+                        owner.version += 1
+                        event.update(epoch=owner.epoch, version=owner.version)
+                        owner.events.append(event)
+                        self._publish(event)
+                events = AlfrdWatcher(key, root, forward, interval=self.interval, idle=self.idle)
+                self._event_watchers[key] = events
+                events.start()
             self._ensure_reaper()
             return w
 
@@ -329,6 +432,9 @@ class LiveHub:
             for key, w in list(self._watchers.items()):
                 if not self._in_use(key, now):
                     w.stop()
+                    companion = self._event_watchers.pop(key, None)
+                    if companion:
+                        companion.stop()
                     del self._watchers[key]
                     stopped.append(key)
         return stopped
@@ -354,6 +460,9 @@ class LiveHub:
             for w in self._watchers.values():
                 w.stop()
             self._watchers.clear()
+            for w in self._event_watchers.values():
+                w.stop()
+            self._event_watchers.clear()
 
     # -- subscribers --------------------------------------------------------
     def subscribe(self, projects: Iterable[str]) -> tuple[Subscriber, dict[str, Any]]:
@@ -379,6 +488,9 @@ class LiveHub:
             if w is None:
                 continue
             w.wait_ready(wait)
+            companion = self._event_watchers.get(key)
+            if companion is not None:
+                companion.wait_ready(wait)
             out[key] = w.state()
         return out
 
@@ -427,6 +539,9 @@ class LiveHub:
         w = self._watchers.get(key)
         if w is not None:
             w.poke()
+        events = self._event_watchers.get(key)
+        if events is not None:
+            events.poke()
 
 
-__all__ = ["LiveHub", "TreeWatcher", "FileWatcher", "Watcher", "diff_snapshots", "tree_snapshot"]
+__all__ = ["LiveHub", "TreeWatcher", "AlfrdWatcher", "FileWatcher", "Watcher", "diff_snapshots", "tree_snapshot"]

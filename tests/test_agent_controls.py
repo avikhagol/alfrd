@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import time
 
 import pytest
 import yaml
@@ -150,6 +151,24 @@ def test_claude_stream_keeps_activity_out_of_handoff(tmp_path, capsys, failure):
     assert json.loads((tmp_path / "unit.agent.json").read_text())["model"] == "claude-reported"
 
 
+def test_claude_status_note_after_the_report_does_not_replace_the_handoff(tmp_path, capsys):
+    """Seen 2026-10-08: a stopped background waiter got a 284-character reply after the report."""
+    from alfrd.agent_loop import REQUIRED_HEADINGS
+
+    response = tmp_path / "response.md"
+    stream = ClaudeStream(response, tmp_path / "unit.exit", headings=list(REQUIRED_HEADINGS))
+    for text in ("Still in progress. Waiting for the notification.", RESPONSE, "The closing report above stands."):
+        stream.feed(json.dumps({"type": "result", "subtype": "success", "result": text}) + "\n")
+    assert stream.close() is None
+    assert response.read_text() == RESPONSE  # the early note was replaced; the late one was not
+    assert "Kept the earlier handoff" in capsys.readouterr().out
+    later = RESPONSE.replace("## Goal", "## Goal\nRevised.", 1)
+    stream = ClaudeStream(response, tmp_path / "unit.exit", headings=list(REQUIRED_HEADINGS))
+    for text in (RESPONSE, later):
+        stream.feed(json.dumps({"type": "result", "subtype": "success", "result": text}) + "\n")
+    assert response.read_text() == later  # the last valid handoff wins
+
+
 def test_human_adjustment_blocks_next_agent_and_survives_runner_death(project):
     configure(project, review=True)
     original = (project / "task/next-step-codex.md").read_text()
@@ -235,6 +254,35 @@ def test_real_shim_stream_reports_model_and_publishes_only_result(project, tmp_p
         assert Path(unit["handoff"]["response_file"]).read_text() == RESPONSE
     assert "Tool: Read" in (project / unit["log"]).read_text()
     assert folder.load()["status"] == ("failed" if failure else "finished")
+
+
+def test_claude_that_lingers_after_its_final_result_is_stopped_and_succeeds(project, tmp_path, monkeypatch):
+    """claude -p can stay open after background agents report; the turn must still end."""
+    configure(project)
+    monkeypatch.setenv("ALFRD_CLAUDE_EXIT_GRACE", "1")
+    executable = tmp_path / "claude"
+    events = [
+        {"type": "system", "subtype": "init", "model": "resolved-model"},
+        {"type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": "a1"}]},
+        {"type": "result", "subtype": "success", "result": "Waiting for the agent."},
+        {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
+        {"type": "result", "subtype": "success", "result": RESPONSE, "usage": {"input_tokens": 1, "output_tokens": 2}},
+    ]
+    executable.write_text(f"#!{sys.executable}\nimport json,sys,time\nsys.stdin.read()\n"
+                          f"for event in {events!r}: print(json.dumps(event), flush=True)\ntime.sleep(600)\n")
+    executable.chmod(0o755)
+    path = project / "alfrd.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["entrypoint"][0].update(cmd=[str(executable), "-p", "--output-format", "text"])
+    path.write_text(yaml.safe_dump(data))
+    folder = scheduler.create_plan(project)
+    started = time.time()
+    scheduler.Runner(project, folder.id).run()
+    assert time.time() - started < 60
+    unit = folder.units()[0]
+    assert Path(unit["handoff"]["response_file"]).read_text() == RESPONSE
+    assert "stayed open" in (project / unit["log"]).read_text()
+    assert folder.load()["status"] == "finished"
 
 
 def test_task_editor_conflicts_sync_and_csrf(project, tmp_path, service):

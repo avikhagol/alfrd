@@ -32,6 +32,7 @@ MIME_TYPES = {
 REQUIRED_ASSETS = (
     "index.html",
     "css/studio.css",
+    "theme.css",
     "js/app.js",
     "js/components/overview.js",
     "js/components/canvas.js",

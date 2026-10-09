@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -22,6 +22,8 @@ class Base(DeclarativeBase):
 
 class Project(Base):
     __tablename__ = "runtime_projects"
+    # One project per folder: the folder holds one manifest and one .alfrd/ state tree.
+    __table_args__ = (Index("ux_runtime_projects_root_path", "root_path", unique=True),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     identifier: Mapped[str] = mapped_column(Text, unique=True, nullable=False)

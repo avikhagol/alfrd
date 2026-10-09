@@ -96,6 +96,9 @@ def create_project(service, path: str | Path, *, name: str | None = None,
         pass
     else:
         raise FileExistsError("project is already registered")
+    taken = service.get_project_by_root(root)
+    if taken is not None:
+        raise FileExistsError(f"this folder already holds project {taken.name!r}; one folder holds one ALFRD project")
     was_dir = root.is_dir()
     root.mkdir(parents=True, exist_ok=True)
     written = []

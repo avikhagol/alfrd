@@ -34,7 +34,7 @@ def resolve_selected_manifest(path: str | Path) -> Path:
         for filename in (MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME):
             candidate = selected / filename
             if candidate.is_symlink():
-                raise ValueError("Manifest symbolic links are not accepted by the dashboard.")
+                raise ValueError("Manifest symbolic links are not accepted.")
             if candidate.is_file():
                 return candidate.resolve()
         raise ManifestNotFoundError(
@@ -49,42 +49,11 @@ def resolve_selected_manifest(path: str | Path) -> Path:
     legacy = selected.parent / MANIFEST_FILENAME
     if selected.name == MANIFEST_ALIAS_FILENAME and legacy.is_file():
         if legacy.is_symlink():
-            raise ValueError("Manifest symbolic links are not accepted by the dashboard.")
+            raise ValueError("Manifest symbolic links are not accepted.")
         return legacy.resolve()
     return selected
 
 
-def resolve_artifact_path(working_directory: str | Path, relative_path: str) -> Path:
-    """Validate a non-sensitive existing artifact contained by one run."""
-
-    if not relative_path.strip():
-        raise ValueError("Artifact path is required.")
-    relative = Path(relative_path)
-    if relative.is_absolute() or "\\" in relative_path or relative in {Path("."), Path("..")}:
-        raise ValueError("Artifact path must be relative to the selected run directory.")
-    for part in relative.parts:
-        lowered = part.casefold()
-        if (
-            part in {"", ".", ".."}
-            or part.startswith(".")
-            or "secret" in lowered
-            or "credential" in lowered
-        ):
-            raise ValueError("Dotfiles, secret paths, and traversal are not allowed.")
-    try:
-        root = Path(working_directory).expanduser().resolve(strict=True)
-        candidate = (root / relative).resolve(strict=True)
-        resolved_relative = candidate.relative_to(root)
-    except (OSError, ValueError, RuntimeError) as error:
-        raise ValueError("Artifact must exist inside the selected run directory.") from error
-    if resolved_relative == Path(".") or any(
-        part.startswith(".") or "secret" in part.casefold() or "credential" in part.casefold()
-        for part in resolved_relative.parts
-    ):
-        raise ValueError("Dotfiles and secret paths cannot be registered through aliases.")
-    if not (candidate.is_file() or candidate.is_dir()):
-        raise ValueError("Artifact must be an existing regular file or directory.")
-    return candidate
 
 
 class CatalogReader(Protocol):
@@ -386,6 +355,5 @@ __all__ = [
     "CatalogReader",
     "RuntimeCatalogReader",
     "SqlAlchemyCatalogReader",
-    "resolve_artifact_path",
     "resolve_selected_manifest",
 ]

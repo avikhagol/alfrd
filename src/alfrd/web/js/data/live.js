@@ -12,7 +12,7 @@
 // tab listens. When the tab comes back, versions tell what was missed.
 
 import { server } from "./server.js";
-import { folderFingerprint, diffFingerprints } from "./folder_scan.js";
+let folderScan = null; // folder mode only: loads on first poll
 
 const RETRY_SSE_MS = 60000;
 const POLL_MIN_MS = 3000;
@@ -38,7 +38,6 @@ export function createLive(hooks) {
     prints: {}, // browser mode: project -> fingerprint
     es: null,
     transport: "sse",
-    errors: 0,
     timer: null,
     retryTimer: null,
     interval: 2,
@@ -86,6 +85,7 @@ export function createLive(hooks) {
   }
 
   function event(ev) {
+    if (ev.type === "plugin_job") { server.pluginJob = ev.job; window.dispatchEvent(new CustomEvent("plugin-job", { detail: ev.job })); hooks.onPluginJob?.(ev.job); return; }
     const key = ev.key;
     const prev = live.known[key];
     if (prev && prev.epoch === ev.epoch && ev.version <= prev.version) return; // already seen
@@ -94,9 +94,10 @@ export function createLive(hooks) {
     if (ev.type === "runtime") { hooks.onRuntime?.(); return; }
     if (prev && (prev.epoch !== ev.epoch || ev.version !== prev.version + 1)) {
       hooks.onResync?.(key); // missed some: re-read the project
-      return;
+      if (ev.type !== "alfrd") return;
     }
     live.lastChange = Date.now();
+    if (ev.type === "alfrd") { hooks.onAlfrd?.(key, ev.events || []); return; }
     if ((ev.changed || []).length || (ev.removed || []).length) hooks.onTree?.(key, { changed: ev.changed || [], removed: ev.removed || [] });
     if (ev.logs && Object.keys(ev.logs).length) hooks.onLogs?.(key, ev.logs);
   }
@@ -106,22 +107,21 @@ export function createLive(hooks) {
     const es = new EventSource(server.eventsUrl(projects));
     live.es = es;
     es.addEventListener("hello", (e) => {
-      live.errors = 0;
       const data = JSON.parse(e.data);
       live.interval = data.interval || live.interval;
       live.idle = data.idle || live.idle;
       set("live", "event stream");
       hello(data.state);
     });
-    ["tree", "runtime"].forEach((type) => es.addEventListener(type, (e) => { try { event(JSON.parse(e.data)); } catch { /* ignore */ } }));
+    ["tree", "runtime", "alfrd", "plugin_job"].forEach((type) => es.addEventListener(type, (e) => { try { event(JSON.parse(e.data)); } catch { /* ignore */ } }));
     es.addEventListener("reset", () => hooks.projects().forEach((p) => hooks.onResync?.(p)));
     es.onerror = () => {
-      live.errors += 1;
-      if (es.readyState === EventSource.CLOSED || live.errors >= 3) {
-        es.close();
-        if (live.es === es) live.es = null;
-        startPolling("event stream unavailable — polling");
-      } else set("reconnecting", "connection lost, retrying");
+      // EventSource hides HTTP status and reconnects automatically. Close it
+      // and use polling to distinguish a lost connection from a 401.
+      es.close();
+      if (live.es !== es) return;
+      live.es = null;
+      if (!server.authRequired) startPolling("event stream unavailable — polling");
     };
   }
 
@@ -173,6 +173,7 @@ export function createLive(hooks) {
     for (const { project, handle } of folders) {
       try {
         if (handle.queryPermission && (await handle.queryPermission({ mode: "read" })) !== "granted") { needPermission = true; continue; }
+        const { folderFingerprint, diffFingerprints } = await (folderScan ||= import("./folder_scan.js"));
         const { prints, ms } = await folderFingerprint(handle);
         if (gen !== live.gen) return;
         slowest = Math.max(slowest, ms);
@@ -197,20 +198,20 @@ export function createLive(hooks) {
 
   // -- lifecycle ---------------------------------------------------------------
   function running() {
-    return live.enabled && !document.hidden;
+    return live.enabled && !server.authRequired && (!document.hidden || hooks.watchHidden?.());
   }
 
   function restart() {
     clear();
     live.gen += 1;
     live.lastChange = Date.now(); // start busy: the reader just arrived
+    if (server.authRequired) { set("auth-required", "access link needed"); return; }
     if (!live.enabled) { set("off", "live updates are off"); return; }
-    if (document.hidden) { set("paused", "tab hidden"); return; }
+    if (document.hidden && !hooks.watchHidden?.()) { set("paused", "tab hidden"); return; }
     if (hooks.mode() === "server") {
       if (hooks.available && !hooks.available()) { set("unavailable", "this server has live updates off"); return; }
       const projects = hooks.projects();
       live.watching = projects.join(",");
-      if (!projects.length) { set("off", "no project"); return; }
       if (live.transport === "sse" && typeof EventSource === "function") connectSse(projects);
       else startPolling("polling for changes");
     } else {
@@ -219,10 +220,16 @@ export function createLive(hooks) {
   }
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { clear(); if (live.enabled) set("paused", "tab hidden"); }
+    if (hooks.watchHidden?.() && live.es) return; // keep notification delivery continuous
+    if (document.hidden && !hooks.watchHidden?.()) { clear(); if (live.enabled) set("paused", "tab hidden"); }
     else restart();
   });
   window.addEventListener("pagehide", clear);
+  server.onAuthRequired(() => {
+    clear();
+    live.gen += 1;
+    set("auth-required", "access link needed");
+  });
 
   Object.assign(live, {
     started: false,

@@ -1,32 +1,18 @@
 from alfrd.agent_loop import DEFAULT_ITERATIONS, MAX_ITERATIONS
 from pathlib import Path
 import os
-import shutil
+import secrets
 import subprocess
 import sys
 import webbrowser
 import ipaddress
 import threading
-from typing import Optional, Annotated
+from urllib.parse import urlencode
+from typing import Optional
 
 import typer
 
-from alfrd import (
-    B,
-    Pipeline,
-    REGISTERED_STEPS,
-    VALIDATE_AFTER,
-    VALIDATE_BEFORE,
-    X,
-    __version__,
-    c,
-    get_alfrd_dir,
-    get_project_dir,
-)
-from alfrd.plugins import List, load_projects
-from alfrd.util import padded_output, read_inputfile
-from alfrd.core.inspect import Inspector, Executor
-from alfrd.core.project import project_directory
+from alfrd import get_alfrd_dir
 
 
 alfrd_cli = typer.Typer()
@@ -40,206 +26,6 @@ try:
         sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 0)
 except:
     pass
-
-
-def load_steps(prefix=""):
-    for i, (name, info) in enumerate(REGISTERED_STEPS.items()):
-        print(f"{prefix}- {i}\t {c['bc']}{name.ljust(20)}{c['x']}: {info['desc']}")
-
-
-def list_steps(proj):
-    """List all registered steps."""
-    print(f"\n\t\t{c['c']}ALFRD ({__version__}){c['x']}\n")
-    print(f"  Run following pipeline steps for {c['bc']}{proj.upper()}{c['x']}")
-    if not REGISTERED_STEPS:
-        print("No pipeline steps registered.")
-    else:
-        load_steps()
-
-
-def proj_dir(proj, create=False):
-    project_dir = project_directory(proj)
-
-    if create:
-        project_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Created project directory at {project_dir}")
-    if not project_dir.exists():
-        print(f"Project directory '{proj}' does not exist.")
-        raise ValueError(f"Project {proj} not found.")
-    return project_dir
-
-
-@alfrd_cli.command()
-def init(proj: str):
-    """Initialize the project-specific plugin directory."""
-    project_dir = project_directory(proj)
-    if not project_dir.exists():
-        _ = proj_dir(proj, create=True)
-    else:
-        print(f"Project directory already exists at {project_dir}")
-
-
-@alfrd_cli.command()
-def ls(proj: str):
-    """List all available pipeline steps for a project."""
-    project_dir = proj_dir(proj)
-
-    load_projects(project_dir)
-    list_steps(proj)
-
-
-@alfrd_cli.command()
-def lsp():
-    """List all available projects."""
-    project_dirs = list(get_project_dir().glob("*"))
-
-    if len(project_dirs):
-        print(f"\tAvailable projects:")
-        for proj in project_dirs:
-            print(f"\t\t{proj.name}")
-            try:
-                load_projects(proj)
-                load_steps(prefix="\t\t\t")
-            except:
-                print("\t\t\tsteps not configured properly!")
-    else:
-        print("no projects found!")
-
-
-@alfrd_cli.command()
-def run(
-    step_name: str = typer.Argument(help="name of the step name in project"),
-    proj: str = typer.Argument(help="name of the ALFRD project"),
-    step_to: str = None,
-    params: List[str] = typer.Argument(None, help="Key-value pairs of parameters or parameter file path (e.g., id=123 name=Test)"),
-    steps: Optional[List[str]] = typer.Option(None, help="list of steps e.g., --steps=step1 --steps=step2 | supersedes values and sequence of the steps", show_default=False),
-):
-    """Run a specific pipeline step for a project."""
-    _params_found = {}
-
-    art = f"""
-    ╔══════════════════════════════════════════════════════════════════╗
-    ║{proj.upper():^66}║
-    ╚══════════════════════════════════════════════════════════════════╝
-    """
-    print(art)
-
-    if params and len(params):
-        for param in params:
-            if not '=' in param:
-                if Path(param).exists():
-                    _params_found, _, _ = read_inputfile(Path(param).absolute().parent, Path(param).name)
-                    Pipeline.update_params(_params_found)
-
-        _params_found = {param.split("=")[0]: param.split("=")[1] for param in params if '=' in param}
-    Pipeline.update_params(_params_found)
-
-    project_dir = proj_dir(proj)
-    load_projects(project_dir)
-
-    if step_name not in REGISTERED_STEPS:
-        print(f"Step '{step_name}' not found! Use `ls` to view available steps.")
-        raise typer.Exit()
-    allsteps = steps or list(REGISTERED_STEPS.keys())
-    idx_from = allsteps.index(step_name)
-    idx_to = idx_from + 1
-
-    if step_to:
-        if step_to not in REGISTERED_STEPS:
-            print(f"Step '{step_to}' not found! Use `ls` to view available steps.")
-            raise typer.Exit()
-        else:
-            idx_from = allsteps.index(step_name)
-            idx_to = allsteps.index(step_to) + 1
-
-    steps = allsteps[idx_from:idx_to]
-    print("Following steps will be executed in the sequence:")
-    print(f"{c['bc']}", "-", f"\n - ".join(steps), f"{c['x']}\n")
-    for s, step_name in enumerate(steps):
-        if s == 0:
-            Pipeline.prev_step_success = True
-            Pipeline.validation_success = True
-        Pipeline.step_name = step_name
-
-        if Pipeline.prev_step_success and (step_name in VALIDATE_BEFORE) and VALIDATE_BEFORE[step_name]['functions']:
-            print(f"\n>  {B}Pre-processing{X} ({Pipeline.step_name})")
-            print("""  ─────────────────────────────────────────────────────────────────""")
-            with padded_output(4):
-                Pipeline.validate_steps = VALIDATE_BEFORE
-                Pipeline.run_validations()
-
-        if Pipeline.prev_step_success and Pipeline.validation_success:
-            print(f"\n>  {B}Processing{X}: {proj.upper()} {step_name}")
-            print("""  ─────────────────────────────────────────────────────────────────""")
-            with padded_output(4):
-                Pipeline.run_step()
-
-        if Pipeline.validation_success and Pipeline.prev_step_success and (step_name in VALIDATE_AFTER) and VALIDATE_AFTER[step_name]['functions']:
-            print(f"\n>  {B}Post-processing{X} ({Pipeline.step_name})")
-            print("""  ─────────────────────────────────────────────────────────────────""")
-
-            with padded_output(4):
-                Pipeline.validate_steps = VALIDATE_AFTER
-                Pipeline.run_validations()
-
-        if Pipeline.validation_success:
-            print(f"{B} finished : {c['bc']}{step_name}{X}")
-        else:
-            print(f"{B} skipped  : {c['bc']}{step_name}{X}")
-
-
-@alfrd_cli.command()
-def add(
-    script_path: str,
-    proj: str,
-    symlink: bool = typer.Option(True, help="(instead of copying files a shortcut is placed in the project folder"),
-):
-    """Add a new plugin to a specific project."""
-    project_dir = proj_dir(proj)
-    script_path = Path(script_path).absolute()
-
-    if not script_path.is_file():
-        print(f"File '{script_path}' not found.")
-        raise typer.Exit()
-
-    dest_path = project_dir / script_path.name
-    if symlink:
-        if Path(dest_path).exists():
-            Path.unlink(dest_path)
-        Path(dest_path).symlink_to(script_path)
-    else:
-        shutil.copy(script_path, dest_path)
-    print(f"Added plugin to {proj}: {dest_path}")
-
-
-@alfrd_cli.command()
-def rm(proj: str):
-    """Remove a specific project."""
-    project_dir = proj_dir(proj)
-    shutil.rmtree(project_dir)
-
-    print(f"removed {proj}: {project_dir}")
-
-@alfrd_cli.command()
-def inspect(configfile: str, schema: bool = False):
-    """Inspect a specific project."""
-    inspect = Inspector(configfile)
-    if schema:
-        inspect.print_schema()
-    else:
-        inspect.print_config()
-
-@alfrd_cli.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def nrun(
-    ctx: typer.Context,
-    yaml_configfile,
-    name: Annotated[str, typer.Option("--name", "-n")] = "runner",
-):
-    """Run a specific entrypoint and forward remaining args."""
-    args = list(ctx.args)
-
-    executor = Executor(yaml_configfile)
-    executor.run_entrypoint(name, args)
 
 
 def _serve_production(app, host: str, port: int) -> None:
@@ -259,8 +45,12 @@ def _serve_production(app, host: str, port: int) -> None:
           connection_limit=200, asyncore_use_poll=True, ident="alfrd", _quiet=True)
 
 
-def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
-    """Open once the local HTTP server responds; stop if serving exits early."""
+def _open_studio_when_ready(url: str, stopped: threading.Event, probe_url: str | None = None) -> None:
+    """Open ``url`` once the local HTTP server responds; stop if serving exits early.
+
+    ``probe_url`` is the readiness check (the public ``/api/health``), so the
+    access token in ``url`` is not spent on a probe.
+    """
     from urllib.error import URLError
     from urllib.request import ProxyHandler, build_opener
 
@@ -269,19 +59,19 @@ def _open_dashboard_when_ready(url: str, stopped: threading.Event) -> None:
         if stopped.wait(0.1):
             return
         try:
-            with opener.open(url, timeout=0.25) as response:
+            with opener.open(probe_url or url, timeout=0.25) as response:
                 ready = response.status == 200
         except (OSError, URLError):
             continue
         if ready and not stopped.is_set():
             try:
                 if not webbrowser.open(url):
-                    print("Could not open a browser; open the dashboard URL above manually.")
+                    print("Could not open a browser; open the Studio URL above manually.")
             except Exception as error:
-                print(f"Could not open a browser ({error}); open the dashboard URL above manually.")
+                print(f"Could not open a browser ({error}); open the Studio URL above manually.")
             return
     if not stopped.is_set():
-        print("Browser launch timed out; open the dashboard URL above manually.")
+        print("Browser launch timed out; open the Studio URL above manually.")
 
 
 def _interrupt_self() -> None:
@@ -291,6 +81,24 @@ def _interrupt_self() -> None:
     if os.name == "nt":  # no reliable self-SIGINT on Windows
         os._exit(0)
     os.kill(os.getpid(), signal.SIGINT)
+
+
+def _reexec_server(token: str, secret_key: str, no_token: bool) -> None:
+    """Settings → Plugins → Restart now: run the same command again in this process.
+
+    The token and session secret travel in the environment, so the new server
+    writes the same token file and the Studio's session cookie stays valid.
+    Sockets are not inherited (PEP 446), so the port is free again.
+    """
+    os.environ["ALFRD_SECRET_KEY"] = secret_key
+    if not no_token:
+        os.environ["ALFRD_TOKEN"] = token
+    argv = list(sys.orig_argv)
+    if "--no-browser" not in argv:  # the Studio tab is already open
+        argv.append("--no-browser")
+    print("Restarting alfrd serve…", flush=True)
+    sys.stderr.flush()
+    os.execv(sys.executable, argv)
 
 
 def _connect_startup_project(service, project: str | None) -> str | None:
@@ -356,7 +164,8 @@ def _startup_folder(project: str | None) -> Path:
 
 def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None, no_browser: bool = False,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
-               live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2) -> None:
+               live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2,
+               token: str | None = None, no_token: bool = False, gui_install: bool = True) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -372,6 +181,12 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         loopback = host.lower() == "localhost"
     if debug and not loopback:
         raise typer.BadParameter("Debug mode is only available on a loopback interface.")
+    if no_token and not loopback:
+        raise typer.BadParameter("--no-token is only available on a loopback interface.")
+    if no_token:
+        typer.echo("Warning: --no-token disables access-token protection; any local user can access this server.", err=True)
+    elif not loopback:
+        typer.echo("Warning: without TLS, the access token travels in clear text. Use an HTTPS reverse proxy or ssh -L.", err=True)
     database = Path(runtime_db).expanduser().resolve() if runtime_db else _default_runtime_db().resolve()
     service = _runtime_service(str(database))
     config = {
@@ -384,6 +199,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         # Live updates: seconds between checks of a busy project tree (0 turns them off).
         "STUDIO_LIVE_INTERVAL": max(0.0, float(live_interval)),
         "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
+        # --no-gui-install: Settings → Plugins can't install/update/remove (plugins.json may also say so).
+        "PLUGINS_GUI_INSTALL": gui_install,
     }
     from alfrd.manifest_default import local_manifest
 
@@ -402,25 +219,45 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     # only those (unless --all-projects).
     scope = [i for i, _ in discovered] or ([config["STUDIO_DEFAULT_PROJECT"]] if config["STUDIO_DEFAULT_PROJECT"] else [])
     config["STUDIO_PROJECTS"] = None if all_projects or not scope else scope
-    # Identifiers are location keys; print the alfrd.yaml names.
-    others = [p.name for p in service.list_projects() if p.identifier not in scope]
-    if config["STUDIO_PROJECTS"] and others:
-        print(f"Also remembered in {database}: {', '.join(others)} (show them with --all-projects; remove with `alfrd projects forget NAME`).")
-    elif not scope and others:
-        print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
+    if not scope:
+        # Identifiers are location keys; print the alfrd.yaml names.
+        others = [p.name for p in service.list_projects()]
+        if others:
+            print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
+    from alfrd.gui import auth
+
+    # One token and session secret per server. Under --debug the reloader
+    # re-runs this function in a child process: the environment carries both
+    # over, so the printed link and the cookies stay valid.
+    token = token or os.environ.get("ALFRD_TOKEN") or auth.new_token()
+    secret_key = os.environ.get("ALFRD_SECRET_KEY") or secrets.token_hex(32)
+    if debug:
+        os.environ["ALFRD_TOKEN"] = token
+        os.environ["ALFRD_SECRET_KEY"] = secret_key
+    config["ACCESS_TOKEN"] = token
+    config["ACCESS_TOKEN_REQUIRED"] = not no_token
+    config["SECRET_KEY"] = secret_key
+    # Cookies ignore the port: two servers on one host need different names.
+    config["SESSION_COOKIE_NAME"] = f"alfrd-session-{port}"
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     authority = f"[{browser_host}]" if ":" in browser_host else browser_host
-    url = f"http://{authority}:{port}/studio/"
+    base = f"http://{authority}:{port}"
+    query = "" if no_token else "?" + urlencode({"token": token})
+    url = f"{base}/studio/{query}"
     print(f"ALFRD Studio: {url}")
-    print(f"ALFRD dashboard: http://{authority}:{port}/dashboard/")
     app = create_app(config)
+    # Only the process that serves writes the token file (not the reloader parent).
+    serving = not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    if serving:
+        auth.write_server_file(port, f"{base}/studio/", None if no_token else token, secret_key)
+        _start_plugin_services(database)
     _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
+    restart = threading.Event()
     browser_thread = None
-    if (not no_browser and (loopback or host in {"0.0.0.0", "::"})
-            and (not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true")):
+    if not no_browser and (loopback or host in {"0.0.0.0", "::"}) and serving:
         browser_thread = threading.Thread(
-            target=_open_dashboard_when_ready, args=(url, stopped), daemon=True,
+            target=_open_studio_when_ready, args=(url, stopped, f"{base}/api/health"), daemon=True,
         )
         browser_thread.start()
     try:
@@ -428,6 +265,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         if not debug and isinstance(config_map, dict):
             # Settings → Quit in the Studio: same as Ctrl+C in this terminal.
             config_map["STUDIO_SHUTDOWN"] = _interrupt_self
+            if os.name != "nt":  # Windows has no self-SIGINT to stop cleanly before the re-exec
+                config_map["STUDIO_RESTART"] = lambda: (restart.set(), _interrupt_self())
             if threading.current_thread() is threading.main_thread():
                 import signal
 
@@ -446,6 +285,31 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         stopped.set()
         if browser_thread is not None:
             browser_thread.join(timeout=1)
+        if serving:
+            from alfrd.extensions import services
+
+            services.supervisor.stop_all()
+            auth.remove_server_file(port)
+    if restart.is_set():
+        _reexec_server(token, secret_key, no_token)
+
+
+def _start_plugin_services(database: Path) -> None:
+    """Plugin services run against this server's database; start the ones set to start with it."""
+    from alfrd import extensions
+    from alfrd.extensions import services
+
+    services.supervisor.env["ALFRD_RUNTIME_DB"] = str(database)
+    if extensions.safe_mode():
+        return
+    try:
+        started = services.supervisor.autostart(
+            [(r.id, r.plugin) for r in extensions.loaded() if r.plugin is not None and extensions.active(r)])
+    except Exception as exc:  # noqa: BLE001 - a plugin service never stops the server
+        print(f"Plugin services not started: {exc}")
+        return
+    for key in started:
+        print(f"Started plugin service {key} (log: Settings → Plugins).")
 
 
 def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
@@ -477,7 +341,7 @@ def serve(
     runtime_db: Optional[str] = typer.Option(
         None, help="Path to the runtime SQLite database that backs matrix routes."
     ),
-    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the dashboard in a browser."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the Studio in a browser."),
     demo: bool = typer.Option(False, "--demo", help="Show the built-in demo data in the Studio."),
     project: Optional[str] = typer.Option(
         None, "--project", help="Folder with alfrd.yaml to open (default: the current folder when it has one)."
@@ -496,11 +360,20 @@ def serve(
     discover_depth: int = typer.Option(
         2, "--discover-depth", min=0, help="How many folder levels --discover searches below the start folder.",
     ),
+    token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
+    no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
+    no_gui_install: bool = typer.Option(
+        False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
+    ),
 ):
-    """Serve ALFRD Studio (default) and the dashboard, backed by the runtime database."""
+    """Serve ALFRD Studio, backed by the runtime database."""
 
+    if safe_mode:
+        os.environ["ALFRD_NO_PLUGINS"] = "1"  # also reaches the debug reloader's child
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
-               discover=discover, discover_depth=discover_depth)
+               discover=discover, discover_depth=discover_depth, token=token, no_token=no_token,
+               gui_install=not no_gui_install)
 
 
 @alfrd_cli.command()
@@ -511,11 +384,33 @@ def gui(
     runtime_db: Optional[str] = typer.Option(
         None, help="Path to the runtime SQLite database that backs matrix routes."
     ),
-    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the dashboard in a browser."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the Studio in a browser."),
+    token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
+    no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
+    no_gui_install: bool = typer.Option(
+        False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
+    ),
 ):
     """Alias for ``alfrd serve``."""
 
-    _serve_web(host, port, debug, runtime_db, no_browser)
+    if safe_mode:
+        os.environ["ALFRD_NO_PLUGINS"] = "1"
+    _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token,
+               gui_install=not no_gui_install)
+
+
+@alfrd_cli.command()
+def url(port: int = typer.Option(5000, min=1, max=65535, help="Port of the running server.")):
+    """Print the access link for a running alfrd serve."""
+    from alfrd.gui.auth import read_server_file
+
+    data = read_server_file(port)
+    if not data or not isinstance(data.get("url"), str) or not data["url"]:
+        typer.echo(f"No alfrd serve found on port {port}", err=True)
+        raise typer.Exit(1)
+    token = data.get("token")
+    typer.echo(data["url"] + ("?" + urlencode({"token": token}) if token else ""))
 
 
 def _studio_handler(directory: Path):
@@ -574,7 +469,7 @@ def studio(
     print("Static files only - use `alfrd serve` for live runtime projects. Press Ctrl+C to stop.")
     stopped = threading.Event()
     if open_browser:
-        threading.Thread(target=_open_dashboard_when_ready, args=(url, stopped), daemon=True).start()
+        threading.Thread(target=_open_studio_when_ready, args=(url, stopped), daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1517,5 +1412,208 @@ def plan_runner(plan_id: str, root: str = _ROOT_OPT):
     raise typer.Exit(code=scheduler.Runner(root, plan_id).run())
 
 
-if __name__ == "__main__":
+plugin_cli = typer.Typer(help="Manage trusted plugins and Studio themes.", no_args_is_help=True)
+alfrd_cli.add_typer(plugin_cli, name="plugin")
+
+
+def _plugin_call(function, *args, **kwargs):
+    """Report operational failures without a CLI traceback."""
+    try:
+        return function(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary, Ctrl-C still propagates
+        _plugin_fail(str(exc))
+
+
+def _plugin_fail(message: str):
+    typer.echo(f"alfrd plugin: {message}", err=True)
+    raise typer.Exit(code=1) from None
+
+
+def _plugin_records():
+    from alfrd import extensions
+
+    records = _plugin_call(extensions.load, force=True)
+    core = _core_command_names(alfrd_cli)
+    for record in records:
+        if record.status == "ok" and record.plugin and record.plugin.cli is not None and record.id in core:
+            record.status, record.error = "error", f"command name {record.id!r} is taken by alfrd"
+    return records
+
+
+def _plugin_find(plugin_id: str, *, load: bool = False):
+    from alfrd import extensions
+
+    if not load:
+        _plugin_call(extensions.add_site)
+    records = _plugin_records() if load else _plugin_call(extensions.discover)
+    record = next((record for record in records if record.id == plugin_id), None)
+    if record is None:
+        _plugin_fail(f"unknown plugin {plugin_id!r}; known: {', '.join(r.id for r in records) or '(none)'}")
+    return record
+
+
+def _plugin_restart():
+    typer.echo("restart `alfrd serve` to apply")
+
+
+@plugin_cli.command("list")
+def plugin_list():
+    """List installed plugins and themes, including disabled or broken plugins."""
+    rows = [("ID", "VERSION", "KINDS", "ENABLED", "STATUS", "SOURCE PACKAGE")]
+    rows += [(r.id, r.version or "-", ",".join(r.kinds) or "-", "yes" if r.enabled else "no", r.status,
+              r.dist or r.source) for r in _plugin_records()]
+    widths = [max(len(str(row[i])) for row in rows) for i in range(6)]
+    for row in rows:
+        typer.echo("  ".join(str(value).ljust(width) for value, width in zip(row, widths)).rstrip())
+
+
+@plugin_cli.command("info")
+def plugin_info(plugin_id: str):
+    """Show a manifest, its contributions and the most recent loading error."""
+    import json
+
+    record = _plugin_find(plugin_id, load=True)
+    data = record.to_dict()
+    if record.plugin:
+        data.update(requires_bin=list(record.plugin.requires_bin), web=record.plugin.web,
+                    theme=record.plugin.theme, cli=record.plugin.cli is not None)
+    typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _plugin_enable(plugin_id: str, enabled: bool):
+    from alfrd import extensions
+
+    record = _plugin_find(plugin_id)
+    if record.source != "entry_point":
+        _plugin_fail("select a theme with `alfrd plugin theme <id>`")
+    _plugin_call(extensions.set_enabled, plugin_id, enabled)
+    typer.echo(f"{plugin_id}: {'enabled' if enabled else 'disabled'}")
+    _plugin_restart()
+
+
+@plugin_cli.command("enable")
+def plugin_enable(plugin_id: str):
+    """Enable a plugin on the next server start."""
+    _plugin_enable(plugin_id, True)
+
+
+@plugin_cli.command("disable")
+def plugin_disable(plugin_id: str):
+    """Disable a plugin on the next server start."""
+    _plugin_enable(plugin_id, False)
+
+
+@plugin_cli.command("install")
+def plugin_install(spec: str, yes: bool = typer.Option(False, "--yes", help="Trust this package without a prompt.")):
+    """Install a trusted Python package, local wheel or source package."""
+    import getpass
+    from alfrd.extensions import installer
+
+    typer.echo(f"Plugins run as {getpass.getuser()} with access to your files and projects. Install only packages you trust.")
+    if not yes and not typer.confirm(f"Trust and install {spec!r}?", default=False):
+        raise typer.Exit(code=1)
+    for record in _plugin_call(installer.install, spec):
+        typer.echo(f"installed {record['id']} {record['version']}")
+    _plugin_restart()
+
+
+@plugin_cli.command("remove")
+def plugin_remove(plugin_id: str, yes: bool = typer.Option(False, "--yes", help="Remove without a prompt.")):
+    """Remove a package installed with `alfrd plugin install`."""
+    from alfrd.extensions import installer
+
+    if not yes and not typer.confirm(f"Remove plugin {plugin_id!r}?", default=False):
+        raise typer.Exit(code=1)
+    _plugin_call(installer.remove, plugin_id)
+    typer.echo(f"removed {plugin_id}")
+    _plugin_restart()
+
+
+@plugin_cli.command("update")
+def plugin_update(plugin_id: Optional[str] = typer.Argument(None, help="Plugin to update (default: all installed plugins).")):
+    """Update from each plugin's recorded installation source."""
+    from alfrd.extensions import installer
+
+    for record in _plugin_call(installer.update, plugin_id):
+        typer.echo(f"updated {record['id']} {record['version']}")
+    _plugin_restart()
+
+
+@plugin_cli.command("theme")
+def plugin_theme(theme_id: Optional[str] = typer.Argument(None, help="Theme to select (default: list themes).")):
+    """List Studio themes or select a theme, then reload Studio to apply."""
+    from alfrd import extensions
+
+    records = [r for r in _plugin_records() if "theme" in r.kinds and r.enabled and r.status == "ok"]
+    if theme_id is None:
+        current = extensions.read_state()["theme"]
+        for record in records:
+            typer.echo(f"{'*' if record.id == current else ' '} {record.id}  {record.title or record.id}")
+        typer.echo(f"Drop-in themes: {extensions.themes_dir()}")
+        return
+    if theme_id not in {r.id for r in records}:
+        typer.echo(f"alfrd plugin: unknown theme {theme_id!r}; available: {', '.join(r.id for r in records) or '(none)'}", err=True)
+        raise typer.Exit(code=1)
+    _plugin_call(extensions.set_theme, theme_id)
+    typer.echo(f"theme: {theme_id}")
+    typer.echo("reload Studio to apply")
+
+
+@plugin_cli.command("new")
+def plugin_new(
+    plugin_id: str,
+    kind: str = typer.Option("viewer", "--kind", help="viewer | converter | theme | panel"),
+    directory: Path = typer.Option(Path("."), "--dir", help="Parent folder for the scaffold."),
+):
+    """Create an editable plugin package or drop-in theme."""
+    from alfrd.extensions.scaffold import create
+
+    target = _plugin_call(create, plugin_id, kind=kind, directory=directory)
+    typer.echo(f"created {target}")
+    typer.echo(f"See {target / 'README.md'} for installation and test commands.")
+
+
+def _core_command_names(app: typer.Typer) -> set[str]:
+    mounted = getattr(app, "_alfrd_plugin_commands", {})
+    names = {c.name or (c.callback.__name__.replace("_", "-") if c.callback else "") for c in app.registered_commands}
+    return names | {g.name for g in app.registered_groups if mounted.get(g.name) is not g.typer_instance}
+
+
+def mount_plugin_commands(app: typer.Typer = alfrd_cli) -> list:
+    """Load the plugins and add each ok plugin's ``cli`` Typer as ``alfrd <id> …`` (core names win)."""
+    from alfrd import extensions
+
+    core = _core_command_names(app)
+    mounted = getattr(app, "_alfrd_plugin_commands", {})
+    app._alfrd_plugin_commands = mounted
+    records = extensions.load()
+    for rec in records:
+        if rec.status != "ok" or rec.plugin is None or rec.plugin.cli is None:
+            continue
+        if rec.id in core:
+            rec.status, rec.error = "error", f"command name {rec.id!r} is taken by alfrd"
+            continue
+        if rec.id in mounted:
+            continue
+        app.add_typer(rec.plugin.cli, name=rec.id)
+        mounted[rec.id] = rec.plugin.cli
+        core.add(rec.id)
+    return records
+
+
+def main() -> None:
+    """The ``alfrd`` console script: plugin commands, then the CLI. Plugin failures never stop it."""
+    from alfrd.extensions import safe_mode
+
+    # `alfrd plugin …` must work while a plugin is broken, and must not hold plugin files open.
+    argv = sys.argv[1:]
+    if "--safe-mode" not in argv and argv[:1] != ["plugin"] and not safe_mode():
+        try:
+            mount_plugin_commands()
+        except Exception as exc:  # noqa: BLE001
+            print(f"alfrd: plugins not loaded ({exc})", file=sys.stderr)
     alfrd_cli()
+
+
+if __name__ == "__main__":
+    main()

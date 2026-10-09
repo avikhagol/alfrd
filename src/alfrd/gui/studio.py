@@ -5,16 +5,17 @@ The Studio is a client-side application (``alfrd.web``). When it is loaded
 from ``alfrd serve`` it detects ``/api/studio/session`` and switches to server
 mode: projects and matrices come from the existing read-only API, and the
 only mutations it performs (connect a project path, retry a step) go through
-the same loopback + CSRF gate as the rest of the dashboard.
+the same loopback + CSRF gate as the rest of the server.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import threading
 from pathlib import Path
 
-from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
+from flask import Blueprint, abort, current_app, jsonify, request, send_file, send_from_directory
 
 from alfrd import __version__
 from alfrd.web import MIME_TYPES, web_root
@@ -41,9 +42,35 @@ def studio_index():
 
 @studio.get("/<path:filename>")
 def studio_asset(filename: str):
+    if filename == "theme.css":
+        from alfrd.extensions.themes import css_path, current_theme
+        from werkzeug.exceptions import NotFound
+
+        path = css_path(current_theme(), plugins=False)  # plugin themes: /studio/plugins/<id>/theme.css
+        try:
+            response = send_from_directory(path.parent, path.name, mimetype="text/css", max_age=0)
+        except (NotFound, OSError):
+            # A theme may disappear between resolution and send (e.g. uninstall).
+            response = current_app.response_class(":root { color-scheme: dark; }\n", mimetype="text/css")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
     if filename.endswith((".py", ".pyc")) or "__pycache__" in filename:
         abort(404)
     return _send(filename)
+
+
+@studio_api.get("/studio/system")
+def studio_system():
+    """CPU and memory of the machine running alfrd serve, for the Studio footer.
+
+    Cheap: CPU is the average since the previous call (no sampling wait).
+    """
+    import psutil
+
+    mem = psutil.virtual_memory()
+    return jsonify(cpu=psutil.cpu_percent(interval=None), cores=psutil.cpu_count() or 1,
+                   mem_used=mem.total - mem.available, mem_total=mem.total)
 
 
 @studio_api.get("/studio/session")
@@ -61,6 +88,8 @@ def studio_session():
         default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"),
         projects=current_app.config.get("STUDIO_PROJECTS"),
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
+        # Settings → Plugins "Restart now": `alfrd serve` re-executes itself (not under --debug).
+        can_restart=bool(current_app.config.get("STUDIO_RESTART")) and mutations_enabled(),
         # Import → Connect → Browse… lists server folders (loopback + CSRF, like mutations).
         can_browse=mutations_enabled(),
         # Folders without alfrd.yaml can be connected with the default manifest.
@@ -76,7 +105,7 @@ def studio_session():
 
 @studio_api.post("/projects/connect")
 def connect_project_api():
-    """JSON twin of ``/dashboard/connect`` used by the Studio's Import dialog."""
+    """Connect a project folder (the Studio's Import dialog)."""
     from alfrd.gui.routes import connect_manifest_path
 
     payload = request.get_json(silent=True) or {}
@@ -144,6 +173,28 @@ def _project_root(project_name: str) -> Path:
     return root
 
 
+def _sync_project_name(project_name: str, root: Path) -> str | None:
+    """Copy alfrd.yaml's ``name``/``description`` to the runtime row (identifier unchanged); the synced name."""
+    import yaml
+
+    from alfrd.gui.routes import _SAFE_PROJECT_NAME
+    from alfrd.manifest_default import local_manifest
+    from alfrd.runtime import RuntimeNotFound
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    path = local_manifest(root)
+    if service is None or path is None:
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        name, description = data.get("name"), data.get("description")
+        if not isinstance(name, str) or _SAFE_PROJECT_NAME.fullmatch(name) is None:
+            return None
+        return service.sync_project_manifest(project_name, name, description if isinstance(description, str) else None).name
+    except (OSError, UnicodeError, yaml.YAMLError, AttributeError, RuntimeNotFound, ValueError):
+        return None
+
+
 def _json_error(error: Exception, status: int, **extra):
     """``{"error": {"code", "message", **extra}}``; e.g. ``reason="permission"`` tells
     a filesystem 403 apart from the session/CSRF 403s raised by ``require_local_csrf``."""
@@ -155,6 +206,47 @@ def avica_layout(project_name: str):
     from alfrd.avica_layout import scan_layout
 
     return jsonify(scan_layout(_project_root(project_name)))
+
+
+@studio_api.get("/studio/avica/<project_name>/fits-files")
+def avica_fits_files(project_name: str):
+    """Suggest basenames from configured FITS storage, never a caller-supplied path."""
+    import os
+    import stat
+    from alfrd.avica_layout import resolve_config, resolve_dir
+    from alfrd.gui.security import require_local_csrf
+
+    if "dir" in request.args:
+        return _json_error(ValueError("dir is not supported; use folder_for_fits"), 400)
+    root = _project_root(project_name).resolve()
+    try:
+        value = resolve_config(root).get("folder_for_fits")
+        if value is None:
+            return jsonify(files=[], truncated=False, note="folder_for_fits is unset")
+        if "$" in str(value):
+            return jsonify(files=[], truncated=False, note="folder_for_fits contains an unresolved variable")
+        folder = (resolve_dir(root, value) or root).resolve()
+        if not folder.is_relative_to(root):
+            require_local_csrf()
+        if not stat.S_ISDIR(folder.stat().st_mode):
+            raise FileNotFoundError(f"FITS folder {folder} not found")
+        files = set()
+        def fail(error):
+            raise error
+        for directory, dirs, names in os.walk(folder, followlinks=False, onerror=fail):
+            depth = len(Path(directory).relative_to(folder).parts)
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".")) if depth < 3 else []
+            for name in sorted(names):
+                lower = name.lower()
+                if not name.startswith(".") and (lower.endswith("fits") or ".idi" in lower):
+                    files.add(name)
+                    if len(files) > 2000:
+                        return jsonify(files=sorted(files)[:2000], truncated=True)
+        return jsonify(files=sorted(files), truncated=False)
+    except PermissionError as error:
+        return _json_error(error, 403)
+    except FileNotFoundError as error:
+        return _json_error(error, 404)
 
 
 @studio_api.post("/studio/avica/<project_name>/summary")
@@ -218,10 +310,13 @@ def project_scan(project_name: str):
         hub = live_hub()
         if hub is not None:
             live_state = hub.touch(project_name)  # the version this scan is at least as new as
+    root = _project_root(project_name)
     try:
-        data = collect_studio_files(_project_root(project_name), log_tail=0, only=only)
+        data = collect_studio_files(root, log_tail=0, only=only)
     except FileNotFoundError as error:
         return _json_error(error, 404)
+    if only is None:
+        data["project_name"] = _sync_project_name(project_name, root)
     if live_state:
         data["live"] = {"epoch": live_state["epoch"], "version": live_state["version"]}
     return jsonify(data)
@@ -249,6 +344,37 @@ def _allowed_cached(root: Path, rel: str) -> Path:
     return path
 
 
+#: Types ``/file?raw=1`` serves as bytes (the image and PDF viewers); never HTML or SVG.
+RAW_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+             ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf"}
+
+
+def _project_file_raw(project_name: str, rel: str):
+    mimetype = RAW_TYPES.get(Path(rel).suffix.lower())
+    if mimetype is None:
+        return _json_error(ValueError("raw=1 serves images and PDF only"), 415)
+    root = _project_root(project_name)
+    try:
+        path = _allowed_cached(root, rel)
+    except ValueError as error:
+        return _json_error(error, 400)
+    except PermissionError as error:
+        # Images and PDFs a views `text`/`image` panel declares open in the viewers too.
+        from alfrd.layout_generic import declared_source
+
+        if not declared_source(root, rel):
+            return _json_error(error, 403)
+        path = (root.resolve() / rel).resolve()
+        if not path.is_relative_to(root.resolve()):
+            return _json_error(error, 403)
+    except FileNotFoundError as error:
+        return _json_error(error, 404)
+    response = send_file(path, mimetype=mimetype, conditional=True, max_age=0)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @studio_api.get("/studio/projects/<project_name>/file")
 def project_file(project_name: str):
     """One log declared in alfrd.yaml (step logs or log artifacts).
@@ -262,13 +388,25 @@ def project_file(project_name: str):
     from alfrd.studio_defs import read_range
 
     rel = request.args.get("path", "")
+    if request.args.get("raw") == "1":
+        return _project_file_raw(project_name, rel)
     raw = request.args.get("offset")
     try:
         offset = int(raw) if raw not in (None, "") else None
     except ValueError:
         return _json_error(ValueError("offset must be an integer"), 400)
     try:
-        path = _allowed_cached(_project_root(project_name), rel)
+        root = _project_root(project_name)
+        try:
+            path = _allowed_cached(root, rel)
+        except PermissionError:
+            # A views `text`/`image` panel's source (e.g. notes.md): the panel already shows it.
+            from alfrd.layout_generic import declared_source
+
+            if not declared_source(root, rel):
+                raise
+            path = (root.resolve() / rel).resolve()
+            path.relative_to(root.resolve())  # ValueError when a symlink leads outside
         chunk = read_range(path, offset, file=request.args.get("id") or None)
     except ValueError as error:
         return _json_error(error, 400)
@@ -417,7 +555,7 @@ def project_manifest_save(project_name: str):
     except Exception as error:  # yaml errors, missing name, OS errors
         return _json_error(error, 400)
     _poke(project_name)
-    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
+    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, project_name=_sync_project_name(project_name, root), hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
 
 
 @studio_api.get("/studio/projects/<project_name>/quickstart")
@@ -524,7 +662,12 @@ def _project_active_jobs(row, active_run_ids=()) -> list[dict]:
     return jobs
 
 
-def _removal_preview(service, project_name: str) -> dict:
+def _removal_preview(service, project_name: str, *, scope: bool = True, measure: bool = False) -> dict:
+    """Counts, active jobs and permission for removing a project.
+
+    ``scope=False`` skips the folder inspection (Forget and Delete only need the
+    permission checks); ``measure=True`` also walks the folder for its size.
+    """
     from alfrd.gui.security import mutations_enabled
 
     row = service.get_project_by_selector(project_name)
@@ -534,12 +677,11 @@ def _removal_preview(service, project_name: str) -> dict:
     reason = None if writable else REMOVAL_READONLY_REASON
     if writable and active:
         reason = REMOVAL_ACTIVE_REASON
-    scope = _delete_scope(service, row)
     return {
         "identifier": row.identifier, "name": row.name, "root_path": row.root_path,
         "counts": counts, "active_jobs": active, "active_job_count": len(active),
-        "can_remove": reason is None, "reason": reason,
-        "mutations_enabled": writable, "delete_scope": scope, "delete_reason": None,
+        "can_remove": reason is None, "reason": reason, "mutations_enabled": writable,
+        "delete_scope": _delete_scope(service, row, measure=measure) if scope else None, "delete_reason": None,
     }
 
 
@@ -548,7 +690,7 @@ ALFRD_FILES = ("alfrd.yaml", "alfrd.yaml.bak", ".alfrd.yaml", ".alfrd.yaml.bak",
                "alfrd.targets.csv", "alfrd.targets.csv.bak", "alfrd.notes.jsonl",
                ".alfrd_project.yaml", ".alfrd_workflow.yaml", "alfrd.db")
 #: Project state inside ``.alfrd/`` (removed one by one when ``.alfrd`` also holds global state).
-ALFRD_STATE_DIRS = ("plans", "history", "locks", "tmp")
+ALFRD_STATE_DIRS = ("plans", "history", "locks", "tmp", "cache")  # cache: plugin conversions
 
 
 def _alfrd_files(root: Path, database: Path | None) -> list[Path]:
@@ -590,18 +732,39 @@ def _alfrd_files(root: Path, database: Path | None) -> list[Path]:
     return sorted(found)
 
 
-def _delete_scope(service, row) -> dict:
+def _measure_folder(root: Path) -> dict:
+    """File count and total size of a folder (symlinks not followed), capped at ``DELETE_FILE_CAP`` files."""
+    import os
+
+    out = {"files": 0, "bytes": 0, "truncated": False}
+    for folder, _dirs, files in os.walk(root, followlinks=False):
+        for name in files:
+            out["files"] += 1
+            try:
+                out["bytes"] += (Path(folder) / name).lstat().st_size
+            except OSError:
+                pass
+        if out["files"] >= DELETE_FILE_CAP:
+            out["truncated"] = True
+            break
+    return out
+
+
+def _delete_scope(service, row, *, measure: bool = False) -> dict:
     """What Delete would remove, in both modes.
 
     Default: ALFRD's files (``alfrd_files``) and the database entry; the folder and its
     other files stay. ``all_files``: the whole folder, refused for a symlinked folder, a
     top-level folder, the home folder or one containing it, the folder holding the
     runtime database, and a folder containing another registered project.
-    """
-    import os
 
+    The folder's size (``files``/``bytes``/``truncated``) needs a full walk, so when the
+    whole folder may be deleted it is filled in only with ``measure=True``; without it
+    those are None and ``measured`` is False.
+    """
     out = {"path": row.root_path, "exists": False, "alfrd_files": [], "files": 0, "bytes": 0, "truncated": False,
-           "git_repository": False, "allowed": True, "all_files_allowed": False, "all_files_reason": None}
+           "measured": True, "git_repository": False, "allowed": True, "all_files_allowed": False,
+           "all_files_reason": None}
     if not row.root_path:
         out["all_files_reason"] = "This project has no folder on record."
         return out
@@ -637,16 +800,10 @@ def _delete_scope(service, row) -> dict:
     out["all_files_allowed"] = reason is None
     if reason is None:
         out["git_repository"] = (root / ".git").exists()
-        for folder, _dirs, files in os.walk(root, followlinks=False):
-            for name in files:
-                out["files"] += 1
-                try:
-                    out["bytes"] += (Path(folder) / name).lstat().st_size
-                except OSError:
-                    pass
-            if out["files"] >= DELETE_FILE_CAP:
-                out["truncated"] = True
-                break
+        if measure:
+            out.update(_measure_folder(root))
+        else:
+            out.update(files=None, bytes=None, truncated=None, measured=False)
     return out
 
 
@@ -675,10 +832,31 @@ def project_removal_preview(project_name: str):
     service = current_app.config.get("RUNTIME_SERVICE")
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
+    measure = request.args.get("size", "").lower() in ("1", "true", "yes")
     try:
-        return jsonify(_removal_preview(service, project_name))
+        return jsonify(_removal_preview(service, project_name, measure=measure))
     except RuntimeNotFound as error:
         return _json_error(error, 404)
+
+
+@studio_api.get("/studio/projects/<project_name>/removal-size")
+def project_removal_size(project_name: str):
+    """Size of the project folder for "Delete all files and folders" (read-only; walks the folder).
+
+    Only measured when deleting the whole folder is allowed; ``measured`` is False otherwise.
+    """
+    from alfrd.runtime import RuntimeNotFound
+
+    service = current_app.config.get("RUNTIME_SERVICE")
+    if service is None:
+        return _json_error(RuntimeError("no runtime database"), 404)
+    try:
+        row = service.get_project_by_selector(project_name)
+    except RuntimeNotFound as error:
+        return _json_error(error, 404)
+    scope = _delete_scope(service, row, measure=True)
+    return jsonify({k: scope[k] for k in ("path", "exists", "files", "bytes", "truncated", "measured",
+                                          "git_repository", "all_files_allowed")})
 
 
 @studio_api.post("/studio/projects/<project_name>/delete")
@@ -697,7 +875,7 @@ def project_delete(project_name: str):
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
     try:
-        preview = _removal_preview(service, project_name)
+        preview = _removal_preview(service, project_name, scope=False)
         row = service.get_project_by_selector(project_name)
     except RuntimeNotFound as error:
         return _json_error(error, 404)
@@ -709,7 +887,7 @@ def project_delete(project_name: str):
     if payload.get("confirm") != row.name:
         return _json_error(ValueError("Type the project name exactly to confirm deletion."), 400)
     all_files = payload.get("all_files") is True
-    scope = _delete_scope(service, row)
+    scope = _delete_scope(service, row, measure=all_files)  # the only walk: for the reported size
     if all_files and not scope["all_files_allowed"]:
         return _json_error(PermissionError(scope["all_files_reason"]), 409)
     root = Path(scope["path"]) if scope["path"] else None
@@ -765,7 +943,7 @@ def project_forget(project_name: str):
     if service is None:
         return _json_error(RuntimeError("no runtime database"), 404)
     try:
-        preview = _removal_preview(service, project_name)
+        preview = _removal_preview(service, project_name, scope=False)
         if not preview["mutations_enabled"]:
             return _json_error(PermissionError(REMOVAL_READONLY_REASON), 403)
         if preview["active_jobs"]:
@@ -1052,6 +1230,59 @@ def studio_quit():
     return jsonify(stopping=True)
 
 
+# Restart waits for mutations in flight (POST/PUT/PATCH/DELETE; reads are retried by the Studio).
+_INFLIGHT = {"count": 0}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+@studio_api.before_app_request
+def _count_mutation():
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.endpoint != "studio_api.studio_restart":
+        with _INFLIGHT_LOCK:
+            _INFLIGHT["count"] += 1
+        request.environ["alfrd.counted"] = True
+
+
+@studio_api.teardown_app_request
+def _uncount_mutation(_error=None):
+    if request.environ.pop("alfrd.counted", False):
+        with _INFLIGHT_LOCK:
+            _INFLIGHT["count"] -= 1
+
+
+def _restart_when_idle(restart, wait: float = 10.0) -> None:
+    import time
+
+    deadline = time.monotonic() + wait
+    while _INFLIGHT["count"] > 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.3)  # let the 202 reach the browser
+    restart()
+
+
+@studio_api.post("/studio/restart")
+def studio_restart():
+    """Restart `alfrd serve` (loopback + CSRF) with the same token and session secret.
+
+    The reply (202) is sent first; the server stops once mutations in flight have
+    finished (at most 10 s) and re-executes itself, so the Studio reconnects as
+    the same logged-in user and loads plugins anew.
+    """
+    from alfrd.extensions import jobs
+    from alfrd.gui.security import require_local_csrf
+
+    require_local_csrf()
+    restart = current_app.config.get("STUDIO_RESTART")
+    if not restart:
+        return _json_error(RuntimeError("this server cannot restart itself (started with --debug or not by "
+                                        "`alfrd serve`); restart it where it runs"), 409)
+    if jobs.runner.running():
+        return _json_error(RuntimeError("a plugin job is running; restart when it has finished"), 409,
+                           job=jobs.runner.running())
+    threading.Thread(target=_restart_when_idle, args=(restart,), daemon=True, name="studio-restart").start()
+    return jsonify(restarting=True), 202
+
+
 def _default_manifest_available() -> bool:
     from alfrd.manifest_default import default_manifest_path
 
@@ -1062,7 +1293,7 @@ def studio_available() -> bool:
     try:
         return (web_root() / "index.html").is_file()
     except FileNotFoundError:  # pragma: no cover
-        current_app.logger.warning("Studio assets missing; falling back to /dashboard/")
+        current_app.logger.warning("Studio assets missing")
         return False
 
 

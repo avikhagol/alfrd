@@ -14,7 +14,8 @@ import { server } from "../data/server.js";
  * opts: { list(path, {hidden}) → Promise<listing>, connect(paths[]) → Promise, use(path), close(), start?,
  *         allowDefault? (folders without alfrd.yaml can be connected with the default manifest),
  *         mkdir?, session? (New folder; default: server's),
- *         select? (pick a folder only: no Connect actions; Cancel + Use this folder) }
+ *         select? (pick a folder only; projects offer "Open instead" via connect; Cancel + Use this folder),
+ *         create?(path) (Open project: "Open" labels, Create project here instead of default-manifest Connect) }
  * Returns { destroy() }.
  */
 export function mountFolderBrowser(host, opts) {
@@ -40,7 +41,8 @@ export function mountFolderBrowser(host, opts) {
       const openBtn = e.is_ms
         ? `<span class="fsb-name muted">${icon("database")}<span>${esc(e.name)}</span></span>`
         : `<button type="button" class="fsb-name" data-fsb-open="${i}" title="Open ${esc(e.path)}">${icon("folder")}<span>${esc(e.name)}</span></button>`;
-      const connect = e.is_project && !opts.select ? `<button type="button" class="btn sm primary" data-fsb-connect="${i}">Connect</button>` : "";
+      const connect = !e.is_project || (opts.select && !opts.connect) ? "" : opts.select ? `<span class="muted small">Already an ALFRD project:</span><button type="button" class="btn sm" data-fsb-connect="${i}">Open instead</button>`
+        : `<button type="button" class="btn sm primary" data-fsb-connect="${i}">${opts.create ? "Open" : "Connect"}</button>`;
       return `<li class="fsb-row${e.is_project ? " is-project" : ""}${e.is_ms ? " is-ms" : ""}">${openBtn}${badge}<span class="grow"></span>${connect}</li>`;
     }).join("");
     host.innerHTML = `<p class="hint">${icon("server")} Folders on the ALFRD server</p>
@@ -52,16 +54,17 @@ export function mountFolderBrowser(host, opts) {
         <button type="button" class="icon-btn" data-fsb-close title="Close (Esc)" aria-label="Close folder browser">${icon("close")}</button>
       </div>
       ${create?.html() || ""}
-      ${listing?.is_project ? `<p class="hint">${icon("info")} This folder is itself an ALFRD project${listing.manifest_name ? ` (<b>${esc(listing.manifest_name)}</b>)` : ""}.</p>` : ""}
+      ${listing?.is_project ? `<p class="hint">${icon("info")} This folder is itself an ALFRD project${listing.manifest_name ? ` (<b>${esc(listing.manifest_name)}</b>)` : ""}.${opts.select && opts.connect ? ` <button type="button" class="btn sm" data-fsb-connect-here>Open instead</button>` : ""}</p>` : ""}
       ${error ? `<p class="callout warn">${icon("alert")}<span>${esc(error)}</span>${listing ? "" : ` <button type="button" class="btn sm" data-fsb-back>${good ? "Back to the last folder" : "Go to the default folder"}</button>`}</p>` : ""}
       <ul class="fsb-list" role="list">${rows || (listing && !error ? `<li class="muted small fsb-empty">No sub-folders.</li>` : "")}</ul>
       ${listing?.truncated ? `<p class="hint warn">Showing the first ${listing.entries.length} folders only.</p>` : ""}
       <div class="fsb-foot row gap wrap">${opts.select ? `<span class="grow"></span><button type="button" class="btn" data-fsb-close>Cancel</button><button type="button" class="btn primary" data-fsb-use ${listing ? "" : "disabled"}>Use this folder</button></div>` : `
-        ${projects.length > 1 || (projects.length && !listing?.is_project) ? `<button type="button" class="btn" data-fsb-all>${icon("link")} Connect all projects here (${projects.length})</button>` : ""}
+        ${!opts.create && (projects.length > 1 || (projects.length && !listing?.is_project)) ? `<button type="button" class="btn" data-fsb-all>${icon("link")} Connect all projects here (${projects.length})</button>` : ""}
         <span class="grow"></span>
-        ${listing?.is_project ? `<button type="button" class="btn primary" data-fsb-connect-here>Connect this project</button>`
+        ${listing?.is_project ? `<button type="button" class="btn primary" data-fsb-connect-here>${opts.create ? "Open" : "Connect"} this project</button>`
+          : listing && opts.create ? `<button type="button" class="btn primary" data-fsb-create>${icon("plus")} Create project here</button>`
           : listing && opts.allowDefault ? `<button type="button" class="btn" data-fsb-connect-here title="No alfrd.yaml here: the built-in default is used (name = folder name). Save Project settings later to write a local alfrd.yaml.">Connect this folder <span class="muted small">(default alfrd.yaml)</span></button>` : ""}
-        <button type="button" class="btn" data-fsb-use ${listing ? "" : "disabled"}>Use this folder</button>
+        ${opts.create ? "" : `<button type="button" class="btn" data-fsb-use ${listing ? "" : "disabled"}>Use this folder</button>`}
       </div>`}`;
     create?.after();
   };
@@ -118,6 +121,7 @@ export function mountFolderBrowser(host, opts) {
     else if (t.matches("[data-fsb-all]")) connect(projectEntries(listing).map((p) => p.path));
     else if (t.matches("[data-fsb-connect-here]")) connect([listing.path]);
     else if (t.matches("[data-fsb-use]") && listing) opts.use(listing.path);
+    else if (t.matches("[data-fsb-create]")) opts.create(listing.path);
     else if (t.matches("[data-fsb-new]")) newFolder();
     else if (t.matches("[data-fsb-back]")) go(good);
     else if (t.matches("[data-fsb-close]")) opts.close();

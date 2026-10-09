@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,7 @@ def _wait(predicate, timeout=30.0):
     return False
 
 
+@pytest.mark.serial  # asserts measured CPU use
 def test_step_usage_summary_and_samples(project, monkeypatch):
     monkeypatch.setenv("FAKE_AVICA_BURN", "1.5")
     monkeypatch.setenv("FAKE_AVICA_MEM", "120")
@@ -128,13 +130,14 @@ def _shim(tmp_path, *command, env=None):
     if not os.access(FAKE_MPIRUN, os.X_OK):
         FAKE_MPIRUN.chmod(0o755)
     exit_file = tmp_path / "u.exit"
-    full = {**os.environ, "ALFRD_USAGE_INTERVAL": "0.4", "ALFRD_UNIT": "u-test", **(env or {})}
+    full = {**os.environ, "ALFRD_USAGE_INTERVAL": "0.4", "ALFRD_UNIT": f"u-test-{uuid.uuid4().hex}", **(env or {})}
     subprocess.run([sys.executable, "-m", "alfrd.runtime.shim", "--exit-file", str(exit_file), "--", *command],
                    env=full, start_new_session=True, check=True, stdout=subprocess.DEVNULL, timeout=60)
     rows = [json.loads(l) for l in exit_file.with_suffix(".usage.jsonl").read_text().splitlines()]
     return json.loads(exit_file.read_text()), rows
 
 
+@pytest.mark.serial  # asserts measured CPU use
 @pytest.mark.parametrize("mode", ["child", "setsid", "daemon"])
 def test_mpi_ranks_are_counted_however_they_are_started(tmp_path, mode):
     """MPI launchers move ranks out of the process group (setsid) or orphan them (daemon)."""
@@ -151,14 +154,16 @@ def test_mpi_ranks_are_counted_however_they_are_started(tmp_path, mode):
     assert all(b["cpu_s"] >= a["cpu_s"] for a, b in zip(rows, rows[1:])), "cumulative CPU never goes down"
 
 
+@pytest.mark.serial  # asserts measured CPU use
 def test_processes_marked_with_the_unit_are_counted(tmp_path):
     """A rank started by an unrelated local daemon, but with this command's ALFRD_UNIT."""
     import subprocess
 
+    unit = f"u-marked-{uuid.uuid4().hex}"  # unique: parallel test workers run shims too
     burner = subprocess.Popen([sys.executable, "-c", "import time\nt=time.time()+2.5\nwhile time.time()<t: pass"],
-                              env={**os.environ, "ALFRD_UNIT": "u-marked"}, start_new_session=True)
+                              env={**os.environ, "ALFRD_UNIT": unit}, start_new_session=True)
     try:
-        data, rows = _shim(tmp_path, sys.executable, "-c", "import time; time.sleep(2)", env={"ALFRD_UNIT": "u-marked"})
+        data, rows = _shim(tmp_path, sys.executable, "-c", "import time; time.sleep(2)", env={"ALFRD_UNIT": unit})
     finally:
         burner.wait(10)
     assert max(r["cores"] for r in rows) >= 0.7, rows

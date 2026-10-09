@@ -1,108 +1,57 @@
-"""Public compatibility classes for ALFRD's 0.2.1.0 baseline."""
+"""Core pipeline classes (PipelineCore, LogFrame) and the config/manifest/repository names."""
 
-from alfrd.core.artifacts import (
-    ArtifactError,
-    ArtifactPathError,
-    ArtifactTemplateError,
-    KNOWN_ARTIFACT_KINDS,
-    ResolvedArtifact,
-    resolve_declared_artifacts,
-    resolve_within_root,
-)
-from alfrd.core.viewers import (
-    ArtifactViewerError,
-    render_artifact,
-    render_directory,
-    render_file,
-    render_gallery,
-    render_html,
-    render_image,
-    render_json,
-    render_log,
-    render_table,
-    render_text,
-    render_yaml,
-)
-from alfrd.core.logframe import LogFrame, LogFrameAdapter, LogFrameEventSink
-from alfrd.core.project import Project, ProjectConfiguration
-from alfrd.core.pipeline import (
-    ArtifactRef,
-    append_step_result_csv,
-    BatchResult,
-    ColName,
-    CrashSnapshotAdapter,
-    DatasetFinished,
-    DatasetResult,
-    DatasetStarted,
-    FunctionPipelineStep,
-    FunctionPipelineStepValidator,
-    PipelineContext,
-    PipelineCore,
-    PipelineError,
-    PipelineStepBase,
-    PipelineStepValidatorBase,
-    PipelineStepValidatorResult,
-    ResultCSVAdapter,
-    RunFinished,
-    RunStarted,
-    StepFailed,
-    StepResult,
-    StepSkipped,
-    StepStarted,
-    StepSucceeded,
-    write_crash_snapshot,
-)
-from alfrd.core.workflow import Workflow, WorkflowConfig, WorkflowManager
-from alfrd.config import BaseConfig, CONFIG_MAPPING, Config
-from alfrd.manifest import ArtifactDefinition, ProjectManifest, discover_manifest, load_manifest
-from alfrd.repository import RepositoryRecord, RepositoryService
+# Exports load on first use (PEP 562), so importing one submodule doesn't load pandas through the others.
+_LAZY = {
+    "alfrd.core.logframe": ("LogFrame", "LogFrameAdapter", "LogFrameEventSink",),
+    "alfrd.core.pipeline": ("ArtifactRef", "append_step_result_csv", "BatchResult", "ColName", "CrashSnapshotAdapter", "DatasetFinished", "DatasetResult", "DatasetStarted", "FunctionPipelineStep", "FunctionPipelineStepValidator", "PipelineContext", "PipelineCore", "PipelineError", "PipelineStepBase", "PipelineStepValidatorBase", "PipelineStepValidatorResult", "ResultCSVAdapter", "RunFinished", "RunStarted", "StepFailed", "StepResult", "StepSkipped", "StepStarted", "StepSucceeded", "write_crash_snapshot",),
+    "alfrd.config": ("BaseConfig", "CONFIG_MAPPING", "Config",),
+    "alfrd.manifest": ("ArtifactDefinition", "ProjectManifest", "discover_manifest", "load_manifest",),
+    "alfrd.repository": ("RepositoryRecord", "RepositoryService",),
+}
+_EXPORTS = {name: module for module, names in _LAZY.items() for name in names}
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(_EXPORTS[name]), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
-    "ArtifactDefinition",
-    "ArtifactError",
-    "ArtifactPathError",
-    "ArtifactTemplateError",
-    "ArtifactViewerError",
-    "BaseConfig",
-    "CONFIG_MAPPING",
-    "Config",
-    "KNOWN_ARTIFACT_KINDS",
-    "ResolvedArtifact",
-    "resolve_declared_artifacts",
-    "resolve_within_root",
-    "render_artifact",
-    "render_directory",
-    "render_file",
-    "render_gallery",
-    "render_html",
-    "render_image",
-    "render_json",
-    "render_log",
-    "render_table",
-    "render_text",
-    "render_yaml",
-    "ArtifactRef",
     "append_step_result_csv",
+    "ArtifactDefinition",
+    "ArtifactRef",
+    "BaseConfig",
     "BatchResult",
     "ColName",
+    "Config",
+    "CONFIG_MAPPING",
     "CrashSnapshotAdapter",
     "DatasetFinished",
     "DatasetResult",
     "DatasetStarted",
+    "discover_manifest",
     "FunctionPipelineStep",
     "FunctionPipelineStepValidator",
+    "load_manifest",
+    "LogFrame",
+    "LogFrameAdapter",
+    "LogFrameEventSink",
     "PipelineContext",
     "PipelineCore",
     "PipelineError",
     "PipelineStepBase",
     "PipelineStepValidatorBase",
     "PipelineStepValidatorResult",
-    "LogFrame",
-    "LogFrameAdapter",
-    "LogFrameEventSink",
-    "Project",
     "ProjectManifest",
-    "ProjectConfiguration",
     "RepositoryRecord",
     "RepositoryService",
     "ResultCSVAdapter",
@@ -114,9 +63,4 @@ __all__ = [
     "StepStarted",
     "StepSucceeded",
     "write_crash_snapshot",
-    "Workflow",
-    "WorkflowConfig",
-    "WorkflowManager",
-    "discover_manifest",
-    "load_manifest",
 ]

@@ -81,7 +81,7 @@ What you get:
 No server? Use browser mode:
 
 ```bash
-alfrd studio        # opens http://127.0.0.1:8080/, then Import → Open project folder
+alfrd studio        # opens http://127.0.0.1:8080/, then ⇅ Import / Export → Import… → Open project folder
 ```
 
 Full guide: [docs/studio-guide.md](https://github.com/avialxee/alfrd/blob/HEAD/docs/studio-guide.md)
@@ -134,7 +134,7 @@ Or in the Studio: **⚙ Settings → Known projects → Forget**. Forgot one by 
 
 No `alfrd.yaml` in an AVICA folder (`avica.inp`, `avica.logs/`, `reductions/`)? `alfrd serve` uses the built-in default (an AVICA manifest, `name` = folder name). `alfrd manifest default -o alfrd.yaml` writes it so you can edit it.
 
-Connect more projects: **Import → ALFRD server → Browse…** walks the server's folders (not your laptop's), marks folders with an `alfrd.yaml`, and connects one or all of them. A folder without `alfrd.yaml` connects too, with the default one.
+Connect more projects: **⇅ Import / Export → Import… → ALFRD server → Browse…** walks the server's folders (not your laptop's), marks folders with an `alfrd.yaml`, and connects one or all of them. A folder without `alfrd.yaml` connects too, with the default one.
 
 Stop the server: **Ctrl+C**, or the **⏻ Quit** button (top right, same machine only). Quit also closes the tab when the browser allows it (the tab `alfrd serve` opened).
 
@@ -147,7 +147,6 @@ ssh -L 5000:127.0.0.1:5000 user@cluster   # then run `alfrd serve --no-browser` 
 Good to know:
 
 - Saving `alfrd.yaml` or `avica.inp` from the UI only works from the same machine (loopback).
-- The old dashboard is still at `/dashboard/`.
 - `alfrd gui` is the same as `alfrd serve`.
 
 ---
@@ -256,7 +255,7 @@ alfrd plan pause | resume [--retry-failed] | cancel
 
 With `execution.concurrency` above 1, rows run in parallel unless they conflict: the avica template serializes rows that share a FITS file name (`execution.serialize_on: [files]`), since those write the same files; the same target with other FITS files runs in parallel.
 
-To follow a plan from a script or an AI assistant, use `alfrd plan status|wait|events|log --json` or `GET /api/v1/projects/<p>/plans/latest` on `alfrd serve`: a read-only, versioned document with a one-line summary, failures with reasons and a resume cursor. See [docs/status-api.md](docs/status-api.md).
+To follow a plan from a script or an AI assistant, use `alfrd plan status|wait|events|log --json` or `GET /api/v1/projects/<p>/plans/latest` on `alfrd serve`: a read-only, versioned document with a one-line summary, failures with reasons and a resume cursor. HTTP requests need `Authorization: Bearer <token>` with the server's access token (see [Opening the Studio](docs/studio-guide.md#opening-the-studio-access-token) and `alfrd url`); other hosts use `ALFRD_API_TOKEN`. See [docs/status-api.md](docs/status-api.md).
 
 In the Studio (`alfrd serve`), open **Workflow → Run…**. The **Schedule** tab shows the targets × steps grid and the execution order (running, queued with ETAs, failed, done). The graph and list show the plan's progress.
 
@@ -287,25 +286,20 @@ result = PipelineCore(
 - One failed dataset skips only its own remaining steps.
 - Parameters come from `step.param`, then global values, then defaults.
 
-Decorator style (older, still supported):
-
-```python
-# pipe.py
-from alfrd.plugins import register
-
-@register("A hello world function")
-def step_hello_world(name):
-    print(f"hello, {name}")
-```
-
-```bash
-alfrd init MYPROJ
-alfrd add pipe.py MYPROJ
-alfrd run step_hello_world MYPROJ name=World
-alfrd run step_hello_world MYPROJ config.txt    # config.txt: name = World
-```
-
 ---
+
+## Studio plugins and themes
+
+Plugins add file viewers, metadata panels, PDF converters, themes and CLI
+commands. Open **Settings → Plugins** to browse a catalog you choose, review
+hash-pinned packages, watch install/update/remove logs and restart the server
+without logging in again. Plugins run as the server account with full access
+to files; install only code you trust. There is no default catalog.
+
+Use `alfrd plugin new <id>` to scaffold a plugin, or
+`alfrd serve --safe-mode` to recover from a broken one. See
+[Plugins and themes](docs/plugins.md) for the public API, packaging, catalogs,
+reference plugins and `--no-gui-install`.
 
 ## Track progress in a table
 
@@ -356,22 +350,15 @@ alfrd import avica-run reductions/ --project my-project --manifest alfrd.yaml
 
 ## Public API
 
-Stable in `0.2.x` (tested in `tests/test_public_api.py`):
+Stable in `0.3.x` (tested in `tests/test_public_api.py`):
 
 - `alfrd` – `PipelineCore`, `PipelineContext`, `PipelineStepBase`, validators, results, events.
 - `alfrd.config` – `BaseConfig`, `Config`.
 - `alfrd.manifest` – `load_manifest`, `validate_manifest`, `ProjectManifest`, …
 - `alfrd.repository` – `RepositoryService`, `add_repository`, …
 - `alfrd.core.logframe` – `LogFrame`, `LogFrameAdapter`, `LogFrameEventSink`.
-- `alfrd.runtime` – `RuntimeStore`, `RuntimeService`, `RuntimePipelineRunner`, models.
+- `alfrd.runtime` – `RuntimeStore`, `RuntimeService`, models.
 - `alfrd.gui` – `create_app()`, catalog readers, `/api/*`, `/studio/`.
-- `alfrd.plugins` – `register`, `validate`, `validator`.
-
-Deprecated (still work, warn):
-
-- `alfrd.Pipeline` / `PipelineRun` → use `PipelineCore`.
-- `alfrd.core.workflow.WorkflowManager` → use `PipelineCore`.
-- `alfrd.core.logger` → use `alfrd.core.logging`.
 
 ---
 

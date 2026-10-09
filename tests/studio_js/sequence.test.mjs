@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { expandWorkflowSteps, sequenceAgents, workflowTurns } from "../../src/alfrd/web/js/data/defs.js";
 import { turnSettingRows, applyTurnSettings, agentRows, turnRoleRows } from "../../src/alfrd/web/js/data/agent_settings.js";
-import { configFields, setConfigField } from "../../src/alfrd/web/js/data/config_fields.js";
 import { summarizeLoop } from "../../src/alfrd/web/js/components/loop_helpers.js";
 
 const manifest = (repeat, extra = {}) => ({ name: "p", entrypoint: [
@@ -40,17 +39,6 @@ test("agents used in a sequence are listed whatever their CLI", () => {
   const rows = agentRows(manifest({ iterations: 2, sequence: ["claude", "gemini"] }));
   assert.deepEqual(rows.map((r) => [r.name, r.adapter]), [["claude", "claude"], ["codex", "codex"], ["gemini", "generic"]]);
   assert.deepEqual(turnRoleRows(manifest({ iterations: 3, sequence: ["claude", "gemini"] })).map((r) => r.agent), ["claude", "gemini", "claude"]);
-});
-
-test("settings field edits total turns; history labels say turns", () => {
-  const text = "name: p\nworkflows:\n- name: loop\n  repeat:\n    passes: 2\n    sequence: [claude, codex]\n";
-  assert.equal(configFields(text).iterations, 4);
-  assert.equal(configFields(text).iterationUnit, "turns");
-  const updated = setConfigField(text, "iterations", 150);
-  assert.match(updated, /iterations: 150/);
-  assert.doesNotMatch(updated, /passes/);
-  const units = [{ iteration: 1, agent: "claude", status: "done" }, { iteration: 2, agent: "codex", status: "running" }];
-  assert.equal(summarizeLoop(units, { iterations: 3, unit: "turns" }), "Turn 2 of 3 · codex · running");
 });
 
 test("quoted strings continued over lines, as PyYAML writes them, parse like PyYAML", async () => {

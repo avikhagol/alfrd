@@ -364,7 +364,8 @@ def prepare(root: Path, archive: Path, step, plan_id: str, unit_id: str, target:
     phase = "final" if final else "first" if step.iteration == 1 and step.first_turn else "middle"
     defaults = {
         "final": "Execute the incoming task and report files changed and checks performed. This is the final turn: provide a closing report; do not invent another task.",
-        "first": "This is the first turn: plan the initial task for the next agent. Inspect as needed; leave implementation and file creation to the next agent.",
+        # A concrete task starts at once; only a vague one costs a planning turn (loop.contract.first overrides).
+        "first": "This is the first turn. If the task already says what to build, start doing it: implement the first part, run its checks, then hand the next part to the next agent. Plan first only when the task is still vague.",
         "middle": "Execute the incoming task, report files changed and checks performed, then plan the next concrete task for the other agent.",
     }
     contract += options.get("contract", {}).get(phase, defaults[phase]) + "\n"

@@ -1,6 +1,6 @@
 ---
 name: alfrd
-description: Drive ALFRD (plan CSVs, targets, alfrd.yaml, AVICA runs, agent loops, Studio API) from an agent with the fewest tokens. Use when a folder has alfrd.yaml / alfrd.plan.csv / .alfrd/, or the user asks to run, monitor, debug or configure ALFRD or AVICA pipeline steps or Claude/Codex agent loops.
+description: Drive ALFRD (plan CSVs, targets, alfrd.yaml, AVICA runs, agent loops, Studio API, notifications, plugins/themes) from an agent with the fewest tokens. Use when a folder has alfrd.yaml / alfrd.plan.csv / .alfrd/, or the user asks to run, monitor, debug or configure ALFRD or AVICA pipeline steps or Claude/Codex agent loops.
 ---
 
 # ALFRD for agents
@@ -58,6 +58,10 @@ compact, versioned JSON form made for you. Prefer it over reading files.
 | Agent loop: run one task | `alfrd plan run -C DIR --target T` (see Agent loops) |
 | Change a turn of a running loop | `alfrd plan turn PLAN t003-codex -C DIR --review / --manual / --after +1h / --after 0 / --model M / --clear` |
 | Approve / reject a held handoff | Studio Handoffs, or `alfrd plan reject PLAN UNIT --reason "…" -C DIR` |
+| Why didn't a notification arrive | `.alfrd/plans/<id>/runner.log` (skips/warnings), routes in Studio Settings → Notifications (see Notifications) |
+| Plan events since seq N | `GET /api/v1/projects/<p>/plans/<id>/events?since=N` (JSON) or `.alfrd/plans/<id>/events.jsonl` (tail it, don't read whole) |
+| Plugins / themes installed | `alfrd plugin list` · `alfrd plugin info <id>` (manifest + last error) · `alfrd plugin theme` (list, `*` = current) |
+| Plugin broke the server | `alfrd serve --safe-mode` (or `ALFRD_NO_PLUGINS=1`), then `alfrd plugin disable <id>` |
 | Token baseline (10 production turns) | `alfrd plan baseline -C DIR [--from PLAN/UNIT] [--count 10] [--exclude TURN=evidence] [--json]` (exit 1 = not ready) |
 
 ## Ask the user before
@@ -65,11 +69,13 @@ compact, versioned JSON form made for you. Prefer it over reading files.
 `plan run`, `plan resume --retry-failed`, `plan cancel`, `plan new --force`,
 `plan turn`, `plan reject`, Studio *Delete permanently* (deletes ALFRD's files;
 with *Delete all files and folders* the whole project folder), setup-form saves, `targets import --replace`, `targets remove`, and
-edits to `alfrd.yaml` or `avica.inp`. Runs start real CASA/MPI jobs or agent
+edits to `alfrd.yaml` or `avica.inp`, `alfrd plugin install|remove|update|enable|disable`
+(plugins run with full user rights), `alfrd plugin theme <id>`, edits to
+`~/.config/alfrd/notify.json` or `plugins.json`, and Studio *Send test*. Runs start real CASA/MPI jobs or agent
 turns that can take hours.
 
 Safe without asking: every `status | wait | events | log | baseline`, `--dry-run`,
-`targets show`, `manifest validate`.
+`targets show`, `manifest validate`, `plugin list|info`, `plugin theme` (no id).
 
 ## Editing state
 
@@ -115,6 +121,59 @@ one argv item each; a missing value refuses the command. Path patterns also
 take `{workdir} {band} {meta_dir} {target_dir} {logs}` and `*`/`?`.
 Full template with comments: `src/alfrd/web/assets/templates/avica.yaml`.
 Non-AVICA trees: `hierarchy` + `views.metadata` (`docs/template-views.md`).
+
+## Notifications
+
+The runner (not `alfrd serve`) appends every plan event to
+`.alfrd/plans/<id>/events.jsonl` and delivers it through routes. Kinds:
+`plan.started|finished|failed|cancelled|interrupted`, `turn.started|finished|failed|retrying|fallback_model|idle`,
+`review.pending|approved|rejected`, `handoff.published`, `limit.reached`.
+
+```yaml
+notify:                    # alfrd.yaml: only `via: desktop` allowed here
+  idle_after: 600          # s without output -> turn.idle; 0/false = off
+  routes:
+    - {via: desktop, 'on': [review.pending, plan.failed, plan.finished, turn.idle]}   # quote 'on'
+```
+
+`webhook` (`url`, `secret`, `headers`; https unless loopback) and `command`
+(`argv`, message JSON on stdin) only in the user's `~/.config/alfrd/notify.json`
+(`{"routes": [...]}`, applies to all projects).
+`telegram` (`token`, numeric `chat_id`, optional `studio_url`; plain text, link to Studio) is user-only too; without `token`/`chat_id` it uses Settings → Plugins → Telegram. `on` takes kinds or `plan.*`, `turn.*`, `*`.
+Routes are read when a runner starts: edits apply to new or restarted runners.
+Events of one plan within 20 s are batched; `notify.cursor` prevents resends.
+An unusable notifier (no desktop, SSH) is skipped with one warning in `runner.log`;
+notifications never fail a plan.
+
+## Plugins and themes
+
+A plugin is a trusted Python package (entry point `alfrd.plugins`) adding
+themes, `views.metadata` panels, file viewers, converters or `alfrd <id> …`
+commands; installed per alfrd installation, not per project. `install|remove|
+update|enable|disable` apply on the next `alfrd serve` restart. Status values:
+`ok disabled error`, `missing binary: X`, `incompatible API`, `skipped (safe mode)`.
+Themes: built-in `obsidian-orbit` (dark, default) and `daylight-orbit`; drop-in
+CSS themes in `~/.local/share/alfrd/themes/<id>/`. CLI theme selection needs a
+Studio reload; Settings applies at once. Scaffold: `alfrd plugin new <id>
+[--kind viewer|converter|theme|panel]`. Details: `docs/plugins.md`.
+Plugins may declare `settings` (form in Settings → Plugins → Configure; values in `~/.config/alfrd/plugin-settings.json`, 0600, read with `alfrd.extensions.settings.values(id)`), a `check` (Test) and `services` (`alfrd <cmd>` children of `alfrd serve`: Start/Stop, log, *Start with the Studio*; exit 2 = don't restart).
+Example `examples/plugins/alfrd-telegram`: token + allowed chat id in its settings; the bot runs as its service or `alfrd telegram run` (`/status /runs /log /help`, `/pause /resume` after Yes/No).
+
+Writing one (start from `alfrd plugin new`, don't hand-roll the layout):
+
+- `pyproject.toml`: `dependencies` must **not** list `alfrd` (the host provides
+  it); exactly one `[project.entry-points."alfrd.plugins"]` entry, whose name
+  equals `Plugin.id` (`myid = "alfrd_myid:plugin"`).
+- `from alfrd.extensions import Plugin, PanelSpec, Converter`; `plugin = Plugin(id=…,
+  version=…, alfrd_api=">=1,<2", panels=[…], converters=[…], cli=typer_app,
+  theme="theme.css", web="web", viewers=[…], requires_bin=[…])`.
+- `PanelSpec(kind, evaluate=fn)`: `fn(root, panel, values, spec)` returns JSON
+  for the browser or raises. `Converter(src=[".ps"], to="pdf", run=fn)`:
+  `fn(src, dest, *, timeout)` writes `dest` or raises.
+- Theme only: `--kind theme` gives `theme.css` (colour tokens) + `theme.json`;
+  copy the folder to the drop-in themes path, no package needed.
+- Test: `uv pip install -e ./alfrd-myid` into alfrd's env, then
+  `alfrd plugin info myid` (shows the load error if any); restart `alfrd serve`.
 
 ## Agent loops
 
@@ -185,8 +244,11 @@ GET /api/studio/projects/<p>/plans/<id>/turns                            # per-t
 GET /api/studio/projects/<p>/quickstart                                  # template setup forms + current values
 ```
 
-Same document as the CLI. Other hosts need `ALFRD_API_TOKEN` +
-`Authorization: Bearer …`. Studio writes (notes, targets, alfrd.yaml) need
+Same document as the CLI. Every route except `/api/health` needs
+`Authorization: Bearer <token>`: on loopback the server's access token (the
+`token` in `~/.config/alfrd/server-<port>.json`, or the `?token=` in
+`alfrd url --port <port>`); other hosts use `ALFRD_API_TOKEN`, which works for
+`/api/v1/*` only. Studio writes (notes, targets, alfrd.yaml) need
 loopback + a CSRF token: use the Python calls or CLI instead of POSTing.
 
 ## Where things live
@@ -200,6 +262,10 @@ loopback + a CSRF token: use the Python calls or CLI instead of POSTing.
 | `<task>/`, `<task>/workspace/` | agent-loop task: handoffs, `task.md`, `.alfrd-task.json`; its git worktree |
 | `alfrd.notes.jsonl` | notes (append-only) |
 | `reductions/<CODE>/<wd>/` | AVICA work dirs; result CSVs `result_<target>_<code>_<wd>.csv` or `<target>_result.csv` |
+| `.alfrd/plans/<id>/events.jsonl`, `notify.cursor`, `runner.log` | plan events, last delivered seq, runner/notifier warnings |
+| `~/.config/alfrd/notify.json` | user notification routes (may hold secrets; never print it) |
+| `~/.config/alfrd/plugins.json` | `disabled`, `theme`, `catalog_url`, `gui_install` |
+| `~/.local/share/alfrd/plugins/`, `.../themes/` | installed plugins (`installed.json`, `site/`), drop-in themes |
 | `~/.alfrd/runtime.sqlite`, `~/.alfrd/search/` | known projects, search indexes (not in the project) |
 
 Entity paths name things across all APIs:

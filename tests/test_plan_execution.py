@@ -479,6 +479,30 @@ def test_command_gets_the_users_pythonpath_not_alfrds(project, monkeypatch):
     assert "PP=/user/lib\n" in (project / unit["log"]).read_text()
 
 
+def test_command_marker_names_the_plan_and_the_unit(project):
+    # Unit ids (0001-<target>-<step>) repeat across plans; usage counts processes by this marker.
+    (project / "alfrd.yaml").write_text(
+        "version: 1\nname: proj\ntemplate: avica\n"
+        "execution: {status_from: exit_code}\n"
+        "workflows:\n  - name: avica\n    steps:\n"
+        "      - {id: preprocess_fitsidi, cmd: [python3, -c, \"import os; print('UNIT=' + os.environ['ALFRD_UNIT'])\"]}\n"
+    )
+    _plan(project, targets=("T1",), steps=["preprocess_fitsidi"])
+    folder = scheduler.create_plan(project)
+    scheduler.Runner(project, folder.id).run()
+    (unit,) = folder.units()
+    assert f"UNIT={folder.id}/{unit['id']}\n" in (project / unit["log"]).read_text()
+
+
+def test_plans_made_in_the_same_second_keep_their_order(tmp_path):
+    root = tmp_path / "p"
+    for n, plan_id in enumerate(["b", "a", "c"]):  # ids don't sort in creation order
+        folder = scheduler.PlanDir(root, plan_id)
+        folder.path.mkdir(parents=True)
+        folder.save({"id": plan_id, "created": "2026-10-09T10:00:00", "created_ns": 1000 + n})
+    assert [p["id"] for p in scheduler.list_plans(root)] == ["c", "a", "b"]
+
+
 def test_fast_runner_is_not_mistaken_for_one_still_starting(tmp_path, monkeypatch):
     # A runner that records "started" before spawn_runner returns (in an earlier
     # second than a stamp taken after Popen) used to look "starting" for 30 s,
@@ -518,3 +542,34 @@ def test_fast_runner_is_not_mistaken_for_one_still_starting(tmp_path, monkeypatc
     with pytest.raises(OSError):
         scheduler.spawn_runner(folder)
     assert not scheduler._starting(folder.load())
+
+
+def test_a_copied_project_never_adopts_the_originals_commands(tmp_path):
+    """A copied project folder keeps the original's pids in its running units."""
+    import subprocess
+    import socket
+
+    original, copy = tmp_path / "original", tmp_path / "copy"
+    copy.mkdir()
+    procs = {}
+    for name, root in (("theirs", original), ("ours", copy)):
+        procs[name] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                       env={**os.environ, "ALFRD_ROOT": str(root)}, start_new_session=True)
+    try:
+        assert _wait(lambda: all(scheduler.proc_start(p.pid) for p in procs.values()))
+        for name, proc in procs.items():
+            assert scheduler.pid_alive(proc.pid)  # alive either way
+            assert scheduler.pid_alive(proc.pid, root=copy) is (name == "ours")
+            assert scheduler.owned_by(proc.pid, copy) is (name == "ours")
+        # Resuming after a killed runner or server is unchanged: the copy's own command is re-adopted.
+        folder = scheduler.PlanDir(copy, "p")
+        folder.path.mkdir(parents=True)
+        folder.save({"id": "p", "status": "running", "created": "2026-10-09T10:00:00"})
+        folder.save_unit({"id": "0001-t", "status": "running", "pid": procs["ours"].pid,
+                          "proc_start": scheduler.proc_start(procs["ours"].pid), "host": socket.gethostname()})
+        assert [a["action"] for a in scheduler.reconcile(copy, spawn=False)] == ["needs runner"]
+        assert procs["theirs"].poll() is None, "the original's command is never signalled"
+    finally:
+        for proc in procs.values():
+            proc.kill()
+            proc.wait(5)

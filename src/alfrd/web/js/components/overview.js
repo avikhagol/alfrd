@@ -11,10 +11,12 @@ import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from 
 import { scoped } from "../data/workspace.js";
 
 // Remembered in this browser until Settings → "Reset view state".
-const UI_FIELDS = ["search", "project", "status", "code", "preset", "mode", "collapsed", "hidden", "drawer", "groupBy"];
+const UI_FIELDS = ["search", "project", "status", "code", "preset", "mode", "collapsed", "hidden", "columnsSet", "drawer", "groupBy", "targetOnly"];
 const saved = loadUi("overview", {
-  search: "", project: "all", status: "all", code: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project",
+  search: "", project: "all", status: "all", code: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project", targetOnly: false,
 });
+// Columns nobody chose yet follow the template's defaults (TEMPLATE_HIDDEN); a saved choice wins.
+saved.columnsSet ??= saved.hidden.some((id) => id !== "stages-all");
 // Per project workspace (All projects has its own): filters, page, checked rows, drawer.
 const ui = scoped("overview", () => ({
   ...saved,
@@ -33,6 +35,28 @@ const LEADING = [
   { id: "stages", label: "Progress" },
   { id: "runtime", label: "Runtime" },
 ];
+
+/** Leading columns a template hides until the user picks columns (AVICA: paths are long and rarely scanned). */
+const TEMPLATE_HIDDEN = { avica: ["ms", "project"] };
+
+/** Hidden leading columns: the user's choice, else the defaults of the template every project in scope uses. */
+function hiddenCols(ctx) {
+  if (ui.columnsSet) return ui.hidden;
+  const templates = new Set(scopeIds(ctx).map((p) => ctx.state.trees?.[p]?.defs?.template || ""));
+  const extra = templates.size === 1 ? TEMPLATE_HIDDEN[[...templates][0]] || [] : [];
+  return new Set([...ui.hidden, ...extra]);
+}
+/** Show or hide one column; the first choice freezes the template defaults into the user's own set. */
+function toggleCol(ctx, id) {
+  ui.hidden = new Set(hiddenCols(ctx));
+  ui.columnsSet = true;
+  toggle(ui.hidden, id);
+}
+
+// Get started card per project: folded to its title, or dismissed (only once the Overview has rows).
+const home = loadUi("overview-home", { folded: [], dismissed: [] });
+const homeFolded = new Set(home.folded), homeDismissed = new Set(home.dismissed);
+const rememberHome = () => saveUi("overview-home", { folded: homeFolded, dismissed: homeDismissed }, ["folded", "dismissed"]);
 
 const STATUSES = ["completed", "failed", "warning", "running", "unknown"];
 const PRESET_LABELS = { nometa: "No work folder" };
@@ -193,7 +217,7 @@ export function mount(el, ctx) {
     { label: "Import results…", icon: "upload", run: () => ctx.openImport() },
   ]));
   on(el, "click", "#ov-export", (e, b) => ctx.menu(b, [
-    ...(loopOnly(ctx) ? [] : [{ label: "Overview CSV (visible rows)", icon: "download", run: () => document.querySelector("#btn-export").click() }]),
+    ...(loopOnly(ctx) ? [] : [{ label: "Overview CSV (visible rows)", icon: "download", run: () => ctx.dataItems().find((it) => it.label?.startsWith("Overview CSV"))?.run() }]),
     ...historyItems(ctx),
   ]));
   // Run history rows act on that exact run, never the newest by default.
@@ -212,10 +236,10 @@ export function mount(el, ctx) {
   on(el, "click", "#ov-columns", (e, b) => {
     const steps = ctx.state.workflow.steps;
     ctx.menu(b, [
-      ...LEADING.map((c) => ({ label: `${ui.hidden.has(c.id) ? "Show" : "Hide"} ${c.label}`, icon: ui.hidden.has(c.id) ? "plus" : "minus", run: () => { toggle(ui.hidden, c.id); remember(); ctx.update(); } })),
+      ...LEADING.map((c) => { const off = hiddenCols(ctx).has(c.id); return { label: `${off ? "Show" : "Hide"} ${c.label}`, icon: off ? "plus" : "minus", run: () => { toggleCol(ctx, c.id); remember(); ctx.update(); } }; }),
       "-",
       { label: ui.hidden.has("stages-all") ? "Show pipeline stage columns" : "Hide pipeline stage columns", icon: "columns", hint: `${steps.length} steps`, run: () => { toggle(ui.hidden, "stages-all"); remember(); ctx.update(); } },
-      { label: "Reset columns", icon: "reset", run: () => { ui.hidden.clear(); remember(); ctx.update(); } },
+      { label: "Reset columns", icon: "reset", hint: "Template defaults", run: () => { ui.hidden.clear(); ui.columnsSet = false; remember(); ctx.update(); } },
     ]);
   });
   on(el, "click", "[data-group]", (e, b) => { toggle(ui.collapsed, b.dataset.group); remember(); renderGrid(el, ctx); });
@@ -243,6 +267,18 @@ export function mount(el, ctx) {
       const { openQuickstart } = await import("./quickstart.js");
       await openQuickstart(ctx, project, { onSaved: () => ctx.refreshProject?.(project) });
     } catch (error) { ctx.toast(error.message, "fail"); }
+  });
+  on(el, "click", "[data-home-fold]", (e, b) => {
+    const p = b.dataset.homeFold;
+    if (homeFolded.has(p)) homeFolded.delete(p); else homeFolded.add(p);
+    rememberHome();
+    renderHome(el, ctx);
+  });
+  on(el, "click", "[data-home-dismiss]", (e, b) => {
+    homeDismissed.add(b.dataset.homeDismiss);
+    rememberHome();
+    renderHome(el, ctx);
+    ctx.toast("Get started hidden · Settings → Reset view state brings it back", "info");
   });
   on(el, "click", "[data-home-targets]", () => ctx.openTargets("import"));
   on(el, "click", "[data-home-run]", (e, b) => openRunDialog(ctx, b.dataset.homeRun, { onStarted: () => ctx.openRun(b.dataset.homeRun) }));
@@ -345,7 +381,15 @@ export function renderHome(el, ctx) {
   if (isLoopProject(ctx, project)) { box.innerHTML = ""; return; } // its run history shows setup, latest and active runs
   const hasSteps = ctx.state.workflow.steps.length > 0, hasTargets = ctx.state.targets.some((t) => t.project === project);
   const run = planOf(project)?.plan;
-  box.innerHTML = `${!hasSteps || !hasTargets || !run ? `<section class="card setup-card"><h2>Get started</h2><p>Set up ${esc(ctx.projectName(project))}, then run your workflow.</p><ol class="setup-list">
+  // Fold / dismiss only once the Overview has rows; before that the card is the way in.
+  const rows = hasTargets; // loop projects returned above, so their targets are the Overview's rows
+  const showSetup = (!hasSteps || !hasTargets || !run) && !(rows && homeDismissed.has(project));
+  const folded = rows && homeFolded.has(project);
+  const done = [hasSteps, hasTargets, !!run].filter(Boolean).length;
+  const setupHead = rows
+    ? `<div class="setup-head"><button class="icon-btn sm ${folded ? "" : "open"}" data-home-fold="${esc(project)}" aria-expanded="${!folded}" aria-label="${folded ? "Expand" : "Collapse"} Get started">${icon("caret")}</button><h2>Get started</h2>${folded ? `<span class="muted small">${done} of 3 done</span>` : ""}<span class="grow"></span><button class="icon-btn sm" data-home-dismiss="${esc(project)}" aria-label="Dismiss Get started" title="Dismiss">${icon("close")}</button></div>`
+    : "<h2>Get started</h2>";
+  box.innerHTML = `${showSetup && folded ? `<section class="card setup-card folded">${setupHead}</section>` : ""}${showSetup && !folded ? `<section class="card setup-card">${setupHead}<p>Set up ${esc(ctx.projectName(project))}, then run your workflow.</p><ol class="setup-list">
     ${hasSetup(ctx, project) ? `<li>⓪ <button class="link-btn" data-home-setup="${esc(project)}">Open the setup wizard</button> (${esc(setupTitle(ctx, project))})</li>` : ""}
     <li>${hasSteps ? "✓" : "①"} <a href="#/workflow">Add steps in Workflow</a> · <a href="#/config">Edit alfrd.yaml in Settings</a></li>
     <li>${hasTargets ? "✓" : "②"} <button class="link-btn" data-home-targets>Add targets</button></li>
@@ -426,7 +470,8 @@ function renderFindView(el, ctx) {
   if (ui.project !== "all" && !projects.some((p) => p.id === ui.project)) ui.project = "all";
   const { codes, none } = allCodes(ctx);
   if (ui.code !== "all" && ui.code !== NO_CODE && !codes.some(([c]) => c === ui.code)) ui.code = "all";
-  const visibleCols = LEADING.filter((c) => !ui.hidden.has(c.id)).length + 1 + (ui.hidden.has("stages-all") ? 0 : ctx.steps().length);
+  const hidden = hiddenCols(ctx);
+  const visibleCols = LEADING.filter((c) => !hidden.has(c.id)).length + 1 + (ui.hidden.has("stages-all") ? 0 : ctx.steps().length);
   const totalCols = LEADING.length + 1 + ctx.steps().length;
   $("#ov-find-rest", el).innerHTML = `
     <label class="select-wrap" title="AVICA project code">${icon("folder")}<select id="ov-code" aria-label="Project code filter">
@@ -466,7 +511,8 @@ function renderGrid(el, ctx) {
 function drawGrid(el, ctx) {
   const steps = ctx.state.workflow.steps;
   const showStages = !ui.hidden.has("stages-all");
-  const cols = LEADING.filter((c) => !ui.hidden.has(c.id));
+  const hidden = hiddenCols(ctx);
+  const cols = LEADING.filter((c) => !hidden.has(c.id));
   const { all, rows, pages } = pageTargets(ctx);
   const groups = new Map();
   const groupKey = (t) => (ui.groupBy === "code" ? targetCodes(ctx, t)[0]?.code || "(no project code)" : t.project);
@@ -562,7 +608,7 @@ const runLoads = new Map(); // project -> {state: "loading"|"ok"|"error", status
 const runLabel = (s) => RUN_STATUS[s] || s;
 
 export function forgetProject(project) {
-  runLoads.delete(project); runFilters.delete(project); homeAsked.delete(project); histPage.delete(project); taskLoads.delete(project);
+  runLoads.delete(project); runFilters.delete(project); homeAsked.delete(project); histPage.delete(project);
   [...summaries.keys()].filter((k) => k.startsWith(`${project}|`)).forEach((k) => summaries.delete(k));
   if (runGridFocus?.project === project) runGridFocus = null;
 }
@@ -656,16 +702,10 @@ function summaryOf(ctx, project, got, ref) {
   return known?.run || null;
 }
 
-// Tasks of an agent-loop project (own turn count and worktree); a click shows that task's runs.
-const taskLoads = new Map(); // project -> {at, tasks, max_iterations, iteration_unit}
-function taskStrip(ctx, project) {
-  const got = taskLoads.get(project);
-  if (!got || (!got.loading && Date.now() - got.at > 30000)) {
-    taskLoads.set(project, { ...(got || {}), loading: true, at: Date.now() });
-    server.tasks(project).then((r) => { taskLoads.set(project, { ...r, at: Date.now() }); ctx.update(); },
-      () => taskLoads.set(project, { tasks: [], at: Date.now() }));
-  }
-  return runGridMod.renderTaskStrip(project, ctx.projectName(project), got, (runFilters.get(project)?.search || "").trim(), runLabel);
+/** Name of the header's target when it belongs to project (loop tasks are targets). */
+function headerTarget(ctx, project) {
+  const t = ctx.target();
+  return t && t.project === project ? t.name : null;
 }
 
 function runSection(ctx, project, index) {
@@ -673,8 +713,9 @@ function runSection(ctx, project, index) {
   const f = runFilters.get(project) || runGridMod.FILTERS_DEFAULT;
   if (isLoopProject(ctx, project)) {
     const runs = runsOf(project);
-    return taskStrip(ctx, project) + runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
-      { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all", setup: hasSetup(ctx, project) });
+    return runGridMod.renderRunHistory(project, ctx.projectName(project), grid, grid, runs, (id) => summaryOf(ctx, project, got, runs.find((r) => r.id === id)), f,
+      { runLabel, error, index, page: histPage.get(project), size: ctx.state.prefs.pageSize || 25, showProject: ctx.state.selectedProject === "all", setup: hasSetup(ctx, project),
+        target: headerTarget(ctx, project), targetOnly: ui.targetOnly });
   }
   const shown = runGridMod.filterRunGrid(grid, f, runLabel);
   return runGridMod.renderRunGrid(project, ctx.projectName(project), grid, shown, f, { runLabel, error, index });
@@ -700,9 +741,10 @@ function bindRunGrids(el, ctx) {
   on(el, "click", "[data-rg-reset]", (e, b) => { runFilters.delete(b.dataset.rgReset); runLoads.delete(b.dataset.rgReset); runGridFocus = null; renderGrid(el, ctx); });
   on(el, "click", "[data-rg-retry]", (e, b) => { runLoads.delete(b.dataset.rgRetry); fetchRuns(ctx, b.dataset.rgRetry); });
   on(el, "click", "[data-rg-cell]", (e, b) => openRunCell(ctx, b.dataset));
-  on(el, "click", "[data-rg-task]", (e, b) => {
-    const project = b.dataset.rgTask, current = (runFilters.get(project)?.search || "").trim();
-    set(project, { search: current === b.dataset.task ? "" : b.dataset.task, run: "all" });
+  on(el, "click", "[data-rg-scope]", (e, b) => {
+    ui.targetOnly = b.dataset.scope === "target";
+    histPage.delete(b.dataset.rgScope);
+    remember(); renderGrid(el, ctx);
   });
 }
 

@@ -39,12 +39,13 @@ import os
 import re
 from importlib import resources
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
-PANEL_TYPES = ("file_status", "files", "json_fields", "csv_table", "text", "image")
+#: Server panel kinds (derived from :data:`PANELS`).
+PANEL_TYPES: tuple[str, ...] = ()
 #: Panels the Studio renders itself from data it already reads (a template opts in by naming them).
+CLIENT_PANELS: tuple[str, ...] = ()
 DEFAULT_BASE = "{meta_dir}"
-CLIENT_PANELS = ("avica_config", "avica_inputs")
 MAX_FILES = 200
 MAX_PARSE = 256 * 1024
 MAX_TEXT = 64 * 1024
@@ -79,7 +80,14 @@ def validate(block: Mapping[str, Any]) -> list[str]:
     except ImportError:  # pragma: no cover - a declared dependency
         return []
     validator = jsonschema.Draft202012Validator(schema())
-    return [f"{'/'.join(map(str, e.absolute_path)) or '(top)'}: {e.message}" for e in validator.iter_errors(dict(block))]
+    errors = [f"{'/'.join(map(str, e.absolute_path)) or '(top)'}: {e.message}" for e in validator.iter_errors(dict(block))]
+    views = block.get("views")
+    for name, panels in (views.items() if isinstance(views, Mapping) else ()):
+        for i, panel in enumerate(panels if isinstance(panels, list) else ()):
+            kind = panel.get("panel") if isinstance(panel, Mapping) else None
+            if isinstance(kind, str) and kind and kind not in PANELS:
+                errors.append(f"views/{name}/{i}/panel: unknown panel {kind!r} (known: {', '.join(sorted(PANELS))})")
+    return errors
 
 
 def _patterns(root: Path, value: Any) -> list[str]:
@@ -317,7 +325,7 @@ def _file_status(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]
     return {"entries": entries, "counts": counts}
 
 
-def _json_fields(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
+def _json_fields(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec: Mapping[str, Any] | None = None) ->dict[str, Any]:
     hits = _expand(root, str(panel.get("source") or ""), values)
     if not hits:
         return {"source": None, "fields": [], "missing": True}
@@ -327,7 +335,7 @@ def _json_fields(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]
     return {"source": rel, "fields": fields, "error": error}
 
 
-def _csv_table(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
+def _csv_table(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec: Mapping[str, Any] | None = None) ->dict[str, Any]:
     source = str(panel.get("source") or "")
     tables = []
     if source == "result_csv":
@@ -360,7 +368,7 @@ def _csv_table(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]) 
     return {"tables": tables}
 
 
-def _text(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
+def _text(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec: Mapping[str, Any] | None = None) ->dict[str, Any]:
     out = []
     for rel, _ in _expand(root, str(panel.get("source") or ""), values)[: int(panel.get("limit") or 5)]:
         try:
@@ -372,7 +380,7 @@ def _text(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]) -> di
     return {"files": out}
 
 
-def _image(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
+def _image(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec: Mapping[str, Any] | None = None) ->dict[str, Any]:
     hits = _expand(root, str(panel.get("source") or ""), values)
     limit = min(int(panel.get("limit") or 12), MAX_IMAGES)
     images = [{"rel": rel, "name": rel.rsplit("/", 1)[-1]} for rel, _ in hits if re.search(r"\.(png|jpe?g|gif|webp)$", rel, re.I)]
@@ -439,23 +447,64 @@ def _files(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec
     return {"files": out}
 
 
+Evaluator = Callable[[Path, Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
+
+#: Panel kind -> ``evaluate(root, panel, values, spec)``; ``None`` = a client panel (the browser renders it).
+PANELS: dict[str, Evaluator | None] = {
+    "file_status": _file_status, "files": _files, "json_fields": _json_fields, "csv_table": _csv_table,
+    "text": _text, "image": _image, "avica_config": None, "avica_inputs": None,
+}
+_BUILTIN_PANELS = frozenset(PANELS)
+_KIND = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _sync_kinds() -> None:
+    global PANEL_TYPES, CLIENT_PANELS
+    PANEL_TYPES = tuple(k for k, fn in PANELS.items() if fn is not None)
+    CLIENT_PANELS = tuple(k for k, fn in PANELS.items() if fn is None)
+
+
+_sync_kinds()
+
+
+def register_panel(kind: str, evaluate: Evaluator | None = None, client: bool = False) -> None:
+    """Add a panel kind: a server ``evaluate(root, panel, values, spec)``, or ``client=True`` (browser only).
+
+    Built-in kinds can't be replaced; registering a plugin kind again replaces it.
+    """
+    if not isinstance(kind, str) or not _KIND.match(kind):
+        raise ValueError(f"invalid panel kind {kind!r} (lowercase letters, digits, _)")
+    if kind in _BUILTIN_PANELS:
+        raise ValueError(f"panel kind {kind!r} is built in")
+    if evaluate is None and not client:
+        raise ValueError(f"panel {kind!r} needs an evaluate function or client=True")
+    if evaluate is not None and not callable(evaluate):
+        raise ValueError(f"panel {kind!r}: evaluate is not callable")
+    PANELS[kind] = evaluate
+    _sync_kinds()
+
+
+def unregister_panel(kind: str) -> None:
+    """Drop a plugin panel kind (built-ins stay)."""
+    if kind not in _BUILTIN_PANELS and kind in PANELS:
+        del PANELS[kind]
+        _sync_kinds()
+
+
 def _evaluate(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any]:
     kind = panel.get("panel")
-    if kind in CLIENT_PANELS:
+    if kind not in PANELS:
+        return {"error": f"unknown panel type {kind!r}"}
+    evaluate = PANELS[kind]
+    if evaluate is None:
         return {"client": True}
-    if kind == "files":
-        return _files(root, panel, values, spec)
-    if kind == "file_status":
-        return _file_status(root, panel, values, spec)
-    if kind == "json_fields":
-        return _json_fields(root, panel, values)
-    if kind == "csv_table":
-        return _csv_table(root, panel, values)
-    if kind == "text":
-        return _text(root, panel, values)
-    if kind == "image":
-        return _image(root, panel, values)
-    return {"error": f"unknown panel type {kind!r}"}
+    if kind in _BUILTIN_PANELS:
+        return evaluate(root, panel, values, spec)
+    try:  # a plugin's evaluator never breaks the view
+        result = evaluate(root, panel, values, spec)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{kind}: {exc}"}
+    return dict(result) if isinstance(result, Mapping) else {"error": f"{kind}: evaluator returned {type(result).__name__}"}
 
 
 def view(root: str | Path, entity: Mapping[str, Any], *, name: str = "metadata") -> dict[str, Any]:
@@ -562,4 +611,50 @@ def panel_file(root: str | Path, entity: Mapping[str, Any], index: int, rel: str
     raise PermissionError(f"{rel} is not an image of this panel")
 
 
-__all__ = ["CLIENT_PANELS", "PANEL_TYPES", "flatten", "panel_file", "schema", "spec_for", "validate", "view", "walk"]
+#: Placeholders that name a folder path (several levels) rather than one folder.
+_PATH_VARS = {"workdir", "workdir_path", "meta_dir", "target_dir", "logs"}
+
+
+def declared_source(root: str | Path, rel: str) -> bool:
+    """Whether ``rel`` matches the ``source`` of a ``text`` or ``image`` panel in the project's views.
+
+    Without an entity the placeholders stay open (folder-path ones span levels, the
+    others one level); ``..`` and absolute paths never match. Callers still confine
+    the resolved path to ``root`` and check the file type.
+    """
+    from alfrd.studio_defs import _TOKEN
+
+    if not rel or rel.startswith(("/", "\\")) or ".." in Path(rel).parts:
+        return False
+    base = Path(root).resolve()
+    try:
+        spec = spec_for(base)
+        values = dict(base_values(base))
+    except Exception:  # noqa: BLE001 - a broken alfrd.yaml declares nothing
+        return False
+    for name, template in _vars(base, spec).items():
+        values[name] = _fill(template, values)
+    for name, panels in (spec.get("views") or {}).items():
+        if name == "vars" or not isinstance(panels, list):
+            continue
+        for panel in panels:
+            if not isinstance(panel, Mapping) or panel.get("panel") not in ("text", "image") or not panel.get("source"):
+                continue
+            text = _fill(str(panel["source"]), values)
+            text = text[2:] if text.startswith("./") else text
+            out = []
+            for token in _TOKEN.split(text.strip("/")):
+                if token == "*":
+                    out.append(r"[^/]*")
+                elif token == "?":
+                    out.append(r"[^/]")
+                elif token.startswith("{") and token.endswith("}"):
+                    out.append(r".+?" if token[1:-1] in _PATH_VARS else r"[^/]+")
+                elif token:
+                    out.append(re.escape(token))
+            if re.fullmatch("".join(out), rel):
+                return True
+    return False
+
+
+__all__ = ["CLIENT_PANELS", "PANELS", "PANEL_TYPES", "declared_source", "flatten", "register_panel", "unregister_panel", "panel_file", "schema", "spec_for", "validate", "view", "walk"]

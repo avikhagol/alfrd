@@ -5,9 +5,36 @@
 import { manifestToWorkflows, normalizeStatus } from "./model.js";
 
 const API = "/api";
+const fitsCache = new Map();
+const authListeners = new Set();
+
+function requireAuth() {
+  if (server.authRequired) return;
+  server.authRequired = true;
+  server.session = null;
+  fitsCache.clear();
+  for (const listener of authListeners) listener();
+}
+
+function accessError() {
+  const error = new Error("This ALFRD server needs its access link.");
+  error.status = 401;
+  return error;
+}
+
+// All API fetches share this check, including text and collection files.
+async function request(url, init) {
+  if (server.authRequired) throw accessError();
+  const response = await fetch(url, { credentials: "same-origin", ...init });
+  if (response.status === 401) {
+    requireAuth();
+    throw accessError();
+  }
+  return response;
+}
 
 async function getJson(path, init) {
-  const response = await fetch(`${API}${path}`, { credentials: "same-origin", headers: { Accept: "application/json" }, ...init });
+  const response = await request(`${API}${path}`, { headers: { Accept: "application/json" }, ...init });
   const type = response.headers.get("content-type") || "";
   const body = type.includes("json") ? await response.json() : null;
   if (!response.ok) {
@@ -22,26 +49,35 @@ async function getJson(path, init) {
 
 export const server = {
   session: null,
+  authRequired: false,
+  request,
+  onAuthRequired(listener) {
+    authListeners.add(listener);
+    if (this.authRequired) listener();
+    return () => authListeners.delete(listener);
+  },
 
   /** Detect a same-origin ALFRD server. Resolves to the session or null. */
   async detect() {
-    if (location.protocol === "file:") return null;
+    if (this.authRequired || location.protocol === "file:") return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2500);
       const session = await getJson("/studio/session", { signal: controller.signal });
-      clearTimeout(timer);
       if (session && session.app === "alfrd") {
         this.session = session;
         return session;
       }
     } catch {
       /* not served by alfrd serve */
+    } finally {
+      clearTimeout(timer);
     }
     return null;
   },
 
   async mutate(path, payload, method = "POST") {
+    if (this.authRequired) throw accessError();
     if (!this.session?.mutations_enabled) throw new Error("Runtime mutations are disabled on this server (loopback only).");
     return getJson(path, {
       method,
@@ -74,6 +110,7 @@ export const server = {
   planReject(project, id, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/reject`, payload); },
   planTurns(project, id) { return getJson(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns`); },
   planTurnSet(project, id, step, payload) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/${encodeURIComponent(id)}/turns/${encodeURIComponent(step)}`, payload); },
+  system() { return getJson("/studio/system"); },
   tasks(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/tasks`); },
   quickstart(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/quickstart`); },
   quickstartApply(project, form, values) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/quickstart/${encodeURIComponent(form)}`, { values }); },
@@ -115,6 +152,12 @@ export const server = {
   planPreview(project, payload) {
     return this.mutate(`/studio/projects/${encodeURIComponent(project)}/plans/preview`, payload);
   },
+  notificationRoutes(project) {
+    return getJson(`/studio/projects/${encodeURIComponent(project)}/notify`);
+  },
+  notificationTest(project, index) {
+    return this.mutate(`/studio/projects/${encodeURIComponent(project)}/notify/test`, { index });
+  },
   planStatus(project, id = null) {
     return getJson(`/studio/projects/${encodeURIComponent(project)}/plans${id ? `?id=${encodeURIComponent(id)}` : ""}`);
   },
@@ -139,6 +182,16 @@ export const server = {
     return this.mutate(`/runtime/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepKey)}/retry`, {});
   },
 
+  avicaFitsFiles(project) {
+    if (!fitsCache.has(project)) {
+      const pending = getJson(`/studio/avica/${encodeURIComponent(project)}/fits-files`, { headers: { "X-CSRF-Token": this.session?.csrf_token || "" } });
+      fitsCache.set(project, pending);
+      pending.catch(() => { if (fitsCache.get(project) === pending) fitsCache.delete(project); });
+    }
+    return fitsCache.get(project);
+  },
+  clearFitsCache(project) { project ? fitsCache.delete(project) : fitsCache.clear(); },
+
   avicaLayout(project) {
     return getJson(`/studio/avica/${encodeURIComponent(project)}/layout`);
   },
@@ -153,7 +206,7 @@ export const server = {
   },
 
   async avicaLog(project, name) {
-    const response = await fetch(`${API}/studio/avica/${encodeURIComponent(project)}/logs/${encodeURIComponent(name)}`, { credentials: "same-origin" });
+    const response = await request(`${API}/studio/avica/${encodeURIComponent(project)}/logs/${encodeURIComponent(name)}`);
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.text();
   },
@@ -167,7 +220,7 @@ export const server = {
   /** A log from byte `offset` on (null: its last 400 kB). → {text, offset, id, size, mtime, reset} */
   async projectFileFrom(project, rel, offset = null, id = null) {
     const q = new URLSearchParams({ path: rel, ...(offset != null ? { offset: String(offset) } : {}), ...(id ? { id } : {}) });
-    const response = await fetch(`${API}/studio/projects/${encodeURIComponent(project)}/file?${q}`, { credentials: "same-origin", cache: "no-store" });
+    const response = await request(`${API}/studio/projects/${encodeURIComponent(project)}/file?${q}`, { cache: "no-store" });
     if (!response.ok) {
       let message = `${response.status} ${response.statusText}`;
       try { message = (await response.json()).error?.message || message; } catch { /* text body */ }
@@ -190,7 +243,7 @@ export const server = {
   },
 
   async projectFile(project, rel) {
-    const response = await fetch(`${API}/studio/projects/${encodeURIComponent(project)}/file?${new URLSearchParams({ path: rel })}`, { credentials: "same-origin" });
+    const response = await request(`${API}/studio/projects/${encodeURIComponent(project)}/file?${new URLSearchParams({ path: rel })}`);
     if (!response.ok) {
       let message = `${response.status} ${response.statusText}`;
       try { message = (await response.json()).error?.message || message; } catch { /* text body */ }
@@ -257,6 +310,8 @@ export const server = {
   },
   /** What Forget / Delete would remove and whether removal is allowed now (read-only). */
   removalPreview(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/removal-preview`); },
+  /** Size of the project folder for "Delete all files and folders" (walks the folder; can be slow). */
+  removalSize(project) { return getJson(`/studio/projects/${encodeURIComponent(project)}/removal-size`); },
   /** Permanent deletion; the server refuses (409) while no deletion scope is configured. */
   deleteProject(project, payload = {}) { return this.mutate(`/studio/projects/${encodeURIComponent(project)}/delete`, payload); },
 
@@ -338,67 +393,79 @@ export const server = {
     const workflows = [];
     const messages = [];
     for (const project of projects) {
-      let list = [];
-      try {
-        list = (await getJson(`/projects/${encodeURIComponent(project.name)}/workflows`)).workflows || [];
-      } catch (error) {
-        messages.push({ level: "warn", text: `${project.title}: ${error.message}` });
-        continue;
-      }
-      if (!list.length) messages.push({ level: "info", text: `${project.title}: connected, but its manifest declares no runtime workflows.` });
-      for (const wf of list) {
-        const info = manifestToWorkflows({ name: project.name, workflows: [{ name: wf.name, description: wf.description, steps: wf.sequence || [] }] }, `${project.title} (server)`, { aliases: false });
-        const workflow = info.workflows[0];
-        if (workflow) workflows.push({ project: project.name, ...workflow });
-        let matrix;
-        try {
-          matrix = await getJson(`/projects/${encodeURIComponent(project.name)}/workflows/${encodeURIComponent(wf.name)}/matrix`);
-        } catch (error) {
-          messages.push({ level: "warn", text: `${project.title}/${wf.name}: ${error.message}` });
-          continue;
-        }
-        if (!(matrix.rows || []).length) {
-          messages.push({ level: "info", text: `${project.title}/${wf.name}: no datasets yet — import results with \`alfrd import avica-run\` or start a run.` });
-        }
-        (matrix.rows || []).forEach((row) => {
-          const steps = {};
-          Object.entries(row.cells || {}).forEach(([key, cell]) => {
-            const status = normalizeStatus(cell.status);
-            steps[key] = {
-              step: key,
-              status: cell.status === "queued" ? "queued" : status,
-              attempt: cell.attempt,
-              attempts: [],
-              started: cell.started_at,
-              finished: cell.finished_at,
-              duration: cell.duration_seconds,
-              note: cell.error_summary || cell.result_summary || "",
-              executionId: cell.execution_id,
-              artifactCount: cell.artifact_count,
-            };
-          });
-          const name = row.dataset_external_id || row.dataset_name || row.dataset_id;
-          targets.push({
-            id: `${project.name}/${name}`,
-            name,
-            project: project.name,
-            projectTitle: project.title || project.description || null,
-            workflow: wf.name,
-            datasetId: row.dataset_id,
-            runId: row.run_id,
-            runStatus: row.run_status,
-            msPath: null,
-            fitsidi: null,
-            meta: null,
-            steps,
-            history: [],
-            artifacts: [],
-            columns: {},
-            source: { kind: "server", file: `${API}/projects/${project.name}/workflows/${wf.name}/matrix`, origin: "server" },
-          });
-        });
-      }
+      const one = await this.loadProjectRuntime(project);
+      targets.push(...one.targets);
+      workflows.push(...one.workflows);
+      messages.push(...one.messages);
     }
     return { targets, workflows, messages, projects, aliases: [] };
+  },
+
+  /** One project's runtime workflows and matrix rows (as targets); `project` is an entry of loadAll().projects. */
+  async loadProjectRuntime(project) {
+    const targets = [];
+    const workflows = [];
+    const messages = [];
+    let list = [];
+    try {
+      list = (await getJson(`/projects/${encodeURIComponent(project.name)}/workflows`)).workflows || [];
+    } catch (error) {
+      messages.push({ level: "warn", text: `${project.title}: ${error.message}` });
+      return { targets, workflows, messages };
+    }
+    if (!list.length) messages.push({ level: "info", text: `${project.title}: connected, but its manifest declares no runtime workflows.` });
+    for (const wf of list) {
+      const info = manifestToWorkflows({ name: project.name, workflows: [{ name: wf.name, description: wf.description, steps: wf.sequence || [] }] }, `${project.title} (server)`, { aliases: false });
+      const workflow = info.workflows[0];
+      if (workflow) workflows.push({ project: project.name, ...workflow });
+      let matrix;
+      try {
+        matrix = await getJson(`/projects/${encodeURIComponent(project.name)}/workflows/${encodeURIComponent(wf.name)}/matrix`);
+      } catch (error) {
+        messages.push({ level: "warn", text: `${project.title}/${wf.name}: ${error.message}` });
+        continue;
+      }
+      if (!(matrix.rows || []).length) {
+        messages.push({ level: "info", text: `${project.title}/${wf.name}: no datasets yet — import results with \`alfrd import avica-run\` or start a run.` });
+      }
+      (matrix.rows || []).forEach((row) => {
+        const steps = {};
+        Object.entries(row.cells || {}).forEach(([key, cell]) => {
+          const status = normalizeStatus(cell.status);
+          steps[key] = {
+            step: key,
+            status: cell.status === "queued" ? "queued" : status,
+            attempt: cell.attempt,
+            attempts: [],
+            started: cell.started_at,
+            finished: cell.finished_at,
+            duration: cell.duration_seconds,
+            note: cell.error_summary || cell.result_summary || "",
+            executionId: cell.execution_id,
+            artifactCount: cell.artifact_count,
+          };
+        });
+        const name = row.dataset_external_id || row.dataset_name || row.dataset_id;
+        targets.push({
+          id: `${project.name}/${name}`,
+          name,
+          project: project.name,
+          projectTitle: project.title || project.description || null,
+          workflow: wf.name,
+          datasetId: row.dataset_id,
+          runId: row.run_id,
+          runStatus: row.run_status,
+          msPath: null,
+          fitsidi: null,
+          meta: null,
+          steps,
+          history: [],
+          artifacts: [],
+          columns: {},
+          source: { kind: "server", file: `${API}/projects/${project.name}/workflows/${wf.name}/matrix`, origin: "server" },
+        });
+      });
+    }
+    return { targets, workflows, messages };
   },
 };

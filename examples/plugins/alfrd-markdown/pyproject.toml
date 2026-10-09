@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "alfrd-markdown"
+version = "0.1.0"
+description = "Markdown file viewer for ALFRD Studio"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."alfrd.plugins"]
+markdown = "alfrd_markdown:plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["alfrd_markdown"]

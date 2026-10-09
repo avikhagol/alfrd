@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { configFields, setConfigField } from "../../src/alfrd/web/js/data/config_fields.js";
 import { loopResults, pollLoopResults } from "../../src/alfrd/web/js/data/loop_results.js";
 import { parseYaml } from "../../src/alfrd/web/js/utils/yaml_parser.js";
 
@@ -20,36 +19,6 @@ workflows:
     human_review: true
 custom: keep-me
 `;
-
-test("fields share a YAML draft and preserve unrelated settings", () => {
-  let draft = setConfigField(text, "name", "My project: #1");
-  draft = setConfigField(draft, "iterations", "5");
-  draft = setConfigField(draft, "timeout", "120");
-  const data = parseYaml(draft);
-  assert.equal(configFields(draft).name, "My project: #1");
-  assert.equal(configFields(draft).iterations, 5);
-  assert.equal(data.execution.mode, "step");
-  assert.equal(data.execution.timeout, 120);
-  assert.equal(data.workflows[0].steps[0].human_review, true);
-  assert.deepEqual(data.workflows[0].steps[0].handoff, { input: "a.md", output: "b.md" });
-  assert.match(draft, /# Preserve handoff settings/);
-  assert.match(draft, /# Project comment/);
-  assert.equal(data.custom, "keep-me");
-  assert.equal(parseYaml(text).workflows[0].repeat.iterations, 2);
-});
-
-test("invalid fields do not replace a valid draft; blank timeout restores default", () => {
-  for (const value of ["", "0", "101", "1.2", "oops"]) assert.throws(() => setConfigField(text, "iterations", value));
-  for (const value of ["0", "-1", "1.2", "oops"]) assert.throws(() => setConfigField(text, "timeout", value));
-  assert.equal(parseYaml(setConfigField(text, "timeout", "")).execution.timeout, undefined);
-  assert.throws(() => configFields("- not a mapping"));
-});
-
-test("mapping workflows remain mappings when changing iterations", () => {
-  const draft = setConfigField("name: p\nworkflows:\n  loop:\n    repeat: {iterations: 2}\n    steps: {x: {handoff: {input: a, output: b}}}\n", "iterations", "3");
-  assert.equal(parseYaml(draft).workflows.loop.repeat.iterations, 3);
-  assert.equal(parseYaml(draft).workflows.loop.steps.x.handoff.output, "b");
-});
 
 test("scheduler turns count independently of retry archives and CSVs", () => {
   const status = { plan: { steps: ["a", "b", "c"] }, table: { rows: [{ cells: { a: "done", b: "running", c: "todo" } }] } };

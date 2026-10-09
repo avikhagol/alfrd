@@ -114,6 +114,33 @@
         }
       }
     },
+    "notify": {
+      "type": "object",
+      "properties": {
+        "idle_after": {
+          "type": ["number", "boolean"],
+          "description": "Seconds without unit activity before turn.idle (default 600; 0 or false disables)."
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["via", "on"],
+            "properties": {
+              "via": {"type": "string", "minLength": 1, "not": {"enum": ["webhook", "command", "telegram"]},
+                      "description": "Notifier; webhook, command and telegram are only allowed in the user's notify.json."},
+              "on": {
+                "oneOf": [
+                  {"type": "string", "minLength": 1},
+                  {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+                ],
+                "description": "Event kinds or prefixes such as plan.*."
+              }
+            }
+          }
+        }
+      }
+    },
     "loop": {
       "type": "object",
       "properties": {

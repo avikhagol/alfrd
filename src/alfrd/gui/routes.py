@@ -14,10 +14,8 @@ from flask import (
     Response,
     abort,
     current_app,
-    flash,
     jsonify,
     redirect,
-    render_template,
     request,
     url_for,
 )
@@ -26,17 +24,15 @@ from alfrd import __version__
 from alfrd.runtime import RuntimeNotFound
 from alfrd.runtime.matrix import (
     DETAIL_FIELDS,
-    MATRIX_STATUSES,
     MatrixQueryService,
     cell_detail,
 )
-from alfrd.gui.services import resolve_artifact_path, resolve_selected_manifest
-from alfrd.gui.summaries import build_dataset_summary, build_summaries
+from alfrd.gui.services import resolve_selected_manifest
+from alfrd.gui.summaries import build_dataset_summary
 from alfrd.manifest import ManifestError, ManifestNotFoundError, load_manifest
 
 
 api = Blueprint("api", __name__, url_prefix="/api")
-dashboard = Blueprint("dashboard", __name__, url_prefix="/dashboard")
 system = Blueprint("system", __name__)
 control = Blueprint("control", __name__, url_prefix="/api/runtime")
 _SAFE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
@@ -122,14 +118,22 @@ def version():
     return {"version": __version__}
 
 
+@system.get("/login")
+def login():
+    """Public page telling a browser without the token how to get the access link."""
+    from alfrd.gui.auth import landing_page
+
+    return landing_page()
+
+
 @system.get("/")
 def root():
-    """The client-side ALFRD Studio is the default UI; /dashboard/ remains."""
+    """The Studio is the UI."""
     from alfrd.gui.studio import studio_available
 
     if studio_available():
         return redirect(url_for("studio.studio_index"))
-    return redirect(url_for("dashboard.index_dashboard"))
+    return "ALFRD Studio files are missing from this installation; reinstall alfrd.", 503
 
 
 @api.get("/")
@@ -222,30 +226,10 @@ def artifact_definition_api(project_name: str, item_name: str):
     return _item_or_404(project_name, item_name, "get_artifact_definition")
 
 
-@dashboard.get("/")
-def index_dashboard():
-    return render_template(
-        "dashboard/index.htm", title="Projects", projects=_reader().list_projects()
-    )
-
-
-def _connect_form(path: str = "", errors: list[str] | None = None, status: int = 200):
-    return (
-        render_template(
-            "dashboard/connect.htm",
-            title="Connect project",
-            form={"path": path},
-            errors=list(errors or []),
-        ),
-        status,
-    )
-
-
 def connect_manifest_path(path: str):
     """Validate and register a project directory/manifest with the runtime.
 
-    Returns ``(project_dict, errors, status)``; shared by the HTML form and the
-    Studio's JSON endpoint so both enforce identical rules.
+    Returns ``(project_dict, errors, status)``; used by the Studio's JSON endpoint.
     """
     used_default = False
     try:
@@ -277,7 +261,12 @@ def connect_manifest_path(path: str):
     try:
         existing = service.get_project_by_identifier(identifier)
     except RuntimeNotFound:
-        existing = None
+        existing = service.get_project_by_root(root_path, manifest.name)
+        if existing is not None:  # renamed in alfrd.yaml: reuse the row, sync the name
+            description = manifest.extra.get("description")
+            existing = service.sync_project_manifest(existing.identifier, manifest.name,
+                                                     description if isinstance(description, str) else None)
+            identifier = existing.identifier
     if existing is None:
         try:
             service.register_manifest(manifest, root_path=root_path, create_root=False)
@@ -313,166 +302,6 @@ def _default_manifest_for(path: str):
         raise ManifestNotFoundError(f"No alfrd.yaml in {folder} and no default alfrd.yaml (ALFRD_DEFAULT_MANIFEST)")
     manifest = parse_manifest(default_manifest_data(folder), source=default)
     return folder / "alfrd.yaml", manifest
-
-
-@dashboard.route("/connect", methods=["GET", "POST"])
-def connect_project():
-    if request.method == "GET":
-        return _connect_form()
-    path = request.form.get("path", "").strip()
-    project, errors, status = connect_manifest_path(path)
-    if errors:
-        return _connect_form(path, errors, status)
-    flash(f"Project {project['name']!r} connected.", "success")
-    return redirect(url_for("dashboard.project_details", project_name=project.get("identifier", project["name"])))
-
-
-@dashboard.get("/project/<project_name>")
-def project_details(project_name: str):
-    project = _project_or_404(project_name)
-    project_id = project["id"]
-    return render_template(
-        "dashboard/project_details.htm",
-        title=project["name"],
-        project=project,
-        manifest=_reader().get_manifest(project_id),
-        workflows=_reader().list_workflows(project_id),
-        steps=_reader().list_steps(project_id),
-        validators=_reader().list_validators(project_id),
-        parameters=_reader().list_parameters(project_id),
-        dataset_columns=_reader().list_dataset_columns(project_id),
-        artifact_definitions=_reader().list_artifact_definitions(project_id),
-        summaries=build_summaries(project, _runtime_service()),
-    )
-
-
-def _project_runs(project_id: str) -> list[dict]:
-    service = _runtime_service()
-    if service is None:
-        return []
-    datasets = {item.id: item.external_id for item in service.list_datasets(project_id)}
-    return [
-        {
-            "id": run.id,
-            "label": f"{datasets.get(run.dataset_id, run.dataset_id)} — {run.status}",
-            "working_directory": run.working_directory,
-            "steps": [
-                {"id": step.id, "label": step.step_definition.key}
-                for step in run.step_executions
-            ],
-        }
-        for run in service.list_runs(project_id=project_id)
-    ]
-
-
-def _artifact_rows(project_id: str) -> list[dict]:
-    service = _runtime_service()
-    if service is None:
-        return []
-    return [
-        {
-            "id": artifact.id,
-            "name": artifact.name,
-            "path": artifact.path,
-            "run_id": run.id,
-            "step_execution_id": artifact.step_execution_id,
-            "media_type": artifact.media_type,
-            "size_bytes": artifact.size_bytes,
-        }
-        for run in service.list_runs(project_id=project_id)
-        for artifact in run.artifacts
-    ]
-
-
-def _artifact_form(project: dict, form: dict[str, str], errors=None, status: int = 200):
-    return (
-        render_template(
-            "dashboard/artifacts.htm",
-            title=f"{project['name']} artifacts",
-            project=project,
-            runs=_project_runs(project["id"]),
-            artifacts=_artifact_rows(project["id"]),
-            form=form,
-            errors=list(errors or []),
-        ),
-        status,
-    )
-
-
-@dashboard.route("/project/<project_name>/artifacts", methods=["GET", "POST"])
-def project_artifacts(project_name: str):
-    project = _project_or_404(project_name)
-    runs = _project_runs(project["id"])
-    owned_runs = {item["id"]: item for item in runs}
-    if request.method == "GET":
-        run_id = request.args.get("run_id", "")
-        if run_id not in owned_runs:
-            run_id = ""
-        step_id = request.args.get("step_execution_id", "")
-        if not run_id or step_id not in {step["id"] for step in owned_runs[run_id]["steps"]}:
-            step_id = ""
-        return _artifact_form(
-            project,
-            {"run_id": run_id, "step_execution_id": step_id, "path": "", "name": "", "media_type": ""},
-        )
-
-    form = {
-        key: request.form.get(key, "").strip()
-        for key in ("run_id", "step_execution_id", "path", "name", "media_type")
-    }
-    errors: list[str] = []
-    selected = owned_runs.get(form["run_id"])
-    if selected is None:
-        errors.append("Select a run belonging to this project.")
-    step_ids = {step["id"] for step in selected["steps"]} if selected else set()
-    if form["step_execution_id"] and form["step_execution_id"] not in step_ids:
-        errors.append("Select a step belonging to the selected run.")
-    if len(form["name"]) > 255:
-        errors.append("Artifact name must be at most 255 characters.")
-    if len(form["media_type"]) > 255:
-        errors.append("Media type must be at most 255 characters.")
-    artifact_path = None
-    if selected is not None:
-        try:
-            artifact_path = resolve_artifact_path(selected["working_directory"], form["path"])
-        except ValueError as error:
-            errors.append(str(error))
-    elif not form["path"]:
-        errors.append("Artifact path is required.")
-    if errors:
-        return _artifact_form(project, form, errors, 400)
-
-    service = _runtime_service()
-    assert service is not None and artifact_path is not None
-    try:
-        service.record_artifact(
-            form["run_id"],
-            artifact_path,
-            step_execution_id=form["step_execution_id"] or None,
-            name=form["name"] or None,
-            media_type=form["media_type"] or None,
-            write_manifest=False,
-        )
-    except (RuntimeNotFound, OSError, ValueError) as error:
-        return _artifact_form(project, form, [str(error)], 400)
-    flash("Artifact registered.", "success")
-    return redirect(url_for("dashboard.project_artifacts", project_name=project_name))
-
-
-@dashboard.get("/project/<project_name>/workflows/<workflow_name>/matrix")
-def matrix_dashboard(project_name: str, workflow_name: str):
-    project = _project_or_404(project_name)
-    _service, matrix = _matrix_or_404(project_name, workflow_name)
-    return render_template(
-        "dashboard/matrix.htm",
-        title=f"{project['name']} / {workflow_name}",
-        project=project,
-        workflow_name=workflow_name,
-        matrix=matrix,
-        status_filter=request.args.get("status") or "",
-        search=request.args.get("search") or "",
-        statuses=MATRIX_STATUSES,
-    )
 
 
 @api.get("/projects/<project_name>/workflows/<workflow_name>/matrix")

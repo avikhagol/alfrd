@@ -13,7 +13,14 @@ class DefaultConfig:
     CATALOG_CREATE_SCHEMA = True
     RUNTIME_MUTATIONS_ENABLED = True
     SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_SAMESITE = "Lax"
+    # Strict: the session holds the access-token login and the CSRF token, and
+    # no other site should ever send it along. `alfrd serve` names it per port.
+    SESSION_COOKIE_SAMESITE = "Strict"
+    SESSION_COOKIE_NAME = "alfrd-session"
+    # Every data route needs the token (cookie or Bearer); see alfrd.gui.auth.
+    ACCESS_TOKEN_REQUIRED = True
+    ACCESS_THROTTLE_LIMIT = 10
+    ACCESS_THROTTLE_WINDOW = 60
 
     @staticmethod
     def database_uri() -> str:

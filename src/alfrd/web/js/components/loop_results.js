@@ -62,7 +62,7 @@ export function render(el, ctx, projects) {
     const s = entry.status, p = s?.plan;
     const summary = p?.loop ? loopResults(s, entry.handoffs || []) : null;
     return `<div class="card loop-results"><div class="row gap wrap"><h2>Agent-loop results</h2><span class="chip">${esc(ctx.projectName(project))}</span><span class="grow"></span><button class="link-btn" data-classic-results>CSV results / collections</button>
-      ${p ? `<label class="field loop-run"><span>Run</span><select class="input sm mono" data-loop-plan="${esc(project)}"><option value="">Latest run</option>${(s.plans || []).map((plan) => `<option value="${esc(plan.id)}" ${entry.selected === plan.id ? "selected" : ""}>Run ${esc(plan.id)} · ${esc(plan.start_at ? "Scheduled" : RUN_STATUS[plan.status] || plan.status)}</option>`).join("")}</select></label>` : ""}
+      ${p ? `<label class="field loop-run"><span>Run</span><select class="input sm mono" data-loop-plan="${esc(project)}" title="${esc(entry.selected ? `Run ${entry.selected}` : "Latest run")}"><option value="">Latest run</option>${(s.plans || []).map((plan) => `<option value="${esc(plan.id)}" ${entry.selected === plan.id ? "selected" : ""}>Run ${esc(plan.id)} · ${esc(plan.start_at ? "Scheduled" : RUN_STATUS[plan.status] || plan.status)}</option>`).join("")}</select></label>` : ""}
       <button class="btn sm" data-loop-refresh="${esc(project)}" ${entry.loading ? "disabled" : ""}>${icon("sync")} Refresh</button>
       ${summary ? `<button class="btn sm" data-loop-handoffs="${esc(project)}">${icon("file")} Read responses / handoffs</button>` : ""}</div>
       ${entry.error ? `<p class="fail-t" role="alert">${esc(entry.error)} — Refresh to retry.</p>` : ""}

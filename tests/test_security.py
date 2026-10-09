@@ -1,10 +1,8 @@
 """Security-focused tests for dynamic project loading and command execution
 paths reviewed for the 0.2.10.0 hardening workstream.
 
-Scope reviewed: ``alfrd.core.project`` (project directory resolution, dynamic
-module loading), ``alfrd.core.inspect`` (schema resolution, entrypoint
-execution), and ``alfrd.runtime.service`` (run working-directory derivation
-from caller-supplied run ids).
+Scope: ``alfrd.runtime.service`` (run working-directory derivation from
+caller-supplied run ids).
 """
 
 from __future__ import annotations
@@ -62,12 +60,3 @@ def test_create_run_with_explicit_working_directory_is_unaffected(runtime, tmp_p
         workflow.id, dataset.id, run_id="not/actually/used/for/path", working_directory=workdir
     )
     assert Path(run.working_directory) == workdir.resolve()
-
-
-def test_project_directory_rejects_traversal_names(tmp_path, monkeypatch):
-    from alfrd.core.project import project_directory
-
-    monkeypatch.setenv("ALFRD_HOME", str(tmp_path / "alfrd-home"))
-    for name in ("../escape", "/etc/passwd", "a/b", "..", "."):
-        with pytest.raises(ValueError):
-            project_directory(name)

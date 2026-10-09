@@ -51,7 +51,8 @@ except ImportError:  # pragma: no cover - Windows
 
 PLANS_DIR = Path(".alfrd") / "plans"
 ACTIVE = ("running", "paused")
-POLL = 1.0
+POLL = float(os.environ.get("ALFRD_RUNNER_POLL") or 1.0)  # seconds between runner ticks (tests lower it)
+NOTIFY_DRAIN = 15.0  # seconds a stopping runner waits for queued notifications
 
 
 def now_iso() -> str:
@@ -88,9 +89,13 @@ def _parse_stamp(value: str | None) -> datetime | None:
     return stamp
 
 
-def pid_alive(pid: int | None, start: str | None = None, host: str | None = None) -> bool:
-    """Is ``pid`` (on this host, started at ``start``) still running and not a zombie?"""
+def pid_alive(pid: int | None, start: str | None = None, host: str | None = None, root: str | Path | None = None) -> bool:
+    """Is ``pid`` (on this host, started at ``start``) still running and not a zombie?
+
+    With ``root``: and not a command of another project (see :func:`owned_by`)."""
     if not pid or (host and host != socket.gethostname()):
+        return False
+    if root is not None and not owned_by(pid, root):
         return False
     try:
         os.kill(int(pid), 0)
@@ -108,6 +113,27 @@ def pid_alive(pid: int | None, start: str | None = None, host: str | None = None
             return False
         if start and proc_start(int(pid)) != start:
             return False
+    return True
+
+
+def owned_by(pid: int | None, root: str | Path) -> bool:
+    """False when ``pid`` runs a command of another project.
+
+    Every command, and whatever it starts, inherits ``ALFRD_ROOT``. A copied project
+    folder keeps the original's pids in its units; without this check its runner would
+    adopt, and could signal, the original's agents. True when unknown (no /proc, not
+    readable, no ``ALFRD_ROOT``), as before.
+    """
+    try:
+        environ = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return True
+    for item in environ.split(b"\0"):
+        if item.startswith(b"ALFRD_ROOT="):
+            theirs = Path(os.fsdecode(item[len(b"ALFRD_ROOT="):]))
+            with contextlib.suppress(OSError):
+                return theirs.resolve() == Path(root).resolve()
+            return theirs == Path(root)
     return True
 
 
@@ -219,7 +245,8 @@ def list_plans(root: str | Path) -> list[dict[str, Any]]:
         data = _read_json(folder / "plan.json")
         if isinstance(data, dict):
             out.append(data)
-    return sorted(out, key=lambda p: str(p.get("created") or ""), reverse=True)
+    # created_ns orders plans made within the same second ("created" has 1 s resolution).
+    return sorted(out, key=lambda p: (str(p.get("created") or ""), int(p.get("created_ns") or 0)), reverse=True)
 
 
 def active_plan(root: str | Path, csv_file: str | Path | None = None, target: str | None = None) -> dict[str, Any] | None:
@@ -747,6 +774,7 @@ def create_plan(root: str | Path, csv_file: str | Path | None = None, *, mode: s
     folder.save({
         "id": plan_id,
         "created": now_iso(),
+        "created_ns": time.time_ns(),
         "root": str(cfg.root),
         "csv": rel,
         "workflow": cfg.workflow,
@@ -1011,6 +1039,7 @@ class Live:
     last_progress: float = 0.0
     killed_at: float | None = None
     reason: str | None = None
+    idle_activity: float | None = None  # last activity at the time turn.idle was reported
 
 
 class Runner:
@@ -1024,6 +1053,8 @@ class Runner:
         self._cfg: ExecutionConfig | None = None
         self._cfg_key: tuple | None = None
         self.delayed: list[dict[str, Any]] = []  # rows whose next step waits for its ``after`` delay
+        self.limit_reported = False  # limit.reached sent for the plan's total runtime
+        self.notifier = None  # alfrd.notify.Dispatcher while _run delivers notifications
 
     # -- helpers ---------------------------------------------------------
     def log(self, text: str) -> None:
@@ -1065,13 +1096,43 @@ class Runner:
         self.plan = current
         self.folder.save(current)
 
-    def event(self, text: str) -> None:
-        current = self.folder.load()
-        history = (current.get("history") or [])[-199:]
-        history.append({"at": now_iso(), "event": text})
-        current["history"] = history
-        self.plan = current
-        self.folder.save(current)
+    def event(self, kind: str, text: str | None = None, *, history: bool = True,
+              unit: Mapping[str, Any] | None = None, **data: Any) -> None:
+        """Record a plan event: ``text`` in plan.json ``history`` (as before), and a structured line in events.jsonl.
+
+        ``history=False`` writes only the structured line (events that never had history text).
+        Writing events.jsonl never stops the runner; a failure is logged to runner.log.
+        """
+        from alfrd.events import EVENT_KINDS
+
+        if kind not in EVENT_KINDS:
+            if os.environ.get("PYTEST_CURRENT_TEST"):
+                raise ValueError(f"unknown event kind {kind!r}")
+            self.log(f"warning: unknown event kind {kind!r}")
+        if history and text is not None:
+            current = self.folder.load()
+            entries = (current.get("history") or [])[-199:]
+            entries.append({"at": now_iso(), "event": text})
+            current["history"] = entries
+            self.plan = current
+            self.folder.save(current)
+        try:
+            from alfrd.events import EVENTS_FILE, EventLog
+
+            unit = unit or {}
+            record = {
+                "at": now_iso(), "kind": kind, "plan": self.folder.id, "project": str(self.folder.root),
+                "target": unit.get("target") or self.plan.get("target") or None, "unit": unit.get("id"),
+                "turn": unit.get("iteration"), "turns": (self.plan.get("loop") or {}).get("iterations"),
+                "agent": unit.get("agent"), "roles": list(unit.get("roles") or (unit.get("handoff") or {}).get("roles") or []),
+                "text": text, "data": data,
+            }
+            seq = EventLog(self.folder.path / EVENTS_FILE).append(record)
+        except Exception as exc:  # noqa: BLE001 - events are best effort
+            self.log(f"warning: cannot write event {kind}: {exc}")
+            return
+        if self.notifier is not None:
+            self.notifier.submit({"seq": seq, **record})
 
     # -- main loop -------------------------------------------------------
     def run(self) -> int:
@@ -1101,14 +1162,14 @@ class Runner:
                                 fcntl.flock(workspace_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                                 break
                             except OSError:
-                                if any(u.get("status") == "running" and pid_alive(u.get("pid"), u.get("proc_start"), u.get("host")) for u in self.folder.units()):
+                                if any(u.get("status") == "running" and pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), self.folder.root) for u in self.folder.units()):
                                     created = _parse_stamp(self.plan.get("created"))
                                     expired = self.plan.get("max_runtime") and created and (datetime.now() - created).total_seconds() >= self.plan["max_runtime"]
                                     if self.folder.control() == "cancel" or expired:
                                         cancel_started = cancel_started or time.time()
                                         sig = signal.SIGKILL if time.time() - cancel_started > float(self.plan.get("kill_grace") or 30) else signal.SIGTERM
                                         for unit in self.folder.units():
-                                            if unit.get("status") == "running" and pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host")):
+                                            if unit.get("status") == "running" and pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host"), self.folder.root):
                                                 self._signal(Live(unit=unit), sig)
                                     time.sleep(0.1)
                                     continue
@@ -1129,11 +1190,32 @@ class Runner:
 
         signal.signal(signal.SIGTERM, on_term)
         signal.signal(signal.SIGINT, on_term)
+        # A turn's process exiting wakes the runner at once instead of at the next tick.
+        self._wake_r, self._wake_w = os.pipe()
+        os.set_blocking(self._wake_w, False)
+        previous_chld = signal.signal(signal.SIGCHLD, self._on_child) if hasattr(signal, "SIGCHLD") else None
         self.save_plan(status="running", runner={
             "pid": os.getpid(), "host": self.host, "proc_start": proc_start(os.getpid()),
             "started": now_iso(), "heartbeat": now_iso(), "stopped": None,
         })
-        self.event(f"runner {os.getpid()} on {self.host} started")
+        from alfrd.notify import start_for
+
+        self.notifier = start_for(self.folder.path, self.cfg.settings.get("notify_routes"), log=self.log,
+                                  root=self.folder.root)
+        try:
+            return self._main(stop)
+        finally:
+            if hasattr(signal, "SIGCHLD"):
+                signal.signal(signal.SIGCHLD, previous_chld or signal.SIG_DFL)
+            for fd in (self._wake_r, self._wake_w):
+                os.close(fd)
+            self._wake_r = self._wake_w = None
+            if self.notifier is not None:
+                self.notifier.stop(deadline=NOTIFY_DRAIN)
+                self.notifier = None
+
+    def _main(self, stop: dict[str, bool]) -> int:
+        self.event("plan.started", f"runner {os.getpid()} on {self.host} started", pid=os.getpid(), host=self.host)
         self.log(f"plan {self.folder.id}: {self.csv_file} mode={self.plan['mode']} concurrency={self.plan['concurrency']}")
         self.adopt()
         beat = float(self.plan.get("heartbeat") or 10)
@@ -1150,7 +1232,7 @@ class Runner:
                 break
             action = self.folder.control()
             if action == "run" and self._waiting_to_start():
-                time.sleep(POLL)
+                self._nap()
                 continue
             self.poll()
             deadline = self.plan.get("max_runtime")
@@ -1158,6 +1240,9 @@ class Runner:
             if deadline and created and (datetime.now() - created).total_seconds() >= deadline:
                 self.stop_new = True
                 self.save_plan(error="total runtime limit reached")
+                if not self.limit_reported:
+                    self.limit_reported = True
+                    self.event("limit.reached", "total runtime limit reached", history=False, limit="max_runtime", seconds=deadline)
                 for live in self.live.values():
                     if not live.killed_at:
                         self.kill(live, "total runtime limit reached")
@@ -1174,12 +1259,33 @@ class Runner:
                 if not self.live and not started and not self.delayed:
                     final = "failed" if self.stop_new else "finished"
                     break
-            time.sleep(POLL)
+            self._nap()
         counts = self.counts()
         self.save_plan(status=final, counts=counts, waiting=[], runner={"stopped": now_iso(), "heartbeat": now_iso()})
-        self.event(f"runner stopped: {final} ({', '.join(f'{k} {v}' for k, v in counts.items() if v)})")
+        kind = {"finished": "plan.finished", "failed": "plan.failed", "cancelled": "plan.cancelled"}.get(final, "plan.interrupted")
+        self.event(kind, f"runner stopped: {final} ({', '.join(f'{k} {v}' for k, v in counts.items() if v)})",
+                   status=final, counts=counts, **({"paused": True} if final == "paused" else {}))
         self.log(f"stopped: {final}")
         return 0
+
+    _wake_r: int | None = None
+    _wake_w: int | None = None
+
+    def _on_child(self, _sig, _frame) -> None:
+        with contextlib.suppress(OSError, TypeError):
+            os.write(self._wake_w, b"x")
+
+    def _nap(self) -> None:
+        """Sleep one tick, or less when a child process exits."""
+        if self._wake_r is None:
+            time.sleep(POLL)
+            return
+        import select
+
+        if select.select([self._wake_r], [], [], POLL)[0]:
+            with contextlib.suppress(BlockingIOError, OSError):
+                os.set_blocking(self._wake_r, False)
+                os.read(self._wake_r, 4096)
 
     def _waiting_to_start(self) -> bool:
         """A scheduled plan (``start_at``) waits, listed as waiting, until its time or "start now"."""
@@ -1198,7 +1304,7 @@ class Runner:
             self.save_plan(started_at=now_iso() if start is not None else self.plan.get("created") or now_iso(),
                            start_at=None, waiting=[])
             if start is not None:
-                self.event("scheduled start reached")
+                self.event("plan.started", "scheduled start reached", scheduled=True)
         return False
 
     def counts(self) -> dict[str, int]:
@@ -1224,7 +1330,7 @@ class Runner:
     def schedule(self) -> int:
         self.delayed = []
         if self.plan.get("loop"):
-            if self.plan["loop"]["manifest_sha256"] not in (manifest_hash(self.folder.root), manifest_hash(self.folder.root, legacy=True)):
+            if self.plan["loop"]["manifest_sha256"] != manifest_hash(self.folder.root):
                 self.stop_new = True
                 self.save_plan(error="agent workflow changed; restore its manifest before resuming")
                 return 0
@@ -1431,7 +1537,7 @@ class Runner:
 
                 argv = list(agent_command(argv, fallback, adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
                 unit.update(requested_model=fallback)
-                self.event(f"{unit['id']}: retrying with fallback model {fallback}")
+                self.event("turn.fallback_model", f"{unit['id']}: retrying with fallback model {fallback}", unit=unit, model=fallback)
             if step and step.manual:
                 argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
         except (ExecutionError, OSError, ValueError) as exc:
@@ -1439,6 +1545,7 @@ class Runner:
                         outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
             self.folder.save_unit(unit)
             self.log(f"{unit['id']}: cannot start: {exc}")
+            self.event("turn.failed", history=False, unit=unit, status="failed", error=str(exc), cannot_start=True)
             first = spec.steps[0]
             self.set_cells({(r.key, first): pc.FAILED for r in cells_rows}, only_if={(r.key, first): {pc.TODO} for r in cells_rows})
             self.after_failure(spec.rows, first)
@@ -1460,7 +1567,9 @@ class Runner:
                             "ALFRD_STEPS": ",".join(spec.steps), "ALFRD_ROOT": str(self.folder.root),
                             "ALFRD_USAGE_INTERVAL": str(self.plan.get("usage_interval", self.cfg.settings.get("usage_interval", 5))),
                             "ALFRD_LAUNCHER": str(self.plan.get("launcher") or "detach"),
-                            "ALFRD_UNIT": unit["id"]})  # marks every process of this command (usage)
+                            # Marks every process of this command for usage. Unit ids repeat across plans
+                            # (0001-<target>-<step>), so the plan id keeps two live plans apart.
+                            "ALFRD_UNIT": f"{self.folder.id}/{unit['id']}"})
         usage_dir = self._workdir_path(spec)
         if usage_dir:
             process_env["ALFRD_USAGE_DIR"] = usage_dir
@@ -1499,6 +1608,9 @@ class Runner:
                         if step.output_capture != "stdout":
                             shim_args += ["--stdout-file", str(output_path)]
                         shim_args += ["--claude-stream"]
+                        if unit.get("handoff", {}).get("headings"):
+                            # A later status-only result must not replace the handoff (see ClaudeStream).
+                            shim_args += ["--response-headings", json.dumps(unit["handoff"]["headings"])]
                 workspace_fd = getattr(self, "workspace_fd", None)
                 process = subprocess.Popen(
                     [sys.executable, "-m", "alfrd.runtime.shim", "--exit-file", str(exit_path), *shim_args, "--", *argv],
@@ -1510,6 +1622,7 @@ class Runner:
                 unit.update(status="failed", error=str(exc), finished=now_iso(),
                             outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
                 self.folder.save_unit(unit)
+                self.event("turn.failed", history=False, unit=unit, status="failed", error=str(exc), cannot_start=True)
                 first = spec.steps[0]
                 self.set_cells({(r.key, first): pc.FAILED for r in cells_rows})
                 self.after_failure(spec.rows, first)
@@ -1520,6 +1633,10 @@ class Runner:
         self.set_cells({(r.key, first): pc.RUNNING for r in cells_rows}, only_if={(r.key, first): {pc.TODO} for r in cells_rows})
         self.live[unit["id"]] = Live(unit=unit, process=process)
         self.log(f"{unit['id']}: started pid {process.pid}: {' '.join(argv)}")
+        attempt = int(unit.get("attempt_number") or 1)
+        if attempt > 1:
+            self.event("turn.retrying", history=False, unit=unit, attempt=attempt, retry_of=unit.get("retry_of"))
+        self.event("turn.started", history=False, unit=unit, steps=list(spec.steps), attempt=attempt)
         return 1
 
     def _workdir_path(self, spec: UnitSpec) -> str | None:
@@ -1541,10 +1658,10 @@ class Runner:
         if live.process is not None:
             return live.process.poll() is None
         unit = live.unit
-        if pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host")):
+        if pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host"), self.folder.root):
             return True
         child = _read_json(self.folder.root / (unit.get("exit_file", "") + "").replace(".exit", ".child"), {}) or {}
-        return pid_alive(child.get("pid"), child.get("proc_start"), unit.get("host"))
+        return pid_alive(child.get("pid"), child.get("proc_start"), unit.get("host"), self.folder.root)
 
     def _review_hold(self, live: Live) -> bool:
         """After a successful exit, hold the handoff until a person approves it.
@@ -1561,17 +1678,23 @@ class Runner:
             return False
         review, approval = exit_path.with_suffix(".review.json"), exit_path.with_suffix(".approval.json")
         rejection = exit_path.with_suffix(".rejection.json")
+        # agent_metadata may have set review_status already; review_event marks the decision's event as sent.
         if approval.exists():
-            if unit.get("review_status") != "approved":
-                unit.update(review_status="approved")
+            if not unit.get("review_event"):
+                history = unit.get("review_status") != "approved"
+                unit.update(review_status="approved", review_event=True)
                 self.folder.save_unit(unit)
-                self.event(f"review approved: {unit['id']}")
+                self.event("review.approved", f"review approved: {unit['id']}", history=history, unit=unit)
             return False
         if rejection.exists():
             decision = _read_json(rejection, {}) or {}
             live.reason = "rejected in review" + (f": {decision['reason']}" if decision.get("reason") else "")
-            unit.update(review_status="rejected", outcome="rejected", outcome_reason=decision.get("reason") or "rejected in review")
+            sent = unit.get("review_event")
+            unit.update(review_status="rejected", outcome="rejected", outcome_reason=decision.get("reason") or "rejected in review",
+                        review_event=True)
             self.folder.save_unit(unit)
+            if not sent:
+                self.event("review.rejected", history=False, unit=unit, reason=decision.get("reason"))
             return False
         try:
             step = self.cfg.step(unit["steps"][0])
@@ -1592,8 +1715,30 @@ class Runner:
             _write_json(review, {"status": "pending", "hash": sha256(text)})
             unit.update(review_status="pending", human_review=True)
             self.folder.save_unit(unit)
-            self.event(f"awaiting human review: {unit['id']}")
+            self.event("review.pending", f"awaiting human review: {unit['id']}", unit=unit)
         return True
+
+    def _check_idle(self, live: Live) -> None:
+        """Report each quiet period once, re-arming when any activity file changes."""
+        unit = live.unit
+        idle_after = self.cfg.settings["idle_after"]
+        if not idle_after or unit.get("manual") or unit.get("review_status") == "pending" or live.killed_at:
+            return
+        log = self.folder.root / unit["log"]
+        activity = []
+        for path in (log, log.with_suffix(".events.jsonl"), log.with_suffix(".usage.jsonl")):
+            try:
+                activity.append(path.stat().st_mtime)
+            except OSError:
+                pass  # streams may not exist yet or may have been removed
+        started = _parse_stamp(unit.get("started"))
+        latest = max(activity) if activity else started.timestamp() if started else live.started
+        if live.idle_activity is not None and latest > live.idle_activity:
+            live.idle_activity = None
+        quiet_for = max(0.0, time.time() - latest)
+        if quiet_for > idle_after and live.idle_activity is None:
+            self.event("turn.idle", history=False, unit=unit, quiet_for=quiet_for)
+            live.idle_activity = latest
 
     def poll(self) -> None:
         for unit_id, live in list(self.live.items()):
@@ -1606,9 +1751,12 @@ class Runner:
                 started = _parse_stamp(live.unit.get("started"))
                 if started and (datetime.now() - started).total_seconds() > float(timeout):
                     self.kill(live, f"timed out after {float(timeout):.0f} s")
+                    self.event("limit.reached", f"{unit_id}: timed out after {float(timeout):.0f} s", history=False,
+                               unit=live.unit, limit="timeout", seconds=float(timeout))
             if alive and live.killed_at and time.time() - live.killed_at > float(self.plan.get("kill_grace") or 30):
                 self._signal(live, signal.SIGKILL)
             if alive:
+                self._check_idle(live)
                 if len(live.unit["steps"]) > 1 and time.time() - live.last_progress > 10:
                     live.last_progress = time.time()
                     self.progress(live)
@@ -1664,12 +1812,12 @@ class Runner:
 
     def _signal(self, live: Live, sig: int) -> None:
         pgid = live.unit.get("pgid") or live.unit.get("pid")
-        if not pgid:
+        if not pgid or not owned_by(live.unit.get("pid"), self.folder.root):
             return
         with contextlib.suppress(OSError):
             os.killpg(int(pgid), sig)
         child = _read_json(self.folder.root / str(live.unit.get("exit_file", "")).replace(".exit", ".child"), {}) or {}
-        if child.get("pid") and pid_alive(child.get("pid"), child.get("proc_start")):
+        if child.get("pid") and pid_alive(child.get("pid"), child.get("proc_start"), root=self.folder.root):
             with contextlib.suppress(OSError):
                 os.kill(int(child["pid"]), sig)
 
@@ -1714,7 +1862,7 @@ class Runner:
                 self.live[unit["id"]] = live
                 running_rows.update(unit.get("rows") or [unit.get("row")])
                 self.log(f"{unit['id']}: re-adopted pid {unit.get('pid')}")
-                self.event(f"re-adopted {unit['id']}")
+                self.event("turn.started", f"re-adopted {unit['id']}", unit=unit, readopted=True)
             else:
                 self.finalize(unit, process=None, reason="cancelled" if self.folder.control() == "cancel" else None, adopted=True)
         # Cells left "running" by a runner that died before writing a unit.
@@ -1767,7 +1915,8 @@ class Runner:
             try:
                 unit["artifact"] = publish(self.folder.root, unit["handoff"], plan_id=self.folder.id,
                                            unit_id=unit["id"], iteration=unit["iteration"], agent=unit["agent"])
-                self.event(f"handoff published: {unit['id']} → {unit['artifact']['path']}")
+                self.event("handoff.published", f"handoff published: {unit['id']} → {unit['artifact']['path']}",
+                           unit=unit, path=unit["artifact"]["path"])
                 outcome = ("accepted", None)
             except ResponseValidationError as exc:
                 reason = f"invalid handoff: {exc}"
@@ -1858,13 +2007,16 @@ class Runner:
                 if blocked:
                     self.set_cells(blocked, only_if={k: {pc.BLOCKED} for k in blocked})
                 failed_step = None
-                self.event(f"{unit['id']}: failed on its model; next attempt uses a fallback model")
+                self.event("turn.fallback_model", f"{unit['id']}: failed on its model; next attempt uses a fallback model",
+                           unit=unit, next_attempt=True)
         if isinstance(exit_data, dict) and isinstance(exit_data.get("usage"), dict):
             unit["usage"] = exit_data["usage"]  # peak memory, CPU s, cores, I/O, wall (alfrd.runtime.usage)
         if adopted:
             unit["note"] = "finalized after a runner restart"
         self.folder.save_unit(unit)
         self.log(f"{unit['id']}: {status} (exit {exit_code})")
+        self.event("turn.failed" if status == "failed" else "turn.finished", history=False, unit=unit, status=status,
+                   exit_code=exit_code, error=error, outcome=unit.get("outcome"), adopted=adopted)
         if status == "failed" and failed_step:
             rows = [r for r in (self.table().row(k) for k in unit.get("rows") or [unit["row"]]) if r]
             self.after_failure(rows, failed_step)
@@ -1897,7 +2049,7 @@ class Runner:
         policy = self.plan.get("on_failure") or "stop_target"
         if policy == "stop_plan":
             self.stop_new = True
-            self.event(f"stopping the plan after {step} failed")
+            self.event("turn.failed", f"stopping the plan after {step} failed", step=step, stop_plan=True)
             return
         if policy != "stop_target":
             return
@@ -1942,7 +2094,7 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
         if folder.runner_alive() or _starting(plan):
             continue
         units = [u for u in folder.units() if u.get("status") == "running"]
-        alive = [u for u in units if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host")) or _held_for_review(base, u)]
+        alive = [u for u in units if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), base) or _held_for_review(base, u)]
         action = folder.control()
         want = bool(alive) or action == "cancel" or (plan.get("auto_resume") == "always" and plan.get("status") == "running" and action == "run")
         if plan.get("auto_resume") == "never" and not alive:
@@ -1964,19 +2116,70 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
         runner.adopt()  # stale "running" cells → interrupted
         status = "paused" if plan.get("status") == "paused" or action == "pause" else "interrupted"
         runner.save_plan(status=status, counts=runner.counts())
-        runner.event(f"runner not running; plan marked {status}")
+        runner.event("plan.interrupted", f"runner not running; plan marked {status}", status=status,
+                     **({"paused": True} if status == "paused" else {}))
         actions.append({"plan": plan["id"], "action": status})
     return actions
 
 
+def plan_activity(root: str | Path, plan: Mapping[str, Any]) -> dict[str, Any]:
+    """What an active plan is doing: ``working``, ``phase``, ``turn``, ``turns``, ``agent`` (reads its units).
+
+    Working = a running unit with a live process, a review pending, or a manual turn waiting for a person.
+    """
+    if plan.get("status") not in ACTIVE:
+        return {"working": False, "phase": plan.get("status"), "turn": None, "turns": None, "agent": None}
+    units = PlanDir(Path(root).resolve(), plan["id"]).units()
+    running = [u for u in units if u.get("status") == "running"]
+    review = [u for u in units if u.get("review_status") == "pending"]
+    manual = [u for u in running if u.get("manual")]
+    live = [u for u in running if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), root)]
+    if review:
+        phase = "review"
+    elif manual:
+        phase = "manual"
+    elif live:
+        phase = "running"
+    elif plan.get("status") == "paused":
+        phase = "paused"
+    elif plan.get("start_at"):
+        phase = "scheduled"
+    else:
+        phase = "waiting"
+    current = (review or manual or live or running or [u for u in units if u.get("iteration")] or [{}])[-1]
+    return {"working": bool(review or manual or live), "phase": phase, "turn": current.get("iteration"),
+            "turns": (plan.get("loop") or {}).get("iterations"), "agent": current.get("agent")}
+
+
+def default_plan_id(root: str | Path, plans: Sequence[Mapping[str, Any]] | None = None,
+                    activity: Mapping[str, Mapping[str, Any]] | None = None) -> str | None:
+    """The run to show when none is chosen (D7).
+
+    The newest working plan (see :func:`plan_activity`), else the newest active plan that isn't
+    waiting for its start time, else the newest scheduled one, else the newest plan.
+    ``plans`` is :func:`list_plans` (newest first); ``activity`` caches :func:`plan_activity` by id.
+    """
+    plans = list_plans(root) if plans is None else plans
+    active = [p for p in plans if p.get("status") in ACTIVE]
+    for plan in active:
+        info = activity.get(plan["id"]) if activity is not None else None
+        if (info or plan_activity(root, plan))["working"]:
+            return plan["id"]
+    pick = (next((p for p in active if not p.get("start_at")), None) or next(iter(active), None)
+            or next(iter(plans), None))
+    return pick["id"] if pick else None
+
+
 def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 200) -> dict[str, Any]:
-    """Everything the CLI / Studio shows for one plan (default: the latest)."""
+    """Everything the CLI / Studio shows for one plan (default: :func:`default_plan_id`)."""
     base = Path(root).resolve()
     plans = list_plans(base)
+    activity = {p["id"]: plan_activity(base, p) for p in plans if p.get("status") in ACTIVE}
+    selected = "id" if plan_id is not None else "default"
     if plan_id is None:
         if not plans:
-            return {"plan": None, "plans": []}
-        plan_id = plans[0]["id"]
+            return {"plan": None, "plans": [], "selected": selected}
+        plan_id = default_plan_id(base, plans, activity)
     folder = PlanDir(base, plan_id)
     plan = folder.load()
     all_units = folder.units()
@@ -2012,8 +2215,20 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
                        [u for u in all_units if u.get("status") == "running"]),
         "durations": durations,
         "waiting": waiting,
-        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"), "target": p.get("target"), "targets": p.get("targets"), "start_at": p.get("start_at")} for p in plans[:20]],
+        "plans": [{"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"),
+                   "target": p.get("target"), "targets": p.get("targets"), "start_at": p.get("start_at"),
+                   **(activity.get(p["id"]) or {"working": False, "phase": p.get("status"), "turn": None,
+                                                "turns": None, "agent": None})}
+                  for p in _listed(plans, plan_id)],
+        "selected": selected,
     }
+
+
+def _listed(plans: Sequence[Mapping[str, Any]], plan_id: str, limit: int = 20) -> list[Mapping[str, Any]]:
+    """The newest ``limit`` plans plus every active one and the shown one (so the switcher sees them all)."""
+    head = list(plans[:limit])
+    ids = {p["id"] for p in head}
+    return head + [p for p in plans[limit:] if p["id"] not in ids and (p.get("status") in ACTIVE or p["id"] == plan_id)]
 
 
 def waiting_rows(plan: Mapping[str, Any], table: pc.PlanTable, units: Sequence[Mapping[str, Any]],
@@ -2077,7 +2292,7 @@ __all__ = [
 ]
 
 
-def manifest_hash(root, *, legacy=False):
+def manifest_hash(root):
     from alfrd.manifest_default import manifest_data
 
     try:
@@ -2086,10 +2301,18 @@ def manifest_hash(root, *, legacy=False):
         raise ExecutionError(str(exc)) from exc
     if path is None:
         raise ExecutionError("project manifest is missing")
-    if legacy:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    import yaml
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        data.pop("history", None)  # File tracking changes do not change the running workflow.
-    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+    raw = path.read_bytes()
+    # The runner checks every tick; parse only when the bytes change (pure-Python YAML is slow).
+    key = hashlib.sha256(raw).digest()
+    if key not in _MANIFEST_HASHES:
+        import yaml
+        data = yaml.safe_load(raw.decode("utf-8"))
+        if isinstance(data, dict):
+            data.pop("history", None)  # File tracking changes do not change the running workflow.
+        if len(_MANIFEST_HASHES) > 64:
+            _MANIFEST_HASHES.clear()
+        _MANIFEST_HASHES[key] = hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+    return _MANIFEST_HASHES[key]
+
+
+_MANIFEST_HASHES: dict[bytes, str] = {}  # sha256(raw manifest) → normalized hash

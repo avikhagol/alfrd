@@ -25,6 +25,7 @@ splitting. A placeholder without a value is an error before anything starts.
 from __future__ import annotations
 
 import copy
+import math
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -65,6 +66,7 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     "serialize_match": "all",
     "usage_interval": 5,           # seconds between resource samples (0 = off)
     "max_runtime": None,          # optional plan wall-clock limit, including pauses
+    "idle_after": 600,            # seconds without unit activity (0 = off); notify.idle_after wins
 }
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -354,6 +356,25 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
                                            and not Path(progress.strip()).is_absolute() and ".." not in Path(progress.strip()).parts)):
         raise ExecutionError("loop.progress must be true, false or a file name in the agent's folder (e.g. PROGRESS.md)")
     settings = {**DEFAULT_EXECUTION, **(merged.get("execution") or {})}
+    notify = merged.get("notify", {})
+    if not isinstance(notify, Mapping):
+        raise ExecutionError("notify must be a mapping")
+    idle_key = "notify.idle_after" if "idle_after" in notify else "execution.idle_after"
+    idle_after = notify.get("idle_after", settings["idle_after"])
+    try:
+        if isinstance(idle_after, bool) and idle_after:
+            raise ValueError
+        settings["idle_after"] = float(idle_after)
+        if not math.isfinite(settings["idle_after"]) or settings["idle_after"] < 0:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ExecutionError(f"{idle_key} must be non-negative seconds (0 or false disables idle detection)") from exc
+    from alfrd.notify import RouteError, validate_routes
+
+    try:
+        settings["notify_routes"] = validate_routes(notify.get("routes"))
+    except RouteError as exc:
+        raise ExecutionError(str(exc)) from exc
     for key, allowed in (("mode", MODES), ("on_failure", ON_FAILURE), ("status_from", STATUS_FROM),
                          ("launcher", LAUNCHERS), ("auto_resume", AUTO_RESUME),
                          ("serialize_match", SERIALIZE_MATCH)):
@@ -366,8 +387,6 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
     settings["serialize_on"] = _serialize_on(settings.get("serialize_on"))
     if settings.get("max_runtime") is not None:
         try:
-            import math
-
             settings["max_runtime"] = float(settings["max_runtime"])
             if not math.isfinite(settings["max_runtime"]) or settings["max_runtime"] <= 0:
                 raise ValueError

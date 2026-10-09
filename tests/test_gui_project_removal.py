@@ -77,9 +77,42 @@ def test_preview_counts_and_no_delete_scope(client, project):
         assert data["mutations_enabled"] is True
         scope = data["delete_scope"]
         assert scope["all_files_allowed"] is True and scope["path"] == str(root.resolve())
-        assert scope["files"] == len([p for p in root.rglob("*") if p.is_file()]) >= 1
-        assert scope["bytes"] >= len("keep me\n") and scope["git_repository"] is False
+        assert scope["measured"] is False and scope["files"] is None and scope["git_repository"] is False
+        files = len([p for p in root.rglob("*") if p.is_file()])
+        for url in (f"/api/studio/projects/{selector}/removal-size", f"/api/studio/projects/{selector}/removal-preview?size=1"):
+            body = client.get(url).get_json()
+            size = body.get("delete_scope", body)
+            assert size["measured"] is True and size["files"] == files >= 1
+            assert size["bytes"] >= len("keep me\n") and size["truncated"] is False
     assert client.get("/api/studio/projects/nope/removal-preview").status_code == 404
+    assert client.get("/api/studio/projects/nope/removal-size").status_code == 404
+
+
+def test_preview_forget_and_alfrd_only_delete_never_walk_the_folder(client, project, monkeypatch):
+    import os
+
+    row, root = project
+    walks: list[str] = []
+    real_walk = os.walk
+    monkeypatch.setattr(os, "walk", lambda top, *a, **k: walks.append(str(top)) or real_walk(top, *a, **k))
+    assert client.get(f"/api/studio/projects/{row.identifier}/removal-preview").status_code == 200
+    assert client.post(f"/api/studio/projects/{row.identifier}/forget", headers=H).status_code == 200
+    assert walks == []
+    again = client.application.config["RUNTIME_SERVICE"].create_project("demo", root)
+    res = client.post(f"/api/studio/projects/{again.identifier}/delete", headers=H, json={"confirm": "demo"})
+    assert res.status_code == 200 and walks == []
+
+
+def test_delete_all_files_walks_at_most_once(client, project, monkeypatch):
+    import os
+
+    row, root = project
+    walks: list[str] = []
+    real_walk = os.walk
+    monkeypatch.setattr(os, "walk", lambda top, *a, **k: walks.append(str(top)) or real_walk(top, *a, **k))
+    res = client.post(f"/api/studio/projects/{row.identifier}/delete", headers=H, json={"confirm": "demo", "all_files": True})
+    assert res.status_code == 200 and res.get_json()["files"] >= 1 and not root.exists()
+    assert walks.count(str(root.resolve())) <= 1
 
 
 def test_forget_blocked_with_409_while_a_plan_is_active(client, project, service):

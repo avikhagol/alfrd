@@ -5,13 +5,36 @@ import { loopTurnCount, hasDirtyHandoff } from "./loop_helpers.js";
 import { dockLog } from "./logview.js";
 import { activePlan } from "./plans.js";
 import { server } from "../data/server.js";
+import { mountFolderBrowser } from "./folder_browser.js";
 import { esc, icon, storage, copyText, loadCss } from "../utils/dom.js";
 
-export async function openCreateProject(ctx, onCreated) {
+// Register a folder that already has alfrd.yaml (Open project; Create's "Open instead"), then show it.
+async function openPath(ctx, onOpened, close, alert, path) {
+  try {
+    const project = await server.connect(path);
+    close();
+    await onOpened(project);
+    ctx.toast(`Project ${project.display_name || project.name} opened`, "ok");
+  } catch (error) { alert.hidden = false; alert.textContent = error.message; }
+}
+
+/** Open project…: server folders; projects show Open, other folders Create project here (never the default manifest). */
+export function openProject(ctx, onOpened, path, create) {
+  ctx.modal(`<header class="modal-h"><h2>Open project</h2><span class="grow"></span><button class="btn sm" id="open-new">${icon("plus")} New project…</button><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header><div class="modal-b"><div id="open-folders"></div><p id="create-error" class="callout fail" role="alert" hidden></p></div>`, (root, close) => {
+    root.querySelector("#open-new").onclick = () => { close(); create(""); };
+    const browser = mountFolderBrowser(root.querySelector("#open-folders"), { list: (p, o) => server.listFolders(p, o), start: path, close,
+      connect: (paths) => openPath(ctx, onOpened, close, root.querySelector("#create-error"), paths[0]),
+      create: (folder) => { close(); create(folder); } });
+    root.addEventListener("beforeclose", () => browser.destroy());
+  });
+}
+
+export async function openCreateProject(ctx, onCreated, path = "") {
   const { templates } = await server.projectTemplates();
-  ctx.modal(`<header class="modal-h"><h2>New project</h2><button class="btn" data-close>Close</button></header>
+  const canOpen = server.canBrowse();
+  ctx.modal(`<header class="modal-h"><h2>New project</h2><span class="grow"></span>${canOpen ? `<button class="btn sm" id="create-open" title="Open a folder that already has alfrd.yaml">${icon("folder")} Open existing project…</button>` : ""}<button class="btn" data-close>Close</button></header>
     <form id="create-project"><div class="modal-b">
-    <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
+    <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project" value="${esc(path)}"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
     <label class="field"><span>Name</span><input class="input" name="name" placeholder="Folder name"></label>
     <label class="field"><span>Template</span><select class="input" name="template">${templates.map((t) => `<option value="${esc(t.name)}" ${t.name === "basic" ? "selected" : ""}>${esc(t.name)} — ${esc(t.description)}</option>`).join("")}</select></label>
     <label class="field" data-loop-field><span>Initial task (for agent workflows)</span><textarea class="input" name="task" rows="5"></textarea></label>
@@ -20,7 +43,10 @@ export async function openCreateProject(ctx, onCreated) {
     <p id="loop-preview" data-loop-field class="muted small"></p><p class="muted small">Each iteration is one agent turn; the sequence repeats until the total is reached. Start runs in Workflow.</p>
     <p id="create-error" class="callout fail" role="alert" hidden></p></div><footer class="modal-f"><button class="btn primary" type="submit">Create project</button></footer></form>`, (root, close) => {
     let browser;
-    root.querySelector("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder(root.querySelector("#create-folders"), root.querySelector('[name="path"]')); };
+    const alert = root.querySelector("#create-error");
+    root.querySelector("#create-open")?.addEventListener("click", () => { close(); openProject(ctx, onCreated, "", (folder) => openCreateProject(ctx, onCreated, folder)); });
+    const open = (folder) => openPath(ctx, onCreated, close, alert, folder);
+    root.querySelector("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder(root.querySelector("#create-folders"), root.querySelector('[name="path"]'), { connect: (paths) => open(paths[0]) }); };
     root.addEventListener("beforeclose", () => browser?.destroy());
     const template = root.querySelector('[name="template"]');
     const iterations = root.querySelector('[name="iterations"]');
@@ -66,7 +92,15 @@ export async function openCreateProject(ctx, onCreated) {
         close();
         await onCreated(project, payload.template);
         ctx.toast(payload.template === "agent-loop" ? "Project created · start a run in Workflow" : "Project created · follow Get started on Overview", "ok");
-      } catch (error) { const alert = root.querySelector("#create-error"); alert.hidden = false; alert.textContent = error.message; }
+      } catch (error) {
+        alert.hidden = false; alert.textContent = error.message;
+        // 409: the folder already holds ALFRD files (alfrd.yaml): offer to register it instead.
+        if (error.status === 409) {
+          const folder = root.querySelector('[name="path"]').value;
+          alert.insertAdjacentHTML("beforeend", ` <button type="button" class="btn sm">Open it instead</button>`);
+          alert.lastChild.onclick = () => open(folder);
+        }
+      }
       finally { button.disabled = false; }
     });
   });

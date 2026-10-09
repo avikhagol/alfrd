@@ -1,23 +1,57 @@
-// VIEW — Project settings: edit and save the loaded alfrd.yaml.
-//
-// alfrd.yaml drives the whole Studio (template, stages, step labels/categories,
-// metadata files, logs, the Overview MS path, field aliases). This view edits
-// the file as text, with a small form for field aliases, and saves it back:
-// through `alfrd serve` (loopback only), into the opened folder (Chrome/Edge),
-// or as a download.
+// Project settings: edit alfrd.yaml and save through the active provider.
 
 import { $, on, esc, icon, copyText, download } from "../utils/dom.js";
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { manifestToWorkflows } from "../data/model.js";
-import { studioManifest } from "../data/defs.js";
+import { studioManifest, templateName } from "../data/defs.js";
 import { scoped, stateOf, markDirty } from "../data/workspace.js";
+import { server } from "../data/server.js";
 
 // One draft per project: switching keeps unsaved edits; Save/Revert affect that project only.
 const SETTINGS = "settings";
-const fresh = () => ({ project: null, text: null, base: null, dirty: false, report: null, aliases: null, mode: "form" });
+const fresh = () => ({ project: null, text: null, base: null, dirty: false, report: null, aliases: null, mode: "form", previewTpl: null });
 const ui = scoped(SETTINGS, fresh);
 let shown = null; // signature of what #ps currently shows (see render)
 let shownText = null;
+const FALLBACK_TEMPLATES = ["basic", "agent-loop", "avica"];
+let templates = null; // names from /studio/project-templates (fallback list without a server)
+let templatesLoading = false;
+let templateGeneration = 0; // a slower fetch for an older choice must not overwrite a newer one
+
+/** Template names for the picker; fetched once, then the panel renders again. */
+function templateNames(el, ctx) {
+  if (templates) return templates;
+  if (ctx.state.mode !== "server") return (templates = FALLBACK_TEMPLATES);
+  if (!templatesLoading) {
+    templatesLoading = true;
+    server.projectTemplates()
+      .then((res) => { templates = (res?.templates || []).map((t) => t.name).filter(Boolean); })
+      .catch(() => {})
+      .finally(() => { if (!templates?.length) templates = FALLBACK_TEMPLATES; shown = null; if (el.isConnected) render(el, ctx); });
+  }
+  return FALLBACK_TEMPLATES;
+}
+
+async function previewTemplate(el, ctx, template) {
+  const generation = ++templateGeneration;
+  const p = project(ctx);
+  const st = stateOf(p, SETTINGS); // the fetch may finish after a project switch
+  try {
+    const response = await fetch(`assets/templates/${encodeURIComponent(template)}.yaml`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const [text, { templateDraft }] = await Promise.all([response.text(), import("../data/yaml_form.js")]);
+    if (generation !== templateGeneration) return;
+    st.text = templateDraft(text, st.text, template);
+    st.previewTpl = template;
+    setDirty(p, st, true);
+    st.report = null;
+    st.aliases = null;
+  } catch (error) {
+    if (generation !== templateGeneration) return;
+    ctx.toast(`Cannot load template ${template}: ${error.message}`, "fail");
+  }
+  if (project(ctx) === p) { shown = null; render(el, ctx); }
+}
 
 function project(ctx) {
   return ctx.activeProject ? ctx.activeProject() : ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null;
@@ -106,6 +140,7 @@ export function mount(el, ctx) {
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(el, ctx); }
   });
+  on(el, "change", "#ps-template", (e) => { if (e.target.value) previewTemplate(el, ctx, e.target.value); });
   on(el, "input", "[data-alias]", (e, inp) => {
     const [i, k] = inp.dataset.alias.split(":");
     ui.aliases[Number(i)][k] = inp.value;
@@ -135,7 +170,7 @@ export function mount(el, ctx) {
         }
       } catch (error) { ctx.toast(error.message, "fail"); }
     }
-    if (a === "revert") { ui.text = ui.base = loadedText(ctx, p); setDirty(p, ui, false); ui.report = null; ui.aliases = null; render(el, ctx); }
+    if (a === "revert") { templateGeneration += 1; ui.text = ui.base = loadedText(ctx, p); ui.previewTpl = null; setDirty(p, ui, false); ui.report = null; ui.aliases = null; render(el, ctx); }
     if (a === "download") download("alfrd.yaml", ui.text, "text/yaml");
     if (a === "history") {
       const st = stateOf(p, SETTINGS);
@@ -157,15 +192,6 @@ export function mount(el, ctx) {
       render(el, ctx);
       ctx.toast("Field aliases written into the editor — Save to keep them", "ok");
     }
-    if (a === "tpl-copy") {
-      const id = $("#ps-tpl-step", el)?.value;
-      const defs = studioManifest(parse(ui.text).data || {});
-      const def = defs.tplSteps?.[id] || defs.steps?.[id];
-      if (!def) return;
-      const text = dumpYaml([{ id, ...def }]).replace(/^/gm, "      ");
-      const ok = await copyText(text);
-      ctx.toast(ok ? `${id}: step definition copied — paste it under workflows[0].steps` : "Copy failed", ok ? "ok" : "fail");
-    }
   });
 }
 
@@ -179,7 +205,7 @@ async function save(el, ctx) {
   if (!report.ok) { renderStatus(el, ctx); ctx.toast("Not saved: fix the errors first", "fail"); return; }
   const saved = st.text;
   const done = () => {
-    if (st.text === saved) { setDirty(p, st, false); st.base = saved; }
+    if (st.text === saved) { setDirty(p, st, false); st.base = saved; st.previewTpl = null; }
     ctx.toast(`${ctx.projectName(p)}: alfrd.yaml saved${ctx.state.mode === "server" ? " (a version is kept in History)" : ""}`, "ok");
     ctx.update();
   };
@@ -216,7 +242,7 @@ function renderStatus(el, ctx) {
 function signature(ctx, p) {
   const tree = ctx.state.trees?.[p] || {};
   return JSON.stringify([p, tree.manifestFile, !!tree.manifestDefault, ctx.state.workflowFile.name, ctx.state.mode,
-    !!ctx.canWrite(p), ui.aliases, (ctx.state.aliases || []).length, ui.mode]);
+    !!ctx.canWrite(p), ui.aliases, (ctx.state.aliases || []).length, ui.mode, ui.previewTpl, templates]);
 }
 
 /** Scroll, selection and focus of the editor, to carry over a rebuild. */
@@ -240,14 +266,11 @@ export function render(el, ctx) {
     setDirty(p, ui, false);
     ui.report = null;
     ui.aliases = null;
+    ui.previewTpl = null;
   }
   if (!ui.aliases) ui.aliases = aliasRows(ui.text);
   if (ui.mode !== "yaml") ui.mode = "form";
-  // A background refresh (live poll, every couple of seconds while "hot") calls
-  // this same render() even when nothing here changed. Rebuilding #ps's whole
-  // innerHTML would replace the <textarea> and reset its scroll position and
-  // cursor mid-edit — so when the editor already shows the current text and
-  // nothing else on the panel changed, only refresh the status line/footer.
+  // Preserve editor focus and scroll during unchanged live refreshes.
   const existing = $("#ps-yaml", el);
   const sig = signature(ctx, p);
   if (sig === shown && ((existing && existing.value === ui.text) || (shownText === ui.text && $("#ps-form", el)))) {
@@ -262,17 +285,20 @@ export function render(el, ctx) {
   const where = ctx.state.mode === "server"
     ? (ctx.canWrite(p) ? "Saves through alfrd serve into the project folder (old file kept as alfrd.yaml.bak)." : "alfrd serve only accepts saves from a browser on the same machine; Save downloads the file.")
     : ctx.canWrite(p) ? "Saves into the opened folder (the browser asks for write access once)." : "No writable folder is open (Chrome/Edge: Import → Open project folder); Save downloads the file.";
-  const defs = studioManifest(parse(ui.text).data || {});
-  const tplSteps = Object.keys(defs.tplSteps || {});
   const found = ctx.state.aliases || [];
+  const current = ui.previewTpl || templateName(parse(ui.text).data) || "";
+  const options = [...new Set([...(current ? [current] : []), ...templateNames(el, ctx)])];
+  const picker = ui.text ? `<label class="row gap small">Template <select id="ps-template" class="input sm" title="Preview a template in the editor; Save to apply, Revert to discard">${current ? "" : '<option value="" selected>none</option>'}${options.map((n) => `<option value="${esc(n)}" ${n === current ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>` : "";
   $("#ps", el).innerHTML = `
     <div class="card"><div class="row gap wrap"><h2>Project settings — alfrd.yaml</h2>${p ? `<span class="chip">${esc(ctx.projectName(p))}</span>` : ""}<span class="mono small muted">${esc(tree.manifestFile || ctx.state.workflowFile.name || "alfrd.yaml")}</span>${tree.manifestDefault ? `<span class="chip" title="This folder has no alfrd.yaml, so ALFRD's default one is shown. Save writes it into the folder; the local file then replaces the default.">default — not saved in the folder</span>` : ""}<span class="grow"></span>
+      ${picker}
       <button class="btn sm" data-act="validate">${icon("validate")} Validate</button>
       <button class="btn sm" data-act="revert">${icon("reset")} Revert</button>
       <button class="btn sm" data-act="download">${icon("download")} Download</button>
       ${ctx.state.mode === "server" && tree.provider === "server" ? `<button class="btn sm" data-act="history" title="Earlier versions of alfrd.yaml: diff and restore">${icon("clock")} History</button>` : ""}
       <button class="btn sm ${ui.dirty ? "primary" : ""}" data-act="save">${icon("save")} Save alfrd.yaml</button></div>
       <p class="muted small">${esc(where)} Ctrl+S saves. After saving, the workflow, stages, metadata health, logs and field aliases are re-read from the file.</p>
+      ${ui.previewTpl ? `<p class="callout warn small" role="status">Previewing template <b>${esc(ui.previewTpl)}</b>. Save to apply, Revert to discard.</p>` : ""}
       <div class="ps-status" id="ps-status"></div></div>
     <div class="row gap wrap" role="group" aria-label="Configuration editor">
       <button class="btn sm ${ui.mode === "form" ? "primary" : ""}" data-act="mode-form" aria-pressed="${ui.mode === "form"}">${icon("gear")} All settings</button>
@@ -304,7 +330,6 @@ export function render(el, ctx) {
             <li><code>overview.ms_path:</code> — patterns for the Overview "MS Storage Path" column.</li>
             <li>Artifacts with <code>kind: log</code> (or <code>show_in_logs: true</code>) — extra groups in the Logs view.</li>
           </ul>
-          ${tplSteps.length ? `<div class="row gap"><select id="ps-tpl-step" class="input sm mono grow" aria-label="Template step">${tplSteps.map((k) => `<option>${esc(k)}</option>`).join("")}</select><button class="btn sm" data-act="tpl-copy">${icon("copy")} Copy template step YAML</button></div>` : ""}
         </section>
       </div>
     </div>`}`;
@@ -315,5 +340,6 @@ export function render(el, ctx) {
   if (formHost) import("./yaml_form.js").then((m) => m.showYamlForm(el, formHost, ui.text, {
     setText: (text) => { ui.text = text; setDirty(p, ui, true); ui.report = ui.aliases = null; shown = signature(ctx, p); shownText = text; renderStatus(el, ctx); },
     rebuild: () => { shown = null; render(el, ctx); },
+    modal: ctx.modal,
   })).catch((error) => { formHost.textContent = error.message; });
 }

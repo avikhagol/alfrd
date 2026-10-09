@@ -62,7 +62,6 @@ class SchemaDefinition:
 
 
 # A short compatibility alias matching the manifest's ``schema`` key.
-ProjectSchema = SchemaDefinition
 
 
 DEFAULT_ARTIFACT_KIND = "file"
@@ -75,7 +74,7 @@ class ArtifactDefinition:
     This differs from ``ArtifactRef`` (one produced value) and the runtime
     ``Artifact`` row (one persisted value). ``path_pattern`` may contain glob
     metacharacters (``*``, ``?``, ``[``), in which case discovery resolves it
-    to zero or more matches; see ``alfrd.core.artifacts.resolve_declared_artifacts``.
+    to zero or more matches; the Studio resolves them.
     """
 
     name: str
@@ -181,8 +180,14 @@ def validate_manifest(data: Mapping[str, Any]) -> None:
     if version != MANIFEST_VERSION:
         raise ManifestError(f"Unsupported manifest version: {version!r}")
 
+    data = dict(data)
+    notify = data.get("notify")
+    if isinstance(notify, Mapping) and isinstance(notify.get("routes"), list):
+        from alfrd.notify import yaml_on_key
+
+        data["notify"] = {**notify, "routes": [yaml_on_key(r) for r in notify["routes"]]}
     errors = sorted(
-        Draft202012Validator(get_manifest_schema(version)).iter_errors(dict(data)),
+        Draft202012Validator(get_manifest_schema(version)).iter_errors(data),
         key=lambda error: tuple(str(part) for part in error.absolute_path),
     )
     if errors:
@@ -279,7 +284,6 @@ __all__ = [
     "ManifestError",
     "ManifestNotFoundError",
     "ProjectManifest",
-    "ProjectSchema",
     "SchemaDefinition",
     "discover_manifest",
     "get_manifest_schema",

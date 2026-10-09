@@ -5,10 +5,13 @@
 
 import { esc, icon, bytes } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { viewerFor, fileObject, mimeOf, renderViewer, conversionButton, mountConversion, viewerGeneration } from "./viewers.js";
 
 const TONE = { ok: "ok", invalid: "fail", missing: "fail", notrun: "muted" };
 const LABEL = { ok: "Present", invalid: "Invalid", missing: "Missing", notrun: "Not run" };
 let levels = []; // hierarchy order (JSON replies sort their keys)
+let revision = 0;
+export const rendererGeneration = () => revision + viewerGeneration();
 const where = (w) => Object.entries(w || {}).filter(([k]) => k !== "target")
   .sort(([a], [b]) => (levels.indexOf(a) + 1 || 99) - (levels.indexOf(b) + 1 || 99)).map(([, v]) => v).join(" / ");
 const short = (v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "—"));
@@ -43,7 +46,15 @@ function csvTable(inst) {
 }
 
 function text(inst, id) {
-  return (inst.files || []).map((f) => `<details data-detail-key="${esc(`${id}|${f.rel || f.name}`)}"><summary class="mono small">${esc(f.rel)}${f.truncated ? " (first 64 KB)" : ""}</summary><pre class="code small">${esc(f.text)}</pre></details>`).join("") || '<p class="muted small">No file.</p>';
+  return (inst.files || []).map((f) => {
+    const viewer = viewerFor(f.rel, "text/plain");
+    // Built-in text: the same <pre> as always; another viewer is mounted after render (mountViewers).
+    let body = viewer.id === "text" ? `<pre class="code small">${esc(f.text)}</pre>`
+      : `<div class="viewer" data-viewer="${esc(viewer.id)}" data-viewer-rel="${esc(f.rel)}"${f.text != null && mimeOf(f.rel).startsWith("text/") ? ` data-viewer-text="${esc(f.text)}"` : ""}></div>`;
+    const action = conversionButton(f.rel, viewer);
+    if (action) body = `${action}<p data-convert-status role="status" aria-live="polite" hidden></p><div data-convert-body>${body}</div>`;
+    return `<details data-detail-key="${esc(`${id}|${f.rel || f.name}`)}"><summary class="mono small">${esc(f.rel)}${f.truncated ? " (first 64 KB)" : ""}</summary>${body}</details>`;
+  }).join("") || '<p class="muted small">No file.</p>';
 }
 
 function images(inst, view, panel, project) {
@@ -88,13 +99,51 @@ function counts(p) {
 }
 
 /**
+ * Panel kind → `render(inst, ctx, t, extra) => html | Promise<html>`, with
+ * `extra = {view, panel, id, formatFile}`. Built-ins below; client panels
+ * (avica_config …) and plugins add theirs with registerPanel().
+ */
+export const panelRenderers = {
+  file_status: (inst, ctx, t) => fileStatus(inst, t),
+  files: (inst, ctx, t, x) => files(inst, x.formatFile, x.id),
+  json_fields: (inst) => jsonFields(inst),
+  csv_table: (inst) => csvTable(inst),
+  text: (inst, ctx, t, x) => text(inst, x.id),
+  image: (inst, ctx, t, x) => images(inst, x.view, x.panel, t.project),
+};
+
+export function registerPanel(kind, render) {
+  if (typeof kind !== "string" || !kind || typeof render !== "function") throw new TypeError("registerPanel(kind, render)");
+  if (panelRenderers[kind] !== render) revision++;
+  panelRenderers[kind] = render;
+}
+
+/** Mount the non-text viewers the `text` panel left as placeholders (idempotent: cached HTML is re-shown). */
+export function mountViewers(el, project) {
+  el.querySelectorAll?.("div.viewer[data-viewer]:not([data-mounted])").forEach((node) => {
+    node.setAttribute("data-mounted", "");
+    const rel = node.getAttribute("data-viewer-rel");
+    const viewer = viewerFor(rel, "text/plain");
+    const text = node.getAttribute("data-viewer-text");
+    renderViewer(viewer, fileObject(project, rel, text != null ? { text } : {}), node).catch((error) => { node.textContent = error.message; });
+  });
+  el.querySelectorAll?.("button[data-convert-rel]:not([data-mounted])").forEach((button) => {
+    button.setAttribute("data-mounted", "");
+    const row = button.closest("details");
+    mountConversion(button, row.querySelector("[data-convert-body]"), row.querySelector("[data-convert-status]"), fileObject(project, button.dataset.convertRel));
+  });
+}
+
+/**
  * The view as cards (one per panel). A panel with several instances (work dirs,
  * chips, nights …) gets tabs; the caller wires `[data-pn-tab]` clicks.
  * opts: {closed: Set of panel keys, tabs: {key: index}, formatFile(file), clientPanels: {name: async (inst, ctx, t) => html}}
+ * (clientPanels are registered on panelRenderers).
  */
 export async function renderPanels(view, ctx, t, opts = {}) {
   const list = view?.panels || [];
   levels = view?.levels || [];
+  Object.entries(opts.clientPanels || {}).forEach(([kind, draw]) => registerPanel(kind, draw));
   if (!list.length) return `<div class="card"><p class="muted small">Nothing declares <code>views.metadata</code> panels for this project (template or alfrd.yaml).</p></div>`;
   const errors = view.errors?.length ? `<p class="callout warn small">${icon("alert")}<span>${esc(view.errors.join("; "))}</span></p>` : "";
   const cards = await Promise.all(list.map(async (p) => {
@@ -105,13 +154,13 @@ export async function renderPanels(view, ctx, t, opts = {}) {
       // Disclosure identity: panel + instance (work dir, chip …) + file rel; never status or size.
       const id = `${key}|${inst.path || where(inst.where) || `#${i}`}`;
       try {
+        const draw = Object.hasOwn(panelRenderers, p.panel) ? panelRenderers[p.panel] : null;
         if (inst.client) {
-          const draw = opts.clientPanels?.[p.panel];
-          return draw ? await draw(inst, ctx, t) : `<p class="muted small">${esc(p.panel)} is drawn by a Studio module that is not loaded.</p>`;
+          return draw ? await draw(inst, ctx, t, { view, panel: p, id, formatFile: opts.formatFile })
+            : `<p class="muted small">${esc(p.panel)} is drawn by a Studio module that is not loaded.</p>`;
         }
-        return p.panel === "file_status" ? fileStatus(inst, t) : p.panel === "files" ? files(inst, opts.formatFile, id)
-          : p.panel === "json_fields" ? jsonFields(inst) : p.panel === "csv_table" ? csvTable(inst) : p.panel === "text" ? text(inst, id)
-            : p.panel === "image" ? images(inst, view, p, t.project) : `<p class="muted small">${esc(inst.error || `unknown panel ${p.panel}`)}</p>`;
+        if (!draw) return `<p class="muted small">${esc(inst.error || `unknown panel ${p.panel}`)}</p>`;
+        return await draw(inst, ctx, t, { view, panel: p, id, formatFile: opts.formatFile });
       } catch (error) {
         return `<p class="callout warn small">${icon("alert")}<span>${esc(error.message)}</span></p>`;
       }

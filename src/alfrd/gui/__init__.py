@@ -61,6 +61,15 @@ def create_app(config=None):
 
     app = Flask(__name__)
 
+    import os
+
+    if os.environ.get("ALFRD_TRUST_PROXY", "").strip().lower() in ("1", "true", "yes"):
+        # Behind one reverse proxy: take the client address, scheme, host and prefix from its
+        # X-Forwarded-* headers (so the cookie gets Secure over https and loopback checks see the real client).
+        from werkzeug.middleware.proxy_fix import ProxyFix
+
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
     from alfrd.gui.config import DefaultConfig
 
     DefaultConfig.apply(app)
@@ -73,7 +82,15 @@ def create_app(config=None):
 
         app.config["SECRET_KEY"] = secrets.token_hex(32)
 
-    from alfrd.gui.routes import api, control, dashboard, system
+    from alfrd.gui.auth import AlfrdSessionInterface, new_token
+
+    # Access stays on by default: without a configured token one is generated
+    # (nobody knows it, so only the public endpoints answer).
+    if not app.config.get("ACCESS_TOKEN"):
+        app.config["ACCESS_TOKEN"] = new_token()
+    app.session_interface = AlfrdSessionInterface()
+
+    from alfrd.gui.routes import api, control, system
     from alfrd.gui.studio import studio, studio_api
     import alfrd.gui.studio_plans  # noqa: F401  (adds the plan routes to studio_api)
     import alfrd.gui.studio_targets  # noqa: F401  (adds the targets CSV routes to studio_api)
@@ -82,14 +99,22 @@ def create_app(config=None):
     import alfrd.gui.studio_search  # noqa: F401  (adds the full-text search routes to studio_api)
     import alfrd.gui.studio_notes  # noqa: F401  (adds the annotation routes to studio_api)
     import alfrd.gui.studio_views  # noqa: F401  (adds the template-driven view route to studio_api)
+    import alfrd.gui.studio_plugins  # noqa: F401  (adds the plugin list/toggle/theme/file routes)
 
     from alfrd.gui.api_v1 import api_v1
+
+    try:  # plugins (panels …) register before the first request; a broken one never stops the app
+        from alfrd import extensions
+
+        app.extensions["alfrd_plugins"] = extensions.load()
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning("plugins not loaded: %s", exc)
+        app.extensions["alfrd_plugins"] = []
 
     app.register_blueprint(studio)
     app.register_blueprint(studio_api)
     app.register_blueprint(api_v1)
     app.register_blueprint(api)
-    app.register_blueprint(dashboard)
     app.register_blueprint(system)
     app.register_blueprint(control)
 
@@ -110,32 +135,26 @@ def create_app(config=None):
         reader = SqlAlchemyCatalogReader()
     app.extensions["alfrd_catalog_reader"] = reader
 
-    from alfrd.gui.security import (
-        csrf_token,
-        mutations_enabled,
-        protect_mutation,
-        runtime_enabled,
-    )
+    from alfrd.gui.security import protect_mutation
 
+    from alfrd.gui.auth import require_access
+
+    # Order matters: an unauthenticated POST gets 401 before the CSRF check's 403.
+    app.before_request(require_access)
     app.before_request(protect_mutation)
-
-    @app.context_processor
-    def dashboard_runtime_context():
-        return {
-            "runtime_enabled": runtime_enabled(),
-            "mutations_enabled": mutations_enabled(),
-            "csrf_token": csrf_token(),
-        }
 
     @app.errorhandler(HTTPException)
     def api_http_error(error):
         if request.path.startswith("/api/"):
-            return (
-                jsonify(
-                    error={"code": error.code, "message": error.description}
-                ),
-                error.code,
+            response = jsonify(
+                error={"code": error.code, "message": error.description}
             )
+            response.status_code = error.code
+            # Keep WWW-Authenticate (401), Retry-After (429), Allow (405).
+            for key, value in error.get_headers():
+                if key.lower() != "content-type":
+                    response.headers[key] = value
+            return response
         return error
 
     return app

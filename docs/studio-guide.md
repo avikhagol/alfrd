@@ -8,7 +8,7 @@ a run selector. Use **Read responses / handoffs** to expand a response, load mor
 or copy it. No results CSV import is needed. Connect through `alfrd serve` to read
 these records.
 
-Create a project with **+ New project** beside the header project picker.
+Create a project with **Projects** (the folder icon at the left of the header project picker); its **Open existing project…** opens a folder that already has `alfrd.yaml`. The picker itself switches projects: long names are shortened in the middle, and the list shows them in full with their folder.
 In **Project settings**, use **All settings** to edit every key in `alfrd.yaml` as a
 form (checkboxes, choices, numbers, lists; known keys that are not set show their
 defaults, and ↺ removes a key so its default applies), or **Edit YAML file** for raw
@@ -36,6 +36,36 @@ alfrd studio --export site/          # copy the static files (any web host)
 
 Open it over HTTP. `file://` does not work (browser rule for ES modules).
 
+### Opening the Studio (access token)
+
+`alfrd serve` creates a random access token, prints the link with it and opens it:
+
+```
+ALFRD Studio: http://127.0.0.1:5000/studio/?token=…
+```
+
+The first visit trades the token for a session cookie and removes it from the address bar. Without it the server answers 401 and shows a page saying how to get the link. Lost the link, or opening it in another browser?
+
+```bash
+alfrd url                  # link for the server on port 5000
+alfrd url --port 5055      # another port
+```
+
+The token is in `~/.config/alfrd/server-<port>.json` (readable only by you, removed when the server stops). A restart makes a new token, so open the new link; the Studio shows the access page instead of stale data. Scripts send `Authorization: Bearer <token>` (see [status-api.md](status-api.md)).
+
+| Option | |
+|---|---|
+| `--token TEXT` / `ALFRD_TOKEN` | Pin the token (the same across restarts; for reverse proxies and scripts) |
+| `--no-token` | No token check. Only allowed on loopback (`127.0.0.1`, `::1`, `localhost`) and prints a warning: any program or account on this machine can then read your projects and start plans |
+
+**Other machines.** With a non-loopback `--host` the token stays required, but plain HTTP sends it in clear text, and `alfrd serve` warns about it. Prefer an SSH tunnel and keep the server on loopback:
+
+```bash
+ssh -L 5000:127.0.0.1:5000 user@server    # then open the alfrd url link on your machine
+```
+
+or put an https reverse proxy in front. The cookie is marked `Secure` when the request arrives over https. A proxy that terminates TLS forwards plain HTTP: start the server with **`ALFRD_TRUST_PROXY=1`** so it reads the proxy's `X-Forwarded-For`, `-Proto`, `-Host` and `-Prefix` (one proxy hop). Then the cookie is `Secure`, links keep the proxy's host and prefix, and the client address is the real one, so loopback-only actions are refused to remote browsers. Set it only behind a proxy that overwrites these headers; otherwise any client could fake them.
+
 ---
 
 ## Two modes
@@ -57,7 +87,7 @@ Server writes need a browser on the same machine (loopback) plus a CSRF token.
 - **One project:** start `alfrd serve` in its folder (or `--project DIR`).
 - **Several projects under one folder:** start it in the parent. Every sub-folder with its own `alfrd.yaml` / `.alfrd.yaml` is opened (2 levels deep; `--discover-depth N`, `--no-discover`). Skipped: `*.ms`, `raw/`, `tmp_*`, `calibration_tables`, dot-folders, and the inside of a project. The walk stops after 2000 folders (a note is printed).
 - **No `alfrd.yaml`?** An AVICA folder (`avica.inp`, `avica.logs/`, `reductions/`) opens with the built-in default manifest (`name` = folder name; `ALFRD_DEFAULT_MANIFEST=/file.yaml` picks another). Project settings shows *default — not saved*; **Save** writes a local `alfrd.yaml`. Discovery only counts local files.
-- **Connect more:** Import → ALFRD server → **Browse…** lists the server's folders (not your laptop's — right for an SSH tunnel). Projects get a badge with their name. **Connect**, **Connect all projects here**, **Connect this folder** (no `alfrd.yaml`: uses the default; a parent's `alfrd.yaml` is never used), or **Use this folder** to fill the path. Keys: ↑/↓ move, Enter opens, Backspace goes up, Esc closes. Loopback browser only (CSRF-checked); hidden otherwise.
+- **Connect more:** ⇅ Import / Export → Import… → ALFRD server → **Browse…** lists the server's folders (not your laptop's — right for an SSH tunnel). Projects get a badge with their name. **Connect**, **Connect all projects here**, **Connect this folder** (no `alfrd.yaml`: uses the default; a parent's `alfrd.yaml` is never used), or **Use this folder** to fill the path. Keys: ↑/↓ move, Enter opens, Backspace goes up, Esc closes. Loopback browser only (CSRF-checked); hidden otherwise.
 - **Forget / Rediscover:** ⚙ Settings → Known projects. *Forget* removes a project from the list (files stay). **↻ Rediscover** brings back the serve folder, the projects found under it, and anything forgotten since the server started.
 - **Delete permanently:** the Remove dialog, after you type the project name exactly, deletes ALFRD's files — `alfrd.yaml` (and `.bak`), the plan, targets and notes files, `.alfrd/` (plans, history, locks), task bookkeeping (`<task>/.alfrd-task.json`) and runtime-run state (`runs/<id>/.alfrd`) — and forgets the project. Your task files, handoffs, worktrees, results and data stay. Tick **Delete all files and folders** (off by default) to delete the whole project folder instead; that is refused for a symlinked folder, a top-level folder, your home folder (or one containing it), the folder holding the runtime database, or a folder containing another registered project, and the dialog shows the size and warns about a git repository first. Both are refused while runs are active.
 - **Setup wizard:** a template can declare a setup wizard (`quickstart:` in alfrd.yaml). Overview → Get started → *Open the setup wizard* opens it as a dialog: the AVICA template fills in `avica.inp`, the agent-loop template the agents' commands, models, sequence and review in `alfrd.yaml`. Path fields have a Browse… button for server folders.
@@ -73,7 +103,9 @@ No need to click **Re-scan**. The **● Live** badge (top bar) shows the state. 
 - **Browser mode (Chrome/Edge):** the opened folder is checked every 5 s (30 s when quiet).
 - **Logs:** an open log that is on screen, and the full-screen log, follow the file as it grows. Only the new bytes are fetched. At most 3 logs at a time. Scroll up to pause on a spot; **↓ New output** jumps back. **Follow** in full screen does the same.
 - **Log Stream tabs:** the `>_` button on a log (or **Minimize to Log Stream** in full screen) docks it in the Log Stream panel at the bottom, like a terminal tab in VS Code. Switch to Overview or Workflow and it keeps following. Up to 6 tabs, remembered after a reload; **×** stops following, **—** hides the panel (the footer shows “N followed”). Drag the panel's top edge (or focus it and use ↑/↓) to resize.
-- **Hidden tab:** nothing runs. Back on the tab, the Studio catches up.
+- **Hidden tab:** nothing runs. Back on the tab, the Studio catches up. (With browser notifications on, the server stream stays open so they still arrive.)
+- **Which run:** Workflow opens on the newest working run (a turn running, or waiting for review or a response), else the newest active one, else a scheduled one, not just the newest run. With more than one active run, an "N active runs" switcher appears above the runs; scheduled runs read "Scheduled HH:MM". A run you pick stays shown; when it ends while another works, the Studio switches and says so.
+- **Notifications:** ⚙ Settings → Notifications lists the notification routes with **Send test**, and *Show browser notifications* (asks for permission on click) shows reviews, failed/finished runs and idle turns while a tab is open. Links such as `#/workflow?project=<id>&plan=<run>&unit=<turn>` open that run and turn. See [notifications.md](notifications.md).
 - Your place is kept: selection, open groups and logs, scroll, the field you are typing in. Unsaved workflow edits are never replaced.
 
 | Badge | Meaning |
@@ -90,7 +122,7 @@ Slow or huge tree? A check never takes more than 1/20 of the time: a check that 
 
 ## Open a project (browser mode)
 
-1. Click **Import → Open project folder**.
+1. Click **⇅ Import / Export → Import… → Open project folder**.
 2. Pick the folder with `alfrd.yaml`.
 
 - **Chrome / Edge:** reads only what `alfrd.yaml` points to. Fast. Remembers the folder for **Re-scan** and live updates.
@@ -249,7 +281,7 @@ alfrd avica scan ROOT --bundle scan.json
 
 - Browser mode: `localStorage` of that site. **Settings → Clear saved Studio data** removes it.
 - **Settings → Reset view state** forgets filters, zoom and folded panels.
-- **Export → Studio snapshot** moves a session to another machine.
+- **⇅ Import / Export → Studio snapshot** moves a session to another machine.
 
 ---
 
@@ -282,9 +314,12 @@ Python side: `alfrd/studio_defs.py`, `alfrd/avica_layout.py`, `alfrd/gui/studio.
 Tests:
 
 ```bash
-python -m pytest -q
-node --test tests/studio_js/*.test.mjs
+python -m pytest -q -n auto -m "not serial"   # everything else, in parallel (about a minute)
+python -m pytest -q -m serial                 # tests that measure time or CPU, alone
+node --test tests/studio_js/*.test.mjs        # the Studio's tests only (pytest runs them too)
 ```
+
+Add `-m "not slow and not serial"` to skip building and installing the wheel while iterating.
 
 ## Setup forms (`quickstart:`)
 

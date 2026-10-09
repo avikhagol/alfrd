@@ -6,6 +6,7 @@ Claude*/
 # C extensions
 *.so
 *.orig
+*.rej
 *.diff
 
 # Distribution / packaging

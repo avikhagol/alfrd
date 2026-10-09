@@ -40,10 +40,11 @@ def test_index_references_local_assets_only():
     assert 'src="js/app.js"' in html and 'type="module"' in html
     assert 'href="css/studio.css"' in html
     for path in _web_files():
-        if path.suffix in {".html", ".js", ".css"}:
+        if path.suffix in {".html", ".js", ".mjs", ".css"}:
             text = path.read_text(encoding="utf-8")
             # No third-party runtime scripts, stylesheets or fonts.
-            assert not re.search(r"""(src|href)\s*=\s*["']https?://""", text), path
+            # Ordinary documentation anchors do not fetch runtime assets.
+            assert not re.search(r"""(?:\bsrc|<link\b[^>]*\bhref)\s*=\s*["']https?://""", text), path
             assert not re.search(r"""import\s[^;]*from\s+["']https?://""", text), path
             assert "@import url(" not in text, path
 
@@ -61,12 +62,15 @@ LAZY_MODULES = {
     "js/components/step_picker.js", "js/data/step_select.js", "js/components/history.js",
     "js/components/palette.js", "js/data/fuzzy.js", "js/components/usage_view.js",
     "js/components/search_view.js", "js/components/notes_panel.js", "js/data/entities.js",
-    "js/components/panels.js", "js/components/metadata_avica.js",
-    "js/components/removal_dialog.js",
+    "js/components/panels.js", "js/components/metadata_avica.js", "js/components/viewers.js",
+    "js/components/removal_dialog.js", "js/components/file_autocomplete.js",
     "js/data/run_grid.js", "js/components/jobs_tray.js",
     "js/components/folder_create.js", "js/components/settings_dialog.js", "js/utils/keep_view.js",
     "js/data/run_history.js",
-    "js/components/yaml_form.js", "js/data/yaml_form.js",
+    "js/components/yaml_form.js", "js/data/yaml_form.js", "js/data/demo.js",
+    "js/data/folder_scan.js",
+    "js/components/settings_plugins_view.js", "js/components/plugin_jobs.js", "js/components/plugins_install_dialog.js", "js/components/plugins_browse.js", "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
+    "js/components/plugin_config.js",
 }
 
 
@@ -82,7 +86,8 @@ def _startup_files() -> set[Path]:
         seen.add(path)
         for match in _STATIC_IMPORT.finditer(path.read_text(encoding="utf-8")):
             todo.append(path.parent / (match.group(1) or match.group(2)))
-    return seen | {(root / "index.html").resolve(), (root / "css" / "studio.css").resolve()}
+    return seen | {(root / "index.html").resolve(), (root / "css" / "studio.css").resolve(),
+                   (root / "css" / "themes" / "obsidian-orbit" / "theme.css").resolve()}
 
 
 def _gz(path: Path) -> int:
@@ -101,7 +106,19 @@ def test_startup_payload_under_178kb_compressed():
     # PM approved 177 KiB (181,248 bytes); measured startup was 180,249 bytes.
     # 0.2.2: agent sequences, multi-line YAML strings and the Set up entry points: 178 KiB
     # (182,272 bytes); measured 181,815.
-    assert total < 178 * 1024, f"{total} bytes gzip"
+    # UI batch T4/T5 (Settings template preview, Re-scan of the opened project only): 179 KiB
+    # (183,296 bytes); measured 182,621. PM approved (t004-claude, 2026-10-07).
+    # T9 Open vs Create (Open project… button, folder browser Open / Create project here /
+    # Open instead) and T8 name sync: PM approved 180 KiB (184,320 bytes); measured 183,629
+    # (t004-claude, 2026-10-07; also closes the T4/T5 179 KiB step).
+    # Notifications N5 (Settings → Notifications, browser notifications, alfrd live events, deep
+    # links) and the active-run switcher / D8 pin: PM approved 185 KiB (189,440 bytes); measured
+    # 188,922 (task-notify-finish t004-claude, 2026-10-08). Next step: lazy-load the Settings panel.
+    # Header pickers (components/picker.js, utils/text_fit.js) were paid for by loading the demo
+    # data (data/demo.js) on demand: no budget change (2026-10-08).
+    # Plugins Phase 3: folder mode (data/folder_scan.js, ~6.5 KiB) loads on demand to pay for the
+    # plugin boot hook: no budget change (task-plugins-p3p5, 2026-10-08).
+    assert total < 185 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_payload_under_106kb_compressed():
@@ -125,7 +142,32 @@ def test_lazy_payload_under_106kb_compressed():
     # Setup fields inline in Settings → Settings fields: 106 KiB (108,544 bytes); measured 107,609.
     # Settings → All settings (form), every alfrd.yaml key as a field (yaml_form.js x2, ~6.7 KiB):
     # 113 KiB (115,712 bytes); measured 114,184 (Settings fields and inline setup forms removed).
-    assert total < 113 * 1024, f"{total} bytes gzip"
+    # UI batch T2/T3 (removal dialog opens at once, size loads after, styled delete-all warning)
+    # and the template draft helper: 114 KiB (116,736 bytes); measured 116,217.
+    # PM approved (t004-claude, 2026-10-07).
+    # T9 Open vs Create (Open project dialog, Create's 409 → Open it instead, Settings button):
+    # PM approved 115 KiB (117,760 bytes); measured 117,188 (t004-claude, 2026-10-07).
+    # Header pickers: the demo data (data/demo.js, 4.9 KiB) moved here from startup to pay for
+    # components/picker.js + utils/text_fit.js there: 120 KiB (122,880 bytes); measured 122,275 (2026-10-08).
+    # Plugins Phase 1: components/viewers.js (file viewers: text, image, PDF) and the panel registry in
+    # panels.js, on demand only: 122 KiB (124,928 bytes); measured 124,465 (task-plugins-p1p2, 2026-10-08).
+    # Phase 2 themes: the on-demand Daylight Orbit palette and theme metadata add 802 B.
+    # 123 KiB (125,952 bytes); measured 125,267. Startup remains capped at 185 KiB.
+    # Plugins Phase 3 (D1): folder mode (data/folder_scan.js, 6,649 B) moved here from startup to pay
+    # for the plugin boot hook: 130 KiB (133,120 bytes); measured 132,113 (task-plugins-p3p5, 2026-10-08).
+    # T3.8: pinned DOMPurify ES module (~11 KiB gzip), its complete dual licence (~4 KiB)
+    # and provenance add ~15 KiB on demand: 130 → 146 KiB. The earlier ~143 KiB estimate
+    # omitted the full licence and underestimated this current sanitizer build.
+    # T3.7/T3.9–T3.11: the lazy browser API, conversion controls, Settings/Diagnostics and
+    # theme-token styles add ~7 KiB: 146 → 152 KiB; measured 155,086 bytes. Startup cap unchanged.
+    # Phase 4 Browse/install dialogs and job log/restart UI load only from Settings → Plugins.
+    # Measured 165510 bytes; rounded once to 162 KiB. Startup cap unchanged.
+    # Settings → All settings → Advanced (sections in a dialog) and the blocked-notifications
+    # hint with Ask again: +1.3 KiB on demand, measured 166,840 → 164 KiB. Startup cap unchanged.
+    # Settings → Plugins → Configure (plugin settings form, Test, background services: plugin_config.js
+    # and its CSS), loaded on the first Configure click: +2.1 KiB, measured 168,912 → 166 KiB.
+    # Startup cap unchanged.
+    assert total < 166 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
@@ -215,7 +257,7 @@ def test_flask_serves_studio_and_blocks_python_files(studio_app):
     assert js.status_code == 200 and js.mimetype == "text/javascript"
     assert client.get("/studio/__init__.py").status_code == 404
     assert client.get("/studio/../cli.py").status_code == 404
-    assert client.get("/dashboard/").status_code == 200
+    assert client.get("/dashboard/").status_code == 404  # the legacy dashboard is gone
 
 
 def test_studio_session_and_json_connect(studio_app, tmp_path):

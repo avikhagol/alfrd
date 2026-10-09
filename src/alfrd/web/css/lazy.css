@@ -124,19 +124,29 @@
 .rm-status:empty, .rm-alert:empty { display: none; }
 .rm-status, .rm-alert { margin: 0; }
 .rm-alert { color: var(--fail-text); }
+.rm-dlg .rm-msgs { padding-top: 0; padding-bottom: 0; }
+.rm-dlg .rm-msgs:not(:has(p:not(:empty))) { display: none; }
+.rm-sure-title { color: var(--fail-text); }
 .rm-f { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .rm-f .btn.danger:disabled, .rm-f .btn:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 600px) { .rm-dlg .rm-h, .rm-dlg .rm-b, .rm-dlg .rm-f { padding: 16px; } }
 
 /* Studio settings: header and tabs stay put, one panel scrolls */
-.modal.set-dlg { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); min-height: 0; }
+/* Fixed size: switching sections never moves or resizes the dialog; only the section scrolls. */
+.modal.set-dlg { display: flex; flex-direction: column; width: min(880px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 32px)); max-height: none; min-height: 0; overflow: hidden; }
+.set-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 200px minmax(0, 1fr); }
 .set-dlg > .modal-h { flex: none; }
-.seg.set-tabs { display: flex; flex-wrap: wrap; gap: 8px; width: auto; margin: 0 16px 8px; flex: none; }
-.set-tabs [role=tab] { flex: 1 1 calc(50% - 8px); min-width: 0; min-height: 40px; justify-content: center; border: 1px solid transparent; }
-@media (min-width: 640px) { .set-tabs [role=tab] { flex-basis: 0; } }
-.set-tabs [role=tab].on { border-color: var(--accent-border); color: var(--accent-text); }
-.set-tabs [role=tab]:hover { background: var(--subtle); border-color: var(--border-strong); }
-.set-panels { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.set-tabs { display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; border-right: 1px solid var(--border); overflow: auto; }
+.set-tabs [role=tab] { display: flex; align-items: center; gap: 10px; flex: none; min-height: 38px; padding: 0 12px; border: 0; border-radius: var(--r); background: none; color: var(--text-2); font: inherit; font-size: 13px; text-align: left; white-space: nowrap; cursor: pointer; }
+.set-tabs [role=tab]:hover { background: var(--subtle); color: var(--text); }
+.set-tabs [role=tab].on { background: var(--accent-bg); color: var(--accent-text); font-weight: 600; }
+.set-tabs [role=tab]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.set-panels { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.set-panel .set-sec-h { flex-wrap: wrap; }
+@media (max-width: 719px) {
+  .set-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .set-tabs { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); padding: 8px; }
+}
 .set-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .set-panel[hidden] { display: none; }
 .set-proj-n { overflow-wrap: anywhere; }
@@ -196,10 +206,6 @@
 .job-row .job-main { flex: 1 1 220px; min-width: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* Agent-loop tasks above the run history; per-turn settings of a running plan. */
-.task-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
-.task-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
-.task-chip.on, .task-chip:hover { border-color: var(--accent); }
-.task-chip .ic { width: 13px; height: 13px; vertical-align: -2px; }
 .turn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .turn-table th, .turn-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; }
 .turn-table input[type=text] { width: 6em; }
@@ -210,7 +216,7 @@
 .yf h4.grow { margin: 0; }
 details.yf-group { border: 1px solid var(--border); border-radius: var(--r); margin: 8px 0; background: var(--surface); }
 details.yf-group > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text); }
-details.yf-group > summary > .muted:last-child { margin-left: auto; font-weight: 400; }
+details.yf-group > summary > .yf-count { margin-left: auto; font-weight: 400; }
 details.yf-group[open] > summary { border-bottom: 1px solid var(--border); background: var(--subtle); }
 details.yf-group .yf-group { margin: 6px 0; }
 .yf-body { padding: 4px 12px 8px; }
@@ -218,3 +224,73 @@ details.yf-group .yf-group { margin: 6px 0; }
 .yf-field .check { font-weight: 500; }
 .yf-add { margin: 6px 0 2px; }
 details.yf-group > summary .icon-btn { margin-left: 4px; }
+.yf-adv { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); }
+.yf-adv p { margin: 2px 0 0; }
+.yf-adv-dlg .modal-h .yf-filter { width: 200px; }
+.yf-adv-dlg > .modal-f { flex: none; position: static; }
+.yf-adv-dlg .set-tabs [role=tab] .muted { font-weight: 400; }
+.yf-adv-dlg .set-panel > .row h3 { margin: 0; }
+
+.fits-suggestions { max-height: 14rem; overflow: auto; border: 1px solid var(--border); border-radius: 6px; margin-top: 4px; background: var(--surface); }
+.fits-suggestions [role=option] { padding: 6px 10px; cursor: pointer; font-family: var(--mono); overflow-wrap: anywhere; }
+.fits-suggestions [aria-selected=true], .fits-suggestions [role=option]:hover { background: var(--accent-bg); color: var(--text); }
+/* Settings → Plugins: theme tokens keep diagnostics and controls legible in every theme. */
+.plug-list { margin: 0; padding: 0; list-style: none; }
+.plug-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px 12px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.plug-row > div { min-width: 0; }
+.plug-kinds { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.plug-description { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.plug-switch { appearance: none; width: 34px; height: 20px; margin: 2px 0; border-radius: 999px; background: var(--muted-bg); border: 1px solid var(--border); cursor: pointer; flex-shrink: 0; }
+.plug-switch::before { content: ""; display: block; width: 14px; height: 14px; margin: 2px; border-radius: 50%; background: var(--text); transition: transform 120ms; }
+.plug-switch:checked { background: var(--accent); }
+.plug-switch:checked::before { transform: translateX(14px); }
+.plug-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plug-switch:disabled { opacity: .5; cursor: not-allowed; }
+.plug-diag { border: 1px solid var(--fail-border); background: var(--fail-bg); border-radius: 8px; padding: 8px 12px; margin-bottom: 16px; }
+.plug-diag > summary { color: var(--fail-text); cursor: pointer; }
+.plug-diag-row { padding: 10px 0; border-top: 1px solid var(--fail-border); margin-top: 8px; overflow-wrap: anywhere; }
+.plug-diag-row p { margin: 4px 0; }
+.plug-diag-row pre { max-height: 12em; overflow: auto; white-space: pre-wrap; }
+.plug-diag-row .btn { margin-top: 8px; }
+.plug-themes { border: 0; padding: 0; margin: 16px 0; min-width: 0; }
+.plug-themes legend { font-weight: 600; margin-bottom: 8px; }
+.plug-theme-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.plug-theme { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.plug-theme small { display: block; }
+.plug-swatch { width: 28px; height: 18px; border: 1px solid var(--border); border-radius: 3px; flex-shrink: 0; background: linear-gradient(90deg, var(--muted-bg) 50%, var(--border) 50%); }
+.plug-swatch-builtin { background: linear-gradient(90deg, var(--bg) 50%, var(--accent) 50%); }
+.plug-theme-check { margin-left: auto; visibility: hidden; color: var(--accent); }
+.plug-theme input:checked ~ .plug-theme-check { visibility: visible; }
+@media (max-width: 559px) { .plug-theme-grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .plug-switch::before { transition: none; } }
+/* Plugins catalog and install dialogs reuse the Settings theme tokens. */
+.plug-tabs,.plug-browse-bar,.plug-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.plug-tabs { margin:12px 0; }
+.plug-tabs [aria-selected=true], .plug-tabs [aria-selected=true]:hover { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+.plug-browse-bar input { flex:1; min-width:120px; width:auto; }
+.plug-browse-bar select { width:auto; }
+.plug-trust { display:block; }
+.plug-letter { width:28px; height:28px; display:grid; place-items:center; background:var(--muted-bg); border-radius:5px; }
+.plug-actions { justify-content:flex-end; max-width:150px; }
+.plug-facts { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px 16px; }
+.plug-facts dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+.plug-facts [data-wheel] { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.plug-job pre { max-height:14em; overflow:auto; white-space:pre-wrap; }
+.plug-failure { color:var(--fail-text); overflow-wrap:anywhere; }
+[data-browse] pre,[data-policy] pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+@media(max-width:479px) { .plug-facts { grid-template-columns:1fr; gap:4px; } .plug-facts dd { margin-bottom:8px; } }
+/* Settings → Plugins → Configure: settings form and background services. */
+.plug-config { grid-column: 1 / -1; min-width: 0; }
+.plug-form fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 10px; margin: 0 0 10px; min-width: 0; }
+.plug-form legend { font-weight: 600; padding: 0 4px; }
+.plug-form label { display: block; margin-top: 8px; }
+.plug-form fieldset > small { display: block; margin-top: 2px; }
+.plug-field { display: flex; gap: 8px; margin-top: 4px; }
+.plug-field input { flex: 1; min-width: 0; }
+.plug-form-actions, .plug-svc-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.plug-svc-actions label { margin: 0; }
+.plug-svc { padding: 6px 0; overflow-wrap: anywhere; }
+.plug-log { max-height: 16em; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
+.notify-blocked { display: flex; gap: 12px; align-items: flex-start; }
+.notify-blocked > div { flex: 1; line-height: 1.5; }
+.notify-blocked .btn { flex: none; }

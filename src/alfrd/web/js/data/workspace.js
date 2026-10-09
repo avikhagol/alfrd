@@ -68,4 +68,3 @@ export function isDirty(project) { return meta(project).dirty.size > 0; }
 /** Forget one project's workspace entirely (after removal). */
 export function dropWorkspace(project) { spaces.delete(keyOf(project)); }
 
-export function workspaceKeys() { return [...spaces.keys()]; }

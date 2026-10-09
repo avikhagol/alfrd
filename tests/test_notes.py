@@ -53,7 +53,7 @@ def _writer(path, n):
 
 
 def test_concurrent_appends_keep_every_line(root):
-    procs = [mp.get_context("fork").Process(target=_writer, args=(root, 40)) for _ in range(4)]
+    procs = [mp.get_context("spawn").Process(target=_writer, args=(root, 40)) for _ in range(4)]
     for p in procs:
         p.start()
     for p in procs:

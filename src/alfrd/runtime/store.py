@@ -10,7 +10,79 @@ from sqlalchemy.orm import Session, sessionmaker
 from .models import Base
 from .identity import project_identifier
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+
+def merge_folder_duplicates(connection) -> list[tuple[str, list[str]]]:
+    """Fold every set of projects sharing one ``root_path`` into a single row.
+
+    Older runtimes registered a folder again when its manifest was renamed. The
+    oldest row survives (its id keeps the history); it takes the most recently
+    updated row's name and description, and the identifier that matches that
+    name when one of the rows already has it. Workflows, datasets (merged by
+    ``external_id``), runs and audit events move to the survivor. Returns
+    ``[(survivor identifier, [merged identifiers])]``.
+    """
+    rows = connection.execute(text(
+        "SELECT id, identifier, name, root_path, description, created_at, updated_at "
+        "FROM runtime_projects ORDER BY root_path, created_at, id"
+    )).all()
+    columns = {table: {c[1] for c in connection.execute(text(f"PRAGMA table_info({table})")).all()}
+               for table in ("workflow_definitions", "datasets", "runs", "artifacts", "audit_events")}
+    groups: dict[str, list] = {}
+    for row in rows:
+        groups.setdefault(row.root_path, []).append(row)
+    merged: list[tuple[str, list[str]]] = []
+    for root_path, group in groups.items():
+        if len(group) < 2:
+            continue
+        survivor, duplicates = group[0], group[1:]
+        latest = max(group, key=lambda r: (r.updated_at or "", r.created_at or ""))
+        canonical = project_identifier(root_path, latest.name)
+        identifier = canonical if any(r.identifier == canonical for r in group) else survivor.identifier
+        for duplicate in duplicates:
+            if "version" in columns["workflow_definitions"]:
+                for workflow in connection.execute(text(
+                    "SELECT id, name, version FROM workflow_definitions WHERE project_id = :p"
+                ), {"p": duplicate.id}).all():
+                    taken = connection.execute(text(
+                        "SELECT MAX(version) FROM workflow_definitions WHERE project_id = :p AND name = :n"
+                    ), {"p": survivor.id, "n": workflow.name}).scalar()
+                    connection.execute(text(  # (project, name, version) is unique: append after the survivor's
+                        "UPDATE workflow_definitions SET project_id = :p, version = :v WHERE id = :id"
+                    ), {"p": survivor.id, "v": workflow.version if taken is None else taken + 1, "id": workflow.id})
+            elif columns["workflow_definitions"]:
+                connection.execute(text("UPDATE workflow_definitions SET project_id = :s WHERE project_id = :d"),
+                                   {"s": survivor.id, "d": duplicate.id})
+            for dataset in connection.execute(text(
+                "SELECT id, external_id FROM datasets WHERE project_id = :p"
+            ), {"p": duplicate.id}).all() if columns["datasets"] else []:
+                kept = connection.execute(text(
+                    "SELECT id FROM datasets WHERE project_id = :p AND external_id = :e"
+                ), {"p": survivor.id, "e": dataset.external_id}).scalar()
+                if kept is None:
+                    connection.execute(text("UPDATE datasets SET project_id = :p WHERE id = :id"),
+                                       {"p": survivor.id, "id": dataset.id})
+                    continue
+                for table in ("runs", "artifacts"):
+                    if "dataset_id" in columns[table]:
+                        connection.execute(text(f"UPDATE {table} SET dataset_id = :k WHERE dataset_id = :d"),
+                                           {"k": kept, "d": dataset.id})
+                if columns["audit_events"]:
+                    connection.execute(text("UPDATE audit_events SET aggregate_id = :k "
+                                            "WHERE aggregate_type = 'dataset' AND aggregate_id = :d"),
+                                       {"k": kept, "d": dataset.id})
+                connection.execute(text("DELETE FROM datasets WHERE id = :id"), {"id": dataset.id})
+            if columns["audit_events"]:
+                connection.execute(text("UPDATE audit_events SET aggregate_id = :s "
+                                        "WHERE aggregate_type = 'project' AND aggregate_id = :d"),
+                                   {"s": survivor.id, "d": duplicate.id})
+            connection.execute(text("DELETE FROM runtime_projects WHERE id = :id"), {"id": duplicate.id})
+        connection.execute(text(
+            "UPDATE runtime_projects SET identifier = :i, name = :n, description = :d WHERE id = :id"
+        ), {"i": identifier, "n": latest.name, "d": latest.description, "id": survivor.id})
+        merged.append((identifier, [r.identifier for r in group if r.identifier != identifier]))
+    return merged
 
 
 class SchemaVersionError(RuntimeError):
@@ -132,6 +204,17 @@ class RuntimeStore:
                 connection.execute(text(
                     "INSERT INTO alfrd_schema_versions(version, applied_at) "
                     "VALUES (3, CURRENT_TIMESTAMP)"
+                ))
+        if version < 4:
+            with self.engine.begin() as connection:
+                merge_folder_duplicates(connection)
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_runtime_projects_root_path "
+                    "ON runtime_projects (root_path)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO alfrd_schema_versions(version, applied_at) "
+                    "VALUES (4, CURRENT_TIMESTAMP)"
                 ))
 
     @property

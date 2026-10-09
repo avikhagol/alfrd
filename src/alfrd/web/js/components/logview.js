@@ -224,7 +224,10 @@ export function openFull(ctx, title, text, sub = "", live = null) {
 
 /** Full-screen view of a file, following it as it grows. */
 export async function openFileFull(ctx, project, rel) {
+  const v = await import("./viewers.js"), viewer = v.viewerFor(rel);
+  if (viewer.id !== "text") return v.openViewer(ctx, project, rel, viewer);
   const c = await load(ctx, project, rel);
+  if (v.converterFor(rel, viewer)) return v.openViewer(ctx, project, rel, viewer, { text: c.text });
   c.nextAt = 0;
   openFull(ctx, rel.split("/").pop(), c.text, rel, { project, rel, c });
   const n = notesAt(ctx, project, { file: rel });

@@ -201,7 +201,7 @@ def test_metadata_reads_never_import_project_python(tmp_path: Path):
     assert not marker.exists()
 
 
-def test_all_catalog_and_dashboard_routes_are_get_only(app, client):
+def test_all_catalog_routes_are_get_only(app, client):
     read_paths = [
         "/api/projects",
         "/api/projects/demo",
@@ -212,8 +212,6 @@ def test_all_catalog_and_dashboard_routes_are_get_only(app, client):
         "/api/projects/demo/dataset-columns",
         "/api/projects/demo/artifact-definitions",
         "/api/projects/demo/manifest",
-        "/dashboard/",
-        "/dashboard/project/demo",
     ]
     for path in read_paths:
         assert client.post(path).status_code == 405, path
@@ -246,12 +244,3 @@ def test_schema_resource_matches_sqlalchemy_catalog(tmp_path: Path):
         "artifact_definitions",
     }
 
-
-def test_dashboard_is_read_only_and_renders_catalog(app, client):
-    index = client.get("/dashboard/")
-    detail = client.get("/dashboard/project/demo")
-    assert index.status_code == 200
-    assert b"demo" in index.data
-    assert detail.status_code == 200
-    assert b"Manifest validation" in detail.data
-    assert b"Run" not in detail.data

@@ -20,195 +20,85 @@ def get_alfrd_dir() -> Path:
     return Path(os.environ.get("ALFRD_HOME", "~/.alfrd")).expanduser()
 
 
-def get_project_dir() -> Path:
-    """Return the current project registry directory."""
-    return get_alfrd_dir() / "projects"
+# The public API loads on first use (PEP 562), so ``import alfrd`` stays cheap: runners,
+# shims and the CLI start in a fraction of a second instead of importing pandas and SQLAlchemy.
+_LAZY = {
+    "alfrd.core.pipeline": ("ArtifactRef", "append_step_result_csv", "BatchResult", "ColName", "CrashSnapshotAdapter", "DatasetFinished", "DatasetStarted", "PipelineContext", "PipelineCore", "PipelineStepBase", "PipelineStepValidatorBase", "PipelineStepValidatorResult", "ResultCSVAdapter", "RunFinished", "RunStarted", "StepFailed", "StepResult", "StepSkipped", "StepStarted", "StepSucceeded", "write_crash_snapshot",),
+    "alfrd.core.logframe": ("LogFrame", "LogFrameAdapter", "LogFrameEventSink",),
+    "alfrd.config": ("BaseConfig", "CONFIG_MAPPING", "Config",),
+    "alfrd.manifest": ("ArtifactDefinition", "Entrypoint", "ManifestError", "ManifestNotFoundError", "ProjectManifest", "SchemaDefinition", "discover_manifest", "load_manifest", "parse_manifest", "validate_manifest",),
+    "alfrd.repository": ("Repository", "RepositoryNotFoundError", "RepositoryRecord", "RepositoryService", "add_repository", "inspect_repository", "sync_repository",),
+}
+_EXPORTS = {name: module for module, names in _LAZY.items() for name in names}
 
 
-# Compatibility constants. Internal code resolves the functions at use time so
-# tests and applications can redirect ALFRD_HOME after importing the package.
-ALFRD_DIR = get_alfrd_dir()
-PROJ_DIR = get_project_dir()
+def __getattr__(name: str):
+    import importlib
 
-from alfrd.plugins import (  # noqa: E402
-    REGISTERED_STEPS,
-    VALIDATE_AFTER,
-    VALIDATE_BEFORE,
-    VALIDATORS,
-    List,
-    PipelineRun,
-    register,
-    validate,
-    validator,
-)
-from alfrd.util import B, X, c  # noqa: E402
+    if name in _EXPORTS:
+        value = getattr(importlib.import_module(_EXPORTS[name]), name)
+    else:
+        try:  # submodules, as eager imports used to set them (alfrd.core, alfrd.manifest, ...)
+            return importlib.import_module(f"{__name__}.{name}")
+        except ModuleNotFoundError as exc:
+            if exc.name != f"{__name__}.{name}":
+                raise
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    globals()[name] = value
+    return value
 
-import warnings as _warnings  # noqa: E402
 
-with _warnings.catch_warnings():
-    # The module-level singleton is a documented compatibility surface;
-    # only warn when *user* code constructs PipelineRun directly.
-    _warnings.simplefilter("ignore", DeprecationWarning)
-    Pipeline = PipelineRun()
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
 
-from alfrd.core.pipeline import (  # noqa: E402
-    ArtifactRef,
-    append_step_result_csv,
-    BatchResult,
-    ColName,
-    CrashSnapshotAdapter,
-    DatasetFinished,
-    DatasetStarted,
-    PipelineContext,
-    PipelineCore,
-    PipelineStepBase,
-    PipelineStepValidatorBase,
-    PipelineStepValidatorResult,
-    ResultCSVAdapter,
-    RunFinished,
-    RunStarted,
-    StepFailed,
-    StepResult,
-    StepSkipped,
-    StepStarted,
-    StepSucceeded,
-    write_crash_snapshot,
-)
-from alfrd.core.artifacts import (  # noqa: E402
-    ArtifactError,
-    ArtifactPathError,
-    ArtifactTemplateError,
-    KNOWN_ARTIFACT_KINDS,
-    ResolvedArtifact,
-    resolve_declared_artifacts,
-    resolve_within_root,
-)
-from alfrd.core.viewers import (  # noqa: E402
-    ArtifactViewerError,
-    render_artifact,
-    render_directory,
-    render_file,
-    render_gallery,
-    render_html,
-    render_image,
-    render_json,
-    render_log,
-    render_table,
-    render_text,
-    render_yaml,
-)
-from alfrd.core.logframe import LogFrame, LogFrameAdapter, LogFrameEventSink  # noqa: E402
-from alfrd.core.project import Project  # noqa: E402
-from alfrd.core.workflow import Workflow  # noqa: E402
-from alfrd.config import BaseConfig, CONFIG_MAPPING, Config  # noqa: E402
-from alfrd.manifest import (  # noqa: E402
-    ArtifactDefinition,
-    Entrypoint,
-    ManifestError,
-    ManifestNotFoundError,
-    ProjectManifest,
-    ProjectSchema,
-    SchemaDefinition,
-    discover_manifest,
-    load_manifest,
-    parse_manifest,
-    validate_manifest,
-)
-from alfrd.repository import (  # noqa: E402
-    Repository,
-    RepositoryNotFoundError,
-    RepositoryRecord,
-    RepositoryService,
-    add_repository,
-    inspect_repository,
-    sync_repository,
-)
 
 __all__ = [
+    "__version__",
+    "add_repository",
     "ALFRD_CACHE_DIR",
     "ALFRD_CONFIG_DIR",
-    "ALFRD_DIR",
-    "ArtifactDefinition",
-    "ArtifactError",
-    "ArtifactPathError",
-    "ArtifactTemplateError",
-    "ArtifactViewerError",
-    "KNOWN_ARTIFACT_KINDS",
-    "ResolvedArtifact",
-    "resolve_declared_artifacts",
-    "resolve_within_root",
-    "render_artifact",
-    "render_directory",
-    "render_file",
-    "render_gallery",
-    "render_html",
-    "render_image",
-    "render_json",
-    "render_log",
-    "render_table",
-    "render_text",
-    "render_yaml",
-    "B",
-    "BaseConfig",
-    "CONFIG_MAPPING",
-    "Config",
-    "Entrypoint",
-    "ArtifactRef",
     "append_step_result_csv",
+    "ArtifactDefinition",
+    "ArtifactRef",
+    "BaseConfig",
     "BatchResult",
     "ColName",
+    "Config",
+    "CONFIG_MAPPING",
     "CrashSnapshotAdapter",
     "DatasetFinished",
     "DatasetStarted",
-    "List",
+    "discover_manifest",
+    "Entrypoint",
+    "get_alfrd_dir",
+    "inspect_repository",
+    "load_manifest",
     "LogFrame",
     "LogFrameAdapter",
     "LogFrameEventSink",
     "ManifestError",
     "ManifestNotFoundError",
-    "Pipeline",
+    "parse_manifest",
     "PipelineContext",
     "PipelineCore",
-    "PipelineRun",
     "PipelineStepBase",
     "PipelineStepValidatorBase",
     "PipelineStepValidatorResult",
-    "PROJ_DIR",
-    "Project",
     "ProjectManifest",
-    "ProjectSchema",
-    "ResultCSVAdapter",
-    "RunFinished",
-    "RunStarted",
-    "REGISTERED_STEPS",
     "Repository",
     "RepositoryNotFoundError",
     "RepositoryRecord",
     "RepositoryService",
+    "ResultCSVAdapter",
+    "RunFinished",
+    "RunStarted",
     "SchemaDefinition",
-    "VALIDATE_AFTER",
-    "VALIDATE_BEFORE",
-    "VALIDATORS",
     "StepFailed",
     "StepResult",
     "StepSkipped",
     "StepStarted",
     "StepSucceeded",
-    "write_crash_snapshot",
-    "Workflow",
-    "X",
-    "__version__",
-    "c",
-    "add_repository",
-    "discover_manifest",
-    "get_alfrd_dir",
-    "get_project_dir",
-    "inspect_repository",
-    "load_manifest",
-    "parse_manifest",
-    "register",
     "sync_repository",
-    "validate",
     "validate_manifest",
-    "validator",
+    "write_crash_snapshot",
 ]

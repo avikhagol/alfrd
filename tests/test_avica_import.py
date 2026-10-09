@@ -117,7 +117,7 @@ def test_import_avica_run_never_writes_source_tree(tmp_path):
     assert not list(FIXTURE_ROOT.rglob(".alfrd"))
 
 
-def test_imported_avica_parameters_and_dataset_columns_render_in_dashboard(tmp_path):
+def test_imported_avica_parameters_and_dataset_columns_are_served_by_the_catalog_api(tmp_path):
     from alfrd.gui import create_app
     from alfrd.gui.services import RuntimeCatalogReader
     from alfrd.runtime.avica import import_avica_run
@@ -127,7 +127,7 @@ def test_imported_avica_parameters_and_dataset_columns_render_in_dashboard(tmp_p
     import_avica_run(
         service,
         FIXTURE_ROOT / "reductions",
-        project_name="avica-dashboard",
+        project_name="avica-catalog",
         steps=STEPS,
         project_root=manifest_root,
     )
@@ -139,9 +139,11 @@ def test_imported_avica_parameters_and_dataset_columns_render_in_dashboard(tmp_p
             "CATALOG_READER": RuntimeCatalogReader(service),
         }
     )
-    response = app.test_client().get("/dashboard/project/avica-dashboard")
-    assert response.status_code == 200
-    assert b"mpi_cores_rpicard" in response.data
-    assert b"TARGET_NAME" in response.data
-    assert b"Dataset \xc3\x97 step matrix" in response.data
+    client = app.test_client()
+    parameters = client.get("/api/projects/avica-catalog/parameters")
+    assert parameters.status_code == 200
+    assert "mpi_cores_rpicard" in {item["name"] for item in parameters.get_json()["parameters"]}
+    columns = client.get("/api/projects/avica-catalog/dataset-columns")
+    assert columns.status_code == 200
+    assert "TARGET_NAME" in {item["name"] for item in columns.get_json()["dataset_columns"]}
 

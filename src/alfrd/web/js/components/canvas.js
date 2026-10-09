@@ -253,6 +253,8 @@ export function mount(el, ctx) {
     planAct(ctx, wfProject(ctx), b.dataset.plan, b, { only, onStarted: toSchedule });
   });
   on(el, "click", "td[data-cell]", (e, td) => cellMenu(ctx, wfProject(ctx), td));
+  on(el, "click", "[data-plan-pick-id]", (e, b) => loadPlan(ctx, wfProject(ctx), { id: b.dataset.planPickId }));
+  on(el, "click", "[data-plan-more]", () => $("[data-plan-pick]", el)?.focus());
   on(el, "change", "[data-plan-pick]", (e, sel) => loadPlan(ctx, wfProject(ctx), { id: sel.value }));
   on(el, "click", "[data-tab]", (e, b) => { ui.tab = b.dataset.tab; remember(); renderInspector(el, ctx); });
   on(el, "click", "[data-fold=inspector]", () => { ui.inspector = !ui.inspector; remember(); ctx.update(); requestAnimationFrame(() => drawViewport(el)); });
@@ -375,7 +377,7 @@ function act(el, ctx, name, button) {
       break;
     case "more":
       ctx.menu(button, [
-        { label: "Export workflow YAML", icon: "download", run: () => document.querySelector("#btn-export").click() },
+        { label: "Export workflow YAML", icon: "download", run: () => ctx.dataItems().find((it) => it.label?.startsWith("Workflow YAML"))?.run() },
         { label: "Clear simulation", icon: "reset", run: () => { resetSimulation(); ctx.update(); } },
         ...(plansAvailable(ctx, wfProject(ctx)) ? [{ label: "Simulate in the browser (nothing runs)", icon: "play", run: () => toggleSim(ctx) }] : []),
         { label: "Open log stream", icon: "log", run: () => ctx.renderConsole() },

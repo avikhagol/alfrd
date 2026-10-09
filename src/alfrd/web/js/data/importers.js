@@ -119,32 +119,6 @@ export function parseKeyValue(text) {
   return out;
 }
 
-/** Parse an avica.meta / sidecar file: JSON, YAML, or key=value text. */
-export function parseMetaFile(text, name) {
-  const trimmed = String(text).trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    try {
-      return { format: "json", data: JSON.parse(trimmed) };
-    } catch (error) {
-      return { format: "text", data: parseKeyValue(text), error: `JSON parse failed: ${error.message}` };
-    }
-  }
-  if (/\.(ya?ml)$/i.test(name)) {
-    try {
-      return { format: "yaml", data: parseYaml(text) };
-    } catch (error) {
-      return { format: "text", data: parseKeyValue(text), error: error.message };
-    }
-  }
-  try {
-    const y = parseYaml(text);
-    if (y && typeof y === "object") return { format: "yaml", data: y };
-  } catch {
-    /* fall through to key=value */
-  }
-  return { format: "text", data: parseKeyValue(text) };
-}
-
 const MAX_TEXT = 25 * 1024 * 1024;
 
 /**
