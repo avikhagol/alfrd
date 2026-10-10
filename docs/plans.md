@@ -26,9 +26,37 @@ execution:
   status_from: both             # avica pipe run exits 0 after a failed step: the result CSV row decides too
 ```
 
-Each argv item is filled separately (no shell). `{target}`, `{step}`, `{from_step}`, `{targets}` and
-`{plan_csv}` are available, and so is every plan CSV column. A value that is missing stops the
-command before it starts.
+Each argv item is filled separately (no shell). Quote words with spaces in the Studio command editor.
+Available placeholders:
+
+- `{project_dir}` (alias `{root}`): absolute path of the project open in ALFRD.
+- `{cwd}`: command working directory, set by `execution.cwd` (defaults to the project directory).
+- `{target}`, `{project_code}`, `{workdir}`: values from the current plan row. `{workdir}` is the
+  `WORKDIR` cell, usually `wd` or `wd_1` for AVICA, not a full path or the project directory.
+  It is unavailable until that cell is populated (often by an earlier AVICA step).
+- `{step}`, `{from_step}`, `{steps}`: current step, first step, and comma-separated unit steps.
+- `{targets}`: current target, or comma-separated targets in batch mode.
+- `{plan_csv}`, `{plan_id}`: plan CSV path and run identifier.
+- Any plan CSV column, such as `{FILENAMES}`, `{PROJECT_CODE}`, or a custom column.
+
+Row placeholders are unavailable in batch mode. A missing or empty value stops the command
+before it starts. For a script in the open project, use e.g.
+`python "{project_dir}/scripts/prepare.py" --target {target}`.
+
+A step can override `execution.status_from` with `status_from: exit_code`, `result_csv`, or `both`.
+In Studio, open **Edit step → More options → Status from** and choose **Command exit code only**
+for custom scripts that do not write AVICA results. Exit code 0 succeeds; any nonzero exit code
+fails. Other steps keep the plan default (`both` in the AVICA template).
+
+```yaml
+workflows:
+  - name: avica
+    steps:
+      - fits_to_ms
+      - id: calc_flux_err
+        cmd: [python, "{project_dir}/scripts/calc_err_flux.py", "{target}"]
+        status_from: exit_code
+```
 
 ## Running a plan
 

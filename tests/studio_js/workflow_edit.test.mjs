@@ -79,6 +79,19 @@ test("minimal template rows resolve without changing the manifest; inherited uns
   assert.equal(data.workflows, undefined);
 });
 
+test("step status source can override the AVICA default and return to inheritance", () => {
+  const template = { execution: { status_from: "both" }, steps: { a: {} }, workflows: [{ name: "avica", steps: ["a"] }] };
+  const original = "name: p\ntemplate: avica\n";
+  let data = updateStep(parseYaml(original), "a", { status_from: "exit_code" }, template);
+  assert.equal(editorSteps(data, template)[0].status_from, "exit_code");
+  const text = workflowText(original, data);
+  assert.equal(parseYaml(text).workflows[0].steps[0].status_from, "exit_code");
+  data = updateStep(data, "a", { status_from: null }, template);
+  assert.equal(editorSteps(data, template)[0].status_from, null);
+  assert.equal(data.workflows[0].steps[0], "a");
+  assert.equal(template.execution.status_from, "both");
+});
+
 test("agent-loop sequence and total turns", () => {
   let data = { workflows: [{ name: "agent-loop", repeat: { iterations: 4, sequence: ["claude", "codex"] } }] };
   assert.equal(workflowKind(data), "sequence");

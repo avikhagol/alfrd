@@ -551,7 +551,7 @@ function stepDialog(ctx, project, id, at = null) {
           ${fallback ? `<label><input type="radio" name="runs" value="default" ${runs === "default" ? "checked" : ""}> Workflow default (${esc(fallback)})</label>` : ""}
         </div>
         <div data-runs="cmd"><input class="input mono" name="cmd" value="${esc(row?.cmd ? joinCommand(row.cmd) : "")}" placeholder='python scripts/prepare.py --target {target}' autocomplete="off">
-          <small class="muted">No shell: quote words with spaces. Placeholders: <code>{target}</code> <code>{workdir}</code> <code>{project_code}</code> <code>{step}</code> <code>{FILENAMES}</code>.</small></div>
+          <small class="muted">No shell: quote words with spaces. Placeholders: <code>{project_dir}</code> (open project directory; alias <code>{root}</code>), <code>{cwd}</code> (command working directory), <code>{target}</code>, <code>{project_code}</code>, <code>{step}</code>, <code>{from_step}</code>, <code>{steps}</code>, <code>{targets}</code>, <code>{plan_csv}</code>, <code>{plan_id}</code>, and any plan CSV column such as <code>{FILENAMES}</code>. <code>{workdir}</code> is the row’s WORKDIR value (AVICA: e.g. wd or wd_1), available once populated; it is not the project directory.</small></div>
         ${entries.length ? `<div data-runs="entrypoint"><select class="input" name="entrypoint">${entries.map((e) => `<option ${e === row?.entrypoint ? "selected" : ""}>${esc(e)}</option>`).join("")}</select></div>` : ""}
       </fieldset>
       <div class="row gap wrap">
@@ -565,12 +565,16 @@ function stepDialog(ctx, project, id, at = null) {
         ${others.length ? `<label><input type="radio" name="after" value="pick" ${after === "pick" ? "checked" : ""}> After these steps:</label>
         <div class="wfe-deps" data-pick>${others.map((o) => `<label class="chip"><input type="checkbox" name="dep" value="${esc(o.id)}" ${depends?.includes(o.id) ? "checked" : ""}> <span class="mono">${esc(o.id)}</span></label>`).join("")}</div>` : ""}
       </fieldset>
-      <details class="wfe-adv" ${row && (row.timeout || isDelay(row.after) || row.description || row.logs.length || row.category) ? "open" : ""}><summary>More options</summary>
+      <details class="wfe-adv" ${row && (row.timeout || row.status_from || isDelay(row.after) || row.description || row.logs.length || row.category) ? "open" : ""}><summary>More options</summary>
         <div class="row gap wrap">
           <label class="field grow"><span>Time limit (seconds)</span><input class="input tabular" name="timeout" type="number" min="1" step="1" value="${esc(row?.timeout ?? "")}" placeholder="project default"></label>
           <label class="field grow"><span>Start delay</span><input class="input mono" name="delay" value="${esc(isDelay(row?.after) ? row.after : "")}" placeholder="e.g. +30m, 2h"></label>
           <label class="field grow"><span>Category</span><input class="input" name="category" value="${esc(row?.category || "")}" placeholder="Step"></label>
         </div>
+        <label class="field"><span>Status from</span><select class="input" name="status_from">
+          <option value="">Use plan default (${esc(d.data?.execution?.status_from || d.template?.execution?.status_from || "exit_code")})</option>
+          ${[["exit_code", "Command exit code only"], ["result_csv", "Results CSV only"], ["both", "Exit code and results CSV"]].map(([value, label]) => `<option value="${value}" ${row?.status_from === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select><small class="muted">Exit code only: 0 succeeds, nonzero fails; no AVICA result CSV is required.</small></label>
         <label class="field"><span>Description</span><textarea class="input" name="description" rows="2">${esc(row?.description || "")}</textarea></label>
         <label class="field"><span>Log files <em class="muted small">(one pattern per line; shown under Logs)</em></span><textarea class="input mono" name="logs" rows="2" placeholder="{workdir}/logs/{step}_*.log">${esc((row?.logs || []).join("\n"))}</textarea></label>
       </details>
@@ -626,6 +630,7 @@ function stepDialog(ctx, project, id, at = null) {
           depends_on: deps,
           after: delay || null,
           timeout,
+          status_from: form.status_from.value || null,
           category: form.category.value.trim(),
           description: form.description.value.trim(),
           logs: form.logs.value.split("\n").map((l) => l.trim()).filter(Boolean),

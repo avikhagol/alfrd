@@ -474,6 +474,8 @@ def conflict_groups(table: pc.PlanTable, names: Sequence[str], match: str = "all
 def values_for(cfg: ExecutionConfig, unit: UnitSpec, plan: Mapping[str, Any], csv_file: Path) -> dict[str, Any]:
     base: dict[str, Any] = {
         "root": str(cfg.root),
+        "project_dir": str(cfg.root),
+        "cwd": str(cfg.cwd),
         "plan_csv": str(csv_file),
         "plan_id": plan.get("id", ""),
         "steps": ",".join(unit.steps),
@@ -1997,7 +1999,8 @@ class Runner:
             exit_code = process.returncode
             note = "the command's wrapper ended without an exit file"
         since = _parse_stamp(unit.get("started")) or datetime.now()
-        status_from = self.plan.get("status_from") or "exit_code"
+        default_status_from = self.plan.get("status_from") or "exit_code"
+        status_sources = {s: self.cfg.step(s).status_from or default_status_from for s in unit["steps"]}
         cells: dict[tuple[str, str], str] = {}
         fills: dict[tuple[str, str], str] = {}
         failed_step = None
@@ -2027,14 +2030,17 @@ class Runner:
             target = row.target if row else unit.get("target", "")
             code = row.code if row else unit.get("code", "")
             workdir = row.workdir if row else unit.get("workdir", "")
-            need = status_from != "exit_code" or interrupted or len(unit["steps"]) > 1
-            found = verify_steps(self.cfg, target, code, workdir, unit["steps"], since) if need else {}
+            # An explicit exit-code-only step never reads AVICA result rows, including stale ones.
+            result_steps = [s for s in unit["steps"] if status_sources[s] != "exit_code" or
+                            (self.cfg.step(s).status_from is None and (interrupted or len(unit["steps"]) > 1))]
+            found = verify_steps(self.cfg, target, code, workdir, result_steps, since) if result_steps else {}
             results_all[key] = found
             after: str | None = None   # what the remaining steps become after a non-done step
             for step in unit["steps"]:
                 if after:
                     cells[(key, step)] = after
                     continue
+                status_from = status_sources[step]
                 row_result = found.get(step)
                 if reason == "cancelled":
                     state = pc.CANCELLED
@@ -2075,7 +2081,7 @@ class Runner:
         error = reason or note
         if not error and status == "failed":
             first = next(iter(results_all.values()), {})
-            if failed_step and status_from != "exit_code" and failed_step not in first:
+            if failed_step and status_sources[failed_step] != "exit_code" and failed_step not in first:
                 error = f"no result CSV row for {failed_step} since {unit.get('started')}"
                 if exit_code not in (0, None):
                     error += f"; exit code {exit_code}"
