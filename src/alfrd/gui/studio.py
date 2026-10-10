@@ -314,20 +314,18 @@ def project_scan(project_name: str):
     from alfrd.avica_layout import collect_studio_files
 
     only = request.args.getlist("only") or None
-    live_state = None
-    if only is None:
-        hub = live_hub()
-        if hub is not None:
-            live_state = hub.touch(project_name)  # the version this scan is at least as new as
     root = _project_root(project_name)
     try:
-        data = collect_studio_files(root, log_tail=0, only=only)
+        hub = live_hub() if only is None else None
+
+        def collect():
+            return collect_studio_files(root, log_tail=0, only=only)
+
+        data = hub.scan(project_name, collect) if hub is not None else collect()
     except FileNotFoundError as error:
         return _json_error(error, 404)
     if only is None:
         data["project_name"] = _sync_project_name(project_name, root)
-    if live_state:
-        data["live"] = {"epoch": live_state["epoch"], "version": live_state["version"]}
     return jsonify(data)
 
 

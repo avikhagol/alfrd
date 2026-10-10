@@ -121,6 +121,12 @@ def test_startup_payload_under_178kb_compressed():
     # plugin boot hook: no budget change (task-plugins-p3p5, 2026-10-08).
     # T8b2: folder_browser.js and its dialog-only paths.js dependency now load on demand.
     # Startup 189,882 → 186,106 B (target <= 187,500); cap unchanged (2026-10-10).
+    # Loading T7.1/T7.2: catalog/runtime split + bounded startup scheduler (exported via
+    # server.js): 186,129 → 187,410 B; 2,030 B headroom; cap unchanged (t005, 2026-10-10).
+    # T7.3 progressive app integration + loading/failed overview text: 189,093 B startup
+    # gzip, 347 B headroom under 189,440 (t006, 2026-10-10). Further loading UI must trim or go lazy.
+    # Closing loading UX: 188,679 B startup; 761 B headroom. Redundant shipped
+    # commentary trimmed; both caps unchanged. Lazy stays 198,478 B (2026-10-10).
     assert total < 185 * 1024, f"{total} bytes gzip"
 
 

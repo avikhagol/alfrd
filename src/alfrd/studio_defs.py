@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import stat as stat_mod
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -262,13 +263,65 @@ def pattern_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(out) + "$")
 
 
-def expand_pattern(root: str | Path, pattern: str, fixed: Mapping[str, Any] | None = None, kind: str = "file") -> list[tuple[str, dict[str, str]]]:
+class ScanCache:
+    """Folder listings and stats shared by the pattern expansions of one request.
+
+    Step logs, ``step_defaults`` logs, log artifacts and ``ms_path`` patterns
+    expand against the same work dirs; each folder is listed (and each path
+    stat-ed) once per request instead of once per pattern. Create one per scan
+    and drop it afterwards: it is never refreshed.
+    """
+
+    def __init__(self) -> None:
+        self._lists: dict[str, list[tuple[str, str, bool]] | None] = {}
+        self._stats: dict[str, os.stat_result | None] = {}
+
+    def listdir(self, path: str | Path) -> list[tuple[str, str, bool]] | None:
+        """``[(name, path, is_dir)]`` sorted by name; ``None`` if unreadable."""
+        key = str(path)
+        if key not in self._lists:
+            try:
+                entries = sorted(os.scandir(key), key=lambda e: e.name)
+            except OSError:
+                self._lists[key] = None
+            else:
+                out = []
+                for entry in entries:
+                    try:
+                        out.append((entry.name, entry.path, entry.is_dir()))
+                    except OSError:
+                        continue
+                self._lists[key] = out
+        return self._lists[key]
+
+    def stat(self, path: str | Path) -> os.stat_result | None:
+        key = str(path)
+        if key not in self._stats:
+            try:
+                self._stats[key] = os.stat(key)
+            except OSError:
+                self._stats[key] = None
+        return self._stats[key]
+
+    def is_dir(self, path: str | Path) -> bool:
+        st = self.stat(path)
+        return st is not None and stat_mod.S_ISDIR(st.st_mode)
+
+    def is_file(self, path: str | Path) -> bool:
+        st = self.stat(path)
+        return st is not None and stat_mod.S_ISREG(st.st_mode)
+
+
+def expand_pattern(root: str | Path, pattern: str, fixed: Mapping[str, Any] | None = None, kind: str = "file",
+                   cache: ScanCache | None = None) -> list[tuple[str, dict[str, str]]]:
     """Paths under ``root`` matching ``pattern`` (relative, with captured placeholders).
 
     Literal segments are opened directly; only segments with a placeholder or a
     wildcard list one folder. Measurement sets and scratch folders are never
-    entered unless the pattern names them literally.
+    entered unless the pattern names them literally. ``cache`` shares listings
+    and stats with the other expansions of the same request.
     """
+    fs = cache or ScanCache()
     base = Path(root).resolve()
     text = fill(normalize_pattern(pattern), fixed or {})
     if {"workdir", "meta_dir", "logs", "target_dir"} & set(_PLACEHOLDER.findall(text)):
@@ -284,27 +337,22 @@ def expand_pattern(root: str | Path, pattern: str, fixed: Mapping[str, Any] | No
         for path, groups in frontier:
             if not _TOKEN.search(seg):
                 cand = path / seg
-                if (cand.is_dir() if want_dir else cand.is_file()):
+                if (fs.is_dir(cand) if want_dir else fs.is_file(cand)):
                     nxt.append((cand, groups))
                 continue
             regex = _segment_regex(seg, groups)
-            try:
-                entries = sorted(os.scandir(path), key=lambda e: e.name)
-            except OSError:
+            entries = fs.listdir(path)
+            if entries is None:
                 continue
-            for entry in entries:
-                try:
-                    is_dir = entry.is_dir()
-                except OSError:
-                    continue
+            for name, entry_path, is_dir in entries:
                 if is_dir != want_dir:
                     continue
-                if is_dir and not last and _NO_DESCEND.search(entry.name):
+                if is_dir and not last and _NO_DESCEND.search(name):
                     continue
-                match = regex.match(entry.name)
+                match = regex.match(name)
                 if match:
                     found = {k: v for k, v in match.groupdict().items() if v is not None}
-                    nxt.append((Path(entry.path), {**groups, **found}))
+                    nxt.append((Path(entry_path), {**groups, **found}))
         frontier = nxt[:_MAX_HITS]
         if not frontier:
             break
@@ -315,21 +363,31 @@ def expand_pattern(root: str | Path, pattern: str, fixed: Mapping[str, Any] | No
 # Context (work dirs, logs dir, meta dir)
 
 
-def studio_context(root: Path) -> dict[str, Any]:
+def studio_context(root: Path, layout: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Manifest, logs dir and AVICA work dirs for log/ms_path expansion.
+
+    ``layout`` (``target_dir``, ``patterns``, ``codes``) is a discovery the
+    caller already made in this request (see ``collect_studio_files``); it is
+    reused instead of walking the work dirs again. Nothing is cached.
+    """
     from alfrd.avica_layout import LOGS_DIRNAME, layout_patterns, manifest_avica, resolve_config, resolve_dir, scan_project_codes
 
     manifest = studio_manifest(root)
     block = manifest_avica(root)
     ctx: dict[str, Any] = {"manifest": manifest, "logs": str(block.get("logs") or LOGS_DIRNAME), "workdirs": [], "meta_dir": "avica.meta"}
     if manifest.get("template") == "avica":
-        cfg = resolve_config(root)
-        target_dir = resolve_dir(root, cfg.get("target_dir")) or root / "reductions"
-        patterns = layout_patterns(root)
+        if layout is not None:
+            target_dir, patterns, codes = layout["target_dir"], layout["patterns"], layout["codes"]
+        else:
+            cfg = resolve_config(root)
+            target_dir = resolve_dir(root, cfg.get("target_dir")) or root / "reductions"
+            patterns = layout_patterns(root)
+            codes = scan_project_codes(root, target_dir, patterns)
         ctx["target_dir"] = os.path.relpath(target_dir, root).replace(os.sep, "/")
         ctx["meta_dir"] = patterns["meta_dir"][0]
         ctx["workdirs"] = [
             {"rel": os.path.relpath(code.wd, root).replace(os.sep, "/"), "id": code.id, "code": code.code}
-            for code in scan_project_codes(root, target_dir, patterns)
+            for code in codes
         ]
     return ctx
 
@@ -349,32 +407,35 @@ def log_patterns(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _expansions(root: Path, pattern: str, ctx: Mapping[str, Any], fixed: Mapping[str, Any], kind: str = "file") -> Iterable[tuple[str, dict[str, str], dict[str, Any] | None]]:
+def _expansions(root: Path, pattern: str, ctx: Mapping[str, Any], fixed: Mapping[str, Any], kind: str = "file",
+                cache: ScanCache | None = None) -> Iterable[tuple[str, dict[str, str], dict[str, Any] | None]]:
     base = {"logs": ctx["logs"], "target_dir": ctx.get("target_dir"), **fixed}
     if "{workdir}" in pattern or "{meta_dir}" in pattern:
         for wd in ctx["workdirs"]:
             values = {**base, "workdir": wd["rel"], "meta_dir": f"{wd['rel']}/{ctx['meta_dir']}"}
-            for rel, groups in expand_pattern(root, pattern, values, kind):
+            for rel, groups in expand_pattern(root, pattern, values, kind, cache):
                 yield rel, groups, wd
     else:
-        for rel, groups in expand_pattern(root, pattern, base, kind):
+        for rel, groups in expand_pattern(root, pattern, base, kind, cache):
             yield rel, groups, None
 
 
-def collect_log_files(root: str | Path, ctx: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Log files matching alfrd.yaml's step ``logs`` and log artifacts (names and sizes only)."""
+def collect_log_files(root: str | Path, ctx: Mapping[str, Any] | None = None, cache: ScanCache | None = None) -> list[dict[str, Any]]:
+    """Log files matching alfrd.yaml's step ``logs`` and log artifacts (names and sizes only).
+
+    ``cache`` (default: a new one) lists each folder once for all patterns.
+    """
     base = Path(root).resolve()
     ctx = ctx or studio_context(base)
+    fs = cache or ScanCache()
     files: dict[str, dict[str, Any]] = {}
     for spec in log_patterns(ctx["manifest"]):
         fixed = {"step": spec["step"]} if spec["step"] else {}
         if "{step}" in spec["pattern"] and not spec["step"]:
             continue
-        for rel, groups, wd in _expansions(base, spec["pattern"], ctx, fixed):
-            path = base / rel
-            try:
-                stat = path.stat()
-            except OSError:
+        for rel, groups, wd in _expansions(base, spec["pattern"], ctx, fixed, cache=fs):
+            stat = fs.stat(base / rel)
+            if stat is None:
                 continue
             item = files.setdefault(rel, {"rel": rel, "size": stat.st_size, "mtime": stat.st_mtime, "groups": []})
             if spec["group"] not in item["groups"]:
@@ -391,14 +452,15 @@ def collect_log_files(root: str | Path, ctx: Mapping[str, Any] | None = None) ->
     return sorted(files.values(), key=lambda f: -f["mtime"])
 
 
-def collect_ms_paths(root: str | Path, ctx: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+def collect_ms_paths(root: str | Path, ctx: Mapping[str, Any] | None = None, cache: ScanCache | None = None) -> list[dict[str, Any]]:
     """Folders matching ``overview.ms_path`` with the target they belong to."""
     base = Path(root).resolve()
     ctx = ctx or studio_context(base)
+    fs = cache or ScanCache()
     patterns = (ctx["manifest"].get("overview") or {}).get("ms_path") or []
     out = []
     for order, pattern in enumerate(patterns if isinstance(patterns, list) else [patterns]):
-        for rel, groups, wd in _expansions(base, normalize_pattern(str(pattern)), ctx, {}, kind="directory"):
+        for rel, groups, wd in _expansions(base, normalize_pattern(str(pattern)), ctx, {}, kind="directory", cache=fs):
             out.append({"rel": rel, "target": groups.get("target"), "band": groups.get("band"), "workdir": wd["id"] if wd else None, "order": order})
     return out
 

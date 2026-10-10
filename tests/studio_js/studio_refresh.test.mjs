@@ -11,7 +11,7 @@ test("Re-scan requests and invalidates only the active project", async () => {
   const workflowCache = new Map([["p", {}], ["q", { keep: true }]]);
   const record = (name, project) => calls.push([name, project]);
   const context = {
-    state, workflowCache,
+    state, workflowCache, projectLoader: null, loadJob: () => null,
     ctx: { projectName: (p) => p, log() {}, toast() {}, scopedTargets: () => [{ id: "p/B" }], target: () => ({ project: "p" }) },
     server: {
       async loadProjectRuntime({ name }) { record("runtime", name); return { messages: [], workflows: [{ project: name }], targets: [] }; },
@@ -53,4 +53,34 @@ test("replacing a modal removes the old Escape handler", () => {
   assert.equal(listeners.size, 1);
   [...listeners][0]({ key: "Escape" });
   assert.equal(host.hidden, false, "warning's beforeclose can return to step one");
+});
+
+test("retained Re-scan publishes source failure and ignores an invalidated runtime response", async () => {
+  const source = app.slice(app.indexOf("async function rescanServerProject("), app.indexOf("async function rescan()"));
+  const make = () => {
+    let resolve;
+    const gate = new Promise((r) => resolve = r), calls = [];
+    const job = { scan: { status: "ready", value: { root: "/old" } }, runtime: { status: "ready" } };
+    const projectLoader = { generation: 1, isCurrent: (g) => g === projectLoader.generation };
+    const context = { projectLoader, loadJob: () => job, state: { serverWorkflows: [{project: "q"}] },
+      ctx: { projectName: (p) => p, log() {}, toast() {} }, scheduleRender() {},
+      server: { loadProjectRuntime: () => gate, projectScan: async () => { calls.push("scan"); throw new Error("disk failure"); } } };
+    return { context, job, calls, resolve };
+  };
+  const a = make();
+  const run = runInNewContext(`${source}; rescanServerProject("p")`, a.context);
+  assert.equal(a.job.retained, true);
+  assert.equal(a.job.runtime.status, "loading");
+  a.resolve({ok: true, messages: [], workflows: [{project: "p"}], targets: []}); await run;
+  assert.equal(a.job.runtime.status, "ready");
+  assert.equal(a.job.scan.status, "failed");
+  assert.equal(a.job.scan.error.message, "disk failure");
+  assert.equal(a.job.running, false);
+  assert.equal(a.job.scan.value.root, "/old");
+  const b = make();
+  const stale = runInNewContext(`${source}; rescanServerProject("p")`, b.context);
+  b.context.projectLoader.generation++;
+  b.resolve({ok: true, messages: [], workflows: [{project: "p"}], targets: []}); await stale;
+  assert.deepEqual(b.calls, []);
+  assert.deepEqual(b.context.state.serverWorkflows, [{project: "q"}]);
 });

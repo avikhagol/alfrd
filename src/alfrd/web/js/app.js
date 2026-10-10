@@ -8,7 +8,6 @@ import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
-// Folder mode (File System Access) loads on demand; every call below is async.
 let folderScan = null;
 const folderMod = () => (folderScan ||= import("./data/folder_scan.js"));
 const canPickDirectory = () => typeof window.showDirectoryPicker === "function";
@@ -16,7 +15,7 @@ const [pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle,
   "pickProjectFolder scanProjectFolder saveFolderHandle loadFolderHandle forgetFolderHandles ensureReadPermission readFileFromHandle readWholeFromHandle readFileRange writeFileToHandle"
     .split(" ").map((name) => async (...args) => (await folderMod())[name](...args));
 import { createLive } from "./data/live.js";
-import { server } from "./data/server.js";
+import { server, createProjectLoader, projectLoadInfo } from "./data/server.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
 import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
 import { projectNotes } from "./data/notes.js";
@@ -92,7 +91,6 @@ function scheduleRender() {
   });
 }
 
-// Tab errors belong to the project that raised them ("plan:<project>" keys name it).
 const tabErrors = new Map(); // `${project}\u0000${view}` -> {message, retry, key}
 const errorOwner = (key) => (typeof key === "string" && key.startsWith("plan:") ? key.slice(5) : activeProject() || "all");
 const errorKey = (project, view) => `${project}\u0000${view}`;
@@ -184,6 +182,13 @@ export const ctx = {
     });
     return Array.from(map.values());
   },
+  /** A server project's startup data: "loading" | "failed" | "" (loaded, or not a server load). */
+  loadState(p) {
+    const j = loadJob(p);
+    return !j ? "" : busy(j.scan) || busy(j.runtime) ? "loading" : j.scan.status === "failed" || j.runtime.status === "failed" ? "failed" : "";
+  },
+  catalogLoading: () => catalogPending,
+  loadInfo(p) { return projectLoadInfo(loadJob(p)); },
   rollup(t) {
     return rollup(t, ctx.steps());
   },
@@ -451,7 +456,6 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   const bp = bundle.alfrdProject || null;
   if (bp) workflowCache.delete(bp); // its alfrd.yaml was just read: build it again when shown
   if (bundle.workflowInfo && bundle.workflowInfo.workflows.length && bp && replace === "project" && bp !== activeProject()) {
-    // Another project's alfrd.yaml: it is built from its tree when that project is opened.
   } else if (bundle.workflowInfo && bundle.workflowInfo.workflows.length) {
     applyWorkflowInfo(bundle.workflowInfo, bundle.manifestFile || "alfrd.yaml", bundle.manifestText, { quiet });
     state.workflowProject = bp;
@@ -460,7 +464,6 @@ function applyBundle(bundle, { replace = true, source = "imported", provider = "
   }
   clearWorkdirCache(replace === "project" ? bundle.alfrdProject : undefined);
   applyAvicaParams(bundle.avica, { quiet });
-  // A project with no targets (agent-loop) stays selected; only a project that is gone falls back.
   if (activeProject() && !ctx.projects().some((p) => p.id === state.selectedProject)) switchProject("all", { render: false });
   const inScope = ctx.scopedTargets();
   if (!inScope.some((t) => t.id === state.selectedTarget)) {
@@ -491,11 +494,11 @@ function resolveInitialProject() {
   switchProject(def && ids.includes(def) ? def : ids.length === 1 ? ids[0] : "all", { render: false });
 }
 
-// Keep each workspace's view, target and scroll when switching projects.
 function switchProject(project, { render = true, restoreView = true, syncUrl = true } = {}) {
   const next = project && project !== "all" ? project : "all";
   const before = state.selectedProject || "all";
   if (before !== next) {
+    if (pendingLink) pendingLink = null;
     linkedRoute = "";
     releasePlanPin(before);
     const out = wsMeta(before);
@@ -504,6 +507,7 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
     out.scroll[state.view] = $("#main")?.scrollTop || 0;
   }
   state.selectedProject = next;
+  projectLoader?.promote(next); // a project still queued for loading goes first
   setActive(next);
   const incoming = wsMeta(next);
   const inScope = ctx.scopedTargets();
@@ -526,9 +530,8 @@ function syncWorkflow() {
   if (!p) { state.workflowProject = null; return; } // All projects: the Workflow view asks for a project
   const tree = state.trees?.[p];
   if (!workflowCache.has(p) && !tree?.manifestText) {
-    // Never keep showing the previous project's workflow while this one loads.
     state.workflow = { ...defaultWorkflow(), steps: [], stages: [] };
-    state.workflowFile = { name: `Loading ${ctx.projectName(p)}…`, loading: true, validated: true, errors: [], warnings: [], text: null, modified: false };
+    state.workflowFile = { name: loadJob(p)?.scan.status === "failed" ? `Could not load ${ctx.projectName(p)}.` : `Loading ${ctx.projectName(p)}…`, loading: loadJob(p)?.scan.status !== "failed", validated: true, errors: [], warnings: [], text: null, modified: false };
     state.workflowProject = p;
     return;
   }
@@ -580,55 +583,73 @@ async function loadDemo({ quiet = false } = {}) {
   if (!quiet) ctx.toast("Demo data loaded — 18 targets under 3 AVICA project codes", "ok");
 }
 
+let projectLoader = null, pendingLink = null, catalogPending = false;
+const loadJob = (p) => projectLoader?.jobs.find((j) => j.project.name === p);
+const busy = (s) => s.status === "queued" || s.status === "loading" || s.applying;
+function loadPending(p) {
+  const job = loadJob(p);
+  return Boolean(job && (busy(job.scan) || busy(job.runtime)));
+}
+
+/** → { projects, settled } once the catalog is shown; `settled` resolves when every project finished (or a reload replaced it). */
 async function loadServer() {
+  if (!projectLoader) {
+    projectLoader = createProjectLoader({ scan: (p) => server.projectScan(p.name), runtime: (p) => server.loadProjectRuntime(p), onSettle: settleProject, onChange: scheduleRender });
+    server.onAuthRequired(() => projectLoader.invalidate()); // expired access: drop late responses
+  }
+  projectLoader.invalidate();
+  catalogPending = true;
+  scheduleRender();
+  const gen = projectLoader.generation;
   try {
     ctx.log("info", "Loading projects from alfrd serve…", "server");
-    const data = await server.loadAll();
+    const projects = await server.listProjects({ scoped: true });
+    if (!projectLoader.isCurrent(gen)) return null; // a newer reload owns the screen
+    catalogPending = false;
     const keep = { project: state.selectedProject, target: state.selectedTarget }; // the header, across a Re-scan
-    state.serverWorkflows = data.workflows;
-    state.projectTitles = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.description || p.name]));
-    state.projectNames = Object.fromEntries(data.projects.map((p) => [p.name, p.title || p.manifest_name || p.name]));
-    state.projectRoots = Object.fromEntries(data.projects.map((p) => [p.name, p.root_path || ""]));
-    applyBundle({ targets: data.targets, messages: data.messages, aliases: [], configs: [], logs: [], files: [] }, { replace: true, source: "server", provider: "server" });
-    if (data.workflows.length) {
-      const wf = data.workflows[0];
-      state.workflow = wf;
-      state.workflowFile = { name: `${ctx.projectName(wf.project)} / ${wf.name} (runtime)`, validated: true, errors: [], warnings: [], text: null, modified: false };
-      state.workflowProject = null; // replaced by the active project's alfrd.yaml below
-    }
-    const scans = await Promise.all(data.projects.map(async (p) => {
-      try {
-        return { p, scan: await server.projectScan(p.name) };
-      } catch (error) {
-        ctx.log("warn", `${p.title || p.name}: project folder not readable (${error.message}).`, "server");
-        return { p, scan: null };
-      }
-    }));
-    for (const { p, scan } of scans) {
-      if (!scan) continue;
-      const bundle = await applyServerScan(p.name, scan, { runtimeRows: state.targets.filter((t) => t.project === p.name) });
-      ctx.log("info", `${p.title || p.name}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
-    }
-    // Restore the selected scope.
-    if (keep.project && keep.project !== "all" && ctx.projects().some((p) => p.id === keep.project)) state.selectedProject = keep.project;
+    const names = new Set(projects.map((p) => p.name));
+    state.serverWorkflows = (state.serverWorkflows || []).filter((w) => names.has(w.project));
+    state.projectTitles = Object.fromEntries(projects.map((p) => [p.name, p.title || p.description || p.name]));
+    state.projectNames = Object.fromEntries(projects.map((p) => [p.name, p.title || p.manifest_name || p.name]));
+    state.projectRoots = Object.fromEntries(projects.map((p) => [p.name, p.root_path || ""]));
+    if (state.source === "server") { // Reload: keep what is on screen until each project's new data arrives
+      state.targets = state.targets.filter((t) => names.has(t.project));
+      state.trees = Object.fromEntries(Object.entries(state.trees).filter(([p]) => names.has(p)));
+    } else applyBundle({ targets: [], messages: [], aliases: [], configs: [], logs: [], files: [] }, { replace: true, source: "server", provider: "server", render: false });
+    if (keep.project && keep.project !== "all" && names.has(keep.project)) state.selectedProject = keep.project;
     const url = parseRoute(location.hash);
-    if (url.project === "all" || ctx.projects().some((p) => p.id === url.project)) state.selectedProject = url.project;
+    if (url.project === "all" || names.has(url.project)) state.selectedProject = url.project;
     resolveInitialProject();
     setActive(state.selectedProject);
     state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[state.selectedProject], keep.target, state.selectedTarget);
     rememberTarget();
-    workflowCache.clear();
+    pendingLink = { ...url, keep: keep.target };
+    if (state.workflowProject && state.workflowFile.modified) workflowCache.set(state.workflowProject, { workflow: state.workflow, workflowFile: state.workflowFile });
+    for (const p of workflowCache.keys()) if (!names.has(p) || !workflowCache.get(p).workflowFile.modified) workflowCache.delete(p);
     state.workflowProject = null;
     syncWorkflow();
-    // Poll background runs too.
-    data.projects.forEach((p) => plansAvailable(ctx, p.name) && loadPlan(ctx, p.name, { quiet: true }));
-    if (url.plan && url.project === state.selectedProject) applyRunLink(url);
-    applyAvicaParams(state.avica?.[ctx.target()?.project]);
-    ctx.log("info", `Server: ${data.projects.length} project(s), ${state.targets.length} target(s).`, "server");
+    ctx.log("info", `Server: ${projects.length} project(s); loading their data…`, "server");
     scheduleRender();
     live?.sync();
-    return { ...data, targets: state.targets };
+    const completion = projectLoader.reloadAll(projects, state.selectedProject);
+    projectLoader.jobs.forEach((j) => { j.retained = Boolean(state.trees[j.project.name] || state.targets.some((t) => t.project === j.project.name)); });
+    const settled = completion.then((result) => {
+      if (!result.cancelled && projectLoader.isCurrent(result.generation)) {
+        pendingLink = null;
+        const wf = projects.flatMap((p) => state.serverWorkflows.filter((w) => w.project === p.name))[0];
+        if (wf && !activeProject() && !state.workflowFile.modified) { // All projects: the first runtime workflow, as before
+          state.workflow = wf;
+          state.workflowFile = { name: `${ctx.projectName(wf.project)} / ${wf.name} (runtime)`, validated: true, errors: [], warnings: [], text: null, modified: false };
+        }
+        ctx.log("info", `Server: ${projects.length} project(s), ${state.targets.length} target(s).`, "server");
+        renderAll();
+      }
+      return result;
+    });
+    return { projects, settled };
   } catch (error) {
+    if (!projectLoader.isCurrent(gen)) return null;
+    catalogPending = false;
     ctx.log("error", `Server load failed: ${error.message}`, "server");
     ctx.showError(`Could not load projects: ${error.message}`, loadServer);
     ctx.toast(`Server load failed: ${error.message}`, "fail");
@@ -636,16 +657,66 @@ async function loadServer() {
   }
 }
 
+/** One project source (scan or runtime) arrived: apply it to that project only. */
+async function settleProject(job, key, gen) {
+  const p = job.project.name, title = job.project.title || p, src = job[key];
+  const why = src.error && (src.error.message || src.error);
+  if (key === "runtime") {
+    const rt = src.value;
+    if (!rt) { ctx.log("warn", `${title}: runtime data not loaded (${why}).`, "server"); projectArrived(p); return; }
+    if (rt.error) { ctx.log("warn", `${title}: ${rt.error}`, "server"); projectArrived(p); return; }
+    rt.messages.forEach((m) => ctx.log(m.level, m.text, "server"));
+    state.serverWorkflows = [...state.serverWorkflows.filter((w) => w.project !== p), ...rt.workflows];
+    const scanned = state.trees?.[p];
+    if (!scanned || state.targetOrigin[p] === "runtime" || !state.targets.some((t) => t.project === p)) {
+      state.targets = [...state.targets.filter((t) => t.project !== p), ...rt.targets, ...state.targets.filter((t) => t.project === p && rt.failed?.includes(t.workflow))];
+      if (scanned) state.targetOrigin[p] = rt.targets.length ? "runtime" : "tree";
+    }
+  } else {
+    if (!src.value) {
+      ctx.log("warn", `${title}: project folder not readable (${why}).`, "server");
+      if (activeProject() === p && state.workflowFile.loading) state.workflowFile = { ...state.workflowFile, loading: false, validated: false, name: `${title}: project folder not readable — Retry to load`, errors: [String(why)] };
+    }
+    else {
+      const scan = src.value;
+      const bundle = await applyServerScan(p, scan, { runtimeRows: job.runtime.status === "ready" ? job.runtime.value?.targets : null, current: () => projectLoader.isCurrent(gen) });
+      if (!bundle) return;
+      ctx.log("info", `${title}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root}.`, "server");
+      const seen = live.known?.[p];
+      if (seen && scan.live?.epoch && (seen.epoch !== scan.live.epoch || (scan.live.version ?? 0) < seen.version)) queueRefresh(p, { full: true });
+      if (plansAvailable(ctx, p)) loadPlan(ctx, p, { quiet: true }); // poll background runs too
+    }
+  }
+  projectArrived(p);
+}
+
+function projectArrived(p) {
+  const url = pendingLink;
+  const inScope = (state.selectedProject === "all" || activeProject() === p) && (!url?.project || url.project === "all" || url.project === p);
+  if (inScope && url) {
+    const scoped = ctx.scopedTargets();
+    if (url.target && scoped.some((t) => t.id === url.target)) { state.selectedTarget = url.target; url.target = null; rememberTarget(); }
+    else if (!ctx.target()) { state.selectedTarget = chooseTarget(scoped, storage.get("ui:app.targets", {})[state.selectedProject], url.keep); rememberTarget(); }
+    if (url.plan && url.project === p && plansAvailable(ctx, p)) { applyRunLink(url); url.plan = null; }
+  }
+  const order = new Map(projectLoader.jobs.map((j, i) => [j.project.name, i]));
+  state.targets.sort((a, b) => (order.get(a.project) ?? 0) - (order.get(b.project) ?? 0));
+  syncWorkflow();
+  applyAvicaParams(state.avica?.[ctx.target()?.project], { quiet: true });
+  scheduleRender();
+}
+
 /**
  * One project's /scan JSON → targets, tree, AVICA index. `live`: a background
  * refresh — no console messages, and the workflow is only replaced when
  * alfrd.yaml itself changed and there are no unsaved workflow edits.
  */
-async function applyServerScan(project, scan, { runtimeRows = null, live: isLive = false } = {}) {
-  state.scans[project] = scan;
-  syncName(project, scan.project_name);
+async function applyServerScan(project, scan, { runtimeRows = null, live: isLive = false, current = null } = {}) {
   const manifest = scan.files?.find((f) => /(^|\/)\.?alfrd\.ya?ml$/.test(f.rel))?.text;
   await ensureTemplatesFor(manifest);
+  if (current && !current()) return null; // replaced by a newer load while templates loaded
+  state.scans[project] = scan;
+  syncName(project, scan.project_name);
   const entries = entriesFromScanBundle(scan);
   const bundle = buildBundle(entries, { source: "server", projectHint: project, rootName: scan.root_name });
   if (bundle.avica) bundle.avica.provider = "server";
@@ -653,8 +724,10 @@ async function applyServerScan(project, scan, { runtimeRows = null, live: isLive
   state.targetOrigin[project] = bundle.targets.length || !rows.length ? "tree" : "runtime";
   if (!bundle.targets.length && rows.length) bundle.targets = rows;
   bundle.alfrdProject = project;
-  if (isLive) keepWorkflow(project, bundle);
+  const draft = workflowCache.get(project);
+  if (isLive || current || state.workflowFile.modified) keepWorkflow(project, bundle);
   applyBundle(bundle, { replace: "project", source: "server", provider: "server", quiet: isLive, render: !isLive });
+  if (draft?.workflowFile.modified) workflowCache.set(project, draft);
   return bundle;
 }
 
@@ -892,23 +965,34 @@ async function reloadAll() {
   server.clearFitsCache();
   state.avica = {};
   clearWorkdirCache();
-  if (await loadServer()) ctx.toast("Reloaded all projects", "ok");
+  const done = await (await loadServer())?.settled;
+  if (done && !done.cancelled && projectLoader.isCurrent(done.generation)) ctx.toast("Reloaded all projects", "ok");
 }
 
-// Refresh the selected project.
 async function rescanServerProject(project) {
-  const title = ctx.projectName(project);
+  const title = ctx.projectName(project), gen = projectLoader?.generation;
+  const current = () => !projectLoader || projectLoader.isCurrent(gen);
+  const job = loadJob(project);
+  let source = "runtime";
+  if (job) { job.retained = true; job.running = true; job.runtime.status = "loading"; job.runtime.error = null; scheduleRender(); }
   try {
     const runtime = await server.loadProjectRuntime({ name: project, title });
+    if (!current()) return;
+    if (runtime.ok === false) throw new Error(runtime.error || "Runtime data could not be loaded.");
     runtime.messages.forEach((m) => ctx.log(m.level, m.text, "server"));
+    state.serverWorkflows = [...(state.serverWorkflows || []).filter((w) => w.project !== project), ...runtime.workflows];
+    if (job) { Object.assign(job.runtime, { status: "ready", value: runtime, error: null }); job.scan.status = "loading"; job.scan.error = null; scheduleRender(); }
+    source = "scan";
     const scan = await server.projectScan(project);
+    if (!current()) return;
+    if (job) Object.assign(job.scan, { status: "ready", value: scan, error: null });
     const keep = state.selectedTarget;
     if (state.avica) delete state.avica[project];
     clearWorkdirCache(project);
     server.clearFitsCache(project);
-    workflowCache.delete(project);
     state.serverWorkflows = [...(state.serverWorkflows || []).filter((w) => w.project !== project), ...runtime.workflows];
-    const bundle = await applyServerScan(project, scan, { runtimeRows: runtime.targets });
+    const bundle = await applyServerScan(project, scan, { runtimeRows: runtime.targets, current });
+    if (!current() || !bundle) return;
     ctx.log("info", `${title}: ${bundle.targets.length} target(s), ${(bundle.logFiles || []).length} log file(s) from ${scan.root} (Re-scan).`, "server");
     if (ctx.scopedTargets().some((t) => t.id === keep)) state.selectedTarget = keep;
     else if (!ctx.scopedTargets().some((t) => t.id === state.selectedTarget)) state.selectedTarget = ctx.scopedTargets()[0]?.id || null;
@@ -920,15 +1004,17 @@ async function rescanServerProject(project) {
     live?.sync();
     ctx.toast(`Re-scanned ${title}`, "ok");
   } catch (error) {
+    if (!current()) return;
+    if (job) Object.assign(job[source], { status: "failed", error });
     ctx.log("error", `Re-scan of ${title} failed: ${error.message}`, "server");
     ctx.toast(`Re-scan of ${title} failed: ${error.message}`, "fail");
-  }
+  } finally { if (job && current()) { job.running = false; scheduleRender(); } }
 }
 
 async function rescan() {
   if (state.mode === "server") {
     const project = activeProject();
-    // Only the opened project; with All projects selected there is none, so reload them all.
+    if (project && loadPending(project)) return;
     if (project && state.trees?.[project]?.provider === "server") await rescanServerProject(project);
     else await reloadAll();
     return;
@@ -1061,7 +1147,6 @@ async function loopRunsInProgress(project) {
 }
 
 async function saveManifest(project, text, { force = false } = {}) {
-  // The runner stops a loop whose alfrd.yaml changed (see scheduler.manifest_hash): ask first.
   const runs = force ? [] : await loopRunsInProgress(project);
   if (runs.length && !confirm(`A run is in progress:\n${runs.map((p) => `• ${p.target || p.id} (${p.status}${p.turn ? `, turn ${p.turn}/${p.turns}` : ""})`).join("\n")}\n\n`
     + `Saving alfrd.yaml stops ${runs.length > 1 ? "them before their" : "it before its"} next turn. To continue, restore the file and resume.\n\nSave anyway?`)) {
@@ -1082,7 +1167,6 @@ async function saveManifest(project, text, { force = false } = {}) {
   await ensureTemplatesFor(text);
   state.trees = { ...state.trees, [project]: { ...tree, manifestText: text, manifestDefault: false, defs: studioManifest(parseYaml(text)) } };
   workflowCache.delete(project);
-  // A save that finishes after a switch must not replace the now-active project's workflow.
   if (info.workflows.length && activeProject() === project) { applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", text); state.workflowProject = project; }
   persist();
   return info;
@@ -1145,8 +1229,6 @@ async function writeAvicaConfig(project, changes) {
   return where;
 }
 
-// ---------------------------------------------------------------------------
-// Modal + menus
 
 let clearModalKeys;
 function modal(html, setup, cls = "") {
@@ -1228,7 +1310,6 @@ function closeMenus() {
 }
 ctx.menu = menu;
 
-// Studio settings: a lazy module (components/settings_dialog.js) driving these shell functions.
 async function openSettings() {
   try {
     lazy.settings ||= import("./components/settings_dialog.js");
@@ -1241,7 +1322,6 @@ const showProject = async (project, template) => {
   switchProject(project.identifier, { restoreView: false });
   ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
 };
-// Create (path: prefilled folder) and Open (a folder with alfrd.yaml) live in agent_dialog.js.
 async function newProject(path, open) {
   try { await (await import("./components/agent_dialog.js"))[open ? "openProject" : "openCreateProject"](ctx, showProject, path, newProject); }
   catch (error) { ctx.toast(error.message, "fail"); }
@@ -1250,6 +1330,8 @@ const openProject = () => newProject("", 1);
 
 /** After removal: drop only that project's workspace, run polling and Log Stream tabs. */
 function removeWorkspace(project) {
+  projectLoader?.invalidate();
+  pendingLink = null;
   state.avica = { ...state.avica };
   delete state.avica[project];
   delete state.trees[project];
@@ -1296,6 +1378,7 @@ function rememberTarget() {
 
 /** Make id the header target (as the Target picker does). */
 function selectTarget(id) {
+  if (pendingLink) pendingLink.target = pendingLink.plan = null;
   state.selectedTarget = chooseTarget(ctx.scopedTargets(), id);
   rememberTarget();
   history.replaceState(null, "", routeHash(state.view, state.selectedProject, state.selectedTarget));
@@ -1412,6 +1495,8 @@ async function runRefresh() {
 
 async function refreshProject(project, job) {
   if (state.mode === "server") {
+    const gen = projectLoader?.generation;
+    const current = () => projectLoader?.isCurrent(gen) && Object.hasOwn(state.projectNames, project);
     const old = state.scans[project];
     let scan;
     if (!old || job.full) scan = await server.projectScan(project);
@@ -1424,8 +1509,10 @@ async function refreshProject(project, job) {
       rels.filter((rel) => !(part.files || []).some((f) => f.rel === rel)).forEach((rel) => byRel.delete(rel)); // gone again
       scan = { ...old, ...part, live: old.live, files: [...byRel.values()], ms_paths: part.ms_paths || old.ms_paths };
     }
+    if (!current()) return false;
     forgetLogs(project, [...job.removed]);
-    await applyServerScan(project, scan, { live: true });
+    await applyServerScan(project, scan, { live: true, current });
+    if (!current()) return false;
     ctx.log("info", `${ctx.projectName(project)}: ${job.full ? "re-read" : `${job.changed.size} file(s) re-read, ${job.removed.size} gone`} (live).`, "live");
     return true;
   }
@@ -1454,8 +1541,10 @@ function liveLogs(project, logs) {
 function liveRuntime() {
   clearTimeout(runtimeTimer);
   runtimeTimer = setTimeout(async () => {
+    const gen = projectLoader?.generation;
     try {
       const data = await server.loadAll();
+      if (!projectLoader?.isCurrent(gen)) return;
       state.serverWorkflows = data.workflows;
       const served = new Set(data.projects.map((p) => p.name));
       const fromRuntime = (p) => served.has(p) && state.targetOrigin[p] !== "tree";
@@ -1485,12 +1574,11 @@ const live = createLive({
   onRuntime: liveRuntime,
   onPluginJob: () => renderJobs(),
   onAlfrd: (project, events) => handleNotifications(ctx, project, events).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server")),
-  onResync: (project) => queueRefresh(project, { full: true }),
+  onResync: (project) => (loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
   onStatus: (status) => { state.liveStatus = status; renderLiveBadge(); },
 });
 live.enabled = state.prefs.live !== false;
 setTails(live.enabled);
-// Presence (Telegram "mute while active") loads on the first click or key, off the startup path.
 let presence;
 const loadPresence = () => (presence ||= import("./data/presence.js")
   .then((m) => m.trackPresence({ enabled: () => state.mode === "server" })(), () => {}));
@@ -1608,8 +1696,6 @@ async function onLiveBadge() {
 }
 
 
-// Desktop sidebar: 240 px or a 64 px icon rail (≥1280 px; narrower windows keep their own layout).
-// Collapsed (icon rail) by default; "shell.v2" so earlier saved "expanded" states start collapsed once.
 const shellUi = loadUi("shell.v2", { sidebarCollapsed: true });
 function setSidebar(collapsed) {
   shellUi.sidebarCollapsed = collapsed === true;
@@ -1653,7 +1739,6 @@ function dataItems() {
   return [
     { label: "Import…", icon: "upload", hint: "results, configuration, snapshot", run: () => openImport() },
     "-",
-    // Agent loops export run history (same exporter as the Overview), never a target-shaped file.
     ...(overview.loopOnly(ctx) ? [] : [
       { label: "Overview CSV (visible rows)", icon: "download", run: () => exportOverviewCsv(false) },
       { label: "Stage details CSV", icon: "download", run: () => exportOverviewCsv(true) }]),
@@ -1680,7 +1765,8 @@ function renderShell() {
       <span class="vsep"></span>
       <div class="picker split" role="group" aria-label="Project">
         <button class="picker-head" id="btn-projects" title="New project or open a project">${icon("folder")}<span class="picker-l">Projects</span></button>
-        <button class="picker-btn" id="pick-project"><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button>
+        <span id="project-picker-description" class="sr-only"></span>
+        <button class="picker-btn" id="pick-project" aria-describedby="project-picker-description"><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button>
       </div>
       <div class="picker"><button class="picker-btn" id="pick-target">${icon("target")}<span class="picker-l">Target</span><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button></div>
       <button class="btn sm jobs-btn" id="btn-jobs" aria-haspopup="dialog" hidden>${icon("play")} <span id="jobs-label">Jobs</span></button><span class="sr-only" id="jobs-live" aria-live="polite"></span>
@@ -1697,7 +1783,8 @@ function renderShell() {
       <div class="rail-links" id="rail-links">${VIEWS.map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
       <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
-    <main id="main" tabindex="-1">${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
+    <span id="project-load-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+    <main id="main" tabindex="-1"><div id="project-load-notice" hidden></div>${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
     <footer class="footbar">
       <span>${icon("database")} <span id="foot-storage"></span></span>
       <span class="vsep"></span>
@@ -1762,13 +1849,15 @@ function renderHeader() {
   badge.title = `${modeText}: ${live ? "projects come from the runtime database; re-queue runs through the runtime API." : "everything runs in this browser; no pipeline code is executed."}`;
 
   const rescanBtn = $("#btn-rescan");
+  if (rescanBtn) rescanBtn.disabled = live && (catalogPending || (activeProject() ? loadPending(activeProject()) : projectLoader?.jobs.some((j) => loadPending(j.project.name))));
   if (rescanBtn) rescanBtn.title = live ? (activeProject() ? `Re-scan ${ctx.projectName(activeProject())}` : "Re-scan all projects") : "Re-read the whole project folder now (live updates only re-read what changed)";
 
   const projects = ctx.projects();
   const labels = projectLabels(projects.map((p) => ({ id: p.id, label: p.title || p.name, root: state.projectRoots?.[p.id] || "" })));
   pickers.project.set([{ value: "all", label: `All projects (${projects.length})` }, ...projects.map((p) => ({
-    value: p.id, label: labels[p.id], detail: state.projectRoots?.[p.id] || "", badge: isDirty(p.id) ? "unsaved" : "",
+    value: p.id, label: labels[p.id], detail: state.projectRoots?.[p.id] || "", badge: [isDirty(p.id) ? "unsaved" : "", ctx.loadInfo(p.id).badge].filter(Boolean).join(" · "),
   }))], state.selectedProject || "all");
+  $("#project-picker-description").textContent = [ctx.loadInfo(activeProject()).badge, state.projectRoots?.[activeProject()]].filter(Boolean).join(". ");
   pickers.target.set(ctx.scopedTargets().map((t) => ({
     value: t.id, label: t.name, detail: state.selectedProject === "all" ? state.projectTitles[t.project] || ctx.projectName(t.project) : "",
   })), state.selectedTarget);
@@ -1779,8 +1868,6 @@ function renderHeader() {
 
 }
 
-// Footer: CPU and RAM of the server machine as two small bars, every 5 s while
-// the tab is visible; the numbers are in the tooltip.
 let systemHtml = "", systemTitle = "", systemTimer = null;
 const SYSTEM_HINT = "CPU and memory of the machine running alfrd serve";
 const gib = (n) => (n / 1024 ** 3).toFixed(1);
@@ -1831,7 +1918,6 @@ function consoleHeight(h) {
 }
 
 
-// Dock tabs always name their project (a file basename alone is ambiguous across projects).
 const runOf = (rel) => (/(?:^|\/)plans\/([^/]+)\//.exec(rel) || [])[1] || "";
 const dockLabel = (d) => [ctx.projectName(d.project), runOf(d.rel), d.name].filter(Boolean).join(" · ");
 
@@ -1984,23 +2070,60 @@ ctx.showDock = (key) => {
   ctx.toast("Following in the Log Stream — switch views freely", "ok");
 };
 
-// Editors never fall back to some project in All projects: they ask for one.
 const NEEDS_PROJECT = { workflow: "edit its workflow", metadata: "browse its metadata", config: "edit its settings" };
 
 function askForProject(el, view) {
   const loading = view === "workflow" && activeProject() && state.workflowFile.loading;
   const ask = !activeProject() && NEEDS_PROJECT[view] && ctx.projects().length > 0;
-  el.setAttribute("aria-busy", String(Boolean(loading)));
+  const job = loadJob(activeProject());
+  const unavailable = job && !state.trees[activeProject()] && ["workflow", "metadata", "config", "logs"].includes(view);
+  el.setAttribute("aria-busy", String(Boolean(unavailable && busy(job.scan))));
   el.classList.toggle("ws-ask", Boolean(ask || loading));
   let box = el.querySelector(":scope > .ws-choose");
   if (!ask && !loading) { box?.remove(); return false; }
   if (!box) { box = document.createElement("div"); box.className = "ws-choose empty"; el.prepend(box); }
-  if (loading) { box.innerHTML = `<h2 role="status">${esc(state.workflowFile.name)}</h2>`; return true; }
+  if (loading) { box.innerHTML = `<h2>${esc(state.workflowFile.name)}</h2>`; return true; }
   box.innerHTML = `<h2>Choose a project to ${NEEDS_PROJECT[view]}</h2><div class="row gap wrap">${ctx.projects().map((p) => `<button class="btn" data-ws-open="${esc(p.id)}">${icon("folder")} ${esc(p.title || p.name)}</button>`).join("")}</div>`;
   return true;
 }
 
+function renderLoading() {
+  const box = $("#project-load-notice"), region = $("#project-load-status");
+  const p = activeProject(), jobs = projectLoader?.jobs || [];
+  const info = ctx.loadInfo(p), scoped = p ? jobs.filter((j) => j.project.name === p) : jobs;
+  const failed = scoped.filter((j) => ctx.loadInfo(j.project.name).failed);
+  const pending = scoped.some((j) => ctx.loadInfo(j.project.name).pending);
+  const loaded = scoped.filter((j) => !ctx.loadInfo(j.project.name).pending && !ctx.loadInfo(j.project.name).failed).length;
+  const message = catalogPending ? "Loading projects…" : p ? info.message : scoped.length && (pending || failed.length) ? `Projects loaded: ${loaded} of ${scoped.length}.${pending ? " Results are still loading." : ""}${failed.length ? ` ${failed.length} project${failed.length === 1 ? "" : "s"} could not fully load.` : ""}` : "";
+  const gen = projectLoader?.generation, scope = state.selectedProject;
+  const announcement = !catalogPending && p && loadJob(p) ? `${ctx.projectName(p)}: ${info.badge || "loaded"}.${info.failed ? ` ${info.errors}` : ""}` : message;
+  const key = `${gen}|${scope}|${announcement}`;
+  if (region.dataset.state !== key) { region.dataset.state = key; region.textContent = announcement; }
+  box.hidden = !message;
+  box.className = `callout project-load-notice ${failed.length ? info.usable || !p ? "warn" : "fail" : "info"}`;
+  let copy = box.querySelector(".grow");
+  if (!copy) { box.innerHTML = `${icon("alert")}<div class="grow"></div>`; copy = box.querySelector(".grow"); }
+  copy.textContent = message + (p && info.errors ? ` ${info.errors}` : !p && failed.length ? ` ${failed.map((j) => ctx.projectName(j.project.name)).join(", ")}.` : "");
+  const retries = scoped.filter((j) => ctx.loadInfo(j.project.name).failed || ctx.loadInfo(j.project.name).retrying);
+  for (const button of box.querySelectorAll("button")) {
+    if (retries.some((j) => j.project.name === button.dataset.project)) continue;
+    const focused = document.activeElement === button || button.dataset.retryFocus === "true" && document.activeElement === document.body; button.remove();
+    if (focused && button.dataset.scope === String(scope) && button.dataset.generation === String(gen)) {
+      const heading = $(`#view-${state.view} h2`) || $("#main"); heading.tabIndex = -1; heading.focus({ preventScroll: true });
+    }
+  }
+  for (const job of retries) {
+    let button = [...box.querySelectorAll("button")].find((b) => b.dataset.project === job.project.name);
+    if (!button) { button = document.createElement("button"); button.type = "button"; button.className = "btn sm"; button.dataset.project = job.project.name; box.append(button); }
+    button.textContent = p ? "Retry" : `Retry ${ctx.projectName(job.project.name)}`;
+    button.setAttribute("aria-label", `Retry loading ${ctx.projectName(job.project.name)}`);
+    button.setAttribute("aria-disabled", String(ctx.loadInfo(job.project.name).pending || job.running));
+    button.onclick = () => { if (button.getAttribute("aria-disabled") === "true") return; button.dataset.retryFocus = String(document.activeElement === button); button.dataset.scope = scope; button.dataset.generation = gen; job.retrying = true; if (projectLoader.retry(job.project.name)) scheduleRender(); };
+  }
+}
+
 function renderAll() {
+  const focusedHeading = document.activeElement?.matches("#main h2");
   syncWorkflow();
   saveUi("app", state, ["selectedProject", "selectedTarget"]);
   renderHeader();
@@ -2022,6 +2145,8 @@ function renderAll() {
       }
     }
   });
+  if (focusedHeading && document.activeElement === document.body) { const h = $(`#view-${state.view} h2`); if (h) { h.tabIndex = -1; h.focus({ preventScroll: true }); } }
+  renderLoading();
   renderFooter();
   renderStrip();
   renderJobs();
@@ -2082,10 +2207,15 @@ async function boot() {
     const data = await loadServer();
     if (server.authRequired) return;
     if (session.default_project) ctx.log("info", `Opened project ${ctx.projectName(session.default_project)}.`, "server");
-    if (!data || !data.targets.length) {
+    const settledEmpty = async () => {
+      const done = data && (await data.settled);
+      if (server.authRequired || (data && (done.cancelled || !projectLoader.isCurrent(done.generation) || state.targets.length || done.jobs.some((j) => j.scan.status === "failed" || j.runtime.status === "failed")))) return;
       if (state.demoEnabled) await loadDemo({ quiet: true });
       else ctx.log("info", "No project yet. Start `alfrd serve` in the folder that holds alfrd.yaml (or use Import → Connect).", "server");
-    }
+    };
+    if (!data) return;
+    if (!data.projects.length) await settledEmpty();
+    else settledEmpty().catch((error) => ctx.log("error", error.message, "server"));
   } else if (state.demoEnabled) {
     await loadDemo({ quiet: true });
   } else if (restoreSaved()) {
@@ -2111,8 +2241,6 @@ async function boot() {
 
 window.alfrdStudio = { ctx, loadDemo, loadServer, applyBundle, rescan, importEntries };
 
-// Use the server-rendered recovery page so startup and expired sessions show
-// exactly the same instructions, including the port, without exposing data.
 server.onAuthRequired(() => location.replace("/login"));
 
 boot().catch((error) => {

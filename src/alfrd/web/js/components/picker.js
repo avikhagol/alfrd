@@ -1,6 +1,3 @@
-// Compact header picker: a button showing the current name (shortened in the
-// middle to its max-width) that opens a listbox with the full names. Replaces
-// native <select>s whose closed state cannot be shortened differently from the list.
 import { esc, icon } from "../utils/dom.js";
 import { fitMiddle } from "../utils/text_fit.js";
 
@@ -38,7 +35,7 @@ export function typeahead(items, index, typed) {
  */
 export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "Nothing to choose" }) {
   const valEl = trigger.querySelector(".picker-val");
-  let items = [], value = null, typed = "", typedAt = 0;
+  let items = [], value = null, typed = "", typedAt = 0, refresh;
   trigger.setAttribute("aria-haspopup", "listbox");
   trigger.setAttribute("aria-expanded", "false");
 
@@ -48,12 +45,13 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     const it = current();
     const text = it ? it.label : empty;
     const key = `${text}\u0000${window.innerWidth}`;
+
+    trigger.title = `${label}: ${text}${it?.detail ? `\n${it.detail}` : ""}`;
+    trigger.setAttribute("aria-label", `${label}: ${text}`);
     if (key === fitted) return;
     fitted = key;
     fitMiddle(valEl, text);
     valEl.removeAttribute("title");
-    trigger.title = `${label}: ${text}${it?.detail ? `\n${it.detail}` : ""}`;
-    trigger.setAttribute("aria-label", `${label}: ${text}`);
   };
 
   function close(focus = false) {
@@ -62,6 +60,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     document.removeEventListener("pointerdown", openPop.outside, true);
     window.removeEventListener("resize", openPop.dismiss);
     openPop = null;
+    refresh = null;
     trigger.setAttribute("aria-expanded", "false");
     if (focus) trigger.focus();
   }
@@ -80,14 +79,23 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     const filter = el.querySelector(".picker-filter");
     let shown = items, active = Math.max(0, items.findIndex((it) => it.value === value));
 
-    const paint = () => {
-      list.innerHTML = shown.length ? shown.map((it, i) => `<div role="option" id="${id}-${i}" data-i="${i}" aria-selected="${it.value === value}" class="${i === active ? "active" : ""}">
-          <span class="picker-opt-l">${esc(it.label)}${it.badge ? ` <small class="picker-badge">${esc(it.badge)}</small>` : ""}</span>${it.detail ? `<small class="picker-opt-d">${esc(it.detail)}</small>` : ""}${it.value === value ? icon("check", "picker-check") : ""}</div>`).join("")
+    const ids = new Map();
+    const optionId = (it) => { if (!ids.has(it.value)) ids.set(it.value, `${id}-${ids.size}`); return ids.get(it.value); };
+    const paint = (scroll = true) => {
+      list.innerHTML = shown.length ? shown.map((it, i) => `<div role="option" id="${optionId(it)}" aria-labelledby="${optionId(it)}-name" aria-describedby="${optionId(it)}-description" data-i="${i}" aria-selected="${it.value === value}" class="${i === active ? "active" : ""}">
+          <span class="picker-opt-l"><span id="${optionId(it)}-name">${esc(it.label)}</span>${it.badge ? `<small class="picker-badge" aria-hidden="true">${esc(it.badge)}</small>` : ""}</span><span class="sr-only" id="${optionId(it)}-description">${esc([it.badge, it.detail].filter(Boolean).join(". "))}</span>${it.detail ? `<small class="picker-opt-d" aria-hidden="true">${esc(it.detail)}</small>` : ""}${it.value === value ? icon("check", "picker-check") : ""}</div>`).join("")
         : `<p class="muted small picker-none">No matches</p>`;
       list.querySelectorAll(".picker-opt-d").forEach((d) => fitMiddle(d, d.textContent, d.clientWidth));
       const target = filter || list;
-      if (shown[active]) target.setAttribute("aria-activedescendant", `${id}-${active}`); else target.removeAttribute("aria-activedescendant");
-      list.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+      if (shown[active]) target.setAttribute("aria-activedescendant", optionId(shown[active])); else target.removeAttribute("aria-activedescendant");
+      if (scroll) list.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+    };
+    refresh = () => {
+      const previous = shown[active]?.value, top = list.scrollTop, index = active;
+      shown = filterItems(items, filter?.value);
+      active = shown.findIndex((it) => it.value === previous);
+      if (active < 0) active = Math.max(0, Math.min(index, shown.length - 1));
+      paint(false); list.scrollTop = top;
     };
     const choose = (it) => {
       close(true);
@@ -117,7 +125,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
 
     const r = trigger.getBoundingClientRect();
     el.style.top = `${r.bottom + 6}px`;
-    el.style.minWidth = `${Math.max(240, r.width)}px`;
+    el.style.minWidth = `${Math.min(window.innerWidth - 16, Math.max(240, r.width))}px`;
     el.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8))}px`;
     paint();
     (filter || list).focus();
@@ -142,6 +150,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
       value = selected;
       trigger.disabled = !items.length;
       fit();
+      refresh?.();
     },
     open,
     close: () => close(false),

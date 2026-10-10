@@ -14,7 +14,7 @@
   --text-2: #C3CEDD;
   --text-3: #A6B3C6;
   --accent: #6366F1;
-  /* Slightly deeper indigo under small white labels meets WCAG AA. */
+
   --accent-control: #5B5EE6;
   --accent-600: #4F46E5;
   --accent-700: #4338CA;
@@ -106,9 +106,9 @@ h5 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px
 .boot, .fatal { padding: 40px; color: var(--text-3); }
 .fatal { color: var(--fail-text); }
 
-/* Shared by /login, browser 401 responses and the Studio's access recovery. */
+
 .access-page { min-height: 100%; height: auto; display: grid; place-items: center; padding: var(--s-5); }
-.access-card { grid-area: auto; /* not the app shell's `main` area */ width: 100%; max-width: 480px; padding: clamp(24px, 6vw, 40px); background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: var(--r-lg); }
+.access-card { grid-area: auto;  width: 100%; max-width: 480px; padding: clamp(24px, 6vw, 40px); background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: var(--r-lg); }
 .access-card h1 { font-size: 14px; line-height: 20px; letter-spacing: .12em; margin-bottom: var(--s-5); }
 .access-brand { display: flex; align-items: center; gap: 10px; }
 .access-brand img { flex: none; }
@@ -125,7 +125,7 @@ h5 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px
 .dot.ok { background: var(--ok); } .dot.fail { background: var(--fail); } .dot.warn { background: var(--warn); } .dot.run { background: var(--ok); } .dot.muted { background: var(--muted); }
 .vsep { width: 1px; height: 22px; background: var(--border); flex: none; }
 
-/* ---------------------------------------------------------------- layout */
+
 .app {
   display: grid;
   grid-template-columns: var(--rail) minmax(0, 1fr);
@@ -146,7 +146,7 @@ h5 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px
 .mode-badge.live i { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .mode-badge { flex-shrink: 0; }
 .picker { display: inline-flex; align-items: stretch; height: 34px; border: 1px solid var(--border); background: var(--subtle); border-radius: var(--r); color: var(--text-2); font-size: 13px; min-width: 0; flex-shrink: 0; overflow: hidden; }
-/* Header pickers (components/picker.js): the closed name is shortened in the middle to its max-width. */
+
 .picker-head, .picker-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; background: transparent; color: var(--text-2); font: inherit; cursor: pointer; min-width: 0; white-space: nowrap; }
 .picker.split .picker-head { border-right: 1px solid var(--border); }
 .picker-head:hover, .picker-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
@@ -195,7 +195,7 @@ body.console-open .view { padding-bottom: calc(var(--console-h, 280px) + 10px); 
 .footbar .ic { width: 14px; height: 14px; }
 #footer-right { gap: 8px; }
 
-/* ---------------------------------------------------------------- controls */
+
 .btn { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px; border-radius: var(--r); border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s; }
 .btn:hover { background: var(--subtle); border-color: var(--border-strong); }
 .btn:focus-visible, .icon-btn:focus-visible, .link-btn:focus-visible, .pill:focus-visible, .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -301,7 +301,7 @@ span.count { cursor: default; }
 .kv dt { color: var(--text-3); font-size: 12px; }
 .kv dd { margin: 0; }
 
-/* switch */
+
 .switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: none; }
 .switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; z-index: 1; }
 .switch i { position: absolute; inset: 0; background: var(--border-strong); border-radius: 999px; transition: background .15s; }
@@ -313,7 +313,7 @@ span.count { cursor: default; }
 .switch.sm i::after { width: 12px; height: 12px; }
 .switch.sm input:checked + i::after { transform: translateX(14px); }
 
-/* ---------------------------------------------------------------- overview */
+
 .ov { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; }
 .ov-head { flex: none; }
 .ov-title { margin-bottom: 10px; }
@@ -333,7 +333,7 @@ span.count { cursor: default; }
 .ov-body.no-drawer .drawer { display: none; }
 .grid-card { padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .grid-scroll { flex: 1 1 auto; min-width: 0; min-height: 0; max-width: 100%; overflow: auto; }
-/* Run grids stack under (or instead of) the target grid: the card scrolls, so no grid or its scrollbar is clipped. */
+
 .grid-card:has(> .rg-wrap) { overflow-y: auto; }
 .grid-card:has(> .rg-wrap) > .grid-scroll { flex: none; max-height: 60vh; }
 .rg-wrap { min-width: 0; }
@@ -409,7 +409,7 @@ tr:hover .path .icon-btn { visibility: visible; }
 .hist summary { cursor: pointer; color: var(--text-2); font-weight: 500; }
 .hist .tbl { margin-top: 8px; }
 
-/* ---------------------------------------------------------------- workflow */
+
 #view-workflow { padding: 0; overflow: hidden; }
 .wf { display: flex; flex-direction: column; height: 100%; }
 .wf-toolbar { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -490,7 +490,7 @@ tr:hover .path .icon-btn { visibility: visible; }
 .bind { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .bind li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; background: var(--subtle); border-radius: 6px; }
 
-/* ---------------------------------------------------------------- metadata */
+
 .md-head .drop { margin-top: 12px; }
 .md-body { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; margin-top: 14px; align-items: start; }
 .md-main .card + .card { margin-top: 14px; }
@@ -510,7 +510,7 @@ tr:hover .path .icon-btn { visibility: visible; }
 .drop.over, .drop:hover { border-color: var(--accent); background: var(--accent-bg); }
 .drop:focus-visible { outline: 2px solid var(--accent); }
 
-/* ---------------------------------------------------------------- results */
+
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
 .kpis > div { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--subtle); }
 .kpis span { font-size: 12px; color: var(--text-3); font-weight: 500; }
@@ -543,7 +543,7 @@ tr:hover .path .icon-btn { visibility: visible; }
 .ladder-tbl td:first-child { white-space: nowrap; }
 .ladder-tbl tr.st-failed td:nth-child(2) b { color: var(--fail-text); }
 
-/* ---------------------------------------------------------------- config */
+
 .cf-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; align-items: start; }
 .cf-grid .card + .card { margin-top: 0; }
 .cf-grid .code { max-height: 240px; }
@@ -554,7 +554,7 @@ tr:hover .path .icon-btn { visibility: visible; }
 .map-rows .field { margin: 6px 0; }
 .console-inline { max-height: 260px; min-height: 140px; }
 
-/* ---------------------------------------------------------------- overlays */
+
 #modal-host { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; }
 .modal-back { position: absolute; inset: 0; background: var(--scrim); }
 .modal { position: relative; width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-lg); border: 1px solid var(--border); }
@@ -564,7 +564,7 @@ tr:hover .path .icon-btn { visibility: visible; }
 .modal-b h3 { display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; }
 .imp-sec { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
 .imp-sec form { margin: 10px 0; }
-/* Import → Connect → Browse… (server folders) */
+
 .fsb { margin: 8px 0 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
 .fsb[aria-busy="true"] { opacity: .7; }
 .fsb-bar { padding: 6px 8px; border-bottom: 1px solid var(--border); align-items: center; background: var(--subtle); flex-wrap: wrap; }
@@ -625,7 +625,7 @@ body.console-open .toasts { bottom: calc(var(--console-h, 280px) + 50px); }
 .ctab-x:hover { color: var(--text); }
 .ctab-path { max-width: 32vw; color: var(--text-3); }
 
-/* ---------------------------------------------------------------- responsive */
+
 @media (max-width: 1280px) {
   .cf-grid { grid-template-columns: 1fr 1fr; }
   .ov-body { grid-template-columns: minmax(0, 1fr) 360px; }
@@ -662,7 +662,7 @@ body.console-open .toasts { bottom: calc(var(--console-h, 280px) + 50px); }
   .badge, .count, .chip { border: 1px solid CanvasText; }
 }
 
-/* ---------------------------------------------------------------- folding panels */
+
 .fold-bar { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; height: 100%; padding: 12px 0; border: 0; background: var(--surface); color: var(--text-2); cursor: pointer; font-size: 12px; }
 .fold-bar:hover { background: var(--subtle); color: var(--accent-text); }
 .fold-bar span { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; letter-spacing: .04em; }
@@ -673,7 +673,7 @@ body.console-open .toasts { bottom: calc(var(--console-h, 280px) + 50px); }
 .wf-main.insp-folded .inspector { overflow: hidden; }
 .insp-h .icon-btn { align-self: flex-start; }
 
-/* ---------------------------------------------------------------- projects vs project codes */
+
 .alfrd-chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 5px; font: 500 12px/18px var(--sans); color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); white-space: nowrap; }
 .code-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; margin: 1px 4px 1px 0; border-radius: 5px; font: 500 12px/18px var(--mono); color: var(--accent-text); background: var(--accent-bg); border: 1px solid var(--accent-border); white-space: nowrap; }
 .code-chip.auto { border-style: dashed; }
@@ -692,7 +692,7 @@ td.codes { white-space: nowrap; }
 .crash summary { cursor: pointer; font-size: 12.5px; }
 .crash pre { margin-top: 6px; max-height: 220px; }
 
-/* ---------------------------------------------------------------- metadata sections */
+
 .md { display: flex; flex-direction: column; gap: 14px; }
 .md-head .seg { margin-top: 10px; }
 #md-main { display: flex; flex-direction: column; gap: 14px; }
@@ -720,7 +720,7 @@ details.meta-file .tbl, details.inp-file .tbl { width: calc(100% - 24px); }
 .src-user { background: var(--subtle); border-color: var(--border); color: var(--text-2); }
 .src-default, .src-global { background: var(--warn-bg); border-color: var(--warn-border); color: var(--warn-text); }
 
-/* Logs: collapsible files, scroll in place, expand to full screen */
+
 details.log-item { border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); margin: 6px 0; }
 details.log-item > summary { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; list-style: none; min-width: 0; }
 details.log-item > summary::-webkit-details-marker, details.lg-group > summary::-webkit-details-marker { display: none; }
@@ -735,7 +735,7 @@ details.log-item .log-dir { max-width: 40%; }
 .modal.full { width: calc(100vw - 32px); height: calc(100vh - 32px); max-height: none; display: flex; flex-direction: column; }
 .modal.full .modal-h { gap: 12px; justify-content: flex-start; }
 .modal.full .modal-b { flex: 1; min-height: 0; display: flex; padding: 12px; }
-/* File viewers (viewers.js): a full-screen viewer fills the modal; an inline PDF gets a usable height. */
+
 .modal.full .modal-b:has(> .viewer-full) { flex-direction: column; gap: 8px; }
 .viewer-full { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .viewer-pdf { display: block; width: 100%; height: 70vh; border: 0; background: var(--surface-2); }
@@ -749,7 +749,7 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .insp-logs { margin-bottom: 8px; }
 .insp-logs .log-dir { display: none; }
 .health td { vertical-align: top; }
-/* Project settings (alfrd.yaml editor) */
+
 .ps { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; }
 .ps-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 12px; align-items: start; }
 @media (max-width: 1280px) { .ps-grid { grid-template-columns: 1fr; } }
@@ -759,7 +759,7 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .insp-logs details.log-item > summary { flex-wrap: wrap; row-gap: 2px; }
 .wf.list-mode .zoom-group { display: none; }
 
-/* Live updates: top-bar badge, following logs */
+
 .live-badge { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font: 600 12px/1 var(--sans); cursor: pointer; white-space: nowrap; }
 .live-badge i { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); }
 .live-badge:hover { border-color: var(--border-strong); }
@@ -783,8 +783,7 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .follow-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); margin-right: 8px; cursor: pointer; }
 @media (max-width: 767px) { .live-badge span { display: none; } .live-badge { padding: 0 9px; } }
 
-/* ------------------------------------------------------------------------
-   Scheduled runs (plans.js): Workflow → Schedule, Run dialog, plan badges */
+
 .wf-sched { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
 .wf.sched-mode .wf-main { grid-template-columns: minmax(0, 1fr) 320px; }
 .wf.sched-mode .wf-main.insp-folded { grid-template-columns: minmax(0, 1fr) 40px; }
@@ -796,7 +795,7 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .wf-sched .grid-scroll { max-height: 46vh; }
 .plan-grid { width: max-content; min-width: 100%; }
 .plan-grid th { position: sticky; top: 0; background: var(--surface); z-index: 3; font-size: 11px; white-space: nowrap; }
-/* The target name stays in view while scrolling sideways to the last step (bounded so it never covers it). */
+
 .plan-grid tbody td:first-child { position: sticky; left: 0; z-index: 2; background: var(--surface); max-width: 220px; overflow-wrap: anywhere; box-shadow: 1px 0 0 var(--border); }
 .plan-grid thead th:first-child { left: 0; z-index: 4; box-shadow: 1px 0 0 var(--border); }
 .plan-grid td.cell { text-align: center; cursor: pointer; font-weight: 600; min-width: 34px; border-left: 1px solid var(--border); }
@@ -831,11 +830,11 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .modal-f { padding: 12px 20px; border-top: 1px solid var(--border); position: sticky; bottom: 0; background: var(--surface); }
 .log-pre { max-height: 70vh; overflow: auto; white-space: pre-wrap; font-size: 12px; }
 @media (max-width: 900px) { .wf.sched-mode .wf-main { grid-template-columns: minmax(0, 1fr); } .plan-bar { display: none; } }
-/* Shared notes (alfrd.notes.jsonl) */
+
 .note-mark { margin-left: 5px; padding: 0 5px; font-size: 11px; line-height: 16px; border: 1px solid var(--warn); border-radius: 999px; background: var(--warn-bg); color: var(--warn-text); cursor: pointer; }
 .plan-grid td.has-note { box-shadow: inset -6px 6px 0 -3px var(--warn); }
 
-/* Studio settings: sections that wrap instead of scrolling sideways */
+
 .set { display: flex; flex-direction: column; gap: 14px; }
 .set h3 { margin: 0 0 6px; }
 .set .muted.small { margin: 4px 0 8px; }
@@ -857,7 +856,7 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 .set-prefs .check input { margin-top: 3px; }
 .set-prefs .check small { display: block; color: var(--text-3); font-size: 12px; }
 .set-prefs .field { flex: 0 0 auto; }
-/* Schedule: one toolbar row, a muted meta line, the execution order docked below or at the side */
+
 .sched-counts { display: inline-flex; gap: 4px; flex-wrap: wrap; font-size: 11px; }
 .sched-meta { margin: -6px 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sched-b.dock-side { grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); align-items: start; }
@@ -877,19 +876,18 @@ details.lg-group[open] > summary { border-bottom: 1px solid var(--border); }
 @media (max-width: 1280px) { .sched-b.dock-side { grid-template-columns: minmax(0, 1fr); } }
 
 .handoff-artifact { white-space: pre-wrap; overflow-wrap: anywhere; }
-/* Agent-loop results stay readable on narrow Studio windows. */
+
 .loop-result-table { overflow-x: auto; }
 
 .loop-results { min-width: 0; }
 .loop-results .loop-run { min-width: 0; max-width: 100%; }
 .loop-run select { min-width: 0; width: 100%; max-width: 100%; }
-/* Native selects: a long chosen name ends in an ellipsis (the open list shows it in full; the title too). */
+
 select { text-overflow: ellipsis; }
 [data-plan-pick] { max-width: 340px; min-width: 0; }
 .loop-results > .mono, .loop-results .kpis { overflow-wrap: anywhere; }
 .loop-result-table .tbl { min-width: 620px; }
-/* Loop KPIs: as many columns as fit, values wrap instead of overflowing into the table below.
-   Doubled class beats .kpis.small and the ≤1280/≤767 .kpis column counts. */
+
 .loop-results .kpis.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 12px; min-width: 0; max-width: 100%; margin-bottom: 16px; }
 .loop-results .kpis > div { min-width: 0; max-width: 100%; height: auto; }
 .loop-results .kpis b { font-size: clamp(20px, 2vw, 26px); line-height: 1.3; font-variant-numeric: tabular-nums; white-space: normal; overflow-wrap: anywhere; }
@@ -913,7 +911,7 @@ select { text-overflow: ellipsis; }
   .loop-run { width: 100%; }
 }
 
-/* Setup and recovery share a quiet, accessible layout. */
+
 .setup-card { margin: var(--s-3); padding: var(--s-5); }
 .setup-card h2 { margin: 0 0 var(--s-2); font-size: 18px; }
 .setup-head { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-2); }
@@ -927,7 +925,7 @@ select { text-overflow: ellipsis; }
 .callout[hidden] { display: none; }
 
 
-/* Obsidian Orbit shell and component treatments. State never relies on color alone. */
+
 #view-config, #view-logs { padding: 0; }
 .ps-grid, .ps-grid > div { min-width: 0; }
 .wf-info > .grow { min-width: 0; }
@@ -1044,12 +1042,12 @@ summary:focus-visible, pre:focus-visible, [role=tab]:focus-visible { outline: 2p
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
-/* Project workspaces: editors ask for a project in All projects instead of borrowing one. */
+
 .view.ws-ask > :not(.ws-choose) { display: none !important; }
 .ws-choose .row { justify-content: center; margin-top: 12px; }
 #jobs-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-/* Minimized Log Stream: a readable strip above the footer that keeps following. */
-/* Sidebar toggle (≥1280 px): one --rail drives the grid track, Log Stream and log strip. */
+
+
 .rail-links { display: contents; }
 .rail-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 4px; }
 .rail-label { flex: 1; font-size: 12px; color: var(--text-3); }
@@ -1075,7 +1073,7 @@ summary:focus-visible, pre:focus-visible, [role=tab]:focus-visible { outline: 2p
 .dock-strip .strip-st.warn { color: var(--warn-text); }
 body.strip-open .view { padding-bottom: 60px; }
 @media (max-width: 767px) { .dock-strip { left: 0; } .dock-strip .strip-name { max-width: 100%; } }
-/* Native dropdowns: explicit dark surfaces so closed controls and open option lists stay readable. */
+
 .picker select { background-color: var(--subtle); color: var(--text); }
 .select-wrap select, select.input, select:not(.picker select, .select-wrap select) { background-color: var(--surface); color: var(--text); }
 select option, select optgroup { background-color: var(--surface); color: var(--text); }
@@ -1103,3 +1101,17 @@ select:disabled, select:not(.picker select, .select-wrap select):disabled, selec
 .run-chip[aria-current="true"] { background:var(--accent-bg); border-color:var(--accent-border); color:var(--accent-text); }
 
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
+.picker-opt-l { min-width: 0; }
+.picker-badge { display: block; font-size: 12px; line-height: 18px; white-space: normal; overflow-wrap: anywhere; }
+.project-load-notice { padding: 16px; gap: 8px; border-radius: 8px; max-width: 100%; flex-wrap: wrap; }
+.project-load-notice .grow { min-width: 0; overflow-wrap: anywhere; }
+.project-load-notice button:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+@media (max-width: 480px) { .project-load-notice button { flex-basis: 100%; } }
+@media (pointer: coarse) { .project-load-notice button { min-height: 44px; } }
+
+#main { display: flex; flex-direction: column; }
+#main > .view { flex: 1; min-height: 0; height: auto; }
+#project-load-notice { flex: none; margin: 10px 18px; max-height: 40vh; overflow: auto; }
+
+.project-load-notice button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }

@@ -1,4 +1,3 @@
-// VIEW 1 — Project Overview: grouped spreadsheet grid + target detail drawer.
 
 import { $, on, esc, icon, hms, short, when, copyText, loadUi, saveUi, keepScroll, download } from "../utils/dom.js";
 import { parseYaml } from "../utils/yaml_parser.js";
@@ -11,14 +10,11 @@ import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from 
 import { renderProjectSections, renderOverviewActions } from "./project_sections.js";
 import { scoped } from "../data/workspace.js";
 
-// Remembered in this browser until Settings → "Reset view state".
 const UI_FIELDS = ["search", "project", "status", "code", "preset", "mode", "collapsed", "hidden", "columnsSet", "drawer", "groupBy", "targetOnly"];
 const saved = loadUi("overview", {
   search: "", project: "all", status: "all", code: "all", preset: null, mode: "details", collapsed: [], hidden: [], drawer: true, groupBy: "project", targetOnly: false,
 });
-// Columns nobody chose yet follow the template's defaults (TEMPLATE_HIDDEN); a saved choice wins.
 saved.columnsSet ??= saved.hidden.some((id) => id !== "stages-all");
-// Per project workspace (All projects has its own): filters, page, checked rows, drawer.
 const ui = scoped("overview", () => ({
   ...saved,
   collapsed: new Set(saved.collapsed),
@@ -54,7 +50,6 @@ function toggleCol(ctx, id) {
   toggle(ui.hidden, id);
 }
 
-// Get started card per project: folded to its title, or dismissed (only once the Overview has rows).
 const home = loadUi("overview-home", { folded: [], dismissed: [] });
 const homeFolded = new Set(home.folded), homeDismissed = new Set(home.dismissed);
 const rememberHome = () => saveUi("overview-home", { folded: homeFolded, dismissed: homeDismissed }, ["folded", "dismissed"]);
@@ -80,8 +75,6 @@ export function showCode(ctx, code) {
 }
 
 
-// Agent-loop projects, from explicit metadata (as in Results): the agent-loop template,
-// or a repeat workflow with handoff steps. Their Overview is run history, not targets.
 const loopSeen = new Map(); // project -> [manifest text, is loop]
 export function isLoopProject(ctx, project) {
   const tree = ctx.state.trees?.[project];
@@ -105,7 +98,6 @@ export function loopOnly(ctx) {
 const targetsIn = (ctx) => ctx.scopedTargets().filter((t) => !isLoopProject(ctx, t.project));
 const runsOf = (project) => (planOf(project) || runLoads.get(project)?.status)?.plans || [];
 
-// Run history export: every known loop run in scope, read when clicked (a frozen snapshot).
 let exporting = false;
 export function historyItems(ctx) {
   const projects = scopeIds(ctx).filter((p) => isLoopProject(ctx, p));
@@ -192,7 +184,6 @@ function counters(ctx, targets) {
 export function mount(el, ctx) {
   el.innerHTML = `<div class="ov"><div class="card ov-head" id="ov-head"></div><div id="ov-home"></div><div class="ov-body"><div class="card grid-card" id="ov-grid"></div><aside class="card drawer" id="ov-drawer" aria-label="Target details"></aside></div></div>`;
 
-  // Typing only refreshes what depends on the filter; the head keeps its input (and focus).
   on(el, "input", "#ov-search", (e) => { ui.search = e.target.value; ui.page = 0; remember(); renderGrid(el, ctx); renderActive(el, ctx); });
   on(el, "change", "#ov-project", (e) => { ui.project = e.target.value; ui.page = 0; remember(); ctx.update(); });
   on(el, "change", "#ov-code", (e) => { ui.code = e.target.value; ui.page = 0; remember(); ctx.update(); });
@@ -221,7 +212,6 @@ export function mount(el, ctx) {
     ...(loopOnly(ctx) ? [] : [{ label: "Overview CSV (visible rows)", icon: "download", run: () => ctx.dataItems().find((it) => it.label?.startsWith("Overview CSV"))?.run() }]),
     ...historyItems(ctx),
   ]));
-  // Run history rows act on that exact run, never the newest by default.
   on(el, "click", "[data-rh-open]", (e, b) => { e.stopPropagation(); ctx.openRun(b.dataset.rhOpen, b.dataset.rhRun); });
   on(el, "click", "[data-rh-results]", async (e, b) => {
     e.stopPropagation();
@@ -364,7 +354,6 @@ export function render(el, ctx) {
   renderHead(el, ctx);
   renderGrid(el, ctx);
   renderDrawer(el, ctx);
-  // Agent loops have no target details: run history takes the whole width.
   el.querySelector(".ov-body").classList.toggle("drawer-folded", !ui.drawer && !loop);
   el.querySelector(".ov-body").classList.toggle("no-drawer", loop);
 }
@@ -374,7 +363,6 @@ const hasSetup = (ctx, project) => ctx.state.mode === "server" && setupForms(ctx
 const setupTitle = (ctx, project) => setupForms(ctx, project).map((f) => f.title || "setup").join(", ");
 const homeAsked = new Set();
 export function renderHome(el, ctx) {
-  // Setup/run summary only for the selected project; All projects never borrows one.
   const project = ctx.activeProject ? ctx.activeProject() : ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : null;
   const box = $("#ov-home", el);
   const sectionFocus = globalThis.document?.activeElement?.closest?.("[data-plugin-section]") ? document.activeElement : null;
@@ -383,7 +371,6 @@ export function renderHome(el, ctx) {
   if (isLoopProject(ctx, project)) { box.innerHTML = ""; renderProjectSections(box, project, ctx); if (sectionFocus?.isConnected) sectionFocus.focus({ preventScroll: true }); return; } // its run history shows setup, latest and active runs
   const hasSteps = ctx.state.workflow.steps.length > 0, hasTargets = ctx.state.targets.some((t) => t.project === project);
   const run = planOf(project)?.plan;
-  // Fold / dismiss only once the Overview has rows; before that the card is the way in.
   const rows = hasTargets; // loop projects returned above, so their targets are the Overview's rows
   const showSetup = (!hasSteps || !hasTargets || !run) && !(rows && homeDismissed.has(project));
   const folded = rows && homeFolded.has(project);
@@ -403,7 +390,6 @@ export function renderHome(el, ctx) {
 
 function renderHead(el, ctx) {
   const head = $("#ov-head", el);
-  // The search box is built once so live refreshes never take its focus or caret.
   if (!$("#ov-search", head)) {
     head.innerHTML = `
       <div class="row gap wrap ov-title" id="ov-title"></div>
@@ -512,7 +498,6 @@ function renderActive(el, ctx) {
     <button class="link-btn small" data-unfilter="*">Clear all</button>`;
 }
 
-// Polls redraw the grid: keep each viewport's sideways/vertical offset and the focused action.
 function renderGrid(el, ctx) {
   keepScroll($("#ov-grid", el), () => drawGrid(el, ctx));
 }
@@ -570,12 +555,14 @@ function drawGrid(el, ctx) {
     }).join("");
   }).join("");
 
+  const sel = ctx.state.selectedProject, load = (sel && sel !== "all" ? [sel] : ctx.projects().map((p) => p.id)).map((p) => ctx.loadState?.(p));
+  const incomplete = load.some(Boolean) || ctx.catalogLoading?.();
   const empty = !all.length
-    ? `<tr><td colspan="${totalCols}" class="empty">${ctx.projects().length ? "No targets yet. Add targets to this project, or clear the filters." : `No project loaded. ${ctx.state.mode === "server" ? "Start <code>alfrd serve</code> in the folder that holds alfrd.yaml, or " : ""}<button class="link-btn" id="ov-import">open the project folder</button>.`}</td></tr>`
+    ? `<tr><td colspan="${totalCols}" class="empty">${ctx.catalogLoading?.() || load.includes("loading") ? `<span>Loading project data…</span>` : load.includes("failed") ? "Some project data could not be loaded. Use Retry above; the console lists the cause." : ctx.projects().length ? "No targets yet. Add targets to this project, or clear the filters." : `No project loaded. ${ctx.state.mode === "server" ? "Start <code>alfrd serve</code> in the folder that holds alfrd.yaml, or " : ""}<button class="link-btn" id="ov-import">open the project folder</button>.`}</td></tr>`
     : "";
 
   $("#ov-grid", el).innerHTML = `
-    <div class="grid-scroll" role="region" aria-label="Targets by workflow steps" tabindex="0" data-scroll-key="ov-targets">
+    <div class="grid-scroll" role="region" aria-busy="${Boolean(!all.length && load.includes("loading"))}" aria-label="Targets by workflow steps" tabindex="0" data-scroll-key="ov-targets">
     <table class="grid ${ui.mode}">
       <thead>
         <tr class="h1"><th class="fz fz0" colspan="2"></th><th colspan="${cols.length}" class="h1l">Target details and progress</th>${showStages ? `<th colspan="${steps.length}" class="h1s">Workflow steps · ${esc(ctx.state.workflow.name)}</th>` : ""}</tr>
@@ -591,20 +578,18 @@ function drawGrid(el, ctx) {
     <div class="grid-foot">
       <span>${ui.checked.size ? `Selected: <b>${ui.checked.size}</b> target${ui.checked.size === 1 ? "" : "s"} ${selectionActions(ctx)} · <button class="link-btn" id="ov-clear-check">clear</button>` : `Selected: <b>${esc(ctx.target()?.name || "none")}</b>`}</span>
       <span class="vsep"></span>
-      <span class="muted">Showing ${rows.length} of ${all.length} targets across ${groups.size} active group${groups.size === 1 ? "" : "s"}</span>
+      <span class="muted">Showing ${rows.length} of ${all.length} targets${incomplete ? " currently loaded" : ""} across ${groups.size} active group${groups.size === 1 ? "" : "s"}</span>
       <span class="grow"></span>
       <button class="btn sm" data-page="-1" ${ui.page === 0 ? "disabled" : ""}>Previous</button>
       <span class="tabular small">Page ${ui.page + 1} of ${pages}</span>
       <button class="btn sm" data-page="1" ${ui.page >= pages - 1 ? "disabled" : ""}>Next</button>
     </div>`;
   ctx.setFooterRight(loopOnly(ctx) ? `Run history · ${ctx.projects().length} projects | Runtime`
-    : `Showing ${all.length} of ${ctx.state.targets.length} targets across ${ctx.projects().length} projects | ${ctx.state.source === "demo" ? "Demo Data" : ctx.state.source === "server" ? "Runtime" : "Imported"}`);
+    : `Showing ${all.length} of ${ctx.state.targets.length} targets${incomplete ? " currently loaded" : ""} across ${ctx.projects().length} projects | ${ctx.state.source === "demo" ? "Demo Data" : ctx.state.source === "server" ? "Runtime" : "Imported"}`);
   renderRunGrids(el, ctx);
 }
 
 
-// ---- Run × step grids for projects without targets (agent loops, unknown types). ----
-// The grid module (js/data/run_grid.js) is loaded on first use; AVICA target grids never need it.
 let runGridMod = null;
 let historyMod = null; // data/run_history.js: run summaries for agent-loop history rows
 let runGridLoading = null;
@@ -626,7 +611,7 @@ export function forgetProject(project) {
 function targetlessProjects(ctx) {
   const sel = ctx.state.selectedProject;
   const ids = sel && sel !== "all" ? [sel] : ctx.projects().map((p) => p.id);
-  return ids.filter((p) => isLoopProject(ctx, p) || !(ctx.state.targets || []).some((t) => t.project === p));
+  return ids.filter((p) => !ctx.loadState?.(p) && (isLoopProject(ctx, p) || !(ctx.state.targets || []).some((t) => t.project === p)));
 }
 
 function renderRunGrids(el, ctx) {
