@@ -415,17 +415,27 @@ def test_scan_only_returns_just_those_files(served):
 def test_full_scan_endpoint_reuses_discovery_for_initial_baseline(served, monkeypatch):
     from alfrd import avica_layout
 
-    app, client, name, _ = served
+    app, client, name, root = served
     app.config["STUDIO_LIVE_INTERVAL"] = 30
     app.config["STUDIO_LIVE_IDLE"] = 30
     collect = avica_layout.collect_studio_files
     calls = []
 
-    def counting(*args, **kwargs):
-        calls.append(kwargs)
-        return collect(*args, **kwargs)
+    def counting(scan_root, *args, **kwargs):
+        if Path(scan_root) == root:
+            calls.append(kwargs)
+        return collect(scan_root, *args, **kwargs)
 
     monkeypatch.setattr(avica_layout, "collect_studio_files", counting)
+    # Another watcher may still be finishing a pass after its fixture called stop().
+    # Reproduce that process-global monkeypatch traffic without relying on timing.
+    unrelated = root.parent / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "alfrd.yaml").write_text("name: unrelated\n", encoding="utf-8")
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(avica_layout.collect_studio_files, unrelated, read=False, log_tail=0).result(timeout=5)
     data = client.get(f"/api/studio/projects/{name}/scan").get_json()
     assert calls == [{"log_tail": 0, "only": None}]
     watcher = app.extensions["alfrd_live"]._watchers[name]
