@@ -85,6 +85,15 @@ def _execution(root: Path) -> ExecutionConfig:
     return load_execution(root)
 
 
+def plan_rows(root: Path):
+    """Read the configured project plan using its execution column contract."""
+    from alfrd.runtime import plan_csv
+
+    cfg = _execution(root)
+    return plan_csv.read(cfg.plan_csv, cfg.step_ids, key_column=cfg.key_column, code_column=cfg.code_column,
+                         workdir_column=cfg.workdir_column, files_column=cfg.files_column).rows
+
+
 def _saved() -> dict:
     from alfrd.extensions import settings
 
@@ -94,7 +103,7 @@ def _saved() -> dict:
 def init_project(project: Path, *, spreadsheet: str | None = None, worksheet: str | None = None,
                  header_row: int = 1, force: bool = False, values: dict | None = None,
                  timeout: float = CLI_TIMEOUT, key_column: str | None = None,
-                 code_column: str | None = None) -> InitOutcome:
+                 code_column: str | None = None, match_against: str = "target") -> InitOutcome:
     """Create the CLI's starter mapping and return its summary without printing."""
     root = project.resolve()
     if type(header_row) is not int or header_row < 1:
@@ -127,6 +136,8 @@ def init_project(project: Path, *, spreadsheet: str | None = None, worksheet: st
     if spreadsheet:
         data["spreadsheet_id"] = sid
     data.update(worksheet=worksheet, header_row=header_row, rows={"key_column": key})
+    if match_against != "target":
+        data["rows"]["match_against"] = match_against
     if code_column:
         a1.column(header, code_column)
         data["rows"]["code_column"] = code_column
@@ -136,6 +147,9 @@ def init_project(project: Path, *, spreadsheet: str | None = None, worksheet: st
     data["outbound"] = [{"step": s, "column": by_name[s.casefold()], "field": "status"} for s in matched]
     if key_column is not None:
         mapping.validate(mapping.parse(data, saved), cfg.step_ids, header)
+    if match_against == "files":
+        plugin_settings.make_engine(timeout, values=saved).snapshot(mapping.parse(data, saved), cfg.step_ids,
+                                                                  project_root=root)
     text = ("# Google Sheet sync for this project. Reference: the alfrd-gsheet plugin README.\n"
             + yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
             + "# More outbound examples (uncomment, then run `alfrd gsheet validate`):\n"
@@ -168,7 +182,7 @@ def validate_summary(project: Path, *, offline: bool = False, values: dict | Non
         rules = f"{len(config.outbound)} outbound and {len(config.inbound)} inbound rules"
         if offline:
             return "ok", f"ok: {MAPPING} is valid ({rules}); the sheet was not checked."
-        state = plugin_settings.make_engine(CLI_TIMEOUT, values=saved).snapshot(config, steps, validate_rules=False)
+        state = plugin_settings.make_engine(CLI_TIMEOUT, values=saved).snapshot(config, steps, validate_rules=False, project_root=root)
         problems = mapping.problems(config, steps, state.header, first_col=state.first_col)
         if problems:
             return "warn", f"{len(problems)} problem{'s' if len(problems) != 1 else ''}: {problems[0]}"

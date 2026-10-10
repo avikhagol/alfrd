@@ -11,7 +11,7 @@ from alfrd import get_alfrd_dir, notifiers, notify
 from alfrd.extensions import Plugin, Service, SettingField
 from alfrd.runtime import RuntimeService, RuntimeStore
 
-from .bot import Bot, Plans
+from .bot import VERSION, Bot, Plans
 
 PLUGIN_ID = "telegram"
 #: Exit code for "fix the settings first": Settings → Plugins doesn't restart the bot after it.
@@ -89,6 +89,7 @@ def run(db: Annotated[Path | None, typer.Option("--db", envvar="ALFRD_RUNTIME_DB
         bot = Bot(route, Plans(RuntimeService(store)), log=typer.echo, state=status_file(str(route["chat_id"])))
         source = "Settings → Plugins → Telegram" if where == "settings" else where
         typer.echo(f"Telegram bot started (token and chat from {source}; pid {os.getpid()}).")
+        bot.announce()
         stopped = bot.run()
     except KeyboardInterrupt:
         typer.echo("Telegram bot stopped.")
@@ -124,16 +125,25 @@ def _problem(exc, what):
 
 
 plugin = Plugin(
-    id=PLUGIN_ID, version="0.2.0", alfrd_api=">=1,<2", title="Telegram",
-    description="Plan status, logs and confirmed pause/resume in one allowed chat.", cli=cli,
+    id=PLUGIN_ID, version=VERSION, alfrd_api=">=1,<2", title="Telegram",
+    description="Plan status, logs, agent-loop handoffs and confirmed pause/resume in one allowed chat.",
+    cli=cli,
     settings=[
         SettingField("token", "Bot token", kind="secret", required=True, pattern=r"[0-9]+:[A-Za-z0-9_-]{20,}",
                      help="From @BotFather, like 123456789:AAH…", placeholder="123456789:AAH…"),
         SettingField("chat_id", "Allowed chat id", required=True, pattern=CHAT_ID,
                      help="The numeric id of your private chat with the bot (see the getUpdates step in the README)",
                      placeholder="123456789"),
+        SettingField("hold_minutes", "Digest every (minutes)", kind="number", pattern=r"[0-9]{1,4}(\.[0-9]+)?",
+                     help="Empty or 0 sends notifications immediately. Otherwise, collect a digest until the oldest "
+                          "notification reaches this age. Keep the Bot service running for delivery on time.",
+                     placeholder="0"),
+        SettingField("mute_when_active", "Mute while I use the Studio", kind="bool",
+                     help="Discard notifications for 5 minutes after your last Studio activity. Pending digests "
+                          "wait until you are inactive. Bot command replies still arrive."),
     ],
     services=[Service("bot", ("telegram", "run"), title="Bot",
-                      description="Answers /status, /runs, /log, /pause and /resume in the allowed chat.")],
+                      description="Answers /status, /log, /runs, /handoff, /pause, /resume and /whoareyou "
+                                  "in the allowed chat; posts each finished agent loop's handoff.")],
     check=check,
 )

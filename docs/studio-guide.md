@@ -218,6 +218,42 @@ Status rule: successes only = completed. Failures only = failed. Both = partial.
 
 ---
 
+## Edit the workflow
+
+In **Workflow**, choose **Edit workflow**. Changes stay in a project draft until
+you press **Save**. **Undo** reverses the last change; **Discard** leaves the file
+unchanged. **YAML** previews what Save will write. Editing does not run commands.
+
+- **Steps:** add a step, edit its label and command, skip it without deleting it,
+  move it earlier or later, or delete it. The step dialog also sets its stage,
+  dependencies, time limit, start delay, category, description and log patterns.
+  Graph view offers these controls through **Step actions** after selecting a node.
+  Steps using “after previous” follow the new order; chosen dependencies stay fixed.
+  Deleting a step lists affected dependents before removing their references to it.
+- **Workflow settings:** choose the default command for steps without their own,
+  targets at once (1–64), and what happens on failure. Set a default time limit,
+  explicitly choose no limit, or inherit it. Log patterns can inherit or use an
+  explicit list, including an empty list. Execution and log defaults apply across
+  the project; existing plans keep their saved settings. **Apply to draft** makes
+  one undoable change, and applying unchanged settings leaves the draft clean.
+- **Stages:** rename, reorder or add stages. IDs stay unchanged when renamed,
+  and steps keep their stage assignments. Stages cannot be deleted here.
+- **Agent loops:** use the turn-order chips to add, move or remove agent turns,
+  and set **Total turns**. **Agents, roles & review…** opens the agent settings.
+  Workflow settings shows the required concurrency and failure behavior read-only;
+  Stages is hidden for loops.
+
+For an empty workflow, **Add first step**, **Agent loop template** and **AVICA
+template** start a draft. Template cards write nothing until Save; Discard returns
+to the empty state with the original file intact.
+
+Save validates the draft and rewrites only changed top-level YAML sections.
+Unchanged sections retain their text and comments, and unrelated settings are kept.
+Comments inside a rewritten section may be reformatted. Browser and server saving
+follow the rules in [Two modes](#two-modes).
+
+---
+
 ## AVICA specifics
 
 Folder layout:

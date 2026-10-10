@@ -43,6 +43,7 @@ def test_state_is_offline_and_returns_only_public_settings(actions):
     assert state["credentials"] and state["default_spreadsheet"] and state["dry_run"]
     assert state["steps"] and {"usage.*", "template"} <= {f["id"] for f in state["fields"]}
     assert "SECRET" not in json.dumps(state) and "PRIVATE" not in json.dumps(state)
+    assert state["spreadsheet_id"] == SID
     assert session.sheet.calls == []
     info = attach(actions)
     state = actions("state")
@@ -54,7 +55,7 @@ def test_state_is_offline_and_returns_only_public_settings(actions):
 def test_sheet_info_headers_samples_and_gid(actions):
     session = actions.cli
     info = actions("sheet_info", spreadsheet=f"https://docs.google.com/spreadsheets/d/{SID}/edit#gid=0")
-    assert info == {"spreadsheet_id": SID, "tabs": [{"title": "Targets", "gid": 0}]}
+    assert info == {"spreadsheet_id": SID, "title": "", "tabs": [{"title": "Targets", "gid": 0}]}
     assert [c[0] for c in session.sheet.calls] == ["metadata"]
     session.sheet.calls.clear()
     result = actions("headers", worksheet="Targets", header_row=1)
@@ -279,9 +280,9 @@ def test_transport_errors_never_expose_body(actions, finished, name):  # noqa: F
 
 def test_manifest_mutation_flags_and_timeouts(actions):
     assert {name for name, action in actions.registered.items() if action.mutating} == {
-        "save", "attach", "detach", "backfill"}
+        "save", "attach", "detach", "backfill", "create_columns"}
     assert actions.registered["backfill"].timeout == 300
-    assert len(actions.registered) == 9
+    assert len(actions.registered) == 11
 
 
 def test_auto_panel_only_with_mapping_and_no_network(actions):
@@ -391,3 +392,145 @@ def test_mapping_lock_timeout_keeps_revision_and_file(actions):
         actions.module.project.write_mapping(root, "invalid", base_sha256=state["mapping_sha256"], timeout=.01)
     assert path.read_bytes() == before
     assert actions("state")["mapping_sha256"] == state["mapping_sha256"]
+
+
+
+def test_backend_samples_share_filename_matching_and_attach_validation(actions):
+    from tests.test_plan_execution import _plan
+
+    _plan(actions.cli.root, targets=("T1",), files="a.fits,b.fits")
+    actions.cli.sheet.values = [["FILENAMES", "fits_to_ms"], ["./a.fits b.fits"], ["unknown.fits"]]
+    result = actions("headers", worksheet="Targets", key_column="FILENAMES", match_against="files")
+    assert [(m["status"], m["target"]) for m in result["matches"]] == [("matched", "T1"), ("unmatched", "")]
+    state = actions("attach", worksheet="Targets", key_column="FILENAMES", match_against="files")
+    assert state["mapping"]["rows"]["match_against"] == "files"
+    assert not actions("validate")["errors"]
+    assert actions("state")["mapping"]["rows"]["key_column"] == "FILENAMES"
+
+
+def test_filename_attach_checks_ambiguity_beyond_samples_before_saving(actions):
+    from tests.test_plan_execution import _plan
+
+    _plan(actions.cli.root, files="a.fits")
+    actions.cli.sheet.values = [["FILENAMES"], *[["unknown.fits"] for _ in range(20)], ["a.fits"]]
+    sample = actions("headers", worksheet="Targets", key_column="FILENAMES", match_against="files")
+    assert all(m["status"] == "unmatched" for m in sample["matches"])
+    with pytest.raises(ValueError, match="multiple targets"):
+        actions("attach", worksheet="Targets", key_column="FILENAMES", match_against="files")
+    assert not (actions.cli.root / "alfrd.gsheet.yaml").exists()
+    assert not actions.cli.sheet.writes
+
+
+def test_target_sample_matching_is_case_sensitive_like_sync(actions):
+    from tests.test_plan_execution import _plan
+
+    _plan(actions.cli.root)
+    actions.cli.sheet.values += [["t1"]]
+    result = actions("headers", worksheet="Targets")
+    assert [m["status"] for m in result["matches"]] == ["matched", "matched", "unmatched"]
+
+
+
+def column_draft(actions):
+    data = attach(actions)["mapping"]
+    data["outbound"] = [{"step": "*", "column": "{step} RAM", "field": "usage.peak_mem"}]
+    return data
+
+
+def test_column_review_expands_names_creates_explicitly_and_preserves_mapping(actions):
+    draft = column_draft(actions)
+    path = actions.cli.root / "alfrd.gsheet.yaml"
+    before = path.read_bytes()
+    validation = actions("validate", mapping=draft)
+    assert validation["missing_columns"] == [f"{s} RAM" for s in actions("state")["steps"]]
+    preview = actions("column_preview", mapping=draft)
+    assert preview["columns"][0] == {"letter": "AA", "name": "preprocess_fitsidi RAM"}
+    assert not actions.cli.sheet.writes
+    result = actions("create_columns", mapping=draft, preview_sha256=preview["preview_sha256"], confirm=True)
+    assert result["created"] == 3 and not result["dry_run"]
+    assert path.read_bytes() == before
+    assert not actions("validate", mapping=draft)["errors"]
+    assert actions("column_preview", mapping=draft)["columns"] == []
+
+
+def test_column_creation_rechecks_headers_and_never_replays_stale_review(actions):
+    draft = column_draft(actions)
+    preview = actions("column_preview", mapping=draft)
+    actions.cli.sheet.values[0].append("someone else's header")
+    with pytest.raises(ValueError, match="changed"):
+        actions("create_columns", mapping=draft, preview_sha256=preview["preview_sha256"], confirm=True)
+    assert not actions.cli.sheet.writes
+    fresh = actions("column_preview", mapping=draft)
+    actions("create_columns", mapping=draft, preview_sha256=fresh["preview_sha256"], confirm=True)
+    with pytest.raises(ValueError, match="changed"):
+        actions("create_columns", mapping=draft, preview_sha256=fresh["preview_sha256"], confirm=True)
+    assert len(actions.cli.sheet.writes) == 1
+
+
+def test_column_creation_dry_run_bounds_letters_and_inbound(actions):
+    draft = column_draft(actions)
+    actions.cli.saved["dry_run"] = True
+    preview = actions("column_preview", mapping=draft)
+    assert preview["dry_run"]
+    assert actions("create_columns", mapping=draft, preview_sha256=preview["preview_sha256"], confirm=True)["created"] == 0
+    assert not actions.cli.sheet.writes
+    draft["read_range"] = "A1:Z"
+    with pytest.raises(ValueError, match="outside read_range"):
+        actions("column_preview", mapping=draft)
+    del draft["read_range"]
+    draft["outbound"] = [{"step": "*", "column": "ZZ", "field": "status"}]
+    draft["inbound"] = [{"column": "missing inbound", "to": "plan_column", "plan_column": "notes"}]
+    assert actions("column_preview", mapping=draft)["columns"] == []
+    draft["rows"]["key_column"] = "missing key"
+    with pytest.raises(ValueError, match="unknown sheet column"):
+        actions("column_preview", mapping=draft)
+
+
+def test_column_creation_duplicate_headers_capacity_confirmation_and_response_loss(actions, monkeypatch):
+    draft = column_draft(actions)
+    with pytest.raises(ValueError, match="Confirm"):
+        actions("create_columns", mapping=draft)
+    actions.cli.sheet.width = 18278
+    with pytest.raises(ValueError, match="column limit"):
+        actions("column_preview", mapping=draft)
+    actions.cli.sheet.width = 26
+    actions.cli.sheet.values[0] += ["duplicate", " DUPLICATE "]
+    with pytest.raises(ValueError, match="ambiguous duplicate"):
+        actions("column_preview", mapping=draft)
+    actions.cli.sheet.values[0] = actions.cli.sheet.values[0][:-2]
+    preview = actions("column_preview", mapping=draft)
+    original = actions.cli.sheet.create_columns
+
+    def lost_response(*args, **kwargs):
+        original(*args, **kwargs)
+        raise TimeoutError("SECRET raw body")
+
+    monkeypatch.setattr(actions.cli.sheet, "create_columns", lost_response)
+    with pytest.raises(ValueError, match="TimeoutError"):
+        actions("create_columns", mapping=draft, preview_sha256=preview["preview_sha256"], confirm=True)
+    assert actions("column_preview", mapping=draft)["columns"] == []
+    assert len(actions.cli.sheet.writes) == 1
+
+
+
+def test_missing_destinations_deduplicate_and_keep_other_mapping_errors(actions):
+    draft = column_draft(actions)
+    draft["outbound"] += [{"step": "fits_to_ms", "column": "fits_to_ms RAM", "field": "duration_s"}]
+    draft["inbound"] = [{"column": "absent source", "to": "plan_column", "plan_column": "notes"}]
+    result = actions("validate", mapping=draft)
+    assert len(result["missing_columns"]) == 3
+    assert any(e["path"] == "inbound[0].column" for e in result["errors"])
+    assert any(e["path"] == "outbound[1].column" for e in result["errors"])
+    draft["outbound"].pop()
+    actions.cli.sheet.values[0].append("fits_to_ms RAM")
+    assert len(actions("validate", mapping=draft)["missing_columns"]) == 2
+
+
+def test_sheet_info_exposes_spreadsheet_title(actions, monkeypatch):
+    monkeypatch.setattr(actions.cli.sheet, "metadata", lambda sid, deadline: {
+        "properties": {"title": "Research <targets>"},
+        "sheets": [{"properties": {"title": "Targets", "sheetId": 0}}],
+    })
+    info = actions("sheet_info")
+    assert info["title"] == "Research <targets>"
+    assert info["tabs"][0]["title"] == "Targets"

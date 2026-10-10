@@ -1,5 +1,5 @@
 // No network in the panel renderer. The palette's explicit check uses the protected host endpoint;
-// the project card and dialogs (project_ui.js) call the plugin's project actions.
+// the Overview menu and dialogs (project_ui.js) call the plugin's project actions.
 import { registerProjectUI } from "./project_ui.js";
 
 const esc = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -63,7 +63,7 @@ export function render(inst) {
 
 export function activate(api) {
   api.registerPanel("gsheet_sync", (inst) => api.sanitize(render(inst)));
-  if (api.registerProjectSection && api.dialog && api.action) registerProjectUI(api);
+  if (api.registerOverviewAction && api.menu && api.dialog && api.action) registerProjectUI(api);
   document.addEventListener("click", (event) => {
     const button = event.target.closest?.("button[data-gsheet-toggle]");
     if (!button) return;

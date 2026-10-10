@@ -157,6 +157,52 @@ lock with an `only_if` guard excluding `running`. No step in the about-to-run
 unit is touched; inbound requests affect later steps. Dry run changes neither
 the sheet nor the plan CSV.
 
+### Matching rows by filenames
+
+Existing mappings default to target-name matching. To match an AVICA sheet's
+`FILENAMES` column, choose **Row-match column → FILENAMES** and **Match against →
+Plan filenames** in Connect sheet, or edit Sync options. The persisted setting is:
+
+```yaml
+rows:
+  key_column: FILENAMES
+  match_against: files
+  # code_column: PROJECT_CODE  # optional disambiguation
+```
+
+The backend resolves sheet values to the plan's targets; target names in the plan
+are preserved. Commas, whitespace and newlines separate filenames, as in ALFRD's
+plan CSV. Duplicate filenames and list order do not matter. Relative path segments
+are normalized (`./a.fits` matches `a.fits`); matching is case-sensitive and does
+not guess basenames or depend on files being present on disk. Every filename in a
+sheet cell must belong to the same plan target. A cell can contain one file from
+a target that has several files.
+
+Setup shows backend-resolved samples (`sheet value → target`). Unknown file lists
+are left unmatched; ambiguous lists prevent attachment/validation/sync. Two sheet
+rows resolving to the same target also prevent sync. A configured project-code
+column disambiguates shared filenames. If missing-row append is enabled, the new
+row uses the plan's complete file list, never its target name; empty or ambiguous
+file lists cannot be appended. Hooks read the running plan CSV; Studio validation
+and connection samples read the configured project plan CSV.
+
+### Creating missing destination columns
+
+When a named outbound destination is missing, the editor lists its concrete names
+(including each `{step}` expansion). **Review column creation…** shows the worksheet,
+header row and destination letters. Confirm **Create N columns** to insert new
+columns and write their headers. Existing headers/data are kept; your draft stays
+open, and **Save** remains a separate action. “Add status columns for all steps”
+continues to add mapping rules for existing headers only.
+
+New columns are inserted at the sheet's actual grid end, after its existing empty
+columns too. Widen or clear a bounded read range if the reviewed letters are outside
+it. Missing row keys, inbound sources, duplicate headers and literal column letters
+need manual correction. Review rechecks current headers, and stale reviews cannot
+write. After a failure, review again to reconcile any completed write before retrying;
+insertion requests are never automatically replayed. Settings dry-run offers
+**Preview column creation** and writes nothing.
+
 ## Fields and formats
 
 Fields: `status`, `exit_code`, `error`, `started`, `finished`, `duration_s`,
@@ -316,17 +362,21 @@ to the explicit validation command.
 
 ## Studio
 
-The project home shows a **Google Sheet** card (it appears after restarting
+Overview shows a **Google Sheet ▾** menu next to **Export** (it appears after restarting
 `alfrd serve` with the plugin enabled). Everything below works without a terminal
 and never edits `alfrd.yaml`.
 
-- **Attach Google Sheet** (or the palette command **Google Sheet: attach…**) opens a
+- **Connect & validate…** opens the connection dialog, with sheet name, worksheet, mapping facts and last sync. A sheet without a mapping shows **Not connected** and **Connect sheet…**.
+  A saved mapping shows **Connected**; this indicates attachment, not a live
+  connectivity check. Use **Validate** to check sheet access. An unreadable mapping
+  shows **Needs attention**, with its error and recovery actions.
+- **Connect sheet** (or the palette command **Google Sheet: attach…**) opens a
   three-step dialog: paste a sheet URL or ID (or use the Settings default), **Load**
   it, pick the tab and header row, then the target-name column (guessed from
   `TARGET_NAME`, `target`, `source`, `name`) and an optional project-code column.
   The first key values and how many match the project's plan targets are shown before
   you attach. A URL with `#gid=` preselects that tab. Without a service-account key
-  the card links to Settings → Plugins → Google Sheet instead.
+  the connection dialog links to Settings → Plugins → Google Sheet instead.
 - **Edit mapping** (or **Google Sheet: open mapping editor**) edits outbound rules
   (step, column, field with usage/results key, format, when, template), inbound rules
   and options. Rows can be added, duplicated, moved and deleted; **Add status columns
@@ -335,15 +385,21 @@ and never edits `alfrd.yaml`.
   **Save** stays disabled until they are fixed. Saving rewrites the file in a stable
   order and removes comments, so the first save asks for confirmation. If the file
   changed on disk since it was opened, Save offers **Reload** instead of overwriting.
-- **Validate**, **Preview** (cell, target, step, column, old → new; the first 500 are
-  listed) and **Backfill…** (preview first, then "Write N cells to <tab>?"). With
+- **Validate connection**, **Preview changes…** (cell, target, step, column, old → new; the first 500 are
+  listed) and the menu’s **Export to sheet…** (preview first, then "Write N cells to <tab>?"). With
   Settings dry run on, backfill writes nothing and says so.
-- **Sync enabled** switch and **Detach…**: disable sync and keep the file, or delete
+- The menu’s **Sync** focuses the **Update this sheet during runs** switch and **Detach…**: disable sync and keep the file, or delete
   `alfrd.gsheet.yaml` (sync history stays).
 
-The card, attach and editor call protected project actions. `plugin_actions: false` in
+The menu, connection dialog, attach and editor call protected project actions. `plugin_actions: false` in
 `plugins.json` (or `alfrd serve --no-plugin-actions`) disables Attach, Save, the switch,
 Backfill and Detach; Validate and Preview stay available. Mapping edits check a SHA-256
 revision under `.alfrd/locks/alfrd.gsheet.yaml.lock` and replace the file atomically;
 CLI init uses the same lock, so hand edits and the Studio never silently overwrite
 each other.
+
+The form uses labelled sections, associated helper text, visible keyboard focus
+and a single-column layout on narrow screens. The mapping tables scroll inside
+their own labelled regions. See [OVERVIEW-UX.md](OVERVIEW-UX.md) and [STUDIO-UX.md](STUDIO-UX.md) for the presentation
+specification and the proposed file-matching and column-creation flows (those two
+flows are not implemented yet).

@@ -1,5 +1,19 @@
 # ALFRD Markdown viewer
 
+This plugin enables Studio's rendered file viewer for `.md` and `.markdown`
+files and `text/markdown` content. Headings, lists, fenced code blocks and tables
+are rendered in the current Studio theme. It also enables the **Rendered / Source**
+controls for each incoming prompt and response in Results → Read responses /
+handoffs → Responses. Rendered opens by default when the viewer is enabled;
+Source shows the original Markdown. Without the plugin, handoffs remain readable
+as Source and show an installation hint.
+
+Handoff previews render only the pages already loaded. An “incomplete prompt” or
+“incomplete response” notice means **Load more** is needed; later pages re-render
+the accumulated Markdown. **Copy** still copies the full original artifact,
+including pages not yet displayed. Rendering does not edit the artifact or review
+response.
+
 From the ALFRD repository root:
 
 ```sh

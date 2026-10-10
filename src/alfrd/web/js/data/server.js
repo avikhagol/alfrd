@@ -3,6 +3,7 @@
 // these requests simply 404 and the app stays in browser-only mode.
 
 import { manifestToWorkflows, normalizeStatus } from "./model.js";
+export { createProjectLoader, projectLoadInfo } from "./project_load.js";
 
 const API = "/api";
 const fitsCache = new Map();
@@ -298,9 +299,14 @@ export const server = {
     return this.mutate(`/studio/avica/${encodeURIComponent(project)}/config`, { changes });
   },
 
-  /** Every project remembered in the runtime database (not only the ones shown). */
-  async listProjects() {
-    return (await getJson("/projects")).projects || [];
+  /** Raw remembered projects for Settings; scoped, normalized catalog for startup. */
+  async listProjects({ scoped = false } = {}) {
+    const all = (await getJson("/projects")).projects || [];
+    if (!scoped) return all;
+    const scope = Array.isArray(this.session?.projects) ? this.session.projects : null;
+    return (scope ? all.filter((p) => scope.includes(p.identifier || p.name)) : all).map((p) => ({
+      ...p, manifest_name: p.name, title: p.display_name || p.name, name: p.identifier || p.name,
+    }));
   },
 
   async forgetProject(project) {
@@ -377,18 +383,7 @@ export const server = {
 
   /** Load every project/workflow matrix into an import bundle. */
   async loadAll() {
-    const { projects: all = [] } = await getJson("/projects");
-    // `alfrd serve` started for one project shows only that one (see --all-projects).
-    const scope = Array.isArray(this.session?.projects) ? this.session.projects : null;
-    const selected = scope ? all.filter((p) => scope.includes(p.identifier || p.name)) : all;
-    // The rest of the Studio treats `name` as its project key. In server mode
-    // that key must be the location identifier, while labels remain human-readable.
-    const projects = selected.map((p) => ({
-      ...p,
-      manifest_name: p.name,
-      title: p.display_name || p.name,
-      name: p.identifier || p.name,
-    }));
+    const projects = await this.listProjects({ scoped: true });
     const targets = [];
     const workflows = [];
     const messages = [];
@@ -411,17 +406,28 @@ export const server = {
       list = (await getJson(`/projects/${encodeURIComponent(project.name)}/workflows`)).workflows || [];
     } catch (error) {
       messages.push({ level: "warn", text: `${project.title}: ${error.message}` });
-      return { targets, workflows, messages };
+      return { targets, workflows, messages, ok: false, error: error.message, failed: [] };
     }
     if (!list.length) messages.push({ level: "info", text: `${project.title}: connected, but its manifest declares no runtime workflows.` });
-    for (const wf of list) {
+    // Two workers fetch matrices; consume results in manifest order below.
+    const matrices = new Array(list.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(2, list.length) }, async () => {
+      while (next < list.length) {
+        const i = next++;
+        try {
+          matrices[i] = { matrix: await getJson(`/projects/${encodeURIComponent(project.name)}/workflows/${encodeURIComponent(list[i].name)}/matrix`) };
+        } catch (error) { matrices[i] = { error }; }
+      }
+    }));
+    const failed = [];
+    for (const [i, wf] of list.entries()) {
       const info = manifestToWorkflows({ name: project.name, workflows: [{ name: wf.name, description: wf.description, steps: wf.sequence || [] }] }, `${project.title} (server)`, { aliases: false });
       const workflow = info.workflows[0];
       if (workflow) workflows.push({ project: project.name, ...workflow });
-      let matrix;
-      try {
-        matrix = await getJson(`/projects/${encodeURIComponent(project.name)}/workflows/${encodeURIComponent(wf.name)}/matrix`);
-      } catch (error) {
+      const { matrix, error } = matrices[i];
+      if (error) {
+        failed.push(wf.name);
         messages.push({ level: "warn", text: `${project.title}/${wf.name}: ${error.message}` });
         continue;
       }
@@ -466,6 +472,6 @@ export const server = {
         });
       });
     }
-    return { targets, workflows, messages };
+    return { targets, workflows, messages, ok: !failed.length, failed };
   },
 };

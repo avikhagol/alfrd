@@ -123,6 +123,25 @@ export function activePlan(project, target = null) {
   return plan ? { plan } : null;
 }
 
+/** Targets of the run a status shows (the server's default: working, else active, else scheduled, else newest; or the picked one).
+ * Never the header selection: null when no run is known. */
+export function runTargets(s) {
+  const plan = s?.plan;
+  if (!plan?.id) return null;
+  const list = (v) => (Array.isArray(v) ? v : typeof v === "string" && v ? v.split(",") : []).map((t) => String(t).trim()).filter(Boolean);
+  const rows = (s.table?.rows || []).map((r) => r.target).filter(Boolean);
+  const targets = [...new Set(list(plan.targets).length ? list(plan.targets) : rows.length ? rows : list(plan.target))];
+  const summary = { ...plan, ...(s.plans || []).find((p) => p.id === plan.id), status: plan.status };
+  const active = ["running", "paused", "interrupted"].includes(plan.status);
+  if (active) summary.phase ||= plan.start_at ? "scheduled" : plan.status;
+  return {
+    plan, targets, active,
+    picked: s.selected === "id",
+    label: active ? phaseLabel(summary) : RUN_STATUS[plan.status] || plan.status || "Unknown",
+    tone: (active && ACTIVITY_PHASE[summary.phase]?.tone) || PLAN_TONE[plan.status] || "muted",
+  };
+}
+
 export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) {
   if (!plansAvailable(ctx, project)) return null;
   usageCtx = ctx;

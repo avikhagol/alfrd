@@ -47,12 +47,17 @@ def tree_snapshot(root: str | Path) -> Snapshot:
     from alfrd.avica_layout import collect_studio_files
 
     data = collect_studio_files(root, log_tail=0, read=False)
+    return scan_snapshot(data)
+
+
+def scan_snapshot(data: Mapping[str, Any]) -> Snapshot:
+    """Use a full scan's pre-read metadata without discovering the tree again."""
     out: Snapshot = {}
     for f in data["files"]:
         if f.get("marker"):
             out[f["rel"]] = ("marker", 0, 0)
         else:
-            kind = "content" if f.get("content") else "log" if f.get("log") else "other"
+            kind = "content" if f.get("content") or "text" in f else "log" if f.get("log") else "other"
             out[f["rel"]] = (kind, f.get("size", 0), int(float(f.get("mtime") or 0) * 1e6))
     return out
 
@@ -107,6 +112,7 @@ class Watcher:
         self.events: deque[dict[str, Any]] = deque(maxlen=history)
         self._snapshot: Any = None
         self._lock = threading.RLock()
+        self._check_lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -164,6 +170,10 @@ class Watcher:
     # -- loop ---------------------------------------------------------------
     def check(self) -> dict[str, Any] | None:
         """One pass: probe, compare with the previous pass, publish a change."""
+        with self._check_lock:
+            return self._check()
+
+    def _check(self) -> dict[str, Any] | None:
         t0 = time.perf_counter()
         try:
             snap = self.probe()
@@ -194,6 +204,11 @@ class Watcher:
         return event
 
     def _run(self) -> None:
+        if self._snapshot is not None:
+            # A scan already supplied the baseline. Keep normal polling rather
+            # than immediately doing the full discovery we just avoided.
+            self._wake.wait(self.next_delay())
+            self._wake.clear()
         while not self._stop.is_set():
             try:
                 self.check()
@@ -210,6 +225,20 @@ class TreeWatcher(Watcher):
     def __init__(self, key: str, root: str | Path, publish, **kw) -> None:
         super().__init__(key, publish, **kw)
         self.root = Path(root)
+
+    def seed(self, data: Mapping[str, Any]) -> bool:
+        """Install only a missing baseline; never rewind an active watcher's cursor."""
+        with self._check_lock:
+            if self._snapshot is not None:
+                return False
+            snap = scan_snapshot(data)
+            self._history([rel for rel, value in snap.items() if value[0] == "content"])
+            self._snapshot = snap
+            self.baseline_ts = data["generated_ts"]
+            self.last_pass = time.time()
+            self.pass_seconds = max(0.0, self.last_pass - self.baseline_ts)
+            self._ready.set()
+            return True
 
     def probe(self) -> Snapshot:
         snap = tree_snapshot(self.root)
@@ -374,6 +403,7 @@ class LiveHub:
         self._event_watchers: dict[str, AlfrdWatcher] = {}
         self._subs: set[Subscriber] = set()
         self._leases: dict[str, float] = {}
+        self._scanning: dict[str, int] = {}
         self._lock = threading.RLock()
         self._reaper: threading.Thread | None = None
 
@@ -389,10 +419,12 @@ class LiveHub:
         """An event for every subscriber (all of them hold the runtime key), e.g. ``plugin_job``."""
         self._publish({"type": kind, "key": self.RUNTIME, **data})
 
-    def watcher(self, key: str) -> Watcher | None:
+    def watcher(self, key: str, *, start: bool = True) -> Watcher | None:
         with self._lock:
             w = self._watchers.get(key)
-            if w is not None and w.running:
+            if w is not None and not w._stop.is_set():
+                if start:
+                    w.start()
                 return w
             if key == self.RUNTIME:
                 if not self.runtime_paths:
@@ -404,7 +436,8 @@ class LiveHub:
                     return None
                 w = TreeWatcher(key, root, self._publish, interval=self.interval, idle=self.idle)
             self._watchers[key] = w
-            w.start()
+            if start:
+                w.start()
             if key != self.RUNTIME:
                 # Share the tree cursor/history so SSE and poll fallback have one ordered stream.
                 def forward(event, owner=w):
@@ -419,7 +452,54 @@ class LiveHub:
             self._ensure_reaper()
             return w
 
+    def scan(self, key: str, collect: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """Full scan with a scan-start cursor and a reusable initial tree baseline.
+
+        A concurrent subscriber may establish the baseline first; seed() then
+        leaves it intact. Failed scans still start normal polling for recovery.
+        Companion plan events start before collection, as with touch().
+        """
+        with self._lock:
+            self._leases[key] = time.time()
+            w = self.watcher(key, start=False)
+            if w is not None:
+                self._scanning[key] = self._scanning.get(key, 0) + 1
+        if w is None:
+            return collect()
+
+        def collect_scan() -> dict[str, Any]:
+            with w._lock:
+                cursor = {"epoch": w.epoch, "version": w.version}
+            data = collect()
+            if isinstance(w, TreeWatcher):
+                w.seed(data)
+            data["live"] = cursor
+            return data
+
+        try:
+            if w.running:
+                w.wait_ready(10.0)
+            companion = self._event_watchers.get(key)
+            if companion is not None:
+                companion.wait_ready(10.0)
+            with w._check_lock:
+                if w._snapshot is None:
+                    # A subscriber or another initial scan must not install a
+                    # newer baseline while this response is being collected.
+                    return collect_scan()
+            return collect_scan()
+        finally:
+            with self._lock:
+                self._scanning[key] -= 1
+                if not self._scanning[key]:
+                    del self._scanning[key]
+                if self._watchers.get(key) is w:
+                    self._leases[key] = time.time()
+                    w.start()
+
     def _in_use(self, key: str, now: float) -> bool:
+        if self._scanning.get(key):
+            return True  # shared-storage scans can take longer than a polling lease
         if any(key in s.keys for s in self._subs):
             return True
         return now - self._leases.get(key, 0.0) < self.lease
@@ -544,4 +624,4 @@ class LiveHub:
             events.poke()
 
 
-__all__ = ["LiveHub", "TreeWatcher", "AlfrdWatcher", "FileWatcher", "Watcher", "diff_snapshots", "tree_snapshot"]
+__all__ = ["LiveHub", "TreeWatcher", "AlfrdWatcher", "FileWatcher", "Watcher", "diff_snapshots", "tree_snapshot", "scan_snapshot"]

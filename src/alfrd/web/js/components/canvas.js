@@ -12,7 +12,11 @@ import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
 import { logItem, logForTarget, projectLogs, zoomablePre } from "./logview.js";
 import { scoped } from "../data/workspace.js";
-import { RUN_STATUS, CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule, usageButton } from "./plans.js";
+import { RUN_STATUS, CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule, runTargets, usageButton } from "./plans.js";
+
+let wfe = null; // workflow_editor.js, loaded on first use
+const loadEditor = () => import("./workflow_editor.js").then((m) => (wfe = m));
+const canEditWf = (ctx, p) => p && ctx.state.trees?.[p]?.manifestText != null;
 
 const W = 1040;
 const GAP = 32;
@@ -57,8 +61,13 @@ export function resetSimulation() {
   Object.assign(sim, { active: false, paused: false, statuses: {}, progress: {}, notes: {}, modeled: {}, realMs: {}, elapsed: 0, timer: null, logs: [], targetId: null });
 }
 
+// Editing: the draft (skipped steps included).
+function wfOf(ctx) {
+  return wfe?.previewWorkflow(wfProject(ctx)) || ctx.state.workflow;
+}
+
 function steps(ctx) {
-  return ctx.state.workflow.steps;
+  return wfOf(ctx).steps;
 }
 
 function stepByKey(ctx, key) {
@@ -101,7 +110,7 @@ function displayStatus(ctx, step) {
 
 
 function computeLayout(ctx) {
-  const wf = ctx.state.workflow;
+  const wf = wfOf(ctx);
   const key = `layout:${wf.name}:${wf.steps.map((s) => s.key).join(",")}`;
   if (ui.layoutKey !== key || !ui.layoutLoaded) {
     if (ui.layoutKey !== key) ui.fitted = false; // a different workflow: fit once
@@ -166,7 +175,7 @@ export function mount(el, ctx) {
     <div class="wf-toolbar" id="wf-toolbar"></div>
     <div class="wf-main">
       <div class="wf-stage">
-        <div class="wf-info" id="wf-info"></div>
+        <div class="wf-info" id="wf-info"></div><span class="sr-only" aria-live="polite" id="wfe-live"></span>
         <div class="canvas" id="wf-canvas" tabindex="0" aria-label="Workflow graph. Drag to pan, Ctrl+wheel to zoom.">
           <div class="world" id="wf-world"></div>
           <div class="minimap" id="minimap-panel"></div>
@@ -181,7 +190,7 @@ export function mount(el, ctx) {
   let drag = null;
   canvasEl.addEventListener("pointerdown", (e) => {
     const node = e.target.closest(".node");
-    if (e.target.closest(".minimap, .setup-card") || e.button !== 0) return;
+    if (e.target.closest(".minimap, .setup-card, .node-add, .wfe-node-tools") || e.button !== 0) return;
     if (node && !e.target.closest("button")) {
       const key = node.dataset.key;
       const p = ui.currentLayout.pos[key];
@@ -237,6 +246,13 @@ export function mount(el, ctx) {
     }
   }, { passive: false });
   canvasEl.addEventListener("keydown", (e) => {
+    if (e.target.closest("[data-wfe]")) return;
+    const node = e.target.closest(".node");
+    if (node && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault(); select(ctx, node.dataset.key);
+      requestAnimationFrame(() => $(".wfe-step-actions button:not(:disabled)", el)?.focus());
+      return;
+    }
     const order = steps(ctx).map((s) => s.key);
     const i = order.indexOf(ui.selected);
     if (e.key === "ArrowRight" || e.key === "ArrowDown") { select(ctx, order[Math.min(order.length - 1, i + 1)]); e.preventDefault(); }
@@ -246,6 +262,8 @@ export function mount(el, ctx) {
   });
 
   on(el, "click", "[data-act]", (e, b) => act(el, ctx, b.dataset.act, b));
+  on(el, "click", "[data-wfe]", (e, b) => loadEditor().then((m) => m.handle(ctx, wfProject(ctx), b.dataset.wfe, b)));
+  on(el, "change", "[data-wfe-skip], #wfe-total", (e, inp) => wfe?.handleInput(ctx, wfProject(ctx), inp));
   const toSchedule = () => { ui.mode = "schedule"; remember(); ctx.update(); };
   on(el, "click", "[data-plan]", (e, b) => {
     if (b.dataset.plan === "schedule") { toSchedule(); return; }
@@ -298,6 +316,7 @@ export function showStep(ctx, key) {
 function select(ctx, key) {
   if (!key) return;
   ui.selected = key;
+  wfe?.selectStep(wfProject(ctx), key);
   ui.inspector = true;
   remember();
   ui.draft = null;
@@ -620,6 +639,8 @@ export function render(el, ctx) {
   if (sim.active && sim.targetId && sim.targetId !== ctx.state.selectedTarget) {
     resetSimulation();
   }
+  const chosen = wfe?.selectedStep(wfProject(ctx));
+  if (chosen) ui.selected = chosen;
   if (!stepByKey(ctx, ui.selected)) ui.selected = steps(ctx).find((s) => ["failed", "running", "warning"].includes(statusOf(ctx, s.key)))?.key || steps(ctx)[0]?.key;
   const project = wfProject(ctx);
   const plans = plansAvailable(ctx, project);
@@ -641,8 +662,10 @@ export function render(el, ctx) {
   if (!steps(ctx).length && ui.mode !== "schedule") {
     const box = ui.mode === "list" ? list : $("#wf-world", el);
     if (ui.mode === "graph") { box.style.transform = "none"; $("#minimap-panel", el).hidden = true; }
-    box.innerHTML = `<div class="empty setup-card"><h2>Build your workflow</h2><p>A step is one piece of work, such as running a script or asking an agent.</p><p>Add your first step in <a class="btn primary" href="#/config">Settings · alfrd.yaml</a>, then return here to run it.</p></div>`;
-  } else if (ui.mode === "list") renderList(el, ctx);
+    if (!wfe) loadEditor().then(() => ctx.update());
+    box.innerHTML = !wfe ? "" : wfe.editing(project) && ui.mode === "list" ? wfe.editList(ctx, project) : wfe.emptyState(ctx, project);
+  } else if (ui.mode === "list" && wfe?.editing(project) && wfe.canAddInGraph(project)) $("#wf-list", el).innerHTML = wfe.editList(ctx, project);
+  else if (ui.mode === "list") renderList(el, ctx);
   else if (ui.mode === "schedule") renderSchedule(sched, ctx, project);
   else renderGraph(el, ctx);
   renderInspector(el, ctx);
@@ -671,14 +694,16 @@ function renderToolbar(el, ctx) {
   const project = wfProject(ctx);
   const plans = plansAvailable(ctx, project);
   const f = ctx.state.workflowFile;
-  const wf = ctx.state.workflow;
+  const wf = wfOf(ctx);
   const running = sim.active && !isFinished();
+  const editBtn = wfe?.editing(project) ? "" : canEditWf(ctx, project) ? `<button class="btn" data-wfe="start" title="Add, skip, reorder and edit steps">${icon("edit")} Edit workflow</button>` : "";
   const pct = sim.active ? overallPct(ctx) : 0;
   $("#wf-toolbar", el).innerHTML = `
     <div class="cfg-pill" title="${esc([...(f.errors || []), ...(f.warnings || [])].join("\n") || f.name)}">${icon("file")}<span class="mono">${esc(f.name)}</span>
       <span class="badge tone-${f.validated ? "ok" : "fail"}">${f.validated ? "Validated" : `${f.errors?.length || 0} error(s)`}</span>${f.modified ? '<span class="badge tone-warn">edited</span>' : ""}</div>
     <span class="stat"><i class="dot ok"></i>${wf.steps.length} Steps / ${wf.stages.length} Stages</span>
     <div class="seg"><button data-act="graph" class="${ui.mode === "graph" ? "on" : ""}">${icon("graph")} Graph</button><button data-act="list" class="${ui.mode === "list" ? "on" : ""}">${icon("list")} List</button>${plans ? `<button data-act="schedule" class="${ui.mode === "schedule" ? "on" : ""}" title="Runs: targets × steps and run order">${icon("clock")} Runs</button>` : ""}</div>
+    ${editBtn}
     <button class="btn" data-act="validate">${icon("validate")} Validate configuration</button>
     ${plans && !sim.active ? runGroup(ctx, project) : `<div class="sim-group ${running ? "on" : ""}">`}${plans && !sim.active ? "" : `
       <button class="btn ${running ? "primary" : ""}" data-act="sim" title="Browser simulation only">${icon(running && !sim.paused ? "sync" : "play", running && !sim.paused ? "spin" : "")}<span id="wf-sim-label">${running ? (sim.paused ? `Paused (${pct}%)` : `Simulating (${pct}%)`) : sim.active ? "Re-run simulation" : "Simulate"}</span></button>
@@ -697,15 +722,50 @@ function renderToolbar(el, ctx) {
     </div>`;
 }
 
-function renderInfo(el, ctx) {
+const MAX_INFO_TARGETS = 3;
+
+// With runs: the shown run's targets (working / scheduled, else newest, or the picked one), never the header selection.
+// Without runs (imports, offline): the header selection overlays its results.
+export function infoHead(ctx, project) {
+  const facts = (t) => {
+    const c = t?.columns || {};
+    return { correlator: c.CORRELATOR, line: [c.RA && `RA: ${c.RA}`, c.DEC && `Dec: ${c.DEC}`, c.FREQ && `Freq: ${c.FREQ}`, c.BASELINES && `Baselines: ${c.BASELINES}`].filter(Boolean).join(" | ") };
+  };
   const t = ctx.target();
-  const c = t?.columns || {};
+  if (!plansAvailable(ctx, project)) {
+    const f = facts(t);
+    return { title: t ? `${ctx.projectName(t.project)} / Target: ${t.name}` : "No target selected", correlator: f.correlator,
+      line: f.line || (t ? `Status overlay from ${t.source?.kind === "server" ? "ALFRD runtime" : t.source?.file || "import"}` : "Pick a target in the header to overlay its results.") };
+  }
+  const name = ctx.projectName(project);
+  const status = planOf(project);
+  const run = runTargets(status);
+  if (!run) return { title: `${name} / ${status ? "No runs yet" : "Loading runs…"}`, line: status ? "Start one with Run…; its target appears here." : "The current run's target appears here." };
+  const lead = run.picked ? "Selected run" : run.active ? "Current run" : "Last run";
+  const shown = run.targets.slice(0, MAX_INFO_TARGETS).join(", ") + (run.targets.length > MAX_INFO_TARGETS ? ` +${run.targets.length - MAX_INFO_TARGETS} more` : "");
+  const one = run.targets.length === 1 ? ctx.state.targets?.find((x) => x.project === project && x.name === run.targets[0]) : null;
+  const f = facts(one);
+  const header = t && t.project === project && run.targets.length && !run.targets.includes(t.name) ? ` · Header target ${t.name} is not in this run` : "";
+  return {
+    title: `${name} / ${run.targets.length > 1 ? `Targets (${run.targets.length}): ${shown}` : run.targets.length ? `Target: ${shown}` : "All targets"}`,
+    full: run.targets.length > MAX_INFO_TARGETS ? run.targets.join(", ") : "",
+    correlator: f.correlator,
+    run,
+    line: `${f.line ? `${f.line} · ` : ""}${lead} ${run.plan.id}${header}`,
+  };
+}
+
+function renderInfo(el, ctx) {
+  const project = wfProject(ctx);
+  const info = $("#wf-info", el);
+  info.classList.toggle("wfe-on", Boolean(wfe?.editing(project)));
+  if (wfe?.editing(project)) { info.innerHTML = wfe.editBar(ctx, project, ui.mode === "graph", ui.selected); return; }
+  const h = infoHead(ctx, project);
   const paramSource = ctx.state.paramSource || "AVICA defaults";
-  const facts = [c.RA && `RA: ${c.RA}`, c.DEC && `Dec: ${c.DEC}`, c.FREQ && `Freq: ${c.FREQ}`, c.BASELINES && `Baselines: ${c.BASELINES}`].filter(Boolean);
   $("#wf-info", el).innerHTML = `
     <span class="info-ic">${icon("target")}</span>
-    <div class="grow"><b>${esc(t ? `${ctx.projectName(t.project)} / Target: ${t.name}` : "No target selected")}</b>${c.CORRELATOR ? ` <span class="chip">${esc(c.CORRELATOR)}</span>` : ""}
-      <div class="muted small">${facts.length ? esc(facts.join(" | ")) : t ? `Status overlay from ${esc(t.source?.kind === "server" ? "ALFRD runtime" : t.source?.file || "import")}` : "Pick a target in the header to overlay its results."}</div></div>
+    <div class="grow"><b class="wf-info-title" ${h.full ? `title="${esc(h.full)}"` : ""}>${esc(h.title)}</b>${h.run ? ` <span class="badge tone-${esc(h.run.tone)}">${esc(h.run.label)}</span>` : ""}${h.correlator ? ` <span class="chip">${esc(h.correlator)}</span>` : ""}
+      <div class="muted small">${esc(h.line)}</div></div>
     ${sim.active || !plansAvailable(ctx, wfProject(ctx)) ? `<div class="info-stat"><span class="muted small">Elapsed Sim Time</span><b id="wf-elapsed" class="tabular">${sim.active ? elapsed(sim.elapsed) : "—"}</b></div>` : ""}
     <div class="info-stat"><span class="muted small">Step parameters from</span><b class="small mono">${esc(paramSource)}</b></div>
     ${sim.active ? `<span class="badge tone-run" title="Nothing is executed in the browser">${icon("info")}Simulated</span>` : ""}`;
@@ -723,12 +783,14 @@ function nodeHtml(ctx, s, p) {
   const dur = sim.active && sim.statuses[s.key] === "completed" ? sim.modeled[s.key] : imported?.duration;
   const params = Object.entries(s.params).slice(0, 3);
   const sel = ui.selected === s.key;
-  return `<div class="node st-${st} ${sel ? "sel" : ""}" data-key="${esc(s.key)}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px" role="button" tabindex="-1" aria-label="${esc(s.key)} ${esc(label)}">
+  const tools = wfe ? wfe.nodeTools(wfProject(ctx), s.key) : "";
+  return `<div class="node st-${st} ${sel ? "sel" : ""} ${s.skipped ? "skipped" : ""} ${tools ? "editable" : ""}" data-key="${esc(s.key)}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px" role="button" tabindex="${tools ? "0" : "-1"}" aria-label="${esc(s.key)} ${esc(s.skipped ? "Skipped" : label)}">
     ${st === "running" ? `<div class="node-prog"><i style="width:${simulating ? pct : 60}%"></i></div>` : ""}
     <div class="node-h">
       <span class="node-ic">${icon(s.icon)}</span>
       <div class="node-t"><b class="mono">${esc(s.key)}</b>${sel ? '<span class="sel-tag">Active selection</span>' : ""}<span>${esc(s.label)}</span></div>
-      <span class="badge tone-${meta.tone}">${icon(simulating ? "sync" : meta.icon, simulating ? "spin" : "")}<span>${esc(label)}</span></span>
+      ${s.skipped ? '<span class="badge tone-muted"><span>Skipped</span></span>' : `<span class="badge tone-${meta.tone}">${icon(simulating ? "sync" : meta.icon, simulating ? "spin" : "")}<span>${esc(label)}</span></span>`}
+      ${tools}
     </div>
     <div class="node-b">
       <div class="kvs">${params.map(([k, v]) => `<span><em>${esc(k)}:</em><code>${esc(typeof v === "string" ? `"${v}"` : typeof v === "number" && Number.isInteger(v) && /thresh|snr|ratio/.test(k) ? v.toFixed(1) : v)}</code></span>`).join("")}</div>
@@ -742,7 +804,8 @@ function nodeHtml(ctx, s, p) {
 function renderGraph(el, ctx) {
   const L = computeLayout(ctx);
   ui.currentLayout = L;
-  const wf = ctx.state.workflow;
+  const wf = wfOf(ctx);
+  const addNode = wfe ? wfe.graphAddNode(wfProject(ctx), L, W) : "";
   const banners = L.banners.map(({ stage, index, y }) => {
     const sts = stage.steps.map((k) => statusOf(ctx, k));
     const n = (x) => sts.filter((s) => s === x).length;
@@ -760,7 +823,7 @@ function renderGraph(el, ctx) {
   world.style.height = `${L.height}px`;
   world.innerHTML = `<svg class="edges" id="wf-edges" width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" aria-hidden="true">
       <defs>${["ok", "fail", "run", "idle", "ready"].map((k) => `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ar ar-${k}"/></marker>`).join("")}</defs>
-      <g id="wf-edge-g"></g></svg>${banners}${nodes}`;
+      <g id="wf-edge-g"></g></svg>${banners}${nodes}${addNode}`;
   drawEdges(el, ctx);
   if (!ui.fitted) {
     requestAnimationFrame(() => { fit(el); ui.fitted = true; });
@@ -774,9 +837,10 @@ function drawEdges(el, ctx) {
   const g = $("#wf-edge-g", el);
   if (!g) return;
   const L = ui.currentLayout;
-  g.innerHTML = ctx.state.workflow.steps.flatMap((s) => s.depends.filter((d) => L.pos[d]).map((d) => {
-    const cls = edgeClass(ctx, d, s.key);
-    const k = cls.slice(2);
+  const skipped = new Set(steps(ctx).filter((s) => s.skipped).map((s) => s.key));
+  g.innerHTML = steps(ctx).flatMap((s) => s.depends.filter((d) => L.pos[d]).map((d) => {
+    const cls = skipped.has(d) || skipped.has(s.key) ? "e-idle e-skip" : edgeClass(ctx, d, s.key);
+    const k = cls.split(" ")[0].slice(2);
     return `<path d="${edgePath(L.pos[d], L.pos[s.key])}" class="edge ${cls}" marker-end="url(#ar-${k})"><title>${esc(d)} → ${esc(s.key)}</title></path>`;
   })).join("");
 }
@@ -788,7 +852,7 @@ function drawMinimap(el, ctx) {
   const tone = { completed: "ok", failed: "fail", running: "run", warning: "warn" };
   mm.innerHTML = `<header><span>Canvas overview</span><button class="icon-btn xs" data-act="minimap" aria-label="Close mini-map">${icon("close")}</button></header>
     <svg class="mm-svg" viewBox="0 0 ${L.width} ${L.height}" preserveAspectRatio="xMidYMid meet">
-      ${ctx.state.workflow.steps.map((s) => { const p = L.pos[s.key]; return `<rect x="${p.x}" y="${p.y}" width="${p.w}" height="${NODE_H}" rx="10" class="mm-n mm-${tone[statusOf(ctx, s.key)] || "idle"}"/>`; }).join("")}
+      ${steps(ctx).map((s) => { const p = L.pos[s.key]; return `<rect x="${p.x}" y="${p.y}" width="${p.w}" height="${NODE_H}" rx="10" class="mm-n mm-${tone[statusOf(ctx, s.key)] || "idle"}"/>`; }).join("")}
       <rect id="mm-view" class="mm-view" x="0" y="0" width="10" height="10"/>
     </svg>`;
   drawViewport(el);
@@ -809,9 +873,9 @@ function renderList(el, ctx) {
   const t = ctx.target();
   const plan = overlay(ctx);
   $("#wf-list", el).innerHTML = `<table class="tbl list-tbl"><thead><tr><th>#</th><th>Step</th><th>Stage</th><th>Category</th><th>Depends on</th><th>Parameters</th><th>Status</th><th>Runtime</th></tr></thead><tbody>
-    ${ctx.state.workflow.steps.map((s, i) => {
+    ${steps(ctx).map((s, i) => {
       const st = displayStatus(ctx, s);
-      const stage = ctx.state.workflow.stages.find((x) => x.id === s.stage);
+      const stage = wfOf(ctx).stages.find((x) => x.id === s.stage);
       const pc = plan && !plan.row ? plan.counts[s.key] : null;
       return `<tr data-step="${esc(s.key)}" class="st-${st} ${ui.selected === s.key ? "sel" : ""}"><td>${i + 1}</td><td class="mono"><b>${esc(s.key)}</b>${s.alias ? ` <small class="muted">(${esc(s.alias)})</small>` : ""}<div class="muted small">${esc(s.label)}</div></td><td>${esc(stage?.title || s.stage)}</td><td>${esc(s.category)}</td><td class="mono small">${esc(s.depends.join(", ") || "—")}</td><td class="mono small">${esc(Object.entries(s.params).map(([k, v]) => `${k}=${v}`).join(" "))}</td><td><span class="badge tone-${STEP_STATUS[st]?.tone}">${icon(STEP_STATUS[st]?.icon)}${esc(STEP_STATUS[st]?.label)}</span>${pc ? `<div class="node-plan">${countsLine(pc)}</div>` : ""}</td><td class="tabular">${esc(short(sim.active && sim.statuses[s.key] === "completed" ? sim.modeled[s.key] : t?.steps?.[s.key]?.duration) || "—")}</td></tr>`;
     }).join("")}</tbody></table>`;

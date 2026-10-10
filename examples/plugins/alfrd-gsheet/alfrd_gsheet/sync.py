@@ -153,7 +153,7 @@ class Sync:
         return self.plan_loader(ctx).steps
 
     def _snapshot(self, ctx: StepContext | None, config: mapping.MappingConfig, steps: Sequence[str], deadline: float,
-                  *, whole_sheet: bool = False, validate_rules: bool = True) -> Snapshot:
+                  *, whole_sheet: bool = False, validate_rules: bool = True, project_root: Path | None = None) -> Snapshot:
         title = (self.client.worksheet_title(config.spreadsheet_id, config.worksheet, deadline=deadline)
                  if isinstance(config.worksheet, int) else config.worksheet)
         range_ = a1.quote(title) + ("!" + config.read_range if config.read_range and not whole_sheet else "")
@@ -188,6 +188,20 @@ class Sync:
         mapping.validate(checked, steps, header, first_col=first_col)
         key_col = a1.column(header, config.key_column, first_col=first_col)
         code_col = a1.column(header, config.code_column, first_col=first_col) if config.code_column else None
+        resolver = None
+        if config.match_against == "files":
+            from .row_match import Resolver
+
+            if ctx is not None:
+                access = self.plan_loader(ctx)
+                plan_rows = plan_csv.read(access.path, access.steps, **access.columns).rows
+            elif project_root is not None:
+                from .project import plan_rows as read_rows
+
+                plan_rows = read_rows(project_root)
+            else:
+                raise mapping.MappingError("filename matching requires a project plan")
+            resolver = Resolver(plan_rows, "files", with_code=bool(config.code_column))
         values, addresses, row_numbers = {}, {}, {}
         for offset, raw in enumerate(rows[header_index + 1:], start=config.header_row + 1):
             def at(col: int, raw: list = raw) -> str:
@@ -197,7 +211,10 @@ class Sync:
             target = at(key_col).strip()
             if not target:
                 continue
-            key = plan_csv.row_key(target, at(code_col).strip() if code_col else "")
+            code = at(code_col).strip() if code_col else ""
+            key = resolver.key(target, code) if resolver else plan_csv.row_key(target, code)
+            if key is None:
+                continue
             if key in row_numbers:
                 raise mapping.MappingError("duplicate sheet row identity; use rows.code_column if necessary")
             row_numbers[key] = offset
@@ -257,11 +274,13 @@ class Sync:
         mapping.validate(config, plan_steps)
         return self._snapshot(ctx, config, plan_steps, deadline)
 
-    def snapshot(self, config: mapping.MappingConfig, steps: Sequence[str], *, validate_rules: bool = True) -> Snapshot:
+    def snapshot(self, config: mapping.MappingConfig, steps: Sequence[str], *, validate_rules: bool = True,
+                 project_root: Path | None = None) -> Snapshot:
         """One read that checks the mapping against the live header (CLI/Studio validate)."""
         checked = config if validate_rules else replace(config, outbound=(), inbound=())
         mapping.validate(checked, steps)
-        return self._snapshot(None, config, steps, time.monotonic() + self.timeout, validate_rules=validate_rules)
+        return self._snapshot(None, config, steps, time.monotonic() + self.timeout, validate_rules=validate_rules,
+                              project_root=project_root)
 
     def before(self, ctx: StepContext) -> Snapshot | None:
         deadline = time.monotonic() + self.timeout
@@ -303,7 +322,18 @@ class Sync:
                 for col in range(state.first_col, state.first_col + len(state.header)):
                     state.addresses[key, col] = a1.cell(state.worksheet, row_number, col)
                 key_col = a1.column(state.header, state.config.key_column, first_col=state.first_col)
-                working[key, key_col] = row["target"]
+                identity = row["target"]
+                if state.config.match_against == "files":
+                    from .row_match import Resolver
+
+                    access = self.plan_loader(ctx)
+                    rows = plan_csv.read(access.path, access.steps, **access.columns).rows
+                    planned = next((r for r in rows if r.key == row["key"]), None)
+                    identity = planned.files if planned else ""
+                    resolver = Resolver(rows, "files", with_code=bool(state.config.code_column))
+                    if not identity or resolver.key(identity, row.get("code", "")) != key:
+                        raise mapping.MappingError("cannot append a row without unambiguous plan filenames")
+                working[key, key_col] = identity
                 if labels is not None:
                     labels[state.addresses[key, key_col]] = {"target": row["target"], "step": "",
                                                             "column": state.config.key_column}

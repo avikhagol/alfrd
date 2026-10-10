@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfrd-telegram"
-version = "0.2.0"
+version = "0.3.0"
 requires-python = ">=3.10"
 # alfrd itself is provided by the host (`--target` would install a second copy);
 # the manifest's `alfrd_api` declares compatibility.

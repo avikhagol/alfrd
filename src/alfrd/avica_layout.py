@@ -494,6 +494,8 @@ class ProjectCode:
     targets: list[str] = field(default_factory=list)
     meta_files: list[str] = field(default_factory=list)
     templates: list[str] = field(default_factory=list)
+    #: Band folders (relative to ``wd``) found by the same walk: the Studio's markers.
+    band_dirs: list[str] = field(default_factory=list)
 
     def to_dict(self, root: Path) -> dict[str, Any]:
         return {
@@ -518,12 +520,25 @@ def _meta_targets(names: Iterable[str]) -> set[str]:
 
 
 def _iter_dirs(base: Path, depth: int) -> Iterable[Path]:
-    if depth <= 0 or not base.is_dir():
+    # os.scandir: the entry type comes with the listing, so files and plain
+    # folders cost no extra stat (symbolic links are still followed).
+    if depth <= 0:
         return
-    for child in sorted(base.iterdir(), key=lambda p: p.name.lower()):
-        if child.is_dir() and not child.name.endswith(".ms") and not child.name.startswith("."):
-            yield child
-            yield from _iter_dirs(child, depth - 1)
+    try:
+        entries = sorted(os.scandir(base), key=lambda e: e.name.lower())
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    for entry in entries:
+        if entry.name.endswith(".ms") or entry.name.startswith("."):
+            continue
+        try:
+            if not entry.is_dir():
+                continue
+        except OSError:
+            continue
+        child = Path(entry.path)
+        yield child
+        yield from _iter_dirs(child, depth - 1)
 
 
 def scan_project_codes(root: str | Path, target_dir: Path, patterns: Mapping[str, list[str]] | None = None) -> list[ProjectCode]:
@@ -551,8 +566,9 @@ def scan_project_codes(root: str | Path, target_dir: Path, patterns: Mapping[str
         bands: set[str] = set()
         for child in _iter_dirs(wd, 2):
             rel = os.path.relpath(child, wd)
-            match = _match_any(band_res, rel)
+            match = _match_any(band_res, rel.replace(os.sep, "/"))
             if match:
+                item.band_dirs.append(rel.replace(os.sep, "/"))
                 if match.groupdict().get("band"):
                     bands.add(match.group("band"))
                 if match.groupdict().get("target"):
@@ -567,6 +583,95 @@ def scan_project_codes(root: str | Path, target_dir: Path, patterns: Mapping[str
         item.targets = sorted(targets)
         codes.append(item)
     return codes
+
+
+#: Result CSVs live at most this many path parts below the target dir
+#: (``<CODE>/<wd>/<file>.csv``); deeper files are never matched.
+RESULT_CSV_DEPTH = 3
+
+
+def _segment_res(pattern: str, groups: Mapping[str, str]) -> list[re.Pattern[str] | None]:
+    """Per-folder regexes of a ``result_csv`` pattern below ``{target_dir}/``.
+
+    ``None`` marks a literal segment. Back-references are relaxed to the
+    group's own regex, so a folder that can belong to a match is never pruned;
+    the whole-path regex still decides.
+    """
+    group_res = {**_GROUPS, **dict(groups)}
+    out: list[re.Pattern[str] | None] = []
+    for seg in pattern.split("/"):
+        if not _PLACEHOLDER.search(seg):
+            out.append(None)
+            continue
+        parts, pos = [], 0
+        for match in _PLACEHOLDER.finditer(seg):
+            parts.append(re.escape(seg[pos:match.start()]))
+            parts.append(f"(?:{group_res.get(match.group(1), r'[^/]+?')})")
+            pos = match.end()
+        parts.append(re.escape(seg[pos:]))
+        out.append(re.compile("^" + "".join(parts) + "$"))
+    return out
+
+
+def _result_csv_candidates(target_dir: Path, patterns: list[str], groups: Mapping[str, str]) -> list[Path]:
+    """``*.csv`` files at most :data:`RESULT_CSV_DEPTH` parts below ``target_dir``.
+
+    Only folders some pattern can pass through are listed: a placeholder
+    segment never enters a measurement set or a hidden folder (like
+    :func:`scan_project_codes`), a literal one enters exactly that name. A
+    pattern not rooted at ``{target_dir}/`` disables pruning (bounded walk).
+    Symbolic links to folders are not followed (as ``Path.rglob``).
+    """
+    segs: list[list[re.Pattern[str] | None] | list[str]] = []
+    unpruned = False
+    for pattern in patterns:
+        if not pattern.startswith("{target_dir}/"):
+            unpruned = True
+            break
+        rest = pattern[len("{target_dir}/"):]
+        segs.append(list(zip(rest.split("/"), _segment_res(rest, groups))))
+
+    def wanted(names: list[str]) -> bool:
+        if unpruned:
+            return True
+        depth = len(names)
+        for pattern_segs in segs:
+            if len(pattern_segs) <= depth:
+                continue
+            for name, (text, regex) in zip(names, pattern_segs):
+                if regex is None:
+                    if name != text:
+                        break
+                elif name.endswith(".ms") or name.startswith(".") or not regex.match(name):
+                    break
+            else:
+                return True
+        return False
+
+    found: list[Path] = []
+    stack: list[tuple[Path, list[str]]] = [(target_dir, [])]
+    while stack:
+        folder, names = stack.pop()
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir:
+                child = [*names, entry.name]
+                if len(child) < RESULT_CSV_DEPTH and wanted(child):
+                    stack.append((Path(entry.path), child))
+            elif entry.name.endswith(".csv"):
+                try:
+                    if entry.is_file():
+                        found.append(Path(entry.path))
+                except OSError:
+                    continue
+    return sorted(found)
 
 
 def result_csvs(
@@ -591,10 +696,8 @@ def result_csvs(
     if not target_dir.is_dir():
         return []
     out = []
-    for path in sorted(target_dir.rglob("*.csv")):
-        if len(path.relative_to(target_dir).parts) > 3:
-            continue
-        rel = os.path.relpath(path, base).replace(os.sep, "/")
+    for path in _result_csv_candidates(target_dir, pats["result_csv"], groups):
+        rel =os.path.relpath(path, base).replace(os.sep, "/")
         match = _most_specific_match(regexes, rel)
         if not match:
             continue
@@ -864,19 +967,20 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
     cfg = resolve_config(base)
     target_dir = resolve_dir(base, cfg.get("target_dir")) or base / "reductions"
     patterns = layout_patterns(base)
-    for item in result_csvs(base, target_dir, patterns, [c.code for c in scan_project_codes(base, target_dir, patterns)]):
+    # One walk of the work dirs per request: result CSVs, meta files, templates,
+    # band markers and studio_context() below all reuse it.
+    codes = scan_project_codes(base, target_dir, patterns)
+    for item in result_csvs(base, target_dir, patterns, [c.code for c in codes]):
         add(base / item["file"])
     meta_dir = patterns["meta_dir"][0]
-    band_res = [pattern_regex(p) for p in patterns["band_dir"]]
-    for code in scan_project_codes(base, target_dir, patterns):
+    for code in codes:
         for name in code.meta_files:
             add(code.wd / meta_dir / name, limit=_MAX_TEXT)
         for rel in code.templates:
             add(code.wd / rel, limit=512 * 1024)
-        for child in _iter_dirs(code.wd, 2):
-            if _match_any(band_res, os.path.relpath(child, code.wd).replace(os.sep, "/")):
-                marker = os.path.relpath(child, base).replace(os.sep, "/") + "/.dir"
-                files.append({"rel": marker, "size": 0, "marker": True})
+        for rel in code.band_dirs:
+            marker = os.path.relpath(code.wd / rel, base).replace(os.sep, "/") + "/.dir"
+            files.append({"rel": marker, "size": 0, "marker": True})
 
     update_dir = resolve_dir(base, cfg.get("picard_input_template_update"))
     update_dirs = [update_dir] if update_dir else [p for p in base.iterdir() if p.is_dir() and re.search(r"input_temp.*update", p.name)]
@@ -896,11 +1000,17 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
     # Step logs and log artifacts declared in alfrd.yaml. The server lists them
     # (log_tail=0) and serves them on open; a --bundle has no server behind it,
     # so it carries the last ``log_tail`` bytes of each, like avica.logs/*.log.
-    from alfrd.studio_defs import collect_log_files, collect_ms_paths, studio_context
+    from alfrd.studio_defs import (
+        ScanCache,
+        collect_log_files,
+        collect_ms_paths,
+        studio_context,
+    )
 
-    studio = studio_context(base)
+    studio = studio_context(base, layout={"target_dir": target_dir, "patterns": patterns, "codes": codes})
+    fs = ScanCache()  # this request only: log and ms_path patterns list each folder once
     by_rel = {f["rel"]: f for f in files}
-    for item in collect_log_files(base, studio):
+    for item in collect_log_files(base, studio, fs):
         info = {k: item[k] for k in ("groups", "steps", "band", "target", "workdir") if item.get(k)}
         if item["rel"] in by_rel:
             entry = by_rel[item["rel"]]
@@ -931,7 +1041,7 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
         "target_dir": os.path.relpath(target_dir, base),
         "files": files,
         "default_manifest": manifest is None,
-        "ms_paths": collect_ms_paths(base, studio),
+        "ms_paths": collect_ms_paths(base, studio, fs),
     }
 
 

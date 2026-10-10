@@ -33,6 +33,11 @@ class SheetsClient(Protocol):
 
     def worksheet_title(self, spreadsheet_id: str, gid: int, *, deadline: float) -> str: ...
 
+    def metadata(self, spreadsheet_id: str, *, deadline: float) -> dict[str, Any]: ...
+
+    def create_columns(self, spreadsheet_id: str, *, sheet_id: int, header_row: int,
+                       start: int, names: list[str], deadline: float) -> None: ...
+
 
 SCOPES = ("https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive.metadata.readonly")
@@ -157,7 +162,7 @@ class RestClient:
         self._session_factory = session_factory
         self._credential_factory = credential_factory or _credentials
 
-    def _request(self, method, url, *, deadline, **kwargs):
+    def _request(self, method, url, *, deadline, attempts=3, **kwargs):
         def perform():
             remaining(deadline)
             creds, lock = self._credential_factory(self._raw, deadline)
@@ -178,7 +183,7 @@ class RestClient:
                     auth_kwargs["timeout"] = min(self.request_timeout, remaining(deadline))
                     return auth_transport(*args, **auth_kwargs)
 
-                for attempt in range(3):
+                for attempt in range(attempts):
                     headers = {}
                     if not lock.acquire(timeout=remaining(deadline)):
                         raise SyncError("Google Sheet request deadline exceeded.")
@@ -216,8 +221,8 @@ class RestClient:
                             raise SyncError("Google rejected the service-account credentials (401).")
                         if status != 429 and not 500 <= status < 600:
                             raise SyncError(f"Google Sheet request failed (HTTP {status}).")
-                        if attempt == 2:
-                            raise SyncError(f"Google Sheet unavailable after 3 attempts (HTTP {status}).")
+                        if attempt == attempts - 1:
+                            raise SyncError(f"Google Sheet unavailable after {attempts} attempts (HTTP {status}).")
                     finally:
                         response.close()
                     delay = 0.5 * 2 ** attempt + random.uniform(0, 0.25)
@@ -260,9 +265,26 @@ class RestClient:
             self._request("POST", self._url(spreadsheet_id) + "/values:batchUpdate", deadline=deadline,
                           json={"valueInputOption": value_input_option, "data": data})
 
+    def create_columns(self, spreadsheet_id, *, sheet_id, header_row, start, names, deadline):
+        """Insert fresh columns and set literal headers atomically, with no unsafe replay.
+
+        Insertion preserves cells even if another editor adds columns after our
+        read. A lost response must be reconciled by a new preview before retrying.
+        """
+        requests = [
+            {"insertDimension": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                                             "startIndex": start, "endIndex": start + len(names)},
+                                 "inheritFromBefore": start > 0}},
+            {"updateCells": {"start": {"sheetId": sheet_id, "rowIndex": header_row - 1, "columnIndex": start},
+                             "rows": [{"values": [{"userEnteredValue": {"stringValue": name}} for name in names]}],
+                             "fields": "userEnteredValue"}},
+        ]
+        self._request("POST", self._url(spreadsheet_id) + ":batchUpdate", deadline=deadline,
+                      attempts=1, json={"requests": requests})
+
     def metadata(self, spreadsheet_id, *, deadline):
         data = self._request("GET", self._url(spreadsheet_id), deadline=deadline,
-                             params={"fields": "properties(title),sheets(properties(sheetId,title))"})
+                             params={"fields": "properties(title),sheets(properties(sheetId,title,gridProperties))"})
         sheets = data.get("sheets")
         if (not isinstance(sheets, list) or any(not isinstance(sheet, dict)
                 or not isinstance(sheet.get("properties"), dict) for sheet in sheets)):

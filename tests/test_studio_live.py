@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from alfrd.studio_defs import read_range
-from alfrd.studio_live import FileWatcher, LiveHub, TreeWatcher, diff_snapshots, tree_snapshot
+from alfrd.studio_live import FileWatcher, LiveHub, TreeWatcher, diff_snapshots, scan_snapshot, tree_snapshot
 
 TREE = Path(__file__).parent / "fixtures" / "avica_tree"
 LOG = "reductions/RDV41/wd/wd_S/avica_avg_casa_log-20260908_180141.log"
@@ -85,6 +86,189 @@ def test_snapshot_is_stat_only_and_classifies(tree):
     assert snap[META][0] == "content"
     assert snap[LOG][0] == "log"
     assert any(kind == "marker" for kind, *_ in snap.values())
+
+
+def test_full_scan_can_seed_the_same_snapshot(tree):
+    from alfrd.avica_layout import collect_studio_files
+
+    assert scan_snapshot(collect_studio_files(tree, log_tail=0)) == tree_snapshot(tree)
+
+
+def test_seed_captures_history_and_keeps_changes_during_read(tree):
+    from alfrd.avica_layout import collect_studio_files
+    from alfrd.history import versions
+
+    w = TreeWatcher("p", tree, lambda e: None)
+    scan = collect_studio_files(tree, log_tail=0)
+    # Metadata in the scan precedes the edit: the first poll must detect it.
+    _bump(tree / META, "\n")
+    assert w.seed(scan)
+    assert w.baseline_ts == scan["generated_ts"]
+    assert versions(tree, "alfrd.yaml")[0]["source"] == "external"
+    event = w.check()
+    assert META in event["changed"] and event["version"] == 1
+    previous = (w._snapshot, w.baseline_ts, w.version, list(w.events))
+    assert not w.seed(scan)
+    assert (w._snapshot, w.baseline_ts, w.version, list(w.events)) == previous
+
+
+def test_hub_initial_scan_discovers_once_and_retains_start_cursor(tree, monkeypatch):
+    from alfrd import avica_layout
+    from alfrd.studio_live import Watcher
+
+    # Control polling explicitly; no timing-dependent operation count.
+    monkeypatch.setattr(Watcher, "start", lambda self: None)
+    monkeypatch.setattr(Watcher, "wait_ready", lambda self, timeout=10: True)
+    hub = LiveHub(lambda key: tree, interval=2)
+    calls = []
+    collect = avica_layout.collect_studio_files
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs)
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(avica_layout, "collect_studio_files", counting)
+    data = hub.scan("p", lambda: counting(tree, log_tail=0))
+    assert len(calls) == 1
+    w = hub._watchers["p"]
+    assert w._ready.is_set() and data["live"] == {"epoch": w.epoch, "version": 0}
+
+    def changing_scan():
+        data = counting(tree, log_tail=0)
+        _bump(tree / META, "\n")
+        assert w.check()["version"] == 1
+        return data
+
+    updated = hub.scan("p", changing_scan)
+    assert updated["live"]["version"] == 0  # never claim an event newer than the scan
+    got, reset = w.since(updated["live"]["epoch"], 0)
+    assert not reset and got[0]["changed"] == [META]
+    hub.stop_all()
+
+
+def test_hub_failed_initial_scan_still_recovers(tree):
+    hub = LiveHub(lambda key: tree, interval=0.2)
+    try:
+        def fail():
+            raise FileNotFoundError("scan failed")
+
+        with pytest.raises(FileNotFoundError):
+            hub.scan("p", fail)
+        w = hub._watchers["p"]
+        assert w.wait_ready(5) and w.running
+        assert w._snapshot == tree_snapshot(tree)
+    finally:
+        hub.stop_all()
+
+
+def test_seed_keeps_companion_events_after_the_scan_start(tree, monkeypatch):
+    from alfrd.avica_layout import collect_studio_files
+    from alfrd.runtime import scheduler
+    from alfrd.studio_live import Watcher
+
+    monkeypatch.setattr(Watcher, "start", lambda self: None)
+    monkeypatch.setattr(scheduler, "list_plans", lambda _: [{"id": "run", "status": "running"}])
+    events_file = tree / ".alfrd/plans/run/events.jsonl"
+    events_file.parent.mkdir(parents=True)
+    events_file.write_text("")
+
+    def ready(watcher, timeout=10):
+        if watcher._snapshot is None:
+            watcher.check()
+        return True
+
+    monkeypatch.setattr(Watcher, "wait_ready", ready)
+    hub = LiveHub(lambda key: tree)
+
+    def collect():
+        data = collect_studio_files(tree, log_tail=0)
+        events_file.write_text(json.dumps({"seq": 1, "kind": "review.pending", "plan": "run"}) + "\n")
+        assert hub._event_watchers["p"].check()["version"] == 1
+        _bump(tree / META, "\n")
+        return data
+
+    try:
+        data = hub.scan("p", collect)
+        w = hub._watchers["p"]
+        assert data["live"]["version"] == 0 and w.version == 1
+        assert w.check()["version"] == 2
+        response = hub.changes({"p": f"{w.epoch}:0"}, ["p"])
+        assert response["reset"] == []
+        assert [event["type"] for event in response["events"]] == ["alfrd", "tree"]
+        assert [event["version"] for event in response["events"]] == [1, 2]
+    finally:
+        hub.stop_all()
+
+
+def test_initial_scan_blocks_a_concurrent_baseline(tree, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from alfrd.avica_layout import collect_studio_files
+    from alfrd.studio_live import Watcher
+
+    monkeypatch.setattr(Watcher, "start", lambda self: None)
+    monkeypatch.setattr(Watcher, "wait_ready", lambda self, timeout=10: True)
+    hub = LiveHub(lambda key: tree)
+    entered, release, probing = threading.Event(), threading.Event(), threading.Event()
+
+    def delayed_scan():
+        data = collect_studio_files(tree, log_tail=0)
+        assert hub.reap(time.time() + 3600) == []  # an in-flight scan owns its watcher
+        entered.set()
+        assert release.wait(5)
+        return data
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        response = pool.submit(hub.scan, "p", delayed_scan)
+        try:
+            assert entered.wait(5)
+            w = hub._watchers["p"]
+            _bump(tree / META, "\n")
+
+            def check():
+                probing.set()
+                return w.check()
+
+            poll = pool.submit(check)
+            assert probing.wait(5)
+            assert w._snapshot is None  # the newer poll cannot replace scan metadata
+        finally:
+            release.set()
+        data = response.result(timeout=5)
+        event = poll.result(timeout=5)
+    assert data["live"]["version"] == 0 and event["version"] == 1
+    assert META in event["changed"]
+    assert hub._scanning == {} and hub.reap(time.time()) == []
+    assert hub.reap(time.time() + 3600) == ["p"]
+    hub.stop_all()
+
+
+def test_seeded_watcher_waits_then_polls_and_can_be_poked(tree, monkeypatch):
+    from alfrd.avica_layout import collect_studio_files
+
+    w = TreeWatcher("p", tree, lambda e: None, interval=0.2)
+    w.seed(collect_studio_files(tree, log_tail=0))
+    waiting, release, checked = threading.Event(), threading.Event(), threading.Event()
+
+    def wait(delay):
+        waiting.set()
+        assert release.wait(5)
+
+    def check():
+        checked.set()
+        w.stop()
+
+    monkeypatch.setattr(w._wake, "wait", wait)
+    monkeypatch.setattr(w, "check", check)
+    w.start()
+    try:
+        assert waiting.wait(5) and not checked.is_set()
+        w.poke()
+        assert w._wake.is_set()
+    finally:
+        release.set()
+        w._thread.join(5)
+        w.stop()
+    assert checked.is_set()
 
 
 def test_diff_separates_log_growth_from_content_changes(tree):
@@ -226,6 +410,27 @@ def test_scan_only_returns_just_those_files(served):
     assert scan["generated_ts"] > 0 and "live" not in scan  # partial scans don't claim a version
     full = client.get(f"/api/studio/projects/{name}/scan").get_json()
     assert full["live"]["epoch"] and full["live"]["version"] == 0
+
+
+def test_full_scan_endpoint_reuses_discovery_for_initial_baseline(served, monkeypatch):
+    from alfrd import avica_layout
+
+    app, client, name, _ = served
+    app.config["STUDIO_LIVE_INTERVAL"] = 30
+    app.config["STUDIO_LIVE_IDLE"] = 30
+    collect = avica_layout.collect_studio_files
+    calls = []
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs)
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(avica_layout, "collect_studio_files", counting)
+    data = client.get(f"/api/studio/projects/{name}/scan").get_json()
+    assert calls == [{"log_tail": 0, "only": None}]
+    watcher = app.extensions["alfrd_live"]._watchers[name]
+    assert watcher.running and watcher._snapshot == scan_snapshot(data)
+    assert watcher.baseline_ts == data["generated_ts"]
 
 
 def test_event_stream_hello_tree_and_ping(served):

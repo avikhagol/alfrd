@@ -27,7 +27,15 @@ MAPPING = {"version": 1, "spreadsheet_id": SID, "worksheet": "Targets", "rows": 
 class Sheet(FakeClient):
     def metadata(self, spreadsheet_id, *, deadline):
         self.calls.append(("metadata", spreadsheet_id))
-        return {"sheets": [{"properties": {"sheetId": 0, "title": "Targets"}}]}
+        return {"sheets": [{"properties": {"sheetId": 0, "title": "Targets", "gridProperties": {"columnCount": getattr(self, "width", 26), "rowCount": 1000}}}]}
+
+    def create_columns(self, spreadsheet_id, *, sheet_id, header_row, start, names, deadline):
+        assert start == getattr(self, "width", 26)
+        self.writes.append((spreadsheet_id, names, "HEADERS"))
+        header = self.values[0]
+        header.extend([""] * (start - len(header)))
+        header.extend(names)
+        self.width = start + len(names)
 
 
 @pytest.fixture

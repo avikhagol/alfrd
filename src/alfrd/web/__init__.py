@@ -53,6 +53,7 @@ REQUIRED_ASSETS = (
     "js/data/server.js",
     "js/data/defs.js",
     "js/data/live.js",
+    "js/data/presence.js",
     "assets/favicon.svg",
     "assets/favicon.ico",
     "assets/apple-touch-icon.png",
