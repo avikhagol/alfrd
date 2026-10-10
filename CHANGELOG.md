@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.3.1.0]
 
 - Add Workflow editing with step and agent-turn controls, undoable workflow settings and stages, and YAML previews. Template cards create drafts saved only on Save; saving rewrites only changed sections and preserves unrelated settings.
 - Improve workflow editor keyboard focus, action announcements, accessible labels and touch targets.
@@ -9,11 +9,7 @@
 - Clarify Telegram summaries and digest/mute helpers; associate plugin settings help with controls and accept fractional minutes.
 - Load Studio presence tracking on the first click or key instead of at startup.
 
-## [0.3.0.1]
-
-### Changed
- - codex wont write history by default.
-
+[0.3.1.0]: https://github.com/avikhagol/alfrd/compare/v0.2.2.0...v0.3.1.0
 [0.3.0.1]: https://github.com/avikhagol/alfrd/compare/v0.2.2.0...v0.3.0.1
 [0.3.0.0]: https://github.com/avikhagol/alfrd/compare/v0.2.2.0...v0.3.0.0
 [0.2.2]: https://github.com/avikhagol/alfrd/compare/v0.2.1.0...v0.2.2
