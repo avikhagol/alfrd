@@ -1,5 +1,4 @@
-// Workflow view → Edit workflow: a per-project draft (with undo) of alfrd.yaml's
-// first workflow; Save rewrites only changed sections via ctx.saveManifest.
+// Per-project workflow drafts; Save writes changed sections.
 
 import { $, $$, esc, icon, loadCss } from "../utils/dom.js";
 import { parseYaml } from "../utils/yaml_parser.js";
@@ -99,7 +98,6 @@ function change(ctx, project, fn, id = null, action = "edit", message = "Draft u
   }
 }
 
-/** The draft as the graph / list render it: skipped steps included (flagged), in place. */
 export function previewWorkflow(project) {
   const d = drafts.get(project);
   if (!d) return null;
@@ -116,14 +114,11 @@ export function previewWorkflow(project) {
   return out;
 }
 
-/** Problems that would make the saved file invalid (skips applied). */
 function draftErrors(d) {
   try { return manifestToWorkflows(d.data, d.file, { aliases: false }).errors.filter((e) => !/declares no steps/.test(e)); } catch (error) { return [error.message]; }
 }
 
-// --- rendering -----------------------------------------------------------------
 
-/** The bar above the canvas while editing: what changed, undo, discard, save. */
 export function editBar(ctx, project, graph = false, selected = null) {
   const d = drafts.get(project);
   const changed = dirty(d);
@@ -179,7 +174,6 @@ function sequencePanel(ctx, project, d) {
     </div>`;
 }
 
-/** List view while editing: every declared step, skipped ones too, with its tools. */
 export function editList(ctx, project) {
   const d = drafts.get(project);
   if (workflowKind(d.data, d.template) === "sequence") return "";
@@ -207,7 +201,6 @@ function tools(r, i, n) {
     <button class="icon-btn sm" data-wfe="delete" data-id="${esc(r.id)}" aria-label="Delete ${esc(r.id)}" title="Delete">${icon("trash")}</button>`;
 }
 
-/** The small action bar on a graph node while editing. */
 export function nodeTools(project, key) {
   const d = drafts.get(project);
   if (!d || workflowKind(d.data, d.template) === "sequence") return "";
@@ -225,7 +218,6 @@ export function canAddInGraph(project) {
   return Boolean(d && workflowKind(d.data, d.template) !== "sequence");
 }
 
-/** Blank project: how to start, without opening alfrd.yaml. */
 export function emptyState(ctx, project) {
   const can = canEdit(ctx, project) ? "" : "disabled";
   const card = (act, ic, title, text, extra = "") => `<button class="wfe-start-card ${act === "first" ? "primary" : ""}" data-wfe="${act}" ${extra} ${can}>${icon(ic)}<b>${title}</b><span>${text}</span></button>`;
@@ -237,7 +229,6 @@ export function emptyState(ctx, project) {
     <p class="muted small">${can ? "Open a project folder first (Projects, at the left of the header)." : 'Prefer the file? <a href="#/config">Settings · alfrd.yaml</a>'}</p></div>`;
 }
 
-/** Editing: a dashed "Add step" node below the last stage of the graph (`L` grows to fit it). */
 export function graphAddNode(project, L, width) {
   if (!canAddInGraph(project)) return "";
   const y = L.height + 8;
@@ -245,7 +236,6 @@ export function graphAddNode(project, L, width) {
   return `<button class="node-add" data-wfe="add" style="left:0;top:${y}px;width:${Math.min(width, 340)}px">${icon("plus")}<span>Add step</span></button>`;
 }
 
-// --- actions -------------------------------------------------------------------
 
 export async function handle(ctx, project, action, button) {
   const d = drafts.get(project);
@@ -306,7 +296,6 @@ export async function handle(ctx, project, action, button) {
   }
 }
 
-/** Inputs outside data-wfe buttons: the skip switches and the total turns field. */
 export function handleInput(ctx, project, el) {
   if (el.dataset.wfeSkip) {
     const id = el.dataset.wfeSkip;
@@ -363,7 +352,6 @@ function deleteDialog(ctx, project, id) {
   }, "wfe-modal");
 }
 
-/** Template cards start a draft; Save writes it, keeping unrelated keys. */
 async function applyTemplate(ctx, project, template) {
   if (!drafts.has(project) && !(await startEdit(ctx, project))) return;
   const d = drafts.get(project);
@@ -380,7 +368,6 @@ async function applyTemplate(ctx, project, template) {
   }
 }
 
-// --- workflow settings / stages dialogs ---------------------------------------------
 
 const FAILURE = {
   stop_target: ["Stop this target", "Leave later steps for that target unrun; other targets can continue."],
@@ -524,7 +511,6 @@ function stagesDialog(ctx, project) {
   }, "wfe-modal");
 }
 
-// --- step dialog -----------------------------------------------------------------
 
 function stepDialog(ctx, project, id, at = null) {
   const d = drafts.get(project);
