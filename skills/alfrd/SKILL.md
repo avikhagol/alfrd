@@ -1,6 +1,10 @@
 ---
 name: alfrd
 description: Drive ALFRD (plan CSVs, targets, alfrd.yaml, AVICA runs, agent loops, Studio API, notifications, plugins/themes) from an agent with the fewest tokens. Use when a folder has alfrd.yaml / alfrd.plan.csv / .alfrd/, or the user asks to run, monitor, debug or configure ALFRD or AVICA pipeline steps or Claude/Codex agent loops.
+compatibility: Requires the alfrd CLI (Python >= 3.10) on PATH; runs and plan state are Linux-first. HTTP calls need a running alfrd serve.
+metadata:
+  alfrd-version: "0.3.1.1"
+  plugin-api: "1"
 ---
 
 # ALFRD for agents
@@ -55,10 +59,10 @@ compact, versioned JSON form made for you. Prefer it over reading files.
 | Check alfrd.yaml | `alfrd manifest validate DIR/alfrd.yaml` |
 | No alfrd.yaml (AVICA tree) | `alfrd manifest default -o alfrd.yaml` (edit, then validate) |
 | Studio (web UI) | `alfrd serve --project DIR --no-browser [--port 5000]` (no `-C` here) |
-| Agent loop: run one task | `alfrd plan run -C DIR --target T` (see Agent loops) |
+| Agent loop: run one task | `alfrd plan run -C DIR --target T` (see [references/agent-loops.md](references/agent-loops.md)) |
 | Change a turn of a running loop | `alfrd plan turn PLAN t003-codex -C DIR --review / --manual / --after +1h / --after 0 / --model M / --clear` |
 | Approve / reject a held handoff | Studio Handoffs, or `alfrd plan reject PLAN UNIT --reason "…" -C DIR` |
-| Why didn't a notification arrive | `.alfrd/plans/<id>/runner.log` (skips/warnings), routes in Studio Settings → Notifications (see Notifications) |
+| Why didn't a notification arrive | `.alfrd/plans/<id>/runner.log` (skips/warnings), routes in Studio Settings → Notifications (see [references/notifications.md](references/notifications.md)) |
 | Plan events since seq N | `GET /api/v1/projects/<p>/plans/<id>/events?since=N` (JSON) or `.alfrd/plans/<id>/events.jsonl` (tail it, don't read whole) |
 | Plugins / themes installed | `alfrd plugin list` · `alfrd plugin info <id>` (manifest + last error) · `alfrd plugin theme` (list, `*` = current) |
 | Plugin broke the server | `alfrd serve --safe-mode` (or `ALFRD_NO_PLUGINS=1`), then `alfrd plugin disable <id>` |
@@ -124,95 +128,18 @@ Non-AVICA trees: `hierarchy` + `views.metadata` (`docs/template-views.md`).
 
 ## Notifications
 
-The runner (not `alfrd serve`) appends every plan event to
-`.alfrd/plans/<id>/events.jsonl` and delivers it through routes. Kinds:
-`plan.started|finished|failed|cancelled|interrupted`, `turn.started|finished|failed|retrying|fallback_model|idle`,
-`review.pending|approved|rejected`, `handoff.published`, `limit.reached`.
-
-```yaml
-notify:                    # alfrd.yaml: only `via: desktop` allowed here
-  idle_after: 600          # s without output -> turn.idle; 0/false = off
-  routes:
-    - {via: desktop, 'on': [review.pending, plan.failed, plan.finished, turn.idle]}   # quote 'on'
-```
-
-`webhook` (`url`, `secret`, `headers`; https unless loopback) and `command`
-(`argv`, message JSON on stdin) only in the user's `~/.config/alfrd/notify.json`
-(`{"routes": [...]}`, applies to all projects).
-`telegram` (`token`, numeric `chat_id`, optional `studio_url`; plain text, link to Studio) is user-only too; without `token`/`chat_id` it uses Settings → Plugins → Telegram. `on` takes kinds or `plan.*`, `turn.*`, `*`.
-Routes are read when a runner starts: edits apply to new or restarted runners.
-Events of one plan within 20 s are batched; `notify.cursor` prevents resends.
-An unusable notifier (no desktop, SSH) is skipped with one warning in `runner.log`;
-notifications never fail a plan.
+Plan events, `notify:` routes (desktop / webhook / command / telegram), why a
+notification didn't arrive: read [references/notifications.md](references/notifications.md).
 
 ## Plugins and themes
 
-A plugin is a trusted Python package (entry point `alfrd.plugins`) adding
-themes, `views.metadata` panels, file viewers, converters or `alfrd <id> …`
-commands; installed per alfrd installation, not per project. `install|remove|
-update|enable|disable` apply on the next `alfrd serve` restart. Status values:
-`ok disabled error`, `missing binary: X`, `incompatible API`, `skipped (safe mode)`.
-Themes: built-in `obsidian-orbit` (dark, default) and `daylight-orbit`; drop-in
-CSS themes in `~/.local/share/alfrd/themes/<id>/`. CLI theme selection needs a
-Studio reload; Settings applies at once. Scaffold: `alfrd plugin new <id>
-[--kind viewer|converter|theme|panel]`. Details: `docs/plugins.md`.
-Plugins may declare `settings` (form in Settings → Plugins → Configure; values in `~/.config/alfrd/plugin-settings.json`, 0600, read with `alfrd.extensions.settings.values(id)`), a `check` (Test) and `services` (`alfrd <cmd>` children of `alfrd serve`: Start/Stop, log, *Start with the Studio*; exit 2 = don't restart).
-Example `examples/plugins/alfrd-telegram`: token + allowed chat id in its settings; the bot runs as its service or `alfrd telegram run` (`/status /runs /log /help`, `/pause /resume` after Yes/No).
-
-Writing one (start from `alfrd plugin new`, don't hand-roll the layout):
-
-- `pyproject.toml`: `dependencies` must **not** list `alfrd` (the host provides
-  it); exactly one `[project.entry-points."alfrd.plugins"]` entry, whose name
-  equals `Plugin.id` (`myid = "alfrd_myid:plugin"`).
-- `from alfrd.extensions import Plugin, PanelSpec, Converter`; `plugin = Plugin(id=…,
-  version=…, alfrd_api=">=1,<2", panels=[…], converters=[…], cli=typer_app,
-  theme="theme.css", web="web", viewers=[…], requires_bin=[…])`.
-- `PanelSpec(kind, evaluate=fn)`: `fn(root, panel, values, spec)` returns JSON
-  for the browser or raises. `Converter(src=[".ps"], to="pdf", run=fn)`:
-  `fn(src, dest, *, timeout)` writes `dest` or raises.
-- Theme only: `--kind theme` gives `theme.css` (colour tokens) + `theme.json`;
-  copy the folder to the drop-in themes path, no package needed.
-- Test: `uv pip install -e ./alfrd-myid` into alfrd's env, then
-  `alfrd plugin info myid` (shows the load error if any); restart `alfrd serve`.
+Installing, debugging (`alfrd plugin info <id>`, `--safe-mode`), themes, and
+writing a plugin: read [references/plugins.md](references/plugins.md).
 
 ## Agent loops
 
-`template: agent-loop`: agents take turns on one task, each reading the previous
-turn's handoff (`{target}/next-step-<agent>.md`) and writing the next one.
-
-```yaml
-loop:
-  workspace: worktree       # each task works in its own git worktree: {target}/workspace, branch alfrd/<task>
-workflows:
-  - name: agent-loop
-    repeat:
-      iterations: 10        # TOTAL turns (agent runs) = the project maximum per task
-      sequence: [claude, claude, codex]   # one pass, repeats; may stop mid-pass
-      # passes: 3           # instead of iterations: whole passes
-      # sequence: [[claude, codex], [claude, claude, codex]]   # custom passes; the last repeats
-    turns:                  # single turns, by number or id (t004-codex)
-      3: {human_review: true}             # hold the handoff for a person
-      t004-codex: {manual: true, after: "+1h"}   # a person writes it; start 1 h after turn 3
-entrypoint:
-  - {name: claude, cmd: [claude, -p], model: opus, fallback_models: [sonnet]}
-  - {name: gemini, cmd: [gemini], adapter: generic, model_option: --model}   # any stdin→stdout CLI
-```
-
-- Step ids are `t<NNN>-<agent>`; older projects (`repeat.iterations` + `steps`)
-  still count passes and use `i<NNN>-<step>`.
-- Tasks: `{target}/task.md` + `{target}/.alfrd-task.json` (`{"iterations": N, "version": 2}`
-  = turns, at most the project maximum). Tasks run in parallel as separate plans.
-  ALFRD never commits, merges or pushes a worktree; the user merges `alfrd/<task>`.
-  Outside git, tasks share one tree (`workspace_warning` on the plan).
-- Review is decided when a turn's command ends, so `plan turn … --review` works
-  on the running turn. Other overrides only on turns not yet started. They live
-  in `.alfrd/plans/<id>/overrides.json` (this plan only; `alfrd.yaml` unchanged).
-- Fallback: Claude gets `--fallback-model`; other agents are relaunched with the
-  next model after a runtime failure (never after an invalid or rejected response).
-- Each turn records `logical_turn_id`, `attempt_number`, `retry_of`, `outcome`
-  (`accepted failed_validation rejected abandoned failed_runtime`), `usage_source`,
-  `agent_usage.input_uncached_tokens`, and `handoff.raw_input_chars /
-  trimmed_handoff_chars / prompt_chars / sections_truncated`.
+`template: agent-loop` projects (turns, handoffs, worktrees, review, overrides,
+fallback models): read [references/agent-loops.md](references/agent-loops.md).
 
 ## Without a server (Python, read-only)
 
