@@ -125,6 +125,7 @@ class StepCommand:
     after: float | None = None         # seconds to wait after the previous step finishes
     at: str | None = None              # or a clock time: "02:00" (next 02:00) / "2026-10-07 02:00"
     turn: int = 0
+    status_from: str | None = None     # None inherits the plan default
 
 
 @dataclass
@@ -201,7 +202,7 @@ class ExecutionConfig:
                 {"id": s.id, "entrypoint": s.entrypoint, "argv": list(s.argv) if s.argv else None, "timeout": s.timeout,
                  "handoff": dict(s.handoff), "iteration": s.iteration, "manual": s.manual,
                  "human_review": s.human_review, "model": s.model, "roles": [dict(r) for r in s.roles],
-                 "turn": s.turn, "adapter": s.adapter, "fallback_models": list(s.fallback_models), "after": s.after}
+                 "status_from": s.status_from, "turn": s.turn, "adapter": s.adapter, "fallback_models": list(s.fallback_models), "after": s.after}
                 for s in self.steps
             ],
             "key_column": self.key_column,
@@ -432,6 +433,9 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
             argv = None
         timeout = spec.get("timeout", entries.get(entry, {}).get("timeout", settings.get("timeout")))
         io = {**entries.get(entry, {}), **spec}
+        status_from = spec.get("status_from")
+        if status_from is not None and status_from not in STATUS_FROM:
+            raise ExecutionError(f"step {sid!r}: status_from must be one of {', '.join(STATUS_FROM)}")
         for key in ("stdin_file", "output_file", "cwd"):
             if io.get(key) is not None and (not isinstance(io[key], str) or not io[key]):
                 raise ExecutionError(f"{key} must be a nonempty string")
@@ -498,7 +502,7 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
             human_review=review, model=model, claude_stream=claude_stream, loop_options=dict(loop_options),
             introduce_roles=bool(spec.get("introduce_roles", int(spec.get("iteration") or 0) == 1)),
             adapter=adapter.name, fallback_models=tuple(fallbacks), after=after, at=at, agent=is_agent, turn=int(spec.get("turn") or 0),
-            model_option=io.get("model_option"),
+            model_option=io.get("model_option"), status_from=status_from,
         ))
     steps = [replace(step, next_roles=tuple(r["label"] for r in steps[i + 1].roles),
                      next_agent=steps[i + 1].entrypoint or steps[i + 1].base_step)
@@ -508,6 +512,8 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
             raise ExecutionError("repeated workflows require mode: step and concurrency: 1")
         if settings["on_failure"] != "stop_plan" or settings["status_from"] != "exit_code":
             raise ExecutionError("repeated workflows require on_failure: stop_plan and status_from: exit_code")
+        if any(s.status_from not in (None, "exit_code") for s in steps):
+            raise ExecutionError("repeated workflows require status_from: exit_code for every step")
         if not all(s.handoff and s.stdin_file and s.output_file for s in steps):
             raise ExecutionError("repeated agent steps need handoff, stdin_file and output_file")
         if not all(s.stdin_file == "{prompt_file}" and s.output_file == "{response_file}" for s in steps):

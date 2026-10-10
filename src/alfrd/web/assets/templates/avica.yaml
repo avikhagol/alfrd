@@ -84,8 +84,12 @@ targets:
 
 # Commands ALFRD runs (Studio → Workflow → Run…, `alfrd plan run`). alfrd.yaml
 # entrypoints with the same name replace these; `execution:` keys override one by one.
-# Placeholders: {target} {step} {from_step} {targets} {plan_csv} {root} and any
-# plan CSV column ({FILENAMES}, {PROJECT_CODE}, ...). No shell: one argv item each.
+# Custom steps may set status_from: exit_code to use only the command exit code.
+# Other steps inherit execution.status_from: both below.
+# Placeholders: {target} {step} {from_step} {steps} {targets} {plan_csv} {plan_id}
+# {project_dir} (open project directory; alias {root}), {cwd} (execution.cwd),
+# {project_code}, {workdir} (row WORKDIR, e.g. wd; requires a populated cell), and
+# any plan CSV column ({FILENAMES}, {PROJECT_CODE}, ...). No shell: one argv item each.
 # Studio → Setup wizard: a form for avica.inp in the project folder (see docs/agent-loops.md "Setup forms").
 quickstart:
   setup:

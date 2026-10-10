@@ -9,7 +9,7 @@ export const STEP_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const SECTIONS = ["workflows", "steps", "stages", "execution", "step_defaults"];
 const sectionsOf = (data) => [...new Set([...SECTIONS, ...Object.keys(isMap(data) ? data : {})])];
 // Keys the step form edits; other keys of a step mapping (metadata, params, …) are kept as they are.
-const FORM_KEYS = ["label", "category", "stage", "description", "cmd", "entrypoint", "depends_on", "after", "timeout", "logs", "skip"];
+const FORM_KEYS = ["label", "category", "stage", "description", "cmd", "entrypoint", "depends_on", "after", "timeout", "status_from", "logs", "skip"];
 
 const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
 const isMap = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -57,6 +57,7 @@ export function editorSteps(data, template = null) {
       depends_on: dep == null ? null : (Array.isArray(dep) ? dep : [dep]).map(String),
       after: merged.after ?? null,
       timeout: merged.timeout ?? null,
+      status_from: merged.status_from ?? null,
       logs: Array.isArray(merged.logs) ? merged.logs : [],
       fromTemplate: Boolean(tplSteps[id]),
     };

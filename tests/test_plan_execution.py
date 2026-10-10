@@ -91,6 +91,41 @@ def test_execution_config_from_template_and_render(project):
         load_execution(project)
 
 
+@pytest.mark.parametrize("mode", ["step", "target", "batch"])
+def test_project_directory_placeholders_in_commands(project, mode):
+    # Spaces stay in one argv item; a custom cwd does not change the project directory.
+    command_dir = project / "command folder"
+    command_dir.mkdir()
+    (project / "alfrd.yaml").write_text(
+        "version: 1\nname: proj\ntemplate: avica\n"
+        "execution: {cwd: 'command folder', target_entrypoint: paths, batch_entrypoint: paths}\n"
+        "entrypoint:\n"
+        "  - name: paths\n"
+        "    cmd: [echo, '{project_dir}/file with spaces', '{root}', '{cwd}']\n"
+        "workflows:\n  - name: avica\n    entrypoint: paths\n    steps: [fits_to_ms]\n"
+    )
+    _plan(project, targets=("T1",))
+    result = scheduler.preview(project, mode=mode)
+    assert not result["errors"]
+    assert result["units"][0]["argv"] == [
+        "echo", str(project / "file with spaces"), str(project), str(command_dir),
+    ]
+
+
+def test_workdir_placeholder_requires_a_plan_row_value(project):
+    cfg = load_execution(project)
+    row = pc.PlanRow(values={}, index=0, key="T1", target="T1", code="BV019", workdir="", files="a.fits")
+    unit = scheduler.UnitSpec([row], ["fits_to_ms"], "step")
+    values = scheduler.values_for(cfg, unit, {"id": "test"}, cfg.plan_csv)
+    assert values["cwd"] == values["project_dir"] == values["root"] == str(project)
+    with pytest.raises(RenderError) as info:
+        render(["echo", "{workdir}"], values)
+    assert info.value.missing == ["workdir"]
+    row.workdir = "wd_1"
+    values = scheduler.values_for(cfg, unit, {"id": "test"}, cfg.plan_csv)
+    assert render(["echo", "{workdir}", "{project_code}"], values) == ["echo", "wd_1", "BV019"]
+
+
 def test_plan_csv_update_keeps_user_edits(tmp_path):
     path = tmp_path / "plan.csv"
     pc.create(path, [{"target": "A"}, {"target": "B", "code": "BV019"}], STEPS, STEPS[:2],
@@ -223,6 +258,58 @@ def test_dry_run_lists_commands_and_missing_values(project):
     _plan_path = _plan(project, targets=("T1",))
     result = scheduler.preview(project, _plan_path, mode="target")
     assert result["units"][0]["argv"][-2:] == ["--resume-from", "preprocess_fitsidi"]
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_avica_custom_step_uses_exit_code_without_result_csv(project, exit_code):
+    (project / "alfrd.yaml").write_text(
+        "version: 1\nname: proj\ntemplate: avica\n"
+        "workflows:\n  - name: avica\n    steps:\n"
+        "      - id: calc_flux_err\n"
+        f"        cmd: {json.dumps([sys.executable, '-c', f'raise SystemExit({exit_code})'])}\n"
+        "        status_from: exit_code\n"
+        "      - fits_to_ms\n"
+    )
+    cfg = load_execution(project)
+    assert cfg.settings["status_from"] == "both"
+    assert cfg.step("calc_flux_err").status_from == "exit_code"
+    assert cfg.step("fits_to_ms").status_from is None
+    _plan(project, targets=("T1",), steps=["calc_flux_err", "fits_to_ms"])
+    folder = scheduler.create_plan(project)
+    scheduler.Runner(project, folder.id).run()
+    table = scheduler.table_for(cfg, cfg.plan_csv)
+    row = table.rows[0]
+    assert row.cell("calc_flux_err") == ("done" if exit_code == 0 else "failed")
+    assert row.cell("fits_to_ms") == ("done" if exit_code == 0 else "blocked")
+    custom = next(u for u in folder.units() if u["steps"] == ["calc_flux_err"])
+    assert custom["results"] == {}
+    assert custom["error"] == (None if exit_code == 0 else "exit code 7")
+
+
+def test_avica_step_exit_code_override_ignores_failed_result_csv(project, monkeypatch):
+    (project / "alfrd.yaml").write_text(
+        "version: 1\nname: proj\ntemplate: avica\n"
+        "workflows:\n  - name: avica\n    steps:\n"
+        "      - {id: preprocess_fitsidi, status_from: exit_code}\n"
+        "      - fits_to_ms\n"
+    )
+    monkeypatch.setenv("FAKE_AVICA_FAIL", "T1:preprocess_fitsidi,T2:fits_to_ms")
+    _plan(project, steps=["preprocess_fitsidi", "fits_to_ms"])
+    folder = scheduler.create_plan(project)
+    scheduler.Runner(project, folder.id).run()
+    table = scheduler.table_for(load_execution(project), load_execution(project).plan_csv)
+    assert all(row.cell("preprocess_fitsidi") == "done" for row in table.rows)
+    assert table.row("T2").cell("fits_to_ms") == "failed"
+
+
+def test_invalid_step_status_source_is_rejected(project):
+    (project / "alfrd.yaml").write_text(
+        "version: 1\nname: proj\ntemplate: avica\n"
+        "workflows:\n  - name: avica\n    steps:\n"
+        "      - {id: fits_to_ms, status_from: unknown}\n"
+    )
+    with pytest.raises(ExecutionError, match="status_from must be"):
+        load_execution(project)
 
 
 def test_runs_steps_and_trusts_the_result_csv_over_exit_code(project, monkeypatch):
