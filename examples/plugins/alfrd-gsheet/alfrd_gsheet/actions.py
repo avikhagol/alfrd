@@ -16,7 +16,7 @@ import yaml
 from alfrd.extensions import ProjectAction
 from alfrd.yaml_text import dump
 
-from . import a1, mapping, project, settings, studio
+from . import a1, columns, mapping, project, settings, studio
 
 ORDER = ("version", "enabled", "spreadsheet_id", "worksheet", "gid", "header_row", "rows",
          "read_range", "verify_before_write", "outbound", "inbound")
@@ -86,7 +86,7 @@ def _path(message: str, prefix: str = "") -> str:
             if field in message or (field == "column" and "destination" in message):
                 return f"{prefix}.{field}"
         return prefix
-    for field in ("code_column", "key_column", "missing_row"):
+    for field in ("code_column", "key_column", "missing_row", "match_against"):
         if field in message:
             return f"rows.{field}"
     for field in ("read_range", "header_row",
@@ -158,12 +158,15 @@ def _validation(root: Path, values: dict, data: Any, *, live: bool) -> dict:
     if config is None or not live:
         return result
     try:
-        state = settings.make_engine(TIMEOUT, values=values).snapshot(config, steps, validate_rules=False)
+        state = settings.make_engine(TIMEOUT, values=values).snapshot(config, steps, validate_rules=False, project_root=root)
     except mapping.MappingError as exc:
         result["errors"].append({"path": _path(str(exc)), "message": str(exc)})
     except Exception:  # noqa: BLE001 - never expose credentials or Google response bodies
         result["warnings"].append("The sheet could not be checked. Check the connection in Settings → Plugins → Google Sheet.")
     else:
+        missing = mapping.missing_columns(config, steps, state.header, first_col=state.first_col)
+        if missing:
+            result["missing_columns"] = missing
         _, live_errors = _errors(data, values, steps, state.header, state.first_col)
         result["errors"] += [e for e in live_errors if e not in result["errors"]]
     return result
@@ -192,6 +195,7 @@ def state(root: Path, values: dict, payload: dict) -> dict:
             "formats": sorted(mapping.FORMATS), "statuses": sorted(mapping.STATUSES),
             "credentials": bool(values.get("credentials_json")),
             "default_spreadsheet": bool(values.get("default_spreadsheet_id")),
+            "spreadsheet_id": (data or {}).get("spreadsheet_id") or values.get("default_spreadsheet_id") or "",
             "dry_run": bool(values.get("dry_run", False)), "comments_notice": COMMENTS_NOTICE,
             "last_sync": {k: latest[k] for k in ("at", "result", "cells_written", "steps") if k in latest}}
 
@@ -201,6 +205,7 @@ def sheet_info(root: Path, values: dict, payload: dict) -> dict:
     client = settings.make_engine(TIMEOUT, values=values).client
     metadata = client.metadata(sid, deadline=time.monotonic() + TIMEOUT)
     return {"spreadsheet_id": sid,
+            "title": metadata.get("properties", {}).get("title", ""),
             "tabs": [{"title": s["properties"]["title"], "gid": s["properties"]["sheetId"]}
                      for s in metadata.get("sheets", [])]}
 
@@ -214,11 +219,20 @@ def headers(root: Path, values: dict, payload: dict) -> dict:
     header = [mapping.text(v).strip() for v in (rows[0] if rows else [])]
     key = payload.get("key_column")
     if not key:
-        aliases = (project._execution(root).key_column, "TARGET_NAME", "target", "source", "name")
+        aliases = (project._execution(root).key_column, "TARGET_NAME", "target", "source", "name", "FILENAMES")
         key = next((h for alias in aliases for h in header if h.casefold() == alias.casefold()), None)
     col = a1.column(header, key) - 1 if key else None
     sample = [mapping.text(r[col]) for r in rows[1:21] if col is not None and col < len(r)]
-    return {"headers": [{"letter": a1.letters(i), "name": name} for i, name in enumerate(header, 1)],
+    from .row_match import Resolver
+
+    mode = payload.get("match_against", "target")
+    code_column = payload.get("code_column", "")
+    code_col = a1.column(header, code_column) - 1 if code_column else None
+    resolver = Resolver(project.plan_rows(root), mode, with_code=bool(code_column))
+    matches = [resolver.sample(mapping.text(r[col]), mapping.text(r[code_col]) if code_col is not None and code_col < len(r) else "")
+               for r in rows[1:21] if col is not None and col < len(r)]
+    return {"matches": matches, "match_against": mode,
+            "headers": [{"letter": a1.letters(i), "name": name} for i, name in enumerate(header, 1)],
             "sample_keys": sample, "key_column": key, "worksheet": title}
 
 
@@ -257,7 +271,7 @@ def attach(root: Path, values: dict, payload: dict) -> dict:
     title = _sheet(client, sid, payload, time.monotonic() + TIMEOUT)
     result = project.init_project(root, spreadsheet=payload.get("spreadsheet"), worksheet=title,
                                   header_row=_header_row(payload), key_column=key, code_column=code,
-                                  force=force, values=values, timeout=TIMEOUT)
+                                  force=force, values=values, timeout=TIMEOUT, match_against=payload.get("match_against", "target"))
     return {"mapping": result.mapping, "mapping_sha256": result.mapping_sha256, "matched": list(result.matched)}
 
 
@@ -351,4 +365,5 @@ ACTIONS = tuple(ProjectAction(name, _guard(run), mutating=mutating, timeout=time
                     ("state", state, False, 30), ("sheet_info", sheet_info, False, 30),
                     ("headers", headers, False, 30), ("validate", validate, False, 30),
                     ("save", save, True, 60), ("attach", attach, True, 60), ("detach", detach, True, 30),
+                    ("column_preview", columns.preview, False, 30), ("create_columns", columns.create, True, 60),
                     ("preview", preview, False, 300), ("backfill", backfill, True, 300)))

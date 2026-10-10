@@ -1,7 +1,43 @@
 // Project-home slots shared by the overview and the full-trust plugin API.
 const sections = new Map();
+const actions = new Map();
+const actionMounts = new WeakMap();
 const mounted = new WeakMap();
 let nextId = 0;
+
+export function registerOverviewAction(spec, report) {
+  if (!spec || !/^[a-z0-9_-]+$/.test(spec.id) || typeof spec.render !== "function"
+      || (spec.order != null && !Number.isFinite(spec.order))) {
+    throw new TypeError("registerOverviewAction({id,order?,render})");
+  }
+  actions.set(spec.id, { order: 100, ...spec, report });
+}
+
+/** Stable toolbar hosts; scope changes update plugins without rebuilding focused controls. */
+export function renderOverviewActions(box, ctx) {
+  box.hidden = ctx.state.source !== "server";
+  if (box.hidden) return;
+  let cache = actionMounts.get(box);
+  if (!cache) { cache = new Map(); actionMounts.set(box, cache); }
+  const project = ctx.state.selectedProject === "all" ? null : ctx.state.selectedProject;
+  for (const spec of [...actions.values()].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))) {
+    let entry = cache.get(spec.id);
+    if (!entry || entry.spec !== spec) {
+      const host = document.createElement("span");
+      host.dataset.pluginAction = spec.id;
+      entry = { spec, host };
+      cache.set(spec.id, entry);
+      box.append(host);
+    }
+    if (entry.project === project) continue;
+    entry.project = project;
+    const fail = (error) => {
+      spec.report?.(error?.message || String(error));
+      ctx.log?.("error", `${spec.id}: overview action: ${error?.message || error}`, "plugins");
+    };
+    try { Promise.resolve(spec.render(project, entry.host, ctx)).catch(fail); } catch (error) { fail(error); }
+  }
+}
 
 export function registerProjectSection(spec, report) {
   if (!spec || !/^[a-z0-9_-]+$/.test(spec.id) || !spec.title || typeof spec.render !== "function"

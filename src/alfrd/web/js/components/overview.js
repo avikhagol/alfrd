@@ -8,7 +8,7 @@ import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
 import { openRunDialog, plansAvailable, planOf, loadPlan, RUN_STATUS } from "./plans.js";
 import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
-import { renderProjectSections } from "./project_sections.js";
+import { renderProjectSections, renderOverviewActions } from "./project_sections.js";
 import { scoped } from "../data/workspace.js";
 
 // Remembered in this browser until Settings → "Reset view state".
@@ -435,12 +435,17 @@ function renderTitle(el, ctx) {
   const srcLabel = src === "demo" ? "Demo Data" : src === "server" ? "Runtime" : src === "imported" ? "Imported" : "No data";
   const loop = loopOnly(ctx);
   const runs = loop ? scopeIds(ctx).reduce((n, p) => n + runsOf(p).length, 0) : 0;
-  $("#ov-title", el).innerHTML = `
+  const title = $("#ov-title", el);
+  if (!title.querySelector("#ov-title-meta")) title.innerHTML = `<span class="row gap wrap" id="ov-title-meta"></span><span class="grow"></span><span class="row gap wrap" id="ov-title-actions"><button class="btn" id="ov-targets" aria-haspopup="menu">${icon("upload")} Targets ${icon("caret")}</button><button class="btn" id="ov-export" aria-haspopup="menu"></button><span class="row gap wrap" id="ov-plugin-actions"></span></span>`;
+  $("#ov-title-meta", title).innerHTML = `
       <h2>Project Overview</h2>
       <span class="chip">${esc(srcLabel)} · ${loop ? `${runs} run${runs === 1 ? "" : "s"}` : `${projects.length} project${projects.length === 1 ? "" : "s"} · ${scoped.length} target${scoped.length === 1 ? "" : "s"}`}</span>
-      <span class="grow"></span>
-      ${loop ? "" : `<button class="btn" id="ov-targets" aria-haspopup="menu">${icon("upload")} Targets ${icon("caret")}</button>`}
-      <button class="btn" id="ov-export" aria-haspopup="menu" ${exporting ? "disabled" : ""}>${icon("download")} ${exporting ? "Preparing history…" : `Export ${icon("caret")}`}</button>`;
+      `;
+  $("#ov-targets", title).hidden = loop;
+  const exportButton = $("#ov-export", title);
+  exportButton.disabled = exporting;
+  exportButton.innerHTML = `${icon("download")} ${exporting ? "Preparing history…" : `Export ${icon("caret")}`}`;
+  renderOverviewActions($("#ov-plugin-actions", title), ctx);
 }
 
 function renderStatusBar(el, ctx) {

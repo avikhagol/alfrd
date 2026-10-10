@@ -587,6 +587,11 @@ tr:hover .path .icon-btn { visibility: visible; }
 .menu button:hover { background: var(--subtle); }
 .menu button small { margin-left: auto; color: var(--text-3); }
 .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.menu { width: 280px; max-width: calc(100vw - 24px); }
+.menu button { min-height: 36px; display: grid; grid-template-columns: 18px minmax(0, 1fr); }
+.menu button small { white-space: normal; grid-column: 2; margin-left: 0; color: var(--text-2); }
+@media (max-width: 640px) { .menu button { min-height: 44px; } }
+
 .toasts { position: fixed; right: 18px; bottom: 50px; z-index: 70; display: flex; flex-direction: column; gap: 8px; }
 body.console-open .toasts { bottom: calc(var(--console-h, 280px) + 50px); }
 .toast { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--surface-float); color: var(--text); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); font-size: 13px; max-width: min(420px, calc(100vw - 36px)); transition: opacity .3s, transform .3s; }
@@ -926,6 +931,7 @@ select { text-overflow: ellipsis; }
 #view-config, #view-logs { padding: 0; }
 .ps-grid, .ps-grid > div { min-width: 0; }
 .wf-info > .grow { min-width: 0; }
+.wf-info-title { overflow-wrap: anywhere; }
 .ps-grid { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
 .yaml-editor { min-width: 0; }
 .count.tone-ok, .count.tone-run { color: var(--ok-text); }

@@ -4,8 +4,9 @@ import { DEFAULT_ITERATIONS, MAX_TURNS, loadTemplate, isSequence, sequenceAgents
 import { loopTurnCount, hasDirtyHandoff } from "./loop_helpers.js";
 import { dockLog } from "./logview.js";
 import { activePlan } from "./plans.js";
+import { mountMarkdown } from "./handoff_markdown.js";
+import { tabFrame, tabRail } from "./tab_frame.js";
 import { server } from "../data/server.js";
-import { mountFolderBrowser } from "./folder_browser.js";
 import { esc, icon, storage, copyText, loadCss } from "../utils/dom.js";
 
 // Register a folder that already has alfrd.yaml (Open project; Create's "Open instead"), then show it.
@@ -19,7 +20,10 @@ async function openPath(ctx, onOpened, close, alert, path) {
 }
 
 /** Open project…: server folders; projects show Open, other folders Create project here (never the default manifest). */
-export function openProject(ctx, onOpened, path, create) {
+export async function openProject(ctx, onOpened, path, create) {
+  let mountFolderBrowser;
+  try { ({ mountFolderBrowser } = await import("./folder_browser.js")); }
+  catch (error) { ctx.toast(`Folder browser not loaded: ${error.message}`, "fail"); return; }
   ctx.modal(`<header class="modal-h"><h2>Open project</h2><span class="grow"></span><button class="btn sm" id="open-new">${icon("plus")} New project…</button><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header><div class="modal-b"><div id="open-folders"></div><p id="create-error" class="callout fail" role="alert" hidden></p></div>`, (root, close) => {
     root.querySelector("#open-new").onclick = () => { close(); create(""); };
     const browser = mountFolderBrowser(root.querySelector("#open-folders"), { list: (p, o) => server.listFolders(p, o), start: path, close,
@@ -115,19 +119,37 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
   let active = handoffs.find((h) => h.phase === "awaiting_response" && !h.response_bytes);
   let review = handoffs.find((h) => h.review_status === "pending" && h.status === "running");
   const canWrite = Boolean(server.session?.mutations_enabled);
-  ctx.modal(`<header class="modal-h"><h2>Agent handoffs</h2><button class="btn" id="handoff-refresh">Refresh</button><button class="btn" data-close>Close</button></header>
-    <div class="modal-b">
-    <section id="review-section" ${review ? "" : "hidden"}><h3>Human adjustment</h3><p>Review the response, then approve to continue.</p><label for="review-response">Response for review</label><textarea class="input" id="review-response" rows="14" disabled></textarea><p id="review-error" role="alert"></p><button class="btn primary" id="review-approve" disabled>Approve and continue</button>
-    <label class="field"><span>Reason for rejecting (optional)</span><input class="input" id="review-reason" maxlength="2000"></label><button class="btn" id="review-reject" disabled>Reject and stop</button></section>
-    <details id="plan-turns-box"><summary>Turns of this run: review, human turn, delay</summary><p class="muted small">Changes apply to this run only. Review can still be added to the running turn; other settings only to turns that have not started.</p><div id="plan-turns">Loading…</div></details>
-    <div id="handoff-turns"></div>
-    <section id="manual-section" ${active ? "" : "hidden"}><h3>Submit a chat response</h3><p>Copy the prompt into chat; paste the full Markdown response.</p><button class="btn" id="manual-copy">Copy prompt</button><label for="manual-response">Manual response</label><textarea class="input" id="manual-response" rows="8"></textarea><p id="manual-error" role="alert"></p><button class="btn" id="manual-submit" ${canWrite ? "" : "disabled"}>Submit response</button></section>
-    <h3>Edit a next step</h3><p class="muted small">Pause before editing the next prompt; active input is frozen.</p>
+  const tabs = [
+    { id: "review", icon: "check", label: "Review", hidden: !review, dot: 1 },
+    { id: "manual", icon: "log", label: "Chat reply", hidden: !active, dot: 1 },
+    { id: "turns", icon: "file", label: "Responses" },
+    { id: "plan", icon: "clock", label: "Run turns" },
+    { id: "next", icon: "edit", label: "Next step" },
+  ];
+  ctx.modal(`<header class="modal-h"><h2>Agent handoffs</h2><span class="mono muted small">${esc(id)}</span><span class="grow"></span>
+      <button class="btn sm" id="handoff-refresh">${icon("sync")} Refresh</button><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    ${tabFrame("ho", "Handoff sections", tabs, {
+      review: `<div id="review-section"><h3>Human adjustment</h3><p class="muted small">Review the response, then approve to continue.</p><label for="review-response">Response for review</label><textarea class="input" id="review-response" rows="14" disabled></textarea><p id="review-error" class="fail-t small" role="alert"></p>
+    <div class="ho-actions"><button class="btn primary" id="review-approve" disabled>Approve and continue</button></div>
+    <label class="field"><span>Reason for rejecting (optional)</span><input class="input" id="review-reason" maxlength="2000"></label><div class="ho-actions"><button class="btn danger" id="review-reject" disabled>Reject and stop</button></div></div>`,
+      manual: `<div id="manual-section"><h3>Submit a chat response</h3><p class="muted small">Copy the prompt into chat; paste the full Markdown response.</p><div class="ho-actions"><button class="btn" id="manual-copy">${icon("copy")} Copy prompt</button></div><label for="manual-response">Manual response</label><textarea class="input" id="manual-response" rows="10"></textarea><p id="manual-error" class="fail-t small" role="alert"></p><div class="ho-actions"><button class="btn primary" id="manual-submit" ${canWrite ? "" : "disabled"}>Submit response</button></div></div>`,
+      turns: `<h3>Prompts and responses</h3><p class="muted small">One entry per turn. Open a turn to read its prompt and archived response.</p><div id="handoff-turns" class="ho-turns"></div>`,
+      plan: `<h3>Turns of this run</h3><p class="muted small">Review, human turn and delay. Changes apply to this run only. Review can still be added to the running turn; other settings only to turns that have not started.</p><div id="plan-turns" class="ho-table">Loading…</div>`,
+      next: `<h3>Edit a next step</h3><p class="muted small">Pause before editing the next prompt; active input is frozen.</p>
     <label for="handoff-file">Next-step file</label><select class="input" id="handoff-file">${files.map((f) => `<option>${esc(f)}</option>`).join("")}</select>
-    <label for="handoff-text">Next-step text</label><textarea class="input" id="handoff-text" rows="8"></textarea>
-    <button class="btn" id="handoff-save" ${canWrite ? "" : "disabled"}>Save next step</button><p id="handoff-message" role="status"></p>
-    </div>`, (root) => {
+    <label for="handoff-text">Next-step text</label><textarea class="input" id="handoff-text" rows="12"></textarea>
+    <div class="ho-actions"><button class="btn primary" id="handoff-save" ${canWrite ? "" : "disabled"}>Save next step</button></div>`,
+    })}
+    <footer class="modal-f row gap"><p id="handoff-message" class="muted small" role="status"></p><span class="grow"></span><button class="btn sm" data-close>Done</button></footer>`, (root) => {
     const select = root.querySelector("#handoff-file"), text = root.querySelector("#handoff-text"), message = root.querySelector("#handoff-message");
+    const showTab = tabRail(root, "ho", (name) => { if (name === "plan") loadPlanTurns(); });
+    // Review and chat reply exist only while a turn waits for them; open the one that needs a person first.
+    const syncTabs = () => {
+      root.querySelector("#ho-tab-review").hidden = !review;
+      root.querySelector("#ho-tab-manual").hidden = !active;
+      const current = root.querySelector(".set-tabs .on");
+      if (!current || current.hidden) showTab(review ? "review" : active ? "manual" : "turns");
+    };
     let loaded = null, generation = 0;
     let reviewHash = null, reviewOriginal = "";
     const fullArtifact = async (unit, kind) => {
@@ -141,7 +163,7 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
     };
     const loadReview = async () => {
       const field = root.querySelector("#review-response"), button = root.querySelector("#review-approve");
-      root.querySelector("#review-section").hidden = !review;
+      syncTabs();
       reviewHash = null; button.disabled = true; root.querySelector("#review-reject").disabled = true;
       if (!review) { field.value = ""; reviewOriginal = ""; return; }
       try {
@@ -184,7 +206,6 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
         });
       } catch (error) { box.textContent = error.message; }
     };
-    root.querySelector("#plan-turns-box").addEventListener("toggle", (event) => { if (event.target.open) loadPlanTurns(); });
     root.querySelector("#review-reject").addEventListener("click", async (event) => {
       if (!review || !confirm("Reject this response? Nothing is published and the run stops.")) return;
       event.target.disabled = true;
@@ -193,24 +214,25 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
     });
     const renderTurns = () => {
       const list = root.querySelector("#handoff-turns");
-      list.innerHTML = handoffs.map((h, index) => `<details data-turn="${index}"><summary>${/^t\d{3}-/.test(h.steps?.[0] || "") ? "Turn" : "Iteration"} ${esc(h.iteration_label)} · ${esc(h.agent)} · ${esc(h.phase)} · Model: ${esc(h.model || (h.requested_model ? `${h.requested_model} (requested)` : "not reported"))} · ${h.prompt_bytes} / ${h.response_bytes} bytes</summary>
+      list.innerHTML = handoffs.map((h, index) => `<details class="ho-turn" data-turn="${index}"><summary><b>${/^t\d{3}-/.test(h.steps?.[0] || "") ? "Turn" : "Iteration"} ${esc(h.iteration_label)}</b><span>${esc(h.agent)}</span><span class="badge">${esc(h.phase)}</span><span class="grow"></span><span class="muted small">${esc(h.model || (h.requested_model ? `${h.requested_model} (requested)` : "Model not reported"))} · <span class="tabular">${h.prompt_bytes} / ${h.response_bytes} B</span></span></summary>
         ${h.error ? `<pre class="handoff-artifact">${esc(h.error)}</pre><p>${/heading|sections/i.test(h.error) ? "Fix the response and resubmit" : "Review the unit log, fix the cause, and retry the turn"}</p>` : ""}
-        ${h.log ? `<button class="btn" data-unit-log>Open unit log</button>` : ""}
-        ${["prompt", "response"].map((kind) => `<section data-artifact="${kind}"><h4>${kind === "prompt" ? "Incoming prompt" : "Response"}</h4><pre class="handoff-artifact"></pre><p data-notice></p><button class="btn" data-more>Load more</button><button class="btn" data-copy>Copy</button></section>`).join("")}</details>`).join("") || "No turns have started.";
+        ${h.log ? `<div class="ho-actions"><button class="btn sm" data-unit-log>${icon("log")} Open unit log</button></div>` : ""}
+        ${["prompt", "response"].map((kind) => `<section class="ho-artifact" data-artifact="${kind}"><div class="row gap"><h4 class="grow">${kind === "prompt" ? "Incoming prompt" : "Response"}</h4><button class="btn sm" data-copy>${icon("copy")} Copy</button></div><div class="seg" role="group" aria-label="${kind === "prompt" ? "Incoming prompt" : "Response"} format"><button type="button" data-mode="rendered" aria-pressed="false">Rendered</button><button type="button" data-mode="source" aria-pressed="false">Source</button></div><pre class="handoff-artifact" tabindex="0" aria-label="${kind} source"></pre><div class="handoff-artifact ho-markdown" data-rendered tabindex="0" aria-label="${kind} rendered" hidden></div><p class="muted small" data-render-status role="status"></p><p class="muted small" data-notice role="status"></p><button class="btn sm" data-more>Load more</button></section>`).join("")}</details>`).join("") || '<p class="muted">No turns have started.</p>';
       list.querySelectorAll("details").forEach((details) => {
         const h = handoffs[Number(details.dataset.turn)];
         details.querySelector("[data-unit-log]")?.addEventListener("click", () => dockLog(ctx, project, h.log));
         details.querySelectorAll("[data-artifact]").forEach((section) => {
           let offset = 0, busy = false, started = false;
-          const pre = section.querySelector("pre"), more = section.querySelector("[data-more]"), notice = section.querySelector("[data-notice]");
+          const append = mountMarkdown(section, { project, path: `${h.id}/${section.dataset.artifact}.md` });
+          const more = section.querySelector("[data-more]"), notice = section.querySelector("[data-notice]");
           const page = async () => {
             if (busy) return;
             busy = true; more.disabled = true;
             try {
               const result = await server.handoffArtifact(project, id, h.id, section.dataset.artifact, offset);
-              pre.textContent += result.content;
+              append(result.content);
               offset += result.returned_bytes;
-              notice.textContent = result.truncated ? `Showing ${(offset / 1024).toFixed(1)} of ${(result.total_bytes / 1024).toFixed(1)} KiB — Load more` : "";
+              notice.textContent = result.truncated ? `Showing ${(offset / 1024).toFixed(1)} of ${(result.total_bytes / 1024).toFixed(1)} KiB — incomplete ${section.dataset.artifact}; Load more to continue` : "";
               more.hidden = !result.truncated; started = true;
             } catch (error) { notice.textContent = error.message; }
             finally { busy = false; more.disabled = false; }
@@ -229,6 +251,7 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
         }
       });
     };
+    showTab(unit ? "turns" : review ? "review" : active ? "manual" : "turns");
     renderTurns();
     const load = async () => {
       const current = ++generation;
@@ -247,7 +270,7 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
         review = handoffs.find((h) => h.phase === "awaiting_review");
         root.querySelector("#manual-response").value = "";
         await loadReview();
-        root.querySelector("#manual-section").hidden = !active;
+        syncTabs();
         root.querySelector("#manual-submit").disabled = !canWrite;
         renderTurns();
         await load();
@@ -272,7 +295,7 @@ export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
       try { await server.planReview(project, id, { unit: review.id, text: root.querySelector("#review-response").value, base_hash: reviewHash }); reviewOriginal = root.querySelector("#review-response").value; message.textContent = "Approved. The next agent will receive your adjusted response."; ctx.update(); }
       catch (error) { root.querySelector("#review-error").textContent = error.message; event.target.disabled = false; }
     });
-  });
+  }, "set-dlg ho-dlg");
 }
 
 export async function openAgentSettings(ctx, project, text, apply) {
@@ -284,25 +307,37 @@ export async function openAgentSettings(ctx, project, text, apply) {
   const turns = turnRoleRows(data).map((turn) => ({ ...turn, rows: turn.keys.map((key) => personas.findIndex((p) => p.key === key)).filter((i) => i >= 0) }));
   const access = data.project_settings?.agent_access || {};
   const enabled = Boolean(data.project_settings?.human_review) || reviews.some((r) => r.enabled);
-  ctx.modal(`<header class="modal-h"><h2>Agents &amp; review</h2><button class="btn" data-close>Close</button></header>
-    <form><div class="modal-b"><p class="muted small">Changes apply to new runs. Blank models use CLI defaults.</p>
-    ${agents.map((a, i) => `<fieldset><legend>${esc(a.name)} <span class="muted small">(${esc(a.adapter)})</span></legend><label class="field"><span>Model name or alias</span><input class="input" data-model="${i}" value="${esc(a.model)}" placeholder="CLI default"></label><label class="field"><span>Fallback models, in order (comma-separated)</span><input class="input" data-fallback="${i}" value="${esc(a.fallback_models.join(", "))}" placeholder="none"></label><label><input type="checkbox" data-manual="${i}" ${a.manual ? "checked" : ""}> Run every turn of this agent through chat</label></fieldset>`).join("") || "No agent CLI entrypoints configured."}
-    <h3>Personalities</h3>
-    <div id="personas"></div><button class="btn" type="button" id="persona-add">Add personality</button>
-    <h3>Turn roles</h3><div id="turn-roles"></div>
-    <h3>Folders and shell commands</h3>
+  const tabs = [
+    { id: "models", icon: "gear", label: "Models" },
+    { id: "personas", icon: "edit", label: "Personalities" },
+    { id: "roles", icon: "list", label: "Turn roles" },
+    { id: "access", icon: "folder", label: "Folders & shell" },
+    { id: "review", icon: "check", label: "Human review" },
+  ];
+  ctx.modal(`<header class="modal-h"><h2>Agents &amp; review</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <form>${tabFrame("ag", "Agent settings sections", tabs, {
+      models: `<h3>Models</h3><p class="muted small">Changes apply to new runs. Blank models use CLI defaults.</p>
+    ${agents.map((a, i) => `<fieldset><legend>${esc(a.name)} <span class="muted small">(${esc(a.adapter)})</span></legend><label class="field"><span>Model name or alias</span><input class="input" data-model="${i}" value="${esc(a.model)}" placeholder="CLI default"></label><label class="field"><span>Fallback models, in order (comma-separated)</span><input class="input" data-fallback="${i}" value="${esc(a.fallback_models.join(", "))}" placeholder="none"></label><label><input type="checkbox" data-manual="${i}" ${a.manual ? "checked" : ""}> Run every turn of this agent through chat</label></fieldset>`).join("") || "<p>No agent CLI entrypoints configured.</p>"}`,
+      personas: `<h3>Personalities</h3><div id="personas" class="ho-turns"></div><div class="ho-actions"><button class="btn" type="button" id="persona-add">Add personality</button></div>`,
+      roles: `<h3>Turn roles</h3><div id="turn-roles" class="ho-turns"></div>`,
+      access: `<h3>Folders and shell commands</h3>
     <label class="field"><span>Additional folders (one per line)</span><textarea class="input" id="agent-folders" rows="4">${esc((access.folders || []).join("\n"))}</textarea></label>
     <p class="muted small">Paths are relative to the project. Claude gets tool access; Codex gets writable folders under workspace-write.</p>
     <label class="field"><span>Claude Bash commands to approve (one pattern per line)</span><textarea class="input" id="agent-bash" rows="3" placeholder="git status *">${esc((access.bash_commands || []).join("\n"))}</textarea></label>
-    <label class="field"><span>Codex shell and file permissions</span><select class="input" id="agent-sandbox"><option value="">Keep CLI settings</option><option value="read-only" ${access.sandbox === "read-only" ? "selected" : ""}>Read only</option><option value="workspace-write" ${access.sandbox === "workspace-write" ? "selected" : ""}>Write in workspace and added folders</option></select></label>
-    <h3>Human in the loop</h3><label><input type="checkbox" id="review-enabled" ${enabled ? "checked" : ""}> Enable review</label>
+    <label class="field"><span>Codex shell and file permissions</span><select class="input" id="agent-sandbox"><option value="">Keep CLI settings</option><option value="read-only" ${access.sandbox === "read-only" ? "selected" : ""}>Read only</option><option value="workspace-write" ${access.sandbox === "workspace-write" ? "selected" : ""}>Write in workspace and added folders</option></select></label>`,
+      review: `<h3>Human in the loop</h3><label><input type="checkbox" id="review-enabled" ${enabled ? "checked" : ""}> Enable review</label>
     <p class="muted small">Approval releases the handoff to the next agent; code changes remain.</p>
-    ${reviews.map((r, i) => `<label class="field"><span><input type="checkbox" data-review="${i}" ${r.enabled ? "checked" : ""} ${enabled ? "" : "disabled"}> Review after every ${esc(r.id)} turn</span></label>`).join("")}
-    ${turnRows.length ? `<details><summary>Per-turn settings (${turnRows.length} turns)</summary><p class="muted small">Choose single turns a person writes or reviews, or delay. A running plan is changed under Handoffs → Turns of this run.</p>
-    <table class="turn-table"><thead><tr><th>Turn</th><th>Agent</th><th>Human writes</th><th>Review</th><th>Start after</th></tr></thead><tbody>${turnRows.map((t, i) => `<tr><td class="mono">${esc(t.id)}</td><td>${esc(t.agent)}</td>
+    ${reviews.map((r, i) => `<label><input type="checkbox" data-review="${i}" ${r.enabled ? "checked" : ""} ${enabled ? "" : "disabled"}> Review after every ${esc(r.id)} turn</label>`).join("")}
+    ${turnRows.length ? `<h3>Per-turn settings (${turnRows.length} turns)</h3><p class="muted small">Choose single turns a person writes or reviews, or delay. A running plan is changed under Handoffs → Run turns.</p>
+    <div class="ho-table"><table class="turn-table"><thead><tr><th>Turn</th><th>Agent</th><th>Human writes</th><th>Review</th><th>Start after</th></tr></thead><tbody>${turnRows.map((t, i) => `<tr><td class="mono">${esc(t.id)}</td><td>${esc(t.agent)}</td>
       <td><input type="checkbox" data-turn-manual="${i}" aria-label="Human writes ${esc(t.id)}" ${t.manual ? "checked" : ""}></td><td><input type="checkbox" data-turn-review="${i}" aria-label="Review ${esc(t.id)}" ${t.human_review ? "checked" : ""}></td>
-      <td><input type="text" class="input" data-turn-after="${i}" aria-label="Delay before ${esc(t.id)}" placeholder="+1h" value="${esc(t.after)}"></td></tr>`).join("")}</tbody></table></details>` : ""}
-    <p role="alert" id="agent-settings-error"></p></div><footer class="modal-f"><button class="btn primary" type="submit">Apply settings</button></footer></form>`, (root, close) => {
+      <td><input type="text" class="input" data-turn-after="${i}" aria-label="Delay before ${esc(t.id)}" placeholder="+1h" value="${esc(t.after)}"></td></tr>`).join("")}</tbody></table></div>` : ""}`,
+    })}
+    <footer class="modal-f row gap"><p role="alert" id="agent-settings-error" class="fail-t small"></p><span class="grow"></span><button class="btn primary" type="submit">Apply settings</button></footer></form>`, (root, close) => {
+    // A hidden field cannot show its validation message: open its section.
+    const form = root.querySelector("form"), showTab = tabRail(root, "ag");
+    showTab("models");
+    form.addEventListener("invalid", () => showTab(form.querySelector(":invalid").closest(".set-panel").id.slice(9)), true);
     const readPersonas = () => {
       personas = personas.map((p, i) => ({ ...p, key: root.querySelector(`[data-persona-key="${i}"]`).value,
         label: root.querySelector(`[data-persona-label="${i}"]`).value, instructions: root.querySelector(`[data-persona-instructions="${i}"]`).value }));
@@ -361,7 +396,7 @@ export async function openAgentSettings(ctx, project, text, apply) {
       } catch (error) { root.querySelector("#agent-settings-error").textContent = error.message; }
       finally { button.disabled = false; }
     });
-  });
+  }, "set-dlg ag-dlg");
 }
 
 // Local drafts retain their original file hash until saved or discarded.

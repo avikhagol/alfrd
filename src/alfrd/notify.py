@@ -130,6 +130,11 @@ def _check_options(via: str, route: Mapping[str, Any], where: str) -> None:
         studio = route.get("studio_url")
         if studio is not None and not (isinstance(studio, str) and studio.startswith(("http://", "https://"))):
             raise RouteError(f"{where}.studio_url must be an http(s):// address")
+        hold = route.get("hold_minutes")
+        if hold is not None and (isinstance(hold, bool) or not isinstance(hold, (int, float)) or hold < 0):
+            raise RouteError(f"{where}.hold_minutes must be a number of minutes (0 sends right away)")
+        if route.get("mute_when_active") is not None and not isinstance(route["mute_when_active"], bool):
+            raise RouteError(f"{where}.mute_when_active must be true or false")
 
 
 def route_warnings(routes: Iterable[Mapping[str, Any]]) -> list[str]:
@@ -267,6 +272,50 @@ def build_message(events: list[Mapping[str, Any]], *, skipped: int = 0, dropped:
         "link": studio_link(key or first.get("project"), first.get("plan"), unit),
         "events": [_brief(e, key) for e in events],
     }
+
+
+ENDED = ("plan.finished", "plan.failed", "plan.cancelled", "plan.interrupted")
+SUMMARY_TARGETS = 50  # most targets a run summary lists
+
+
+def _template(root: Path) -> str | None:
+    """``template:`` of the project's manifest (an ``avica:`` block implies avica), or None."""
+    import yaml
+
+    from alfrd.studio_defs import template_name
+
+    for name in ("alfrd.yaml", "alfrd.yml"):
+        path = root / name
+        if path.is_file():
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            return template_name(data) if isinstance(data, Mapping) else None
+    return None
+
+
+def run_summary(root: Any, plan: Any) -> dict[str, Any] | None:
+    """Per target, each step's status and duration for an ended plan of an ``avica`` project; else None.
+
+    ``{"template", "plan", "targets": [{"target", "steps": [{"step", "status", "duration_s"}]}], "more"}``.
+    """
+    try:
+        base = Path(str(root or "")).expanduser()
+        if not plan or _template(base) != "avica":
+            return None
+        from alfrd.api.status import plan_status
+
+        doc = plan_status(base, str(plan), detail="full")
+    except Exception:  # noqa: BLE001 - a summary is a nicety; the notification goes out without it
+        return None
+    steps = (doc.get("plan") or {}).get("steps") or []
+    targets = []
+    for row in doc.get("rows") or []:
+        cells, detail = row.get("cells") or {}, row.get("detail") or {}
+        items = [{"step": s, "status": cells.get(s), "duration_s": (detail.get(s) or {}).get("duration_s")}
+                 for s in steps if cells.get(s) not in (None, "skip")]
+        if items:
+            targets.append({"target": row.get("target"), "steps": items})
+    return {"template": "avica", "plan": str(plan), "targets": targets[:SUMMARY_TARGETS],
+            "more": max(0, len(targets) - SUMMARY_TARGETS)}
 
 
 def stale_summary(events: list[Mapping[str, Any]], project: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -419,12 +468,19 @@ class Dispatcher:
         if dropped:
             self.log(f"notify: queue full, {dropped} event(s) dropped")
         workers = []
+        run: list[Any] = []  # the run summary, computed once per batch when a matched event ends the plan
         for index, route in enumerate(self.routes):
             matched = [e for e in events if route_matches(route, e)]
             if not matched:
                 continue
             message = (stale_summary(matched, self.project) if summary
                        else build_message(matched, dropped=dropped, project=self.project))
+            ended = next((e for e in matched if e.get("kind") in ENDED), None)
+            if ended is not None and not summary:
+                if not run:
+                    run.append(run_summary(self.project.get("root") or _root_of(self.plan_dir), ended.get("plan")))
+                if run[0]:
+                    message["summary"] = run[0]
             # one thread per route: a slow webhook must not hold up the desktop notice (R2)
             worker = threading.Thread(target=self._send, args=(route, message, index), daemon=True,
                                       name=f"alfrd-notify-{route['via']}")
@@ -534,8 +590,9 @@ def start_for(plan_dir: Path, project_routes: Any, *, log: Callable[[str], None]
 
 
 __all__ = [
-    "Dispatcher", "KNOWN_VIA", "RouteError", "SENDERS", "Skip", "build_message", "load_routes", "project_ref",
-    "route_matches", "route_warnings", "start_for", "studio_link", "user_routes", "validate_routes",
+    "Dispatcher", "ENDED", "KNOWN_VIA", "RouteError", "SENDERS", "Skip", "build_message", "load_routes",
+    "project_ref", "route_matches", "route_warnings", "run_summary", "start_for", "studio_link", "user_routes",
+    "validate_routes",
 ]
 
 from alfrd import notifiers as _notifiers  # noqa: E402,F401 - registers desktop, webhook, command, telegram in SENDERS

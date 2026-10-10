@@ -1,10 +1,10 @@
 // Pure helpers of the Google Sheet project UI; no DOM, no network.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gidFrom, guessKey, matchCount, statusRules, move, splitField, cleanMapping, sheetURL }
+import { gidFrom, guessKey, statusRules, move, splitField, cleanMapping, sheetURL }
   from "../../examples/plugins/alfrd-gsheet/alfrd_gsheet/web/project_ui.js";
 
-test("gid parsing, key guessing and plan-target matching", () => {
+test("gid parsing and key guessing", () => {
   assert.equal(gidFrom("https://docs.google.com/spreadsheets/d/abc/edit#gid=42"), 42);
   assert.equal(gidFrom("https://docs.google.com/spreadsheets/d/abc/edit?gid=7&x=1"), 7);
   assert.equal(gidFrom("abc"), null);
@@ -12,7 +12,6 @@ test("gid parsing, key guessing and plan-target matching", () => {
   assert.equal(guessKey(headers), "TARGET_NAME");
   assert.equal(guessKey(headers, "Source"), "Source");
   assert.equal(guessKey([{ letter: "A", name: "x" }]), "");
-  assert.deepEqual(matchCount(["M31", " m33 ", "", "NGC 1"], ["M31", "M33"]), { matched: 2, total: 3 });
 });
 
 test("status rules only for same-named headers without a status rule", () => {

@@ -68,6 +68,7 @@ class MappingConfig:
     outbound: tuple[Outbound, ...] = ()
     inbound: tuple[Inbound, ...] = ()
     verify_before_write: bool = True
+    match_against: str = "target"
 
     def applies(self, steps: Sequence[str]) -> bool:
         return bool(self.inbound or any(r.step == "*" or r.step in steps for r in self.outbound))
@@ -163,9 +164,12 @@ def parse(data: Any, defaults: Mapping[str, Any] | None = None) -> MappingConfig
     rows = data.get("rows")
     if not isinstance(rows, dict):
         raise MappingError("rows.key_column is required")
-    _keys(rows, {"key_column", "code_column", "missing_row"}, "rows")
+    _keys(rows, {"key_column", "code_column", "missing_row", "match_against"}, "rows")
     key = _text(rows.get("key_column"), "rows.key_column")
     code = _text(rows["code_column"], "rows.code_column") if "code_column" in rows else ""
+    match_against = rows.get("match_against", "target")
+    if match_against not in ("target", "files"):
+        raise MappingError("rows.match_against must be target or files")
     missing = rows.get("missing_row", "skip")
     if missing not in ("skip", "append"):
         raise MappingError("rows.missing_row must be skip or append")
@@ -210,7 +214,7 @@ def parse(data: Any, defaults: Mapping[str, Any] | None = None) -> MappingConfig
             raise MappingError("inbound rule has an incompatible destination")
         inbound.append(Inbound(col, to, destination))
     return MappingConfig(sid, worksheet, key, code, header, missing, read_range, tuple(outbound), tuple(inbound),
-                         data.get("verify_before_write", True))
+                         data.get("verify_before_write", True), match_against)
 
 
 def validate(config: MappingConfig, steps: Sequence[str], headers: Sequence[str] | None = None, *, first_col: int = 1) -> None:
@@ -253,6 +257,26 @@ def validate(config: MappingConfig, steps: Sequence[str], headers: Sequence[str]
         if dest in inbound_seen:
             raise MappingError("duplicate inbound destination")
         inbound_seen.add(dest)
+
+
+def missing_columns(config: MappingConfig, steps: Sequence[str], headers: Sequence[str], *, first_col: int = 1) -> list[str]:
+    """Concrete, distinct named outbound destinations; never invent key/inbound columns."""
+    found = {}
+    for rule in config.outbound:
+        if rule.step != "*" and rule.step not in steps:
+            continue
+        for step in steps if rule.step == "*" else [rule.step]:
+            name = rule.column.replace("{step}", step).strip()
+            try:
+                a1.column(headers, name, first_col=first_col)
+            except ValueError:
+                # Duplicate headers need correction, rather than another column.
+                if any(h.strip().casefold() == name.casefold() for h in headers):
+                    continue
+                if re.fullmatch(r"[A-Z]+", name):
+                    continue
+                found.setdefault(name.casefold(), name)
+    return list(found.values())
 
 
 def problems(config: MappingConfig, steps: Sequence[str], headers: Sequence[str] | None = None, *,

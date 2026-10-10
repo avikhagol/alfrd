@@ -8,7 +8,7 @@ const CONFLICT = "changed on disk";
 const CUSTOM = "__custom__";
 const confirmedRewrite = new Set();
 let nextId = 0;
-let mountedSection = null;
+
 
 // ---- pure helpers (exported for tests) ----
 
@@ -25,12 +25,6 @@ export function guessKey(headers, preferred) {
     if (found) return found;
   }
   return "";
-}
-
-export function matchCount(samples, targets) {
-  const known = new Set(targets.map((t) => String(t).trim().toLowerCase()));
-  const keys = samples.map((s) => String(s).trim()).filter(Boolean);
-  return { matched: keys.filter((k) => known.has(k.toLowerCase())).length, total: keys.length };
 }
 
 /** Status rules `init` would add: a header named like a step that has no status rule yet. */
@@ -108,8 +102,13 @@ function debounce(fn, ms) {
 
 function field(label, control, hint) {
   if (!control.id) control.id = uid("f");
+  const hintId = hint ? `${control.id}-hint` : null;
+  if (hintId) {
+    control.setAttribute("aria-describedby", hintId);
+    control.setAttribute("data-gs-hint", hintId);
+  }
   return h("div", { class: "field" }, h("label", { for: control.id, text: label }), control,
-    hint ? h("p", { class: "small muted", text: hint }) : null);
+    hint ? h("p", { class: "gs-hint small muted", id: hintId, text: hint }) : null);
 }
 
 function alertBox(text, tone = "warn") {
@@ -141,9 +140,41 @@ export function registerProjectUI(api) {
   const policy = async () => {
     try { return (await api.fetchJSON("/studio/plugins")).plugin_actions !== false; } catch { return true; }
   };
-  const refresh = (project) => {
-    if (mountedSection?.project === project && mountedSection.host.isConnected) renderSection(project, mountedSection.host);
-  };
+  let toolbar, closeMenu, connection, scopeVersion = 0;
+  const refresh = (project) => { if (toolbar?.project === project) loadToolbar(toolbar); };
+  async function loadToolbar(entry) {
+    const mine = ++entry.request;
+    entry.state = null; entry.error = null;
+    try {
+      const [state, canWrite] = await Promise.all([call(entry.project, "state"), policy()]);
+      if (toolbar === entry && mine === entry.request) Object.assign(entry, { state, canWrite });
+    } catch (error) { if (toolbar === entry && mine === entry.request) entry.error = error.message; }
+  }
+  function renderToolbar(project, host) {
+    closeMenu?.();
+    connection?.close();
+    scopeVersion++;
+    if (!host.firstChild) host.append(h("button", { type: "button", class: "btn", "aria-haspopup": "menu", "aria-expanded": "false" },
+      "Google Sheet ", h("span", { "aria-hidden": "true", text: "▾" })));
+    const trigger = host.firstChild;
+    const entry = toolbar = { project, trigger, request: 0 };
+    trigger.onclick = () => {
+      if (!project) { closeMenu = api.menu(trigger, [{ label: "Select a project to use Google Sheet", disabled: true }]); return; }
+      const state = entry.state, mapped = !!state?.mapping;
+      const reason = entry.error ? "Couldn’t load the connection" : !state ? "Checking connection…"
+        : state.attached ? "Fix the connection first" : "Connect a sheet first";
+      closeMenu = api.menu(trigger, [
+        { label: "Export to sheet…", disabled: !mapped || !entry.canWrite,
+          hint: mapped ? entry.canWrite ? "Review project results before writing." : OFF_TITLE : reason,
+          run: () => openPreview(project, state, true) },
+        { label: "Sync", disabled: !mapped, hint: mapped ? `${state.enabled ? "On" : "Off"} · Choose whether runs update this sheet.` : reason,
+          run: () => openConnection(project, true) }, "-",
+        { label: "Connect & validate…", run: () => openConnection(project) },
+      ]);
+    };
+    trigger.onkeydown = (event) => { if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); trigger.click(); } };
+    if (project) loadToolbar(entry);
+  }
   const where = (mapping) => {
     const spreadsheet = mapping.spreadsheet_id ? { spreadsheet: mapping.spreadsheet_id } : {};
     const tab = Number.isInteger(mapping.gid) ? { gid: mapping.gid } : { worksheet: mapping.worksheet };
@@ -157,88 +188,111 @@ export function registerProjectUI(api) {
     return ok;
   }
 
-  // -- section card --
-  async function renderSection(project, host) {
-    mountedSection = { project, host };
-    host.replaceChildren(h("p", { class: "muted small", role: "status", text: "Loading Google Sheet…" }));
-    const [state, canWrite] = await Promise.all([call(project, "state"), policy()]);
-    if (mountedSection?.host !== host || mountedSection.project !== project) return;
-    const body = h("div", { class: "gs-card" });
+  // -- connection dialog --
+  async function openConnection(project, focusSync = false) {
+    const version = scopeVersion;
+    const body = h("div", { class: "gs-connection-dialog" }, h("p", { role: "status", text: "Loading connection…" }));
+    const handle = api.dialog({ title: "Google Sheet", body, actions: [{ label: "Close", run: (d) => d.close() }] });
+    connection = handle;
+    handle.onDispose = () => { if (connection === handle) connection = null; };
+    handle.root.classList.add("gs-connection-modal");
+    const current = () => handle.root.isConnected && version === scopeVersion;
+    const close = handle.root.querySelector("[data-close]");
+    close.focus();
+    let state, canWrite;
+    try { [state, canWrite] = await Promise.all([call(project, "state"), policy()]); }
+    catch (error) {
+      if (current()) body.replaceChildren(alertBox(`Couldn’t load the connection: ${error.message}`),
+        h("button", { type: "button", class: "btn primary", text: "Reload connection", onclick: () => openConnection(project, focusSync) }));
+      return handle;
+    }
+    if (!current()) return handle;
+    const primary = (text, run, disabled = false) => {
+      const button = h("button", { type: "button", class: "btn primary", text, disabled, onclick: run });
+      handle.footer.append(button); return button;
+    };
+    body.replaceChildren(h("p", { class: "muted", text: api.projectName(project) }));
+    if (!canWrite) body.append(h("p", { class: "small muted", text: OFF_TITLE }));
     if (!state.attached) {
-      body.append(h("p", { text: "Write step status, run times and resource usage into a Google Sheet row per target. Nothing is sent until you attach a sheet." }));
-      if (!state.credentials) {
-        body.append(h("div", { class: "callout" }, "Add a service-account key first. ",
-          h("button", { type: "button", class: "link-btn", text: "Open Settings → Plugins", onclick: openPluginSettings })));
-      } else {
-        body.append(h("button", { type: "button", class: "btn primary", text: "Attach Google Sheet", disabled: !canWrite, title: canWrite ? null : OFF_TITLE,
-          onclick: () => openAttach(project, state) }));
-      }
-      host.replaceChildren(body);
-      return;
+      body.append(h("p", { class: "gs-chip", text: "Not connected" }),
+        h("p", { text: "Connect a sheet to export project results and update step status during runs." }));
+      if (!state.credentials) body.append(h("p", { text: "Add a service-account key in Settings → Plugins → Google Sheet, then connect your sheet." }));
+      const setup = primary(state.credentials ? "Connect sheet…" : "Set up credentials…", () => {
+        if (state.credentials) openAttach(project, state); else { handle.close(); openPluginSettings(); }
+      }, state.credentials && !canWrite);
+      if (!setup.disabled) setup.focus();
+      return handle;
     }
     if (!state.mapping) {
-      body.append(alertBox(`alfrd.gsheet.yaml cannot be read: ${state.intrinsic_errors?.[0]?.message || "invalid file"}`),
-        h("p", { class: "small muted", text: "Fix the file in an editor, or delete it and attach the sheet again." }),
-        h("div", { class: "row gap wrap" },
-          h("button", { type: "button", class: "btn", text: "Reload", onclick: () => refresh(project) }),
-          h("button", { type: "button", class: "btn danger", text: "Delete alfrd.gsheet.yaml…", disabled: !canWrite, title: canWrite ? null : OFF_TITLE,
-            onclick: () => openDetach(project, state, "delete") })));
-      host.replaceChildren(body);
-      return;
+      body.append(h("p", { class: "gs-chip gs-chip-error", text: "! Needs attention" }),
+        alertBox(`alfrd.gsheet.yaml cannot be read: ${state.intrinsic_errors?.[0]?.message || "invalid file"}`),
+        h("p", { text: "Fix the file in an editor, or explicitly delete it and connect again." }),
+        h("button", { type: "button", class: "btn danger", text: "Delete alfrd.gsheet.yaml…", disabled: !canWrite, onclick: () => openDetach(project, state, "delete") }));
+      primary("Reload connection", () => openConnection(project, focusSync)); return handle;
     }
     const m = state.mapping;
-    const url = sheetURL(m.spreadsheet_id, m.gid);
-    const out = m.outbound?.length || 0, inn = m.inbound?.length || 0;
-    const chip = (text) => h("span", { class: "gs-chip", text });
-    body.append(h("p", { class: "row gap wrap gs-line" },
-      url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer", "aria-label": "Open sheet in a new tab", text: "Open sheet ↗" })
-        : h("span", { class: "muted", text: "Sheet from Settings default" }),
-      chip(`Tab: ${m.worksheet ?? `gid ${m.gid}`}`), chip(`Key: ${m.rows?.key_column || "?"}`), chip(`${out} outbound · ${inn} inbound`)));
-    const switchId = uid("enabled");
-    const toggle = h("input", { type: "checkbox", role: "switch", id: switchId, checked: state.enabled, disabled: !canWrite, title: canWrite ? null : OFF_TITLE });
+    const status = h("p", { class: `gs-chip ${state.intrinsic_errors?.length ? "gs-chip-error" : "gs-chip-connected"}`, text: state.intrinsic_errors?.length ? "! Needs attention" : "✓ Connected" });
+    const live = h("div", { role: "status", "aria-live": "polite" });
+    const title = h("dd", { text: "Loading sheet name…" });
+    body.append(status, h("p", { class: "small muted", text: "Validate to check sheet access and mapped columns." }),
+      h("dl", { class: "gs-facts" }, h("dt", { text: "Spreadsheet" }), title,
+        h("dt", { text: "Worksheet" }), h("dd", { text: m.worksheet ?? `gid ${m.gid}` }),
+        h("dt", { text: "Row matching" }), h("dd", { text: `${m.rows?.key_column || "?"} · ${m.rows?.match_against === "files" ? "Plan filenames" : "Plan target"}` }),
+        h("dt", { text: "Rules" }), h("dd", { text: `${m.outbound?.length || 0} outbound · ${m.inbound?.length || 0} inbound` })));
+    const url = sheetURL(state.spreadsheet_id || m.spreadsheet_id, m.gid);
+    if (url) body.append(h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "Open sheet ↗" }));
+    const last = state.last_sync || {};
+    body.append(h("p", { text: last.at ? `Last sync: ${new Date(last.at).toLocaleString()} · ${last.result === "error" ? "Last sync failed" : last.result || "unknown"}` : "Last sync: Never" }));
+    for (const error of state.intrinsic_errors || []) body.append(alertBox(`${error.path}: ${error.message}`));
+    body.append(live);
+    const validate = primary(state.intrinsic_errors?.length ? "Retry validation" : "Validate connection", async () => {
+      validate.disabled = true; handle.setBusy(true); live.textContent = "Validating…";
+      try {
+        const result = await call(project, "validate");
+        if (!current()) return;
+        status.textContent = result.errors?.length ? "! Needs attention" : "✓ Connected";
+        status.className = `gs-chip ${result.errors?.length ? "gs-chip-error" : "gs-chip-connected"}`;
+        live.replaceChildren(...(result.errors?.length ? result.errors.map((e) => alertBox(`${e.path}: ${e.message}`))
+          : [h("p", { text: "✓ Sheet access and mapping checked." })]),
+          ...(result.warnings || []).map((text) => h("p", { class: "small muted", text })));
+      } catch (error) { if (current()) { status.textContent = "! Needs attention"; live.replaceChildren(alertBox(error.message)); } }
+      finally { handle.setBusy(false); validate.disabled = false; }
+    });
+    const hint = uid("sync-hint");
+    const toggle = h("input", { type: "checkbox", role: "switch", checked: state.enabled, disabled: !canWrite, "aria-describedby": hint });
+    const syncStatus = h("p", { class: "small", role: "status", text: `Automatic sync ${state.enabled ? "on" : "off"}` });
     toggle.addEventListener("change", async () => {
       const wanted = toggle.checked;
-      toggle.disabled = true;
+      toggle.disabled = true; handle.setBusy(true); syncStatus.textContent = "Saving sync setting…";
       try {
-        if (!await confirmRewrite(project, state, api.confirm)) { toggle.checked = !wanted; return; }
+        if (!await confirmRewrite(project, state, handle.confirm)) { toggle.checked = !wanted; syncStatus.textContent = `Automatic sync ${state.enabled ? "on" : "off"}`; return; }
+        if (!current()) return;
         const result = await call(project, "save", { mapping: { ...m, enabled: wanted }, base_sha256: state.mapping_sha256 });
         if (!result.saved) throw new Error(result.errors?.map((e) => `${e.path}: ${e.message}`).join("; ") || "The mapping is invalid.");
-        api.toast(wanted ? "Sync enabled" : "Sync disabled", "ok");
-        refresh(project);
+        if (!current()) return;
+        m.enabled = wanted; state.enabled = wanted; state.mapping_sha256 = result.mapping_sha256;
+        syncStatus.textContent = `Automatic sync ${wanted ? "on" : "off"}`; refresh(project);
       } catch (error) {
-        toggle.checked = !wanted;
-        api.toast(error.message.includes(CONFLICT) ? "The file changed on disk; reloaded the card." : error.message, "fail");
-        if (error.message.includes(CONFLICT)) refresh(project);
-      } finally { toggle.disabled = !canWrite; }
+        if (current()) { toggle.checked = !wanted; syncStatus.textContent = error.message; }
+        if (error.message.includes(CONFLICT)) { refresh(project); if (current()) openConnection(project, true); }
+      } finally { handle.setBusy(false); toggle.disabled = !canWrite; }
     });
-    const last = state.last_sync || {};
-    body.append(h("p", { class: "row gap wrap gs-line" },
-      h("label", { class: "check", for: switchId }, toggle, h("span", { text: "Sync enabled" })),
-      h("span", { class: "muted small" }, "Last sync: ", last.at
-        ? h("time", { datetime: last.at, title: last.at, text: `${new Date(last.at).toLocaleString()} (${last.result || "unknown"})` })
-        : "never")));
-    if (state.dry_run) body.append(h("p", { class: "small muted", text: "Dry run is on in Settings: backfill and hooks write nothing." }));
-    const live = h("div", { class: "gs-validate small", "aria-live": "polite" });
-    const off = (node) => { if (!canWrite) { node.disabled = true; node.title = OFF_TITLE; } return node; };
+    body.append(h("section", {}, h("h3", { text: "Automatic sync" }),
+      h("label", { class: "check" }, toggle, h("span", { text: "Update this sheet during runs" })),
+      h("p", { class: "small muted", id: hint, text: "Uses this project's saved mapping." }), syncStatus));
+    if (state.dry_run) body.append(h("p", { class: "small muted", text: "Dry run: no cells will be written" }));
     body.append(h("div", { class: "row gap wrap" },
-      h("button", { type: "button", class: "btn primary", text: "Edit mapping", onclick: () => openEditor(project) }),
-      h("button", { type: "button", class: "btn", text: "Validate", onclick: async (e) => {
-        const button = e.currentTarget;
-        button.disabled = true;
-        live.replaceChildren(h("span", { class: "muted", text: "Validating…" }));
-        try {
-          const result = await call(project, "validate");
-          live.replaceChildren(...result.errors.length
-            ? [h("p", { text: `${result.errors.length} problem${result.errors.length === 1 ? "" : "s"}:` }),
-              h("ul", {}, result.errors.map((err) => h("li", { text: `${err.path}: ${err.message}` })))]
-            : [h("p", { text: "✓ Mapping valid" })], ...(result.warnings || []).map((w) => h("p", { class: "muted", text: w })));
-        } catch (error) { live.replaceChildren(alertBox(error.message)); }
-        finally { button.disabled = false; }
-      } }),
-      h("button", { type: "button", class: "btn", text: "Preview", onclick: () => openPreview(project, state, false) }),
-      off(h("button", { type: "button", class: "btn", text: "Backfill…", onclick: () => openPreview(project, state, true) })),
-      off(h("button", { type: "button", class: "btn", text: "Detach…", onclick: () => openDetach(project, state) }))), live);
-    host.replaceChildren(body);
+      h("button", { type: "button", class: "btn", text: "Edit mapping…", onclick: () => openEditor(project) }),
+      h("button", { type: "button", class: "btn", text: "Preview changes…", onclick: () => openPreview(project, state, false) }),
+      h("button", { type: "button", class: "btn", text: "Detach…", disabled: !canWrite, onclick: () => openDetach(project, state) })));
+    if (focusSync && !toggle.disabled) toggle.focus(); else close.focus();
+    const fallback = () => {
+      title.textContent = state.spreadsheet_id || m.spreadsheet_id ? `Sheet ID: ${state.spreadsheet_id || m.spreadsheet_id}` : "Sheet configured in Settings";
+      live.append(h("p", { class: "small muted", text: "Sheet name unavailable. Validate to check sheet access." }));
+    };
+    call(project, "sheet_info", where(m)).then((info) => { if (current()) { if (info.title) title.textContent = info.title; else fallback(); } })
+      .catch(() => { if (current()) fallback(); });
+    return handle;
   }
 
   // -- attach dialog --
@@ -254,32 +308,46 @@ export function registerProjectUI(api) {
     const load = h("button", { type: "button", class: "btn", text: "Load" });
     const tab = h("select", { class: "input" }), row = h("input", { type: "number", min: 1, value: 1, class: "input gs-num" });
     const key = h("select", { class: "input" }), code = h("select", { class: "input" });
-    const sample = h("p", { class: "small", "aria-live": "polite" });
+    const mode = h("select", { class: "input" }, option("target", "Plan target", true), option("files", "Plan filenames"));
+    const sample = h("div", { class: "small", "aria-live": "polite" });
     const force = h("input", { type: "checkbox" });
     const tabStep = h("fieldset", { class: "gs-step", hidden: true }, h("legend", { text: "2. Tab" }),
-      h("div", { class: "row gap wrap" }, field("Tab", tab), field("Header row", row)));
+      h("div", { class: "gs-fields" }, field("Tab", tab, "Select the worksheet containing your target rows."),
+        field("Header row", row, "The row containing column names, usually 1.")));
     const colStep = h("fieldset", { class: "gs-step", hidden: true }, h("legend", { text: "3. Columns" }),
-      h("div", { class: "row gap wrap" }, field("Target-name column", key), field("Project-code column (optional)", code)), sample);
+      h("div", { class: "gs-fields" }, field("Row-match column", key, "Choose the sheet column used to find each plan target. Check the sample below."),
+        field("Match against", mode, "Plan filenames matches the files listed for each plan target. Commas, spaces and newlines separate files; paths and case must match."),
+        field("Project-code column (optional)", code, "Use a project code to distinguish targets with the same name.")), sample);
     const body = h("div", { class: "gs-attach" }, steps,
+      h("p", { class: "gs-intro", text: "Choose a sheet, then match its rows to your plan targets. No run data is written during setup." }),
       h("fieldset", { class: "gs-step" }, h("legend", { text: "1. Spreadsheet" }),
-        field("Sheet URL or ID", sheet),
+        field("Sheet URL or ID", sheet, "Share the sheet with the service-account email from Settings → Plugins, with Editor access."),
         h("label", { class: "check" }, useDefault, h("span", { text: state.default_spreadsheet ? "Use the default sheet from Settings" : "Use the default sheet from Settings (none set)" })),
         h("div", { class: "row gap" }, load)),
       tabStep, colStep,
       state.attached ? h("label", { class: "check" }, force, h("span", { text: "Replace the existing mapping" })) : null,
       problem);
-    let info = null, attachButton;
+    let info = null, attachButton, matchesReady = false, headerSequence = 0;
     const source = () => useDefault.checked ? {} : { spreadsheet: sheet.value.trim() };
-    const ready = () => { if (attachButton) attachButton.disabled = !(info && key.value); };
+    const ready = () => { if (attachButton) attachButton.disabled = !(info && key.value && matchesReady); };
     const fill = (select, items, chosen, none) => {
       select.replaceChildren(...none ? [option("", none)] : [], ...items.map((x) => option(x.value, x.text, x.value === chosen)));
     };
     mark(0);
-    useDefault.addEventListener("change", () => { sheet.disabled = useDefault.checked; });
+    const invalidateSource = () => {
+      headerSequence++; matchesReady = false; info = null;
+      tabStep.hidden = true; colStep.hidden = true; mark(0); ready();
+    };
+    sheet.addEventListener("input", invalidateSource);
+    useDefault.addEventListener("change", () => { sheet.disabled = useDefault.checked; invalidateSource(); });
     load.addEventListener("click", async () => {
+      invalidateSource(); loadHeaders.cancel();
+      const mine = headerSequence;
       say(""); load.disabled = true; load.setAttribute("aria-busy", "true");
       try {
-        info = await call(project, "sheet_info", source());
+        const result = await call(project, "sheet_info", source());
+        if (mine !== headerSequence || !body.isConnected) return;
+        info = result;
         const gid = gidFrom(sheet.value);
         fill(tab, info.tabs.map((t) => ({ value: t.title, text: t.title })), info.tabs.find((t) => t.gid === gid)?.title);
         tabStep.hidden = false; mark(1);
@@ -291,32 +359,46 @@ export function registerProjectUI(api) {
     const loadHeaders = debounce(async (keyColumn) => {
       if (!info) return;
       say("");
+      const mine = headerSequence;
       try {
         const result = await call(project, "headers", { ...source(), worksheet: tab.value, header_row: Number(row.value) || 1,
+          match_against: mode.value, ...code.value ? { code_column: code.value } : {},
           ...keyColumn ? { key_column: keyColumn } : {} });
+        if (mine !== headerSequence || !body.isConnected) return;
         const items = result.headers.filter((x) => x.name).map((x) => ({ value: x.name, text: `${x.letter} · ${x.name}` }));
         const chosen = keyColumn || guessKey(result.headers, result.key_column);
         fill(key, items, chosen, "Choose a column…");
         fill(code, items.filter((x) => x.value !== chosen), code.value, "(none)");
-        const { matched, total } = matchCount(result.sample_keys, api.targets?.(project) || []);
+        if (!keyColumn && chosen?.toUpperCase() === "FILENAMES" && mode.value !== "files") {
+          mode.value = "files"; reloadMatches(); return;
+        }
+        const matches = result.matches || [];
+        const matched = matches.filter((x) => x.status === "matched").length;
+        matchesReady = !matches.some((x) => x.status === "ambiguous");
         sample.replaceChildren(
-          h("span", { text: total ? `First keys: ${result.sample_keys.slice(0, 5).join(", ")}${total > 5 ? " …" : ""}` : "No values under this column." }),
-          h("br"),
-          h("span", { text: matched ? `✓ ${matched} of ${total} match plan targets` : `⚠ 0 of ${total} match plan targets. Is this the right column?` }));
+          h("p", { text: `${matched} of ${matches.length} match plan targets` }),
+          h("ul", {}, matches.slice(0, 5).map((x) => h("li", { text: `${x.value} → ${x.status === "matched" ? x.target : x.status === "ambiguous" ? "Matches multiple targets — correct this before attaching" : "No matching plan target"}` }))));
         colStep.hidden = false; mark(2);
-      } catch (error) { say(error.message); }
+      } catch (error) { if (mine !== headerSequence) return; matchesReady = false; say(error.message); }
       ready();
     }, 400);
-    tab.addEventListener("change", () => loadHeaders());
-    row.addEventListener("input", () => loadHeaders());
-    key.addEventListener("change", () => { ready(); if (key.value) loadHeaders(key.value); });
+    const reloadMatches = () => { headerSequence++; matchesReady = false; ready(); loadHeaders(key.value); };
+    tab.addEventListener("change", () => { key.value = ""; code.value = ""; reloadMatches(); });
+    row.addEventListener("input", reloadMatches);
+    mode.addEventListener("change", reloadMatches);
+    code.addEventListener("change", reloadMatches);
+    key.addEventListener("change", () => {
+      mode.value = key.value.toUpperCase() === "FILENAMES" ? "files" : "target";
+      if (code.value === key.value) code.value = "";
+      reloadMatches();
+    });
     const handle = api.dialog({ title: "Attach Google Sheet", body, actions: [
       { label: "Cancel", run: (d) => d.close() },
       { label: "Attach", tone: "primary", async run() {
         say("");
         try {
           await call(project, "attach", { ...source(), worksheet: tab.value, header_row: Number(row.value) || 1,
-            key_column: key.value, ...code.value ? { code_column: code.value } : {}, ...force.checked ? { force: true } : {} });
+            key_column: key.value, match_against: mode.value, ...code.value ? { code_column: code.value } : {}, ...force.checked ? { force: true } : {} });
         } catch (error) { say(error.message); return; }
         api.toast("Sheet attached", "ok");
         refresh(project);
@@ -330,8 +412,12 @@ export function registerProjectUI(api) {
 
   // -- mapping editor --
   async function openEditor(project) {
+    const version = scopeVersion;
+    const origin = document.querySelector("#modal-host .gs-connection-dialog");
+    const current = () => version === scopeVersion && (!origin || origin.isConnected);
     let state;
     try { state = await call(project, "state"); } catch (error) { api.toast(error.message, "fail"); return; }
+    if (!current()) return;
     if (!state.attached) { api.toast("Attach a Google Sheet first.", "warn"); return openAttach(project, state); }
     if (!state.mapping) { api.toast("alfrd.gsheet.yaml cannot be read; fix or delete it first.", "fail"); return; }
     const canWrite = await policy();
@@ -339,14 +425,14 @@ export function registerProjectUI(api) {
     let headerNote = "";
     try { headers = (await call(project, "headers", where(state.mapping))).headers.filter((x) => x.name); }
     catch { headerNote = "Sheet headers could not be loaded; columns can still be typed."; }
-    return editor(project, state, headers, headerNote, canWrite);
+    if (current()) return editor(project, state, headers, headerNote, canWrite);
   }
 
   function editor(project, state, headers, headerNote, canWrite) {
     let base = state.mapping_sha256;
     let draft = structuredClone(state.mapping);
     let loaded = JSON.stringify(cleanMapping(draft));
-    let errors = [];
+    let errors = [], missingColumns = [];
     const custom = new WeakSet();
     const keyLists = {};
     const outBody = h("tbody"), inBody = h("tbody");
@@ -477,6 +563,13 @@ export function registerProjectUI(api) {
     };
     const drawOptions = () => {
       const rows = draft.rows ||= {};
+      const key = control(h("input", { class: "input", value: rows.key_column || "" }), "rows.key_column", "Row-match column", "opt.key");
+      key.addEventListener("input", () => { rows.key_column = key.value.trim(); changed(); });
+      const mode = control(h("select", { class: "input" }, option("target", "Plan target", rows.match_against !== "files"),
+        option("files", "Plan filenames", rows.match_against === "files")), "rows.match_against", "Match against", "opt.mode");
+      mode.addEventListener("change", () => { rows.match_against = mode.value; changed(); });
+      const code = control(h("input", { class: "input", value: rows.code_column || "" }), "rows.code_column", "Project-code column (optional)", "opt.code");
+      code.addEventListener("input", () => { if (code.value.trim()) rows.code_column = code.value.trim(); else delete rows.code_column; changed(); });
       const missing = control(h("select", { class: "input" }, option("skip", "Skip targets with no row", rows.missing_row !== "append"),
         option("append", "Append a row", rows.missing_row === "append")), "rows.missing_row", "Missing row", "opt.missing");
       missing.addEventListener("change", () => { rows.missing_row = missing.value; changed(); });
@@ -486,7 +579,8 @@ export function registerProjectUI(api) {
       verify.addEventListener("change", () => { draft.verify_before_write = verify.checked; changed(); });
       const enabled = control(h("input", { type: "checkbox", role: "switch", checked: draft.enabled !== false }), "enabled", "Sync enabled", "opt.enabled");
       enabled.addEventListener("change", () => { draft.enabled = enabled.checked; changed(); });
-      options.replaceChildren(field("Missing row", missing), field("Read range", range, "Optional, without a tab name."),
+      options.replaceChildren(field("Row-match column", key), field("Match against", mode, "Match the files listed for each plan target; ambiguous rows prevent writes."),
+        field("Project-code column (optional)", code), field("Missing row", missing), field("Read range", range, "Optional, without a tab name."),
         h("label", { class: "check" }, verify, h("span", { text: "Verify cells before writing" })),
         h("label", { class: "check" }, enabled, h("span", { text: "Sync enabled" })));
       for (const node of options.querySelectorAll("[aria-label]")) if (node.closest("label") || node.labels?.length) node.removeAttribute("aria-label");
@@ -494,14 +588,18 @@ export function registerProjectUI(api) {
     const showErrors = () => {
       body.querySelectorAll("[aria-invalid]").forEach((node) => node.removeAttribute("aria-invalid"));
       body.querySelectorAll(".gs-err").forEach((node) => node.remove());
-      body.querySelectorAll("[data-gs-described]").forEach((node) => { node.removeAttribute("aria-describedby"); node.removeAttribute("data-gs-described"); });
+      body.querySelectorAll("[data-gs-described]").forEach((node) => {
+        if (node.dataset.gsHint) node.setAttribute("aria-describedby", node.dataset.gsHint);
+        else node.removeAttribute("aria-describedby");
+        node.removeAttribute("data-gs-described");
+      });
       const items = errors.map((error) => {
         let node = body.querySelector(`[data-path="${CSS.escape(error.path)}"]:not([hidden])`);
         if (!node && /\[\d+\]$/.test(error.path)) node = body.querySelector(`[data-path^="${CSS.escape(error.path)}."]:not([hidden])`);
         if (node) {
           const id = uid("err");
           node.setAttribute("aria-invalid", "true");
-          node.setAttribute("aria-describedby", id);
+          node.setAttribute("aria-describedby", [node.dataset.gsHint, id].filter(Boolean).join(" "));
           node.setAttribute("data-gs-described", "");
           (node.closest("td, .field, label") || node.parentNode).append(h("p", { class: "gs-err small", id, text: error.message }));
         }
@@ -523,6 +621,8 @@ export function registerProjectUI(api) {
         const result = await call(project, "validate", { mapping: cleanMapping(draft) });
         if (mine !== sequence || !body.isConnected) return;
         errors = result.errors || [];
+        missingColumns = result.missing_columns || [];
+        drawMissing();
         warn.replaceChildren(...(result.warnings || []).map((w) => h("p", { class: "small muted", text: w })));
       } catch (error) {
         if (mine !== sequence) return;
@@ -531,6 +631,53 @@ export function registerProjectUI(api) {
       showErrors();
     }, 600);
     const warn = h("div", { class: "gs-warnings" });
+    const missingBox = h("div", { class: "gs-column-recovery" });
+    const columnStatus = h("p", { class: "small", role: "status", "aria-live": "polite" });
+    const reviewColumns = h("button", { type: "button", class: "btn", text: state.dry_run ? "Preview column creation" : "Review column creation…",
+      disabled: !canWrite && !state.dry_run, title: !canWrite && !state.dry_run ? OFF_TITLE : "" });
+    const drawMissing = () => {
+      missingBox.replaceChildren(...missingColumns.length ? [h("div", { class: "callout" },
+        h("p", { text: `${missingColumns.length} destination column${missingColumns.length === 1 ? " is" : "s are"} missing.` }),
+        h("ul", {}, missingColumns.map((name) => h("li", { text: name }))), reviewColumns)] : []);
+    };
+    reviewColumns.addEventListener("click", async () => {
+      const focus = document.activeElement;
+      const pendingDraft = cleanMapping(draft);
+      validate.cancel(); sequence++;
+      handle.setBusy(true); reviewColumns.disabled = true;
+      body.querySelectorAll("fieldset").forEach((node) => { node.disabled = true; });
+      columnStatus.textContent = "Checking current sheet headers…";
+      try {
+        // Every attempt starts with a fresh review, including after a lost response.
+        const preview = await call(project, "column_preview", { mapping: pendingDraft });
+        if (!preview.columns.length) {
+          columnStatus.textContent = "These columns already exist. Review your mapping, then Save.";
+        } else if (preview.dry_run) {
+          columnStatus.textContent = `No columns will be written. ${preview.worksheet}, header row ${preview.header_row}: ${preview.columns.map((c) => `${c.letter} · ${c.name}`).join(", ")}`;
+        } else {
+          const count = preview.columns.length;
+          const approved = await handle.confirm(`${preview.worksheet}, header row ${preview.header_row}: ${preview.columns.map((c) => `${c.letter} · ${c.name}`).join(", ")}. Adds headers at the end of this sheet. Existing headers and data are kept.`,
+            { tone: "primary", confirmLabel: `Create ${count} column${count === 1 ? "" : "s"}` });
+          if (!approved) { columnStatus.textContent = "Column creation cancelled. Your draft is kept."; return; }
+          columnStatus.textContent = "Creating columns…";
+          const result = await call(project, "create_columns", { mapping: pendingDraft, preview_sha256: preview.preview_sha256, confirm: true });
+          if (result.headers) headers = result.headers.filter((x) => x.name);
+          columnStatus.textContent = result.dry_run ? "No columns will be written." : `Created ${result.created} column${result.created === 1 ? "" : "s"}. Review your mapping, then Save.`;
+        }
+      } catch (error) {
+        columnStatus.textContent = `${error.message} Your draft is kept. Review again to refresh headers before retrying.`;
+      } finally {
+        // Refresh after success or failure, preserving rules, revision and dirty state.
+        try { headers = (await call(project, "headers", where(draft))).headers.filter((x) => x.name); rerender(); }
+        catch { /* validation below retains the connection error and draft */ }
+        await validate.flush();
+        body.querySelectorAll("fieldset").forEach((node) => { node.disabled = false; });
+        handle.setBusy(false);
+        reviewColumns.disabled = !canWrite && !state.dry_run;
+        showErrors();
+        if (focus?.isConnected) focus.focus(); else addRule.focus();
+      }
+    });
     const addRule = h("button", { type: "button", class: "btn", text: "Add rule", "data-ctl": "outbound.add", onclick: () => {
       draft.outbound.push({ step: state.steps[0] || "*", column: "", field: "status" });
       rerender(ctl("outbound", draft.outbound.length - 1, "step")); changed();
@@ -552,13 +699,14 @@ export function registerProjectUI(api) {
       h("div", { class: "callout", text: state.comments_notice || "Saving rewrites alfrd.gsheet.yaml; comments in it are removed." }),
       headerNote ? alertBox(headerNote) : null,
       h("fieldset", { class: "gs-group" }, h("legend", { text: "Outbound (Studio → sheet)" }),
+        h("p", { class: "gs-hint small muted", text: "Choose which step values to write and where they belong in the sheet. Saving changes the mapping; Preview shows the cells that would change." }),
         table("Outbound rules", ["Step", "Column", "Field", "Format", "When", "Template", "Actions"], outBody),
-        h("div", { class: "row gap wrap" }, addRule, addStatus)),
+        h("div", { class: "row gap wrap" }, addRule, addStatus), missingBox, columnStatus),
       h("fieldset", { class: "gs-group" }, h("legend", { text: "Inbound (sheet → plan)" }),
         h("p", { class: "small muted", text: "A plan column must be an existing extra column; it cannot change a step, target, code, workdir or files column. A step cell accepts only todo or skip and never changes the unit about to run." }),
         table("Inbound rules", ["Column", "To", "Plan column or step", "Actions"], inBody),
         h("div", { class: "row gap wrap" }, addInbound)),
-      h("fieldset", { class: "gs-group" }, h("legend", { text: "Options" }), options),
+      h("fieldset", { class: "gs-group" }, h("legend", { text: "Sync options" }), options),
       datalists, warn, summary);
     let save = null;
     const handle = api.dialog({ title: "Google Sheet mapping", body, wide: true, actions: [
@@ -599,9 +747,10 @@ export function registerProjectUI(api) {
     const body = h("div", { class: "gs-preview" }, h("p", { class: "muted", role: "status", text: "Computing the cells that would change…" }));
     let preview = null, writeButton = null;
     const actions = [{ label: "Close", run: (d) => d.close() }];
-    if (write) actions.push({ label: "Write cells…", tone: "primary", async run(d) {
+    if (write) actions.push({ label: state.dry_run ? "Review dry run…" : "Write cells…", tone: "primary", async run(d) {
       const total = preview?.total_cells || 0;
-      if (!await d.confirm(`Write ${total} cell${total === 1 ? "" : "s"} to ${tabName}?`, { tone: "primary", confirmLabel: "Write" })) return;
+      if (!await d.confirm(state.dry_run ? `Run a dry run for ${total} cell${total === 1 ? "" : "s"} in ${tabName}? No cells will be written.`
+        : `Write ${total} cell${total === 1 ? "" : "s"} to ${tabName}?`, { tone: "primary", confirmLabel: state.dry_run ? "Run dry run" : "Write" })) return;
       const result = await call(project, "backfill", { confirm: true });
       api.toast(result.dry_run ? `Dry run: nothing written (${result.total_cells} cells)` : `Wrote ${result.cells_written} cells (${result.result})`, result.result === "error" ? "fail" : "ok");
       d.close();
@@ -611,8 +760,9 @@ export function registerProjectUI(api) {
     writeButton = write ? handle.footer.querySelector(".btn.primary") : null;
     if (writeButton) writeButton.disabled = true;
     call(project, "preview").then((result) => {
+      if (!body.isConnected) return;
       preview = result;
-      const parts = [h("p", { role: "status" }, h("strong", { text: `${result.total_cells} cell${result.total_cells === 1 ? "" : "s"} would change in ${tabName}` }),
+      const parts = [h("p", { text: "Exports mapped project results, independently of visible filters, checked rows and pagination." }), h("p", { role: "status" }, h("strong", { text: `${result.total_cells} cell${result.total_cells === 1 ? "" : "s"} would change in ${tabName}` }),
         result.truncated ? " (showing first 500)" : "")];
       if (result.conflicts?.length) parts.push(h("div", { class: "callout warn", text: `Changed in the sheet since the last sync, so left alone: ${result.conflicts.join(", ")}` }));
       if (!result.cells.length) parts.push(h("p", { text: "Nothing to write; the sheet is up to date." }));
@@ -663,7 +813,7 @@ export function registerProjectUI(api) {
     return handle;
   }
 
-  api.registerProjectSection({ id: "gsheet", title: "Google Sheet", order: 50, render: renderSection });
+  api.registerOverviewAction({ id: "gsheet", title: "Google Sheet", order: 50, render: renderToolbar });
   const withProject = (fn) => async () => {
     const project = api.project();
     if (!project) { api.toast("Select a project first.", "warn"); return; }
@@ -676,5 +826,5 @@ export function registerProjectUI(api) {
     if (!await policy()) { api.toast(OFF_TITLE, "warn"); return; }
     openAttach(project, state);
   }) });
-  return { renderSection, openAttach, openEditor, editor, openPreview, openDetach };
+  return { renderToolbar, openConnection, openAttach, openEditor, editor, openPreview, openDetach };
 }

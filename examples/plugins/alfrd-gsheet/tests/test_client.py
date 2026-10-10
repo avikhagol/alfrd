@@ -362,3 +362,19 @@ def test_manifest_zero_client_calls_without_applicable_mapping(gsheet, tmp_path,
     assert manifest.before(ctx) is None
     assert manifest.after(ctx, None) is None
     assert manifest.after(replace(ctx, readopted=True), None) is None
+
+
+
+def test_column_creation_is_one_atomic_literal_request_with_no_retry(transport, gsheet):
+    t = transport
+    t.responses.append(Response())
+    t.client.create_columns(SID, sheet_id=17, header_row=3, start=26, names=["s1 RAM", "=literal"], deadline=deadline())
+    assert t.calls[0][1].endswith(":batchUpdate")
+    requests = t.calls[0][2]["json"]["requests"]
+    assert requests[0] == {"insertDimension": {"range": {"sheetId": 17, "dimension": "COLUMNS", "startIndex": 26, "endIndex": 28}, "inheritFromBefore": True}}
+    assert requests[1]["updateCells"]["start"] == {"sheetId": 17, "rowIndex": 2, "columnIndex": 26}
+    assert requests[1]["updateCells"]["rows"][0]["values"][1] == {"userEnteredValue": {"stringValue": "=literal"}}
+    t.responses.append(Response(503))
+    with pytest.raises(gsheet.client.SyncError, match="after 1 attempts"):
+        t.client.create_columns(SID, sheet_id=17, header_row=3, start=26, names=["s1 RAM"], deadline=deadline())
+    assert len(t.calls) == 2

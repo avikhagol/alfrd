@@ -17,7 +17,6 @@ const [pickProjectFolder, scanProjectFolder, saveFolderHandle, loadFolderHandle,
     .split(" ").map((name) => async (...args) => (await folderMod())[name](...args));
 import { createLive } from "./data/live.js";
 import { server } from "./data/server.js";
-import { mountFolderBrowser } from "./components/folder_browser.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
 import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
 import { projectNotes } from "./data/notes.js";
@@ -144,13 +143,17 @@ export const ctx = {
   openLogs(opts = {}) { logs.showLogs(ctx, opts); },
   /** Pick a folder on the ALFRD server (never the viewer's machine) into `input`; Create project still decides. */
   browseFolder(host, input, more) {
+    let browser, cancelled = false;
+    const b = { destroy() { cancelled = true; browser?.destroy(); } };
     const done = (path) => {
       b.destroy();
       if (path != null) { input.value = path; ["input", "change"].forEach((t) => input.dispatchEvent(new Event(t, { bubbles: true }))); }
       input.focus();
     };
-    const b = mountFolderBrowser(host, { list: (path, opts) => server.listFolders(path, opts), start: input.value.trim(), select: true,
-      use: done, close: () => done(null), ...more });
+    import("./components/folder_browser.js").then(({ mountFolderBrowser }) => {
+      if (!cancelled && host.isConnected) browser = mountFolderBrowser(host, { list: (path, opts) => server.listFolders(path, opts), start: input.value.trim(), select: true,
+        use: done, close: () => done(null), ...more });
+    }).catch((error) => { if (!cancelled && host.isConnected) ctx.toast(`Folder browser not loaded: ${error.message}`, "fail"); });
     return b;
   },
   navigate(view, params = {}) {
@@ -835,19 +838,26 @@ function openImport(tab = "files") {
         browseBtn?.setAttribute("aria-expanded", "false");
         browseBtn?.focus();
       };
-      browseBtn?.addEventListener("click", () => {
+      browseBtn?.addEventListener("click", async () => {
         if (browser) { closeBrowser(); return; }
-        browseBtn.setAttribute("aria-expanded", "true");
-        const typed = String(form.elements.path.value || "").trim();
-        browser = mountFolderBrowser($("#imp-browse", root), {
-          start: typed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(typed) ? typed.replace(/[\\/]\.?alfrd\.ya?ml$/i, "") : "",
-          list: (path, o) => server.listFolders(path, o),
-          connect: connectPaths,
-          allowDefault: server.session?.default_manifest !== false,
-          use: (path) => { form.elements.path.value = path; closeBrowser(); form.elements.path.focus(); },
-          close: closeBrowser,
-        });
+        browseBtn.disabled = true;
+        try {
+          const { mountFolderBrowser } = await import("./components/folder_browser.js");
+          if (!root.isConnected) return;
+          browseBtn.setAttribute("aria-expanded", "true");
+          const typed = String(form.elements.path.value || "").trim();
+          browser = mountFolderBrowser($("#imp-browse", root), {
+            start: typed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(typed) ? typed.replace(/[\\/]\.?alfrd\.ya?ml$/i, "") : "",
+            list: (path, o) => server.listFolders(path, o),
+            connect: connectPaths,
+            allowDefault: server.session?.default_manifest !== false,
+            use: (path) => { form.elements.path.value = path; closeBrowser(); form.elements.path.focus(); },
+            close: closeBrowser,
+          });
+        } catch (error) { ctx.toast(`Folder browser not loaded: ${error.message}`, "fail"); }
+        finally { browseBtn.disabled = false; }
       });
+      root.addEventListener("beforeclose", () => browser?.destroy());
     }
   });
 }
@@ -1143,6 +1153,7 @@ function modal(html, setup, cls = "") {
   clearModalKeys?.();
   const previousFocus = document.activeElement;
   const host = $("#modal-host");
+  if (host.hidden || !host.contains(previousFocus)) host.returnFocus = previousFocus;
   host.innerHTML = `<div class="modal-back" data-close></div><div class="modal ${cls}" role="dialog" aria-modal="true">${html}</div>`;
   host.hidden = false;
   const root = $(".modal", host);
@@ -1151,7 +1162,9 @@ function modal(html, setup, cls = "") {
     host.hidden = true;
     host.innerHTML = "";
     document.removeEventListener("keydown", esc_);
-    if (previousFocus?.isConnected) previousFocus.focus();
+    if (host.returnFocus?.isConnected) host.returnFocus.focus();
+    else $("#ov-export")?.focus();
+    host.returnFocus = null;
   };
   const esc_ = (e) => {
     if (e.key === "Escape") { close(); return; }
@@ -1178,6 +1191,9 @@ function menu(anchor, items) {
   const el = document.createElement("div");
   el.className = "menu";
   el.setAttribute("role", "menu");
+  el.id = `studio-menu-${Date.now()}`;
+  anchor.setAttribute("aria-controls", el.id);
+  anchor.setAttribute("aria-expanded", "true");
   el.innerHTML = items.map((it, i) => (it === "-" ? `<hr>` : `<button role="menuitem" data-i="${i}" ${it.disabled ? "disabled" : ""}>${icon(it.icon || "caret")}<span>${esc(it.label)}</span>${it.hint ? `<small>${esc(it.hint)}</small>` : ""}</button>`)).join("");
   document.body.appendChild(el);
   const r = anchor.getBoundingClientRect();
@@ -1187,12 +1203,28 @@ function menu(anchor, items) {
     const b = e.target.closest("button[data-i]");
     if (!b) return;
     closeMenus();
-    items[Number(b.dataset.i)].run();
+    anchor.focus();
+    items[Number(b.dataset.i)].run?.();
   });
-  setTimeout(() => document.addEventListener("click", closeMenus, { once: true }), 0);
+  const keys = (event) => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenus(); anchor.focus(); }
+    else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const buttons = [...el.querySelectorAll("button:not(:disabled)")];
+      const current = buttons.indexOf(document.activeElement);
+      const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[index]?.focus();
+    } else if (event.key === "Tab") closeMenus();
+  };
+  document.addEventListener("keydown", keys, true);
+  el.cleanup = () => { document.removeEventListener("keydown", keys, true); document.removeEventListener("click", closeMenus); anchor.setAttribute("aria-expanded", "false"); };
+  el.querySelector("button:not(:disabled)")?.focus();
+  setTimeout(() => { if (el.isConnected) document.addEventListener("click", closeMenus, { once: true }); }, 0);
+  return () => { el.cleanup(); el.remove(); };
 }
 function closeMenus() {
-  $$(".menu").forEach((m) => m.remove());
+  $$(".menu").forEach((m) => { m.cleanup?.(); m.remove(); });
 }
 ctx.menu = menu;
 
@@ -1458,6 +1490,11 @@ const live = createLive({
 });
 live.enabled = state.prefs.live !== false;
 setTails(live.enabled);
+// Presence (Telegram "mute while active") loads on the first click or key, off the startup path.
+let presence;
+const loadPresence = () => (presence ||= import("./data/presence.js")
+  .then((m) => m.trackPresence({ enabled: () => state.mode === "server" })(), () => {}));
+for (const name of ["pointerdown", "keydown"]) document.addEventListener(name, loadPresence, { once: true, capture: true });
 
 let pointerDown = 0; // time of an unreleased press (dragging on the canvas, selecting text)
 let typingUntil = 0; // keys pressed in a field: hold live renders for a moment

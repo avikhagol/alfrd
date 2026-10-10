@@ -169,9 +169,23 @@ python3 -c 'import json,sys; m=json.load(sys.stdin); print(m["title"]); print(m[
 
 ### `telegram` (notify.json only)
 
-Sends the title, the body and (with `studio_url`) the Studio link as one plain
-text message through the Telegram Bot API. Options: `token` and `chat_id`,
-`studio_url` (optional, e.g. `http://127.0.0.1:5122`).
+Sends one styled (HTML) message through the Telegram Bot API: a headline with an
+emoji, the project, target and plan, one line per event and (with `studio_url`)
+the Studio link. If Telegram rejects the markup the same message goes out as plain
+text. A message about an ended plan (`plan.finished`, `plan.failed`,
+`plan.cancelled`, `plan.interrupted`) never carries the Studio link; for an
+`avica` project it carries a **run summary** instead: per target, each step's
+status and duration, plus a totals line.
+
+Options: `token` and `chat_id`; `studio_url` (optional, e.g.
+`http://127.0.0.1:5122`); `hold_minutes` (optional, a number: collect
+notifications and send one digest, split only past Telegram's message size, once
+the oldest is this many minutes old; `0` sends right away); `mute_when_active`
+(optional, `true`: send nothing while you have used the Studio in the last
+5 minutes, those notifications are dropped). Left out, `hold_minutes` and
+`mute_when_active` come from Settings → Plugins → Telegram. Held notifications
+wait in the plugin data folder (`plugins/telegram/outbox-*.jsonl`); the next
+notification or the plugin's Bot service sends them when due.
 
 With the `alfrd-telegram` plugin installed, leave out `token` and `chat_id`: the
 route then uses the values saved in Settings → Plugins → Telegram, so you paste

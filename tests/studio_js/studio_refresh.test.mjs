@@ -34,7 +34,7 @@ test("Re-scan requests and invalidates only the active project", async () => {
 
 test("replacing a modal removes the old Escape handler", () => {
   const listeners = new Set();
-  const host = { hidden: true, innerHTML: "" };
+  const host = { hidden: true, innerHTML: "", contains: () => false };
   let activeRoot;
   const document = {
     activeElement: null,

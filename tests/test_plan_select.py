@@ -25,7 +25,9 @@ def dead():
     return {"status": "running", "pid": 999999999}
 
 
-def test_a_newer_scheduled_run_does_not_hide_the_working_one(tmp_path):
+def test_a_newer_scheduled_run_does_not_hide_the_working_one(tmp_path, monkeypatch):
+    # The test process stands in for the agent; under an alfrd run it inherits another ALFRD_ROOT.
+    monkeypatch.setattr(scheduler, "owned_by", lambda pid, root: True)
     add_plan(tmp_path, "old", "2026-10-07T10:00:00", units=[{"status": "ok"}, alive()])
     add_plan(tmp_path, "new", "2026-10-07T22:00:00", start_at="2026-10-07T22:45:00")
     assert scheduler.default_plan_id(tmp_path) == "old"

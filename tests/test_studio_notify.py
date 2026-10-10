@@ -90,8 +90,9 @@ def test_telegram_route_hides_token_and_chat_id_and_send_test_skips_cleanly(serv
     reply = client.post("/api/studio/projects/test/notify/test", json={"index": 1},
                         headers={"X-CSRF-Token": csrf}).get_json()
     assert reply["ok"] is False and "HTTP 401" in reply["skipped"] and token not in json.dumps(reply)
-    assert "\n\nOpen in Studio\nhttp://127.0.0.1:5122" in fake.calls[0]["body"]["text"]
-    assert fake.calls[0]["body"]["text"].startswith("ALFRD test notification\n\nThis is a test notification")
+    text = fake.calls[0]["body"]["text"]
+    # The test notification is a "plan finished": an ended plan carries no Studio link.
+    assert text.startswith("🏁 <b>ALFRD test notification</b>") and "Open in Studio" not in text
 
 
 def test_watcher_baseline_partial_utf8_rotation_and_finished_flush(tmp_path, monkeypatch):
@@ -153,3 +154,14 @@ def test_hub_companion_events_are_available_through_poll_cursor(tmp_path, monkey
         assert response["reset"] == []
     finally:
         hub.stop_all()
+
+
+def test_presence_endpoint_marks_the_studio_active(served):
+    from alfrd import presence
+
+    _, client, csrf = served
+    assert not presence.active()
+    assert client.post("/api/studio/presence", json={}).status_code == 403  # CSRF required
+    reply = client.post("/api/studio/presence", json={}, headers={"X-CSRF-Token": csrf})
+    assert reply.status_code == 200 and reply.get_json()["ok"] is True
+    assert presence.active() and not presence.active(now=presence.presence_file().stat().st_mtime + 301)

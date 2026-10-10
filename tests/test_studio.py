@@ -55,6 +55,7 @@ _STATIC_IMPORT = re.compile(
 )
 #: Modules the Studio loads with ``import()`` on first use; never part of startup.
 LAZY_MODULES = {
+    "js/components/folder_browser.js", "js/data/paths.js",
     "js/components/agent_dialog.js",
     "js/components/agent_settings_dialog.js", "js/data/agent_settings.js",
     "js/components/loop_results.js", "js/data/loop_results.js",
@@ -70,7 +71,7 @@ LAZY_MODULES = {
     "js/components/yaml_form.js", "js/data/yaml_form.js", "js/data/demo.js",
     "js/data/folder_scan.js",
     "js/components/settings_plugins_view.js", "js/components/plugin_jobs.js", "js/components/plugins_install_dialog.js", "js/components/plugins_browse.js", "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
-    "js/components/plugin_config.js", "js/components/plugin_dialogs.js",
+    "js/components/plugin_config.js", "js/components/plugin_dialogs.js", "js/data/presence.js",
 }
 
 
@@ -118,6 +119,8 @@ def test_startup_payload_under_178kb_compressed():
     # data (data/demo.js) on demand: no budget change (2026-10-08).
     # Plugins Phase 3: folder mode (data/folder_scan.js, ~6.5 KiB) loads on demand to pay for the
     # plugin boot hook: no budget change (task-plugins-p3p5, 2026-10-08).
+    # T8b2: folder_browser.js and its dialog-only paths.js dependency now load on demand.
+    # Startup 189,882 → 186,106 B (target <= 187,500); cap unchanged (2026-10-10).
     assert total < 185 * 1024, f"{total} bytes gzip"
 
 
@@ -173,7 +176,31 @@ def test_lazy_payload_under_106kb_compressed():
     # Project actions UI: single-modal dialog/confirmation helpers and CSS load with the
     # plugin API; +2.5 KiB on demand, measured 171,379 bytes. Section registry is small
     # and shared with Overview; startup stays within its existing 185 KiB cap.
-    assert total < 169 * 1024, f"{total} bytes gzip"
+    # D1/D2 (improve-plugins-and-ui, 2026-10-10): Workflow info shows the run's targets and Agent
+    # handoffs uses the Settings tab frame (+1.4 KiB agent_dialog.js/lazy.css, +1 KiB canvas/plans):
+    # PM approved 171 KiB (175,104 bytes); measured 173,577. Startup cap unchanged.
+    # C1 handoff Markdown and Agents & review in the same frame (shared tab_frame.js, also used by
+    # Studio settings) fit under this cap: measured 175,100 bytes, 4 bytes headroom.
+    # improve-plugin-and-ui-2: data/presence.js (544 B) moved here from startup (loads on the first
+    # click or key) to keep startup under 185 KiB, plus the Overview action mount and Telegram
+    # settings helpers (+161 B): PM approved 172 KiB (176,128 bytes); measured 175,809 (t004-claude,
+    # 2026-10-10). Startup cap unchanged (measured 189,329).
+    # task-improve-workflow: the Workflow editor (workflow_editor.js, data/workflow_edit.js and its
+    # lazy.css rules: add/skip/reorder/delete steps, step dialog, agent-loop bar, templates) loads on
+    # the first Edit workflow click: +14.8 KiB, measured 190,607. PM approved 187 KiB (191,488 bytes)
+    # (task-improve-workflow t004-claude, 2026-10-10). Startup cap stays 185 KiB: the editor hooks
+    # in canvas.js are paid for by moving startup code here, not by raising it. Pre-approved follow-ups,
+    # each recorded here with its measurement: that move (e.g. folder_browser.js, ~3.2 KiB) and
+    # Workflow settings/Stages (T9b, <= 4 KiB), up to 194 KiB total; anything above needs trimming.
+    # T8b2 exercised the approved startup-trim allowance: lazy 190,607 → 194,592 B
+    # (folder_browser.js 3,212 B plus paths.js and import hooks). Round to 191 KiB;
+    # T9b may use the remaining allowance up to 194 KiB after measurement.
+    # T9b (Workflow settings + Stages dialogs, template drafts, live region; t006-claude,
+    # 2026-10-10): 194,592 → 198,475 B (+3,883 B, within the pre-approved 4 KiB). Cap set to the
+    # absolute 194 KiB ceiling; anything more needs trimming.
+    # Workflow completion: list action announcements + removal of reset defaults on Save:
+    # startup 186,129 B; lazy 198,478 B (178 B below the unchanged cap, 2026-10-10).
+    assert total < 194 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

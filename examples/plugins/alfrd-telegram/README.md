@@ -42,6 +42,23 @@ Restart `alfrd serve`, then open **Settings → Plugins → Telegram → Configu
 The bot stops when `alfrd serve` stops. A rejected token or chat (HTTP 400, 401,
 403, 404) stops it as `failed` without retries: fix the settings, then Start.
 
+### Quieter notifications
+
+Two optional settings shape the plan notifications (`via: telegram` routes in
+`notify.json`; see `docs/notifications.md`):
+
+- **Digest every (minutes)**: collect notifications and send one digest, split
+  only when it is longer than one Telegram message, once the oldest is this many
+  minutes old. Useful while you test runs. Keep the **Bot** service running so a
+  digest goes out on time even after the last run ends. Empty or `0` sends each
+  notification right away (and the bot sends anything still held).
+- **Mute while I use the Studio**: while you have clicked, typed or scrolled in
+  ALFRD Studio (`alfrd serve`) in the last 5 minutes, notifications are dropped
+  and held digests wait. Replies to your bot commands are never muted.
+
+Plan-end messages carry no Studio link (it can't open from a phone); for an
+`avica` project they list each target's steps with status and duration.
+
 ### From a terminal
 
 ```bash
@@ -70,10 +87,16 @@ appear on the command line, in the bot's output or in its replies.
 | `/status more` or reply `more` | Shows the next 5 entries of the open list, or the next 5 target cards |
 | Reply `2`, `1 3`, `1,3` or `all` | Answers the open list; tappable numbers select one, **All** selects every target across all pages, and **More ▸** shows the next page |
 | `/runs` | The 10 most recent plans of the selected project |
-| `/log TARGET STEP` | The last 30 lines of that step's log |
+| `/log` or `/logs` | Menu: pick a target, then a step; shows the last 30 lines of its log |
+| `/log TARGET STEP` | The last 30 lines of that step's log, without the menu |
+| `/handoff` | The final handoff of the newest agent-loop plan in the selected project |
+| `/whoareyou`, `/whoami` | Host, user, system and versions of the machine running the bot |
 | `/pause` | Asks Yes/No; Yes lets active commands finish and starts no new ones |
 | `/resume` | Asks Yes/No; Yes continues the plan, failed cells stay as they are |
 | `/help`, `/start` | This list |
+
+At start the bot also fills Telegram's `/` command menu (`setMyCommands`), so
+typing `/` in the chat lists the commands.
 
 ### Picking and remembering status
 
@@ -92,32 +115,61 @@ The choice survives bot restarts. It is saved per chat in
 `<plugins_dir>/telegram/status-<hash of chat id>.json`; the hash is the first
 12 characters of the chat id's SHA-256 hash. On Linux, `plugins_dir` defaults to
 `~/.local/share/alfrd/plugins` (under `XDG_DATA_HOME` when set). A damaged file is ignored.
-`/runs`, `/log`, `/pause` and `/resume` use the remembered project (or the only
+`/runs`, `/log`, `/handoff`, `/pause` and `/resume` use the remembered project (or the only
 project if none is selected). `/status latest` leaves that selection unchanged.
 
-Replies are plain text, sized for a phone. Each target has a card:
+Replies use Telegram's HTML formatting (bold titles, monospace step names,
+emoji status icons), sized for a phone. Each target has a card:
 
 ```text
-Project - T1 - s3
--------------------------------
+📁 Project · 🎯 T1
+🔄 s3
+━━━━━━━━━━━━━━━━
 
-finished:
- - s1 (42s)
- - s2 (1h 02m)
+✅ Finished
+  • s1  42s
+  • s2  1h 02m
 
-running:
- - s3 (2m 05s)
+🔄 Running
+  • s3  2m 05s
 
-next:
- - s4
+⏳ Next
+  • s4
 ```
 
 Finished steps show their duration; running steps show elapsed time. Empty
-sections are omitted. A `failed:` section appears when a step has stopped,
-including blocked, cancelled or interrupted steps. The title shows the running
+sections are omitted. A `❌ Failed` section appears when a step has stopped,
+including blocked, cancelled or interrupted steps. The second line shows the running
 step, otherwise `X (failed)`, `X (next)` or `done` (`nothing to run` if there are
 no finished or pending steps). A paused or stopped plan is noted at the end.
 If a remembered target is gone, its card says "Not in the latest plan".
+Every project, target and log text is HTML-escaped; if Telegram still rejects a
+message's markup, the bot sends it again as plain text.
+
+### Logs from a menu
+
+`/log` (or `/logs`) without arguments lists the selected project's targets that
+have started a command, most recently active first, then that target's steps
+(newest first, with their state). Pick one to get its last 30 log lines in a
+monospace block. A list with a single entry is skipped. `/log TARGET STEP` still
+works without the menu.
+
+### Agent-loop handoffs
+
+While it runs, the bot checks every 20 seconds for agent-loop plans (in every
+project ALFRD remembers) that it has seen running. When one finishes, fails or
+is cancelled, it posts the **final handoff**: the last published agent response,
+with headings, bold/italic, code, checklists, links and tables converted to
+Telegram formatting. A long handoff is split at headings into at most 4
+messages; the rest stays in the Studio. Loops that ended while the bot was
+stopped are not posted; send `/handoff` to get the newest one on demand.
+
+### Which machine is this?
+
+When bots on several machines report to the same chat (or one token moves
+between machines), `/whoareyou` (or `/whoami`)
+replies with the host name, OS user, system, Python, ALFRD and plugin versions,
+the ALFRD folder, the bot's PID and uptime, and how many projects it knows.
 
 A pause/resume confirmation:
 

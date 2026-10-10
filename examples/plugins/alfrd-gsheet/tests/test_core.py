@@ -454,3 +454,71 @@ def test_per_spreadsheet_lock_serializes_writes(case):
         thread.join()
     assert len(results) == 2
     assert maximum == 1
+
+
+@pytest.mark.parametrize("value", ["a.fits", "./a.fits,b.fits", "b.fits a.fits a.fits", "a.fits\nb.fits"])
+def test_filename_matching_writes_target_row(case, value):
+    case.access.path.write_text(case.access.path.read_text().replace("T1,,,,", 'T1,,,"a.fits,b.fits",'))
+    case.config["rows"].update(key_column="FILENAMES", match_against="files")
+    case.save()
+    case.client.values = [["FILENAMES", "s1"], [value]]
+    state = case.engine.before(case.ctx)
+    assert state.row_numbers == {"T1": 2}
+    assert case.engine.after(case.ctx, state).changes == {"'Targets'!B2": "done"}
+
+
+@pytest.mark.parametrize("value", ["A.fits", "other.fits", "a.fits,unknown.fits", "dir/a.fits"])
+def test_filename_unmatched_values_never_write(case, value):
+    case.access.path.write_text(case.access.path.read_text().replace("T1,,,,", "T1,,,a.fits,"))
+    case.config["rows"].update(key_column="FILENAMES", match_against="files")
+    case.save()
+    case.client.values = [["FILENAMES", "s1"], [value]]
+    assert case.engine.after(case.ctx, case.engine.before(case.ctx)).result == "no changes"
+    assert not case.client.writes
+
+
+def test_filename_ambiguity_and_duplicate_sheet_targets_block_writes(case, gsheet):
+    case.access.path.write_text(case.access.path.read_text().replace("T1,,,,", "T1,,,a.fits,") + "T2,,,a.fits,todo,todo,todo,\n")
+    case.config["rows"].update(key_column="FILENAMES", match_against="files")
+    case.save()
+    case.client.values = [["FILENAMES", "s1"], ["a.fits"]]
+    with pytest.raises(gsheet.client.SyncError, match="multiple targets"):
+        case.engine.before(case.ctx)
+    case.access.path.write_text(case.access.path.read_text().replace("T2,,,a.fits", "T2,,,other.fits"))
+    case.client.values.append(["./a.fits"])
+    with pytest.raises(gsheet.client.SyncError, match="duplicate sheet row identity"):
+        case.engine.before(case.ctx)
+    assert not case.client.writes
+
+
+def test_filename_append_uses_files_not_target_name(case):
+    case.access.path.write_text(case.access.path.read_text().replace("T1,,,,", "T1,,,a.fits,"))
+    case.config["rows"].update(key_column="FILENAMES", match_against="files", missing_row="append")
+    case.save()
+    case.client.values = [["FILENAMES", "s1"]]
+    assert case.engine.after(case.ctx, case.engine.before(case.ctx)).changes == {
+        "'Targets'!A2": "a.fits", "'Targets'!B2": "done"}
+
+
+def test_filename_inbound_retains_target_identity(case):
+    case.access.path.write_text(case.access.path.read_text().replace("T1,,,,", "T1,,,a.fits,"))
+    case.config["rows"].update(key_column="FILENAMES", match_against="files")
+    case.config["inbound"] = [{"column": "notes", "to": "plan_column", "plan_column": "notes"}]
+    case.save()
+    case.client.values = [["FILENAMES", "s1", "notes"], ["a.fits", "", "from sheet"]]
+    case.engine.before(case.ctx)
+    row = plan_csv.read(case.access.path, case.access.steps, **case.access.columns).rows[0]
+    assert row.target == "T1" and row.values["notes"] == "from sheet"
+
+
+
+def test_filename_code_disambiguation(case):
+    case.access.path.write_text("TARGET_NAME,PROJECT_CODE,WORKDIR,FITS_FILE,s1,s2,s3,notes\n"
+                                "T1,P1,,a.fits,running,todo,todo,old\nT2,P2,,a.fits,todo,todo,todo,old\n")
+    case.config["rows"].update(key_column="FILENAMES", match_against="files", code_column="PROJECT_CODE")
+    case.save()
+    case.client.values = [["FILENAMES", "s1", "PROJECT_CODE"], ["a.fits", "", "P1"], ["a.fits", "", "P2"]]
+    ctx = replace(case.ctx, rows=({"key": "T1@P1", "target": "T1", "code": "P1"},), cells={"T1@P1": {"s1": "done"}})
+    state = case.engine.before(ctx)
+    assert state.row_numbers == {"T1@P1": 2, "T2@P2": 3}
+    assert case.engine.after(ctx, state).changes == {"'Targets'!B2": "done"}

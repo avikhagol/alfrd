@@ -20,20 +20,43 @@
 .gsheet-summary [hidden] { display: none; }
 /* Project card and dialogs (project_ui.js). Tokens only; status colours accent borders, text stays --text. */
 .gs-card { display: grid; gap: 10px; color: var(--text); }
+.gs-connection { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.gs-connect { min-height: 30px; padding: 4px 6px; border-radius: var(--r-sm); color: var(--accent-text); font-size: 13px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.gs-connect:hover:not(:disabled) { background: var(--accent-bg); }
+.gs-connect:active:not(:disabled) { background: var(--subtle); }
+.gs-connect:disabled { color: var(--muted); cursor: not-allowed; text-decoration: none; }
 .gs-line { align-items: center; margin: 0; }
 .gs-card a { color: var(--text); text-decoration: underline; }
 .gs-chip { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r); padding: 2px 7px; background: var(--surface-2); color: var(--text); }
+.gs-chip-connected { border-color: var(--ok-text); }
+.gs-chip-error { border-color: var(--fail-text); }
 .gs-validate ul, .gs-summary ul { margin: 4px 0 0; padding-left: 18px; }
-.gs-steps { display: flex; gap: 16px; list-style: decimal inside; padding: 0; margin: 0 0 12px; color: var(--text); }
-.gs-steps li[aria-current="step"] { font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
-.gs-step, .gs-group { border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; margin: 0 0 12px; min-width: 0; }
-.gs-step legend, .gs-group legend { padding: 0 4px; font-weight: 600; color: var(--text); }
+.gs-attach, .gs-editor { color: var(--text); line-height: 1.5; }
+.gs-intro { margin: 0 0 20px; color: var(--text-2); font-size: 13px; }
+.gs-hint { margin: 0; font-weight: 400; line-height: 1.5; }
+.gs-steps { display: flex; flex-wrap: wrap; gap: 8px; list-style: decimal inside; padding: 0; margin: 0 0 16px; color: var(--text); font-size: 12px; }
+.gs-steps li { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+.gs-steps li[aria-current="step"] { border-color: var(--accent-text); font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+.gs-step, .gs-group { border: 1px solid var(--border); border-radius: var(--r); padding: 16px; margin: 0 0 20px; min-width: 0; }
+.gs-step legend, .gs-group legend { padding: 0 6px; font-size: 13px; font-weight: 600; color: var(--text); }
+.gs-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.gs-attach .field, .gs-editor .field { gap: 6px; margin: 0 0 12px; color: var(--text); font-size: 13px; }
+.gs-attach .input, .gs-editor .input { min-height: 36px; border-color: var(--text-3); }
+.gs-attach .input:disabled, .gs-editor .input:disabled { background: var(--surface-2); color: var(--muted); cursor: not-allowed; }
+.gs-attach .check, .gs-editor .check { min-height: 30px; align-items: center; }
+.gs-attach .check { margin-bottom: 12px; }
+.gs-attach .btn, .gs-editor .btn { white-space: normal; height: auto; min-height: 36px; padding-block: 6px; }
+.gs-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px 16px; }
+.gs-options .field { margin-bottom: 0; }
+.gs-group > .gs-hint { margin-bottom: 12px; }
+.gs-group > .row { margin-top: 12px; }
 .gs-num { width: 7rem; }
-.gs-scroll { overflow-x: auto; }
+.gs-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 8px 8px; margin-bottom: 12px; }
 .gs-rules { min-width: 900px; }
 .gs-rules caption, .gs-cells caption { text-align: left; color: var(--text); font-weight: 600; padding: 6px 0; }
-.gs-rules td { vertical-align: top; }
+.gs-rules td { vertical-align: top; padding-block: 12px; }
 .gs-rules td:nth-child(-n+3) .input { min-width: 9rem; }
+.gs-rules td:nth-child(4) .input { min-width: 7rem; }
 .gs-rules .input { width: 100%; }
 .gs-letter { margin-top: 4px; }
 .gs-actions { white-space: nowrap; }
@@ -51,3 +74,29 @@
 .gs-editor [hidden], .gs-attach [hidden] { display: none; }
 /* 1024 px: the template column gives way first. */
 @media (max-width: 1100px) { .gs-rules { min-width: 820px; } .gs-template .input { min-width: 7rem; } }
+@media (max-width: 640px) {
+  .gs-fields, .gs-options { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .gs-step, .gs-group { padding: 12px; margin-bottom: 16px; }
+  .gs-connect, .gs-attach .check, .gs-editor .check { min-height: 44px; }
+}
+
+/* Column recovery stays readable for long expanded headers and narrow dialogs. */
+.gs-column-recovery .callout { display: block; }
+.gs-column-recovery ul { margin: 8px 0 12px; padding-left: 20px; overflow-wrap: anywhere; }
+.gs-attach [aria-live] li { overflow-wrap: anywhere; }
+
+.gs-connection-modal { width: 560px; max-width: calc(100vw - 32px); }
+.gs-connection-dialog { display: grid; gap: 16px; color: var(--text); font-size: 13px; line-height: 1.5; }
+.gs-connection-dialog p { margin: 0; }
+.gs-connection-dialog h3 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+.gs-connection-dialog section { display: grid; gap: 8px; }
+.gs-connection-dialog .check { min-height: 36px; }
+.gs-facts { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 12px; margin: 0; }
+.gs-facts dt { color: var(--text-2); }
+.gs-facts dd { margin: 0; overflow-wrap: anywhere; }
+.gs-connection-modal :focus-visible, [data-plugin-action="gsheet"] :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .gs-facts { grid-template-columns: minmax(0, 1fr); }
+  .gs-connection-dialog .check, .gs-connection-modal .btn, [data-plugin-action="gsheet"] .btn { min-height: 44px; }
+  .gs-connection-modal .modal-b { padding: 16px; }
+}

@@ -5,6 +5,7 @@ import { notificationPanel, mountNotifications } from "./notifications.js";
 
 import { $, esc, icon, bytes, storage, loadUi, saveUi, resetUi, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { tabFrame, tabRail } from "./tab_frame.js";
 
 const TABS = [
   { id: "projects", label: "Projects", icon: "database" },
@@ -75,9 +76,7 @@ export function openSettings(ctx, app) {
   };
   ctx.modal(`
     <header class="modal-h"><h2>Studio settings</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="set-body"><div class="set-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">${TABS.map((t) => `<button type="button" role="tab" id="set-tab-${t.id}" aria-controls="set-panel-${t.id}" aria-selected="${t.id === section}" tabindex="${t.id === section ? 0 : -1}" class="${t.id === section ? "on" : ""}" data-tab="${t.id}">${icon(t.icon)}<span>${t.label}</span></button>`).join("")}</div>
-    <div class="modal-b set set-panels">${TABS.map((t) => `<section class="set-panel" role="tabpanel" id="set-panel-${t.id}" aria-labelledby="set-tab-${t.id}" ${t.id === section ? "" : "hidden"}>${panels[t.id]}</section>`).join("")}</div></div>`, (root, close) => {
-    const tabs = [...root.querySelectorAll("[role=tab]")];
+    ${tabFrame("set", "Settings sections", TABS, panels, "set")}`, (root, close) => {
     let pluginsMounted = false;
     const mountPlugins = () => {
       if (pluginsMounted) return;
@@ -87,26 +86,13 @@ export function openSettings(ctx, app) {
         $("#set-panel-plugins", root).textContent = `Couldn’t load plugins: ${error.message}`;
       });
     };
-    const select = (id) => {
-      tabs.forEach((b) => { const on = b.dataset.tab === id; b.classList.toggle("on", on); b.setAttribute("aria-selected", on); b.tabIndex = on ? 0 : -1; });
-      root.querySelectorAll(".set-panel").forEach((p) => { p.hidden = p.id !== `set-panel-${id}`; });
+    tabRail(root, "set", (id) => {
       ui.section = id;
       saveUi("settings", ui, ["section"]);
       if (id === "plugins") mountPlugins();
-    };
-    const bar = $(".set-tabs", root);
-    bar.addEventListener("click", (e) => { const b = e.target.closest("[role=tab]"); if (b) select(b.dataset.tab); });
-    // Manual activation: arrows/Home/End move focus; Enter/Space (native button click) selects.
-    bar.addEventListener("keydown", (e) => {
-      const i = tabs.indexOf(document.activeElement);
-      const to = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
-      if (i < 0 || to === undefined) return;
-      e.preventDefault();
-      tabs[(to + tabs.length) % tabs.length].focus();
-    });
+    })(section);
     if (serverMode) drawProjects(ctx, app, root);
     mountNotifications(ctx, root);
-    if (section === "plugins") mountPlugins();
     $("#set-create", root)?.addEventListener("click", () => { close(); app.newProject(); });
     $("#set-open", root)?.addEventListener("click", () => { close(); app.openProject(); });
     $("#set-quit", root)?.addEventListener("click", () => { close(); app.quitServer(); });

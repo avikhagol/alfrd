@@ -118,6 +118,15 @@ def connect_project_api():
     return jsonify(project), 201
 
 
+@studio_api.post("/studio/presence")
+def presence_api():
+    """The Studio is being used (posted at most once a minute): notifiers may mute while it is."""
+    from alfrd import presence
+
+    presence.touch()
+    return jsonify(ok=True, window_s=presence.WINDOW)
+
+
 @studio_api.post("/studio/projects/create")
 def create_project_api():
     from alfrd.project_creation import create_project

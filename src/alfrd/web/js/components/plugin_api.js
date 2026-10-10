@@ -4,7 +4,7 @@ import { server } from "../data/server.js";
 import { registerViewer, setConverters, convertFile } from "./viewers.js";
 import { registerPanel } from "./panels.js";
 
-import { registerProjectSection } from "./project_sections.js";
+import { registerProjectSection, registerOverviewAction } from "./project_sections.js";
 import { dialog, confirm } from "./plugin_dialogs.js";
 
 export const pluginErrors = [];
@@ -76,6 +76,10 @@ export function api(ctx, purify) {
   let provider = false;
   return {
     registerViewer, registerPanel, action,
+    registerOverviewAction: (spec) => registerOverviewAction(spec, (message) => {
+      pluginErrors.push({ id: spec.id, title: spec.title || spec.id, message: `overview action: ${message}` });
+    }),
+    menu: (...args) => ctx.menu(...args),
     registerProjectSection(spec) {
       registerProjectSection(spec, (message) => {
         const detail = `project section: ${message}`;
@@ -97,6 +101,7 @@ export function api(ctx, purify) {
     project: () => ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : ctx.target()?.project || null,
     /** Target names already loaded for a project (no request). */
     targets: (project) => (ctx.state.targets || []).filter((t) => t.project === project).map((t) => t.name).filter(Boolean),
+    projectName: (project) => ctx.projectName?.(project) || project,
     sanitize: (html) => purify.sanitize(html, { USE_PROFILES: { html: true } }),
     convert: (path, to = "pdf", project = ctx.state.selectedProject) => convertFile(project, path, to),
   };

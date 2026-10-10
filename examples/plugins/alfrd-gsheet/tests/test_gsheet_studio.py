@@ -184,4 +184,5 @@ def test_registered_actions_work_through_protected_routes(studio, studio_app, tm
     assert client.post(base + "detach", json={"mode": "delete", "base_sha256": saved["data"]["mapping_sha256"]},
                        headers=csrf).status_code == 403
     assert client.post(base + "state", headers=csrf).get_json()["data"]["attached"]
+    assert client.post(base + "create_columns", json={"mapping": data["mapping"], "confirm": True}, headers=csrf).status_code == 403
     assert sheet.writes == []
