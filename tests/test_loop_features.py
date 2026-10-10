@@ -118,6 +118,31 @@ def test_task_file_versions_convert_between_passes_and_turns():
     assert task_iterations({"iterations": 3}, legacy) == 3
 
 
+@pytest.mark.parametrize("sequence", [["claude", "codex"], ["codex", "claude"]])
+def test_workflow_edit_updates_existing_task_preview_and_run(service, tmp_path, project, sequence):
+    client, headers, prefix = task_client(service, tmp_path)
+    metadata = project / "task/.alfrd-task.json"
+    metadata.write_text(json.dumps({"iterations": 10, "version": 2}) + "\n")
+    original = metadata.read_text()
+    old_table = (project / "alfrd.plan.csv").read_text()
+    # Edit only the workflow: the existing task and CSV still describe ten turns.
+    edit(project, lambda data: data["workflows"][0]["repeat"].update(iterations=2, sequence=sequence))
+    execution = client.get(prefix + "/execution?target=task").get_json()
+    assert len(execution["steps"]) == 2
+    listing = client.get(prefix + "/tasks").get_json()
+    task = next(t for t in listing["tasks"] if t["name"] == "task")
+    assert task["iterations"] == 2 and not task["over_limit"]
+    payload = {"target": "task", "rows": [{"target": "task", "files": "task.md"}], "start": False}
+    preview = client.post(prefix + "/plans/preview", json=payload, headers=headers)
+    assert preview.status_code == 200, preview.get_json()
+    assert len(preview.get_json()["units"]) == 2
+    assert (project / "alfrd.plan.csv").read_text() == old_table
+    response = client.post(prefix + "/plans", json=payload, headers=headers)
+    assert response.status_code == 201, response.get_json()
+    assert len(response.get_json()["plan"]["steps"]) == 2
+    assert metadata.read_text() == original
+
+
 def test_parse_delay():
     assert parse_delay("+1h") == 3600 and parse_delay("90m") == 5400 and parse_delay("2h30m") == 9000
     assert parse_delay(45) == 45 and parse_delay(None) is None and parse_delay("0") is None

@@ -88,6 +88,9 @@ def _write_rows(cfg, path: Path, payload: dict) -> None:
                 selected = [row for row in table.rows if row.target == target]
                 if len(selected) != 1:
                     raise ExecutionError(f"unknown task target: {target}")
+                # A workflow edit may add or rename turns. Keep other tasks'
+                # cells and metadata, but include every current turn on rerun.
+                table.header.extend(step for step in cfg.step_ids if step not in table.header)
                 selected[0].values.update({step: pc.TODO for step in cfg.step_ids})
                 selected[0].values[cfg.files_column] = item["files"] or "task.md"
                 pc.atomic_write(path, pc.dump(table.header, [row.values for row in table.rows]))

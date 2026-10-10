@@ -539,7 +539,13 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
 
 
 def load_task_execution(root: str | Path, target: str | None, *, cap: bool = False) -> ExecutionConfig:
-    """The project's configuration with one task's own turn count (``{target}/.alfrd-task.json``)."""
+    """A task's saved turn count, bounded by the current workflow maximum.
+
+    Editing a workflow can lower its maximum below an existing task's count.
+    Use the current limit for future runs without rewriting task metadata or
+    the configuration snapshots of historical runs. New task counts are still
+    validated strictly by ``load_execution(..., cap=True)``.
+    """
     import json
 
     cfg = load_execution(root)
@@ -555,6 +561,8 @@ def load_task_execution(root: str | Path, target: str | None, *, cap: bool = Fal
         count = task_iterations(options if isinstance(options, dict) else {}, merged_manifest(cfg.root).get("_workflow") or {})
     except ValueError as exc:
         raise ExecutionError(f"{target}/.alfrd-task.json: {exc}") from exc
+    if count is not None and cfg.loop_max:
+        count = min(count, cfg.loop_max)
     return load_execution(root, iterations=count, cap=cap) if count is not None else cfg
 
 

@@ -377,8 +377,11 @@ remain in the project's `.alfrd/plans/`, keyed by plan ID and selected target.
 Optional task iteration settings live in `<target>/.alfrd-task.json` and are
 snapshotted into the plan, so tasks may use different turn counts — e.g.
 `small-task` 2 and `long-task` 5. The project's iterations are the maximum;
-creating a task or starting a plan above it is refused, and Overview flags a
-task left above a lowered maximum without rewriting it.
+creating a task above it is refused. If a workflow edit lowers the maximum,
+existing tasks use the new maximum for previews and future runs. Their saved
+counts and historical run snapshots remain intact. Rerunning a task also adds
+any newly configured turn columns to the shared CSV, preserving other tasks'
+cells and metadata.
 
 With `loop.workspace: worktree` (the default for new projects) each task gets a
 git worktree at `<target>/workspace` on branch `alfrd/<target>`, made from the
