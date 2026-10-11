@@ -41,3 +41,13 @@ test("read-only browsers and unconfigured plugins", () => {
   assert.ok(html.includes("Not configured: Bot token."));
   assert.match(html, /data-plug-svc-do="stop" disabled/);
 });
+
+test("fields use Studio inputs; a word-list pattern is a dropdown with a Default", () => {
+  const html = sandbox.render(config({ settings: [
+    { key: "policy", label: "Conflict policy", kind: "text", value: "skip", choices: ["overwrite", "skip"], help: "" },
+    { key: "timeout", label: "Timeout", kind: "number", value: "", help: "" },
+  ] }), true);
+  assert.match(html, /<select class="input" id="plug-set-policy" name="policy"/);
+  assert.match(html, /<option value="">Default<\/option><option >overwrite<\/option><option selected>skip<\/option>/);
+  assert.match(html, /<input class="input" id="plug-set-timeout"/);
+});

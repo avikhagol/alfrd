@@ -550,8 +550,11 @@ def project_manifest_save(project_name: str):
     text = payload.get("text")
     if not isinstance(text, str) or not text.strip():
         return _json_error(ValueError("text is required"), 400)
+    from alfrd.execution import follow_workflow_edit, workflow_pattern
+
     root = _project_root(project_name)
     path = manifest_file(root) or root / "alfrd.yaml"
+    before = workflow_pattern(root)
     try:
         entry = history.save(root, "alfrd.yaml", text, source="studio", message=payload.get("message"),
                              base_hash=payload.get("base_hash"), base_text=payload.get("base_text"),
@@ -561,8 +564,9 @@ def project_manifest_save(project_name: str):
                        current_hash=conflict.current_hash, diff=conflict.diff), 409
     except Exception as error:  # yaml errors, missing name, OS errors
         return _json_error(error, 400)
+    tasks = follow_workflow_edit(root, before)
     _poke(project_name)
-    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, project_name=_sync_project_name(project_name, root), hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
+    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, tasks_updated=tasks, project_name=_sync_project_name(project_name, root), hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
 
 
 @studio_api.get("/studio/projects/<project_name>/quickstart")

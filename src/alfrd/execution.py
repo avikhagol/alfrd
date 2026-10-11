@@ -566,6 +566,49 @@ def load_task_execution(root: str | Path, target: str | None, *, cap: bool = Fal
     return load_execution(root, iterations=count, cap=cap) if count is not None else cfg
 
 
+def workflow_pattern(root: str | Path) -> tuple[dict[str, Any], list[str]] | None:
+    """The first workflow and its turn ids (``t001-claude`` …), or None when alfrd.yaml has no loop."""
+    try:
+        cfg = load_execution(root)
+        return dict(merged_manifest(cfg.root).get("_workflow") or {}), cfg.step_ids
+    except (ExecutionError, ValueError, OSError):
+        return None
+
+
+def follow_workflow_edit(root: str | Path, before: tuple[dict[str, Any], list[str]] | None) -> list[str]:
+    """After a workflow edit, tasks that ran the whole old pattern take the whole new one.
+
+    A task's ``.alfrd-task.json`` keeps the turn count it was created with, so
+    without this a task made for two turns keeps starting two-turn runs after
+    the workflow grows to four. A task with its own shorter count keeps it.
+    Returns the updated task names.
+    """
+    import json
+
+    from alfrd.agent_loop import task_iterations, task_options, workflow_turns
+    from alfrd.runtime import plan_csv as pc
+
+    after = workflow_pattern(root)
+    if not before or not after or before[1] == after[1] or not after[0].get("repeat"):
+        return []
+    try:
+        old_full, new_full = workflow_turns(before[0]), workflow_turns(after[0])
+    except (ValueError, TypeError):
+        return []
+    updated = []
+    for path in sorted(Path(root).expanduser().resolve().glob("*/.alfrd-task.json")):
+        try:
+            options = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(options, dict) or task_iterations(options, before[0]) != old_full:
+                continue
+        except (OSError, ValueError):
+            continue
+        pc.atomic_write(path, json.dumps({**{k: v for k, v in options.items() if k not in ("iterations", "version")},
+                                         **task_options(after[0], new_full)}) + "\n")
+        updated.append(path.parent.name)
+    return updated
+
+
 MAX_DELAY = 7 * 24 * 3600
 
 

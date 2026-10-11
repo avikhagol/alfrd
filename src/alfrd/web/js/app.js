@@ -1156,7 +1156,10 @@ async function saveManifest(project, text, { force = false } = {}) {
   const info = manifestToWorkflows(parseYaml(text), tree.manifestFile || "alfrd.yaml");
   if (state.mode === "server" && tree.provider === "server") {
     const base = tree.manifestDefault || tree.manifestText == null ? {} : (await sha256(tree.manifestText)) ? { base_hash: await sha256(tree.manifestText) } : { base_text: tree.manifestText };
-    syncName(project, (await server.saveManifest(project, text, { ...base, ...(force ? { force: true } : {}) }))?.project_name);
+    const saved = await server.saveManifest(project, text, { ...base, ...(force ? { force: true } : {}) });
+    syncName(project, saved?.project_name);
+    // A new turn pattern: tasks that ran the whole workflow now run the whole new one.
+    if (saved?.tasks_updated?.length) ctx.toast(`New runs of ${saved.tasks_updated.join(", ")} use the new workflow turns`, "ok");
   } else if (state.folders[project] || (await loadFolderHandle(project))) {
     const folder = state.folders[project] || (await loadFolderHandle(project));
     await writeFileToHandle(folder, tree.manifestFile || "alfrd.yaml", text);
@@ -2187,7 +2190,8 @@ async function boot() {
     if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
     const href = a.getAttribute("href"), url = parseRoute(href);
-    if (url.plan || url.project) { location.hash = href; route(); }
+    // replace, not push: a tab with one history entry is one the Studio may close on Quit.
+    if (url.plan || url.project) { location.replace(href); route(); }
     else goTo(url.view);
   });
   route();

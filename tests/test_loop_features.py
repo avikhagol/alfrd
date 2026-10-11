@@ -143,6 +143,25 @@ def test_workflow_edit_updates_existing_task_preview_and_run(service, tmp_path, 
     assert metadata.read_text() == original
 
 
+def test_studio_workflow_save_moves_full_length_tasks_to_the_new_pattern(service, tmp_path, project):
+    client, headers, prefix = task_client(service, tmp_path)
+    edit(project, lambda data: data["workflows"][0]["repeat"].update(iterations=2, sequence=["claude", "codex"]))
+    (project / "task/.alfrd-task.json").write_text(json.dumps({"iterations": 2, "version": 2}) + "\n")
+    (project / "short").mkdir()
+    (project / "short/.alfrd-task.json").write_text(json.dumps({"iterations": 1, "version": 2}) + "\n")
+    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data["workflows"][0]["repeat"].update(iterations=4, sequence=["claude", "codex", "claude", "codex"])
+    response = client.post(prefix + "/manifest", json={"text": yaml.safe_dump(data), "force": True}, headers=headers)
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["tasks_updated"] == ["task"]
+    assert json.loads((project / "task/.alfrd-task.json").read_text()) == {"iterations": 4, "version": 2}
+    assert json.loads((project / "short/.alfrd-task.json").read_text()) == {"iterations": 1, "version": 2}
+    assert len(client.get(prefix + "/execution?target=task").get_json()["steps"]) == 4
+    # Saving the same pattern again leaves tasks alone.
+    response = client.post(prefix + "/manifest", json={"text": yaml.safe_dump(data), "force": True}, headers=headers)
+    assert response.get_json()["tasks_updated"] == []
+
+
 def test_parse_delay():
     assert parse_delay("+1h") == 3600 and parse_delay("90m") == 5400 and parse_delay("2h30m") == 9000
     assert parse_delay(45) == 45 and parse_delay(None) is None and parse_delay("0") is None

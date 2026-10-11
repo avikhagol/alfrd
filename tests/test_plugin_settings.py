@@ -315,3 +315,12 @@ plugin = Plugin(id="unsafecheck", version="1", check_project=check)
     assert result == {"level": "fail", "text": "The check failed (RuntimeError)."}
     with pytest.raises(TypeError, match="check_project"):
         Plugin(id="bad", version="1", check_project="not a function")
+
+
+def test_word_list_patterns_offer_choices():
+    plugin = Plugin(id="choicy", version="1", settings=(SettingField("mode", pattern="RAW|USER_ENTERED"),
+                                          SettingField("id", pattern=r"[0-9]+"),
+                                          SettingField("secret", kind="secret", pattern="a|b")))
+    form = {f["key"]: f for f in settings.public(plugin)}
+    assert form["mode"]["choices"] == ["RAW", "USER_ENTERED"]
+    assert "choices" not in form["id"] and "choices" not in form["secret"]

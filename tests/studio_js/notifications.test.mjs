@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 const saved = new Map();
 globalThis.localStorage = { getItem: (k) => saved.get(k) ?? null, setItem: (k, v) => saved.set(k, v) };
 globalThis.document = { hidden: false, addEventListener() {} };
-globalThis.window = { addEventListener() {}, focus() { this.focused = true; }, location: {} };
+globalThis.window = { addEventListener() {}, focus() { this.focused = true; }, location: { replace(url) { this.hash = url; } } };
 globalThis.isSecureContext = true;
 globalThis.navigator ??= {}; // global only from Node 21; CI runs Node 20
 let requests = 0;
