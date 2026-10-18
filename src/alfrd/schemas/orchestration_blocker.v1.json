@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/avikhagol/alfrd/schemas/orchestration_blocker.v1.json",
+  "title": "alfrd.orchestration/1 blocker",
+  "description": "Something a task cannot resolve alone. needs=user asks a person (decision.needed); needs=orchestrator wakes the orchestrator once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "reason"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "question": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      },
+      "maxItems": 10,
+      "uniqueItems": true
+    },
+    "needs": {
+      "enum": [
+        "user",
+        "orchestrator"
+      ],
+      "default": "user"
+    }
+  }
+}

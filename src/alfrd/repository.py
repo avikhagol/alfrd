@@ -11,6 +11,7 @@ from typing import Any
 
 from alfrd import get_alfrd_dir
 from alfrd.manifest import ManifestError, ProjectManifest, discover_manifest, load_manifest
+from alfrd.manifest_paths import project_root
 
 
 class RepositoryNotFoundError(KeyError):
@@ -39,7 +40,7 @@ class RepositoryService:
 
     def add(self, repository: str | Path) -> RepositoryRecord:
         manifest_path = discover_manifest(repository)
-        root = manifest_path.parent.resolve()
+        root = project_root(manifest_path).resolve()
         manifest = load_manifest(manifest_path)
         index = self._read_index()
 
@@ -87,7 +88,7 @@ class RepositoryService:
                 raise
             manifest_path = discover_manifest(requested)
             manifest = load_manifest(manifest_path)
-            return self._record(manifest_path.parent.resolve(), manifest_path, manifest)
+            return self._record(project_root(manifest_path).resolve(), manifest_path, manifest)
         manifest_path = Path(item["manifest_path"]).resolve()
         manifest_data = item.get("manifest")
         if isinstance(manifest_data, dict):

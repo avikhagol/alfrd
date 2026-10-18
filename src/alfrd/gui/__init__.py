@@ -95,11 +95,13 @@ def create_app(config=None):
     import alfrd.gui.studio_plans  # noqa: F401  (adds the plan routes to studio_api)
     import alfrd.gui.studio_targets  # noqa: F401  (adds the targets CSV routes to studio_api)
     import alfrd.gui.studio_collections  # noqa: F401  (adds the collection routes to studio_api)
+    import alfrd.gui.studio_files  # noqa: F401  (Measurement Sets and the confined project explorer)
     import alfrd.gui.studio_history  # noqa: F401  (adds the alfrd.yaml history routes to studio_api)
     import alfrd.gui.studio_search  # noqa: F401  (adds the full-text search routes to studio_api)
     import alfrd.gui.studio_notes  # noqa: F401  (adds the annotation routes to studio_api)
     import alfrd.gui.studio_views  # noqa: F401  (adds the template-driven view route to studio_api)
     import alfrd.gui.studio_plugins  # noqa: F401  (adds the plugin list/toggle/theme/file routes)
+    import alfrd.gui.studio_chat  # noqa: F401  (project chat: sessions, messages, decisions, artifacts)
 
     from alfrd.gui.api_v1 import api_v1
 

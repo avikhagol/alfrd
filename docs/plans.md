@@ -78,7 +78,21 @@ the same files; the same target with other FITS files runs in parallel.
 
 In the Studio (`alfrd serve`), open **Workflow → Run…**. The **Schedule** tab shows the
 targets × steps grid and the execution order (running, queued with ETAs, failed, done). The graph
-and list show the plan's progress.
+and list show the plan's progress. The Workflow toolbar has **Pause**, **Resume** (or **Start now** for a
+scheduled run) and **Cancel** for the run it shows; **More → Schedule a run…** opens Run… at its
+start time (with +15 min / +1 h / +4 h shortcuts). Right-click a step (or press Shift+F10) for
+**Run <step>…**, and for the header target's cell in the shown run: **Stop** (running), **Retry**
+or **Skip**.
+
+### Stopping one command
+
+`POST /api/studio/projects/<p>/plans/<id>/units/<unit>/stop` (loopback + CSRF, like the other plan
+controls) stops one running command: the request is written to the plan's `control.json`
+(`stop_units`), and the runner sends SIGTERM to that command's process group (SIGKILL after
+`kill_grace`) and finalizes it as `cancelled`. Its cell becomes `cancelled`, so that target's later
+steps wait; the other targets and the plan keep running. Retry the cell to run it again. With no
+live runner one is started to adopt the command and stop it. Responses: `202` with the unit, `404`
+for an unknown plan or unit, `409` when the unit is not running.
 
 ## Closing the terminal, reboots
 

@@ -17,7 +17,7 @@ test("one failing activate is diagnosed while the following plugin activates", a
     { id: "broken", title: "Broken", enabled: true, active: true, status: "ok", web: { js: module("export function activate(){throw new Error('bad plugin')} ") } },
     { id: "good", title: "Good", enabled: true, active: true, status: "ok", web: { js: module("export function activate(api){api.registerCommand({id:'good-command',label:'Good command',run(){}})}") } },
     { id: "disabled", enabled: false, active: false, status: "disabled", web: { js: "invalid" } },
-  ] }, ctx);
+  ], project: "p", project_type: "basic" }, ctx); // boot fetches the list for the selected project
   assert.deepEqual(pluginErrors.map((p) => [p.id, p.message]), [["broken", "bad plugin"]]);
   assert.deepEqual(ctx.lines, [["error", "broken: browser: bad plugin", "plugins"]]);
   assert.equal(ctx.palette.providers[0]()[0].id, "good-command");

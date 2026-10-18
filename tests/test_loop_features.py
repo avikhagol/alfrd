@@ -14,10 +14,11 @@ from alfrd.agent_io import agent_totals, codex_report, token_usage
 from alfrd.agent_loop import approve_response, compact_report, expand_steps, reject_response, sha256, task_iterations
 from alfrd.execution import ExecutionError, load_execution, parse_delay
 from alfrd.runtime import scheduler
+from alfrd.manifest_paths import project_manifest
 
 
 def edit(root, change):
-    path = root / "alfrd.yaml"
+    path = project_manifest(root)
     data = yaml.safe_load(path.read_text())
     change(data)
     path.write_text(yaml.safe_dump(data, sort_keys=False))
@@ -116,6 +117,50 @@ def test_task_file_versions_convert_between_passes_and_turns():
     assert task_iterations({"iterations": 3, "version": 2}, sequence) == 3
     assert task_iterations({"iterations": 3, "version": 2}, legacy) == 2
     assert task_iterations({"iterations": 3}, legacy) == 3
+
+
+@pytest.mark.parametrize("sequence", [["claude", "codex"], ["codex", "claude"]])
+def test_workflow_edit_updates_existing_task_preview_and_run(service, tmp_path, project, sequence):
+    client, headers, prefix = task_client(service, tmp_path)
+    metadata = project / "task/.alfrd-task.json"
+    metadata.write_text(json.dumps({"iterations": 10, "version": 2}) + "\n")
+    original = metadata.read_text()
+    old_table = (project / "alfrd.plan.csv").read_text()
+    # Edit only the workflow: the existing task and CSV still describe ten turns.
+    edit(project, lambda data: data["workflows"][0]["repeat"].update(iterations=2, sequence=sequence))
+    execution = client.get(prefix + "/execution?target=task").get_json()
+    assert len(execution["steps"]) == 2
+    listing = client.get(prefix + "/tasks").get_json()
+    task = next(t for t in listing["tasks"] if t["name"] == "task")
+    assert task["iterations"] == 2 and not task["over_limit"]
+    payload = {"target": "task", "rows": [{"target": "task", "files": "task.md"}], "start": False}
+    preview = client.post(prefix + "/plans/preview", json=payload, headers=headers)
+    assert preview.status_code == 200, preview.get_json()
+    assert len(preview.get_json()["units"]) == 2
+    assert (project / "alfrd.plan.csv").read_text() == old_table
+    response = client.post(prefix + "/plans", json=payload, headers=headers)
+    assert response.status_code == 201, response.get_json()
+    assert len(response.get_json()["plan"]["steps"]) == 2
+    assert metadata.read_text() == original
+
+
+def test_studio_workflow_save_moves_full_length_tasks_to_the_new_pattern(service, tmp_path, project):
+    client, headers, prefix = task_client(service, tmp_path)
+    edit(project, lambda data: data["workflows"][0]["repeat"].update(iterations=2, sequence=["claude", "codex"]))
+    (project / "task/.alfrd-task.json").write_text(json.dumps({"iterations": 2, "version": 2}) + "\n")
+    (project / "short").mkdir()
+    (project / "short/.alfrd-task.json").write_text(json.dumps({"iterations": 1, "version": 2}) + "\n")
+    data = yaml.safe_load((project_manifest(project)).read_text())
+    data["workflows"][0]["repeat"].update(iterations=4, sequence=["claude", "codex", "claude", "codex"])
+    response = client.post(prefix + "/manifest", json={"text": yaml.safe_dump(data), "force": True}, headers=headers)
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["tasks_updated"] == ["task"]
+    assert json.loads((project / "task/.alfrd-task.json").read_text()) == {"iterations": 4, "version": 2}
+    assert json.loads((project / "short/.alfrd-task.json").read_text()) == {"iterations": 1, "version": 2}
+    assert len(client.get(prefix + "/execution?target=task").get_json()["steps"]) == 4
+    # Saving the same pattern again leaves tasks alone.
+    response = client.post(prefix + "/manifest", json={"text": yaml.safe_dump(data), "force": True}, headers=headers)
+    assert response.get_json()["tasks_updated"] == []
 
 
 def test_parse_delay():

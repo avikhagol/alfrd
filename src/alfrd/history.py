@@ -39,7 +39,7 @@ from alfrd.runtime.plan_csv import atomic_write, locked
 HISTORY_DIR = Path(".alfrd") / "history"
 DEFAULT_FILES = ("alfrd.yaml",)
 DEFAULT_KEEP = 200
-SOURCES = ("studio", "cli", "external", "restore")
+SOURCES = ("studio", "cli", "external", "restore", "migrate")
 _VERSION = re.compile(r"^\d{8}T\d{6}\d{6}-[0-9a-f]{12}$")
 
 
@@ -131,11 +131,23 @@ def is_tracked(root: str | Path, rel: str) -> bool:
 
 
 def tracked_among(root: str | Path, rels) -> list[str]:
-    """Which of ``rels`` (tree paths) are tracked; ``.alfrd.yaml`` is reported as ``alfrd.yaml``."""
+    """Which of ``rels`` (tree paths) are tracked; the active manifest is reported as ``alfrd.yaml``.
+
+    ``alfrd.yaml`` in the history always means the active manifest
+    (``.alfrd/alfrd.yaml``, ``alfrd.yaml`` or ``.alfrd.yaml``); a shadowed
+    manifest file is not tracked under that name.
+    """
+    from alfrd.manifest_paths import MANIFEST_CANDIDATES, manifest_rel
+
     patterns = settings(root)["files"]
+    active = manifest_rel(root)
     out = []
     for rel in rels:
-        rel = "alfrd.yaml" if rel == ".alfrd.yaml" else str(rel)
+        rel = str(rel)
+        if rel in MANIFEST_CANDIDATES:
+            if rel != (active or "alfrd.yaml"):
+                continue
+            rel = "alfrd.yaml"
         if _excluded(rel) or ".." in Path(rel).parts:
             continue
         if any(fnmatch(rel, p) if any(ch in p for ch in "*?[") else rel == p for p in patterns):
@@ -329,6 +341,9 @@ def save(root: str | Path, rel: str, text: str, *, source: str, message: str | N
         data = yaml.safe_load(final)
         if not isinstance(data, dict) or not str(data.get("name") or "").strip():
             raise ValueError("alfrd.yaml must be a YAML mapping with a `name`")
+        from alfrd.studio_defs import check_workflow_dependencies
+
+        check_workflow_dependencies(data)  # cycles / bad deps: nothing is recorded or written
     # Recorded before the write, so the live watcher can't claim the new content as "external".
     entry = record(base, rel, final, source=source, message=message)
     if rel == "alfrd.yaml":

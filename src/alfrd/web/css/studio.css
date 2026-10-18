@@ -167,6 +167,9 @@ h5 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px
 .picker-check { grid-column: 2; grid-row: 1; width: 14px; height: 14px; align-self: center; color: var(--accent-text); }
 .picker-badge { color: var(--warn-text); font-weight: 400; }
 .picker-none { padding: 8px 10px; margin: 0; }
+.picker-action { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; margin-top: 4px; padding: 6px 10px; border: 0; border-top: 1px solid var(--border); background: none; color: var(--accent-text); font: inherit; cursor: pointer; }
+.picker-action:hover { background: var(--subtle); }
+.picker-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (max-width: 1439px) {
   .mode-badge span { display: none; }
   .mode-badge { padding: 7px; }
@@ -1049,6 +1052,8 @@ summary:focus-visible, pre:focus-visible, [role=tab]:focus-visible { outline: 2p
 
 
 .rail-links { display: contents; }
+.rail-plugins:not([hidden]) { display: contents; }
+.rail-plugins .rail-head { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .rail-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 4px; }
 .rail-label { flex: 1; font-size: 12px; color: var(--text-3); }
 .rail-foot { margin-top: auto; display: flex; justify-content: flex-start; padding: 4px 4px 0; }
@@ -1115,3 +1120,22 @@ select:disabled, select:not(.picker select, .select-wrap select):disabled, selec
 #project-load-notice { flex: none; margin: 10px 18px; max-height: 40vh; overflow: auto; }
 
 .project-load-notice button[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+/* Canvas operations: ports, interactive edges, connect marks, fullscreen, compact mode */
+.node:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.node-port { position: absolute; left: calc(50% - 8px); bottom: -1px; width: 16px; height: 10px; border-radius: 8px 8px 0 0; background: var(--accent); opacity: .55; cursor: crosshair; z-index: 1; }
+.node:hover .node-port, .node.sel .node-port { opacity: 1; }
+.edge-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
+.edge:has(+ .edge-hit:hover), .edge.e-hl { stroke-width: 3.5; }
+.e-link { stroke: var(--accent); stroke-dasharray: 4 4; }
+.node.link-from { outline: 2px dashed var(--accent); outline-offset: 3px; }
+.node.link-cand { outline: 3px solid var(--ok); outline-offset: 3px; }
+.node.link-bad { outline: 3px solid var(--fail); outline-offset: 3px; cursor: not-allowed; }
+.cm-anchor { position: fixed; width: 1px; height: 0; pointer-events: none; outline: none; }
+.wf:fullscreen { background: var(--bg); }
+.wf:fullscreen .menu { z-index: 1000; }
+.wf-compact-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-text); }
+body.wf-compact #view-workflow :is(.wf-info:not(.wfe-on), .cfg-pill, .wf-toolbar > .stat, .wf-toolbar > .seg, [data-act=validate], .minimap) { display: none; }
+body.wf-compact #view-workflow .wf-main:not(.insp-cfg) { grid-template-columns: minmax(0, 1fr); }
+body.wf-compact #view-workflow .wf-main:not(.insp-cfg) .inspector { display: none; }
+body.wf-compact:has(#view-workflow:not([hidden])) :is(.footbar, .dock-strip, .console) { display: none; }
+#conn-notice { margin: 8px 12px 0; }

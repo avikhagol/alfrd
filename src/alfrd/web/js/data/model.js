@@ -140,6 +140,7 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
     });
     for (let i = steps.length - 1; i >= 0; i--) if (!steps[i]) steps.splice(i, 1);
     // Default dependency chain: each step waits on its predecessor.
+    const declared = new Set(steps.filter((st) => st.depends !== null).map((st) => st.key));
     steps.forEach((step, i) => {
       if (step.depends) step.depends = step.depends.filter((d) => !skipped.has(d));
       if (step.depends === null) step.depends = i ? [steps[i - 1].key] : [];
@@ -147,6 +148,14 @@ export function manifestToWorkflows(manifest, fileName = "alfrd.yaml", { aliases
         if (!seen.has(d)) errors.push(`Step "${step.key}" depends on unknown step "${d}".`);
       });
     });
+    // Kahn over declared dependencies (not the implicit "previous step" chain, which a reorder may
+    // contradict): steps left over wait on each other. The server refuses to save that too.
+    const left = new Map(steps.map((s) => [s.key, declared.has(s.key) ? s.depends.filter((d) => seen.has(d) && !skipped.has(d)) : []]));
+    for (let k = [...left].find(([, d]) => !d.length); k; k = [...left].find(([, d]) => !d.length)) {
+      left.delete(k[0]);
+      left.forEach((d, key) => left.set(key, d.filter((x) => x !== k[0])));
+    }
+    if (left.size) errors.push(`Workflow "${wfName}" has a dependency cycle between ${[...left.keys()].join(", ")}.`);
     workflows.push({
       name: String(wfName),
       label: (!Array.isArray(def) && def?.label) || String(wfName),

@@ -521,6 +521,16 @@ def _auto_panels(root: Path, listed: Sequence[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _applicable(root: Path, listed: Sequence[Any]) -> list[Any]:
+    """Drop panels of plugins that don't apply to this project's type (alfrd.extensions.applicability)."""
+    from alfrd import extensions
+    from alfrd.extensions.applicability import available
+
+    owners = {p.get("panel"): extensions.PANEL_OWNERS.get(p.get("panel")) for p in listed if isinstance(p, Mapping)}
+    allowed = {owner: available(owner, root) for owner in set(owners.values()) if owner}
+    return [p for p in listed if not isinstance(p, Mapping) or allowed.get(owners.get(p.get("panel")), True)]
+
+
 def _evaluate(root: Path, panel: Mapping[str, Any], values: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any]:
     kind = panel.get("panel")
     if kind not in PANELS:
@@ -567,6 +577,7 @@ def view(root: str | Path, entity: Mapping[str, Any], *, name: str = "metadata")
     listed = list((spec.get("views") or {}).get(name) or [])
     if name == "metadata":
         listed += _auto_panels(base, listed)
+    listed = _applicable(base, listed)
     for i, panel in enumerate(listed):
         if not isinstance(panel, Mapping):
             continue

@@ -81,20 +81,180 @@ def gui_install(state: dict | None = None) -> bool:
     return bool(current_app.config.get("PLUGINS_GUI_INSTALL", True) and state["gui_install"])
 
 
+def _scope(project_name: str | None) -> tuple[Path | None, dict]:
+    """``?project=``: the project folder and what the list reports about it (type, known types, manifest hash)."""
+    from werkzeug.exceptions import HTTPException
+
+    from alfrd.extensions import applicability
+    from alfrd.gui.studio import _project_root
+
+    if not project_name:
+        return None, {}
+    try:
+        root = _project_root(project_name)
+    except HTTPException as exc:
+        return None, {"project": project_name, "project_error": exc.description}
+    from alfrd import history
+    from alfrd.studio_defs import manifest_file
+
+    path = manifest_file(root)
+    text = history.read_text(path) if path is not None else None
+    ptype = applicability.project_type(root)
+    return root, {"project": project_name, "project_type": ptype, "has_manifest": text is not None,
+                  "manifest_hash": history.text_hash(text) if text is not None else None,
+                  "project_types_known": sorted({*applicability.known_types(), ptype})}
+
+
+def _applies(rec: extensions.Record, root: Path | None, state: dict) -> dict:
+    """``available``/``unavailable_reason``/``applicability`` of one plugin for the listed project."""
+    from alfrd.extensions import applicability
+
+    default = rec.plugin.project_types if rec.plugin is not None else None
+    if root is None:
+        return {"available": True, "unavailable_reason": None, "project_types": list(default) if default is not None else None}
+    rule = applicability.resolve(rec.id, default, applicability.project_type(root),
+                                 project=applicability.project_overrides(root).get(rec.id), global_types=state["project_types"])
+    return {"available": rule["available"], "unavailable_reason": rule["reason"], "applicability": rule,
+            "project_types": list(default) if default is not None else None}
+
+
 @studio_api.get("/studio/plugins")
 def plugins_list():
-    """Installed plugins, their state and browser files, and the selectable themes."""
+    """Installed plugins, their state and browser files, and the selectable themes.
+
+    ``?project=<p>`` adds whether each plugin applies to that project (``available``, ``unavailable_reason``,
+    ``applicability``) and the project's type.
+    """
     from alfrd.extensions import jobs
 
     state = extensions.read_state()
     from alfrd.extensions import installer
     inventory = installer.installed()
     disabled = set(state["disabled"])
+    root, scope = _scope(request.args.get("project"))
     # ``job``: the running (or last) plugin job, so a reloaded Studio can show its progress.
     job = jobs.runner.get(jobs.runner.last) if jobs.runner.last else None
-    return jsonify(plugins=[{**_entry(r, disabled), "managed": r.id in inventory} for r in _records()], theme=state["theme"], themes=_themes(),
-                   safe_mode=extensions.safe_mode(), gui_install=gui_install(state),
-                   plugin_actions=plugin_actions(state), job=job)
+    return jsonify(plugins=[{**_entry(r, disabled), "managed": r.id in inventory, **_applies(r, root, state)} for r in _records()],
+                   theme=state["theme"], themes=_themes(), safe_mode=extensions.safe_mode(), gui_install=gui_install(state),
+                   plugin_actions=plugin_actions(state), job=job, **scope)
+
+
+def _not_applicable(plugin_id: str, root: Path):
+    """None when the plugin applies to the project at ``root``, else the 403 reply (no plugin code ran)."""
+    from alfrd.extensions import applicability
+
+    rec = next((r for r in extensions.loaded() if r.id == plugin_id), None)
+    rule = applicability.for_root(plugin_id, rec.plugin.project_types if rec and rec.plugin else None, root)
+    if rule["available"]:
+        return None
+    return _json_error(PermissionError(rule["reason"]), 403, reason="not_applicable", applicability=rule)
+
+
+def _types_payload(value):
+    """``"all"`` / a list of names / ``None`` (remove the override) from a JSON body, else ValueError."""
+    from alfrd.extensions.applicability import parse_types
+
+    if value is None:
+        return None
+    parsed = parse_types(value)
+    if parsed is False:
+        raise ValueError('project_types must be "all" or a non-empty list of project type names')
+    return "all" if parsed is None else list(parsed)
+
+
+@studio_api.post("/studio/plugins/<plugin_id>/project-types")
+def plugin_project_types(plugin_id: str):
+    """Global applicability override: ``{"project_types": [..] | "all" | null}`` (null = the plugin's default)."""
+    require_local_csrf()
+    if _record(plugin_id) is None:
+        return _json_error(LookupError(f"no plugin {plugin_id!r}"), 404)
+    try:
+        types = _types_payload((request.get_json(silent=True) or {}).get("project_types"))
+        state = extensions.set_project_types(plugin_id, types)
+    except ValueError as exc:
+        return _json_error(exc, 400)
+    _audit("applicability", plugin_id)
+    value = state["project_types"].get(plugin_id, False)
+    return jsonify(id=plugin_id, project_types=None if value is False else "all" if value is None else list(value),
+                   overridden=value is not False)
+
+
+@studio_api.post("/studio/projects/<project_name>/plugins/<plugin_id>/applicability")
+def plugin_project_applicability(project_name: str, plugin_id: str):
+    """Per-project override in the active alfrd.yaml: ``{"enabled": bool|null, "project_types": [..]|"all"|null}``.
+
+    A key that is present with ``null`` removes that setting; an absent key keeps it. The write goes through
+    ``history.save`` with the conflict guard (``base_hash`` from ``GET /studio/plugins?project=``, else the text
+    read here): 409 when alfrd.yaml changed meanwhile.
+    """
+    import yaml
+
+    from alfrd import history
+    from alfrd.gui.studio import _poke, _project_root
+    from alfrd.manifest import parse_manifest
+    from alfrd.studio_defs import manifest_file
+    from alfrd.yaml_text import replace_sections
+
+    require_local_csrf()
+    if _record(plugin_id) is None:
+        return _json_error(LookupError(f"no plugin {plugin_id!r}"), 404)
+    body = request.get_json(silent=True) or {}
+    root = _project_root(project_name)
+    path = manifest_file(root)
+    text = history.read_text(path) if path is not None else None
+    if text is None:
+        return _json_error(ValueError("This project has no alfrd.yaml to hold a project setting; use the global setting."), 400)
+    try:
+        old = yaml.safe_load(text) or {}
+        if not isinstance(old, dict):
+            raise ValueError("alfrd.yaml is not a mapping")
+        new = yaml.safe_load(text) or {}
+        block = dict(new.get("plugins") or {}) if isinstance(new.get("plugins"), dict) else {}
+        entry = dict(block.get(plugin_id) or {}) if isinstance(block.get(plugin_id), dict) else {}
+        if "enabled" in body:
+            if body["enabled"] is None:
+                entry.pop("enabled", None)
+            elif isinstance(body["enabled"], bool):
+                entry["enabled"] = body["enabled"]
+            else:
+                raise ValueError("enabled must be true, false or null")
+        if "project_types" in body:
+            types = _types_payload(body["project_types"])
+            if types is None:
+                entry.pop("project_types", None)
+            else:
+                entry["project_types"] = types
+        if entry:
+            block[plugin_id] = entry
+        else:
+            block.pop(plugin_id, None)
+        if block:
+            new["plugins"] = block
+        else:
+            new.pop("plugins", None)
+        parse_manifest(new)
+    except ValueError as exc:
+        return _json_error(exc, 400)
+    except Exception as exc:  # noqa: BLE001 - schema / YAML errors read well as they are
+        return _json_error(ValueError(f"alfrd.yaml would not be valid: {exc}"), 400)
+    updated = replace_sections(text, old, new)
+    base_hash = body.get("base_hash") if isinstance(body.get("base_hash"), str) else None
+    try:
+        history.save(root, "alfrd.yaml", updated, source="studio", message=f"plugin {plugin_id}: project applicability",
+                     base_hash=base_hash, base_text=None if base_hash else text)
+    except history.Conflict as conflict:
+        return jsonify(error={"code": 409, "message": f"{conflict}; reload and try again"}, current_hash=conflict.current_hash,
+                       diff=conflict.diff), 409
+    except (ValueError, OSError) as exc:
+        return _json_error(exc, 400)
+    _audit("applicability", plugin_id)
+    _poke(project_name)
+    from alfrd.extensions import applicability
+
+    rec = _record(plugin_id)
+    rule = applicability.for_root(plugin_id, rec.plugin.project_types if rec and rec.plugin else None, root)
+    return jsonify(id=plugin_id, applicability=rule, available=rule["available"], unavailable_reason=rule["reason"],
+                   manifest_hash=history.text_hash(history.read_text(manifest_file(root)) or ""))
 
 
 @studio_api.get("/studio/plugins/catalog")
@@ -331,6 +491,9 @@ def plugin_project_check(project_name: str, plugin_id: str):
     if plugin.check_project is None:
         return _json_error(LookupError(f"plugin {plugin_id!r} has no project check"), 404)
     root = _project_root(project_name)
+    refused = _not_applicable(plugin_id, root)
+    if refused:
+        return refused
     try:
         level, text = plugin.check_project(root, settings.values(plugin_id))
         if level not in ("ok", "warn", "fail") or not isinstance(text, str):
@@ -420,6 +583,10 @@ def plugin_project_action(project_name: str, plugin_id: str, action_id: str):
     if not isinstance(payload, dict):
         return _json_error(ValueError("expected a JSON object"), 400)
     root = _project_root(project_name)
+    refused = _not_applicable(plugin_id, root)
+    if refused:
+        audit("refused", "not applicable to this project type")
+        return refused
     finished, (data, error) = _run_action(action, root, settings.values(plugin_id), payload)
     if not finished:
         audit("timeout", f"timed out after {action.timeout:g} s")
@@ -557,6 +724,7 @@ def plugin_convert(project_name: str):
     return response
 
 
-__all__ = ["plugin_check", "plugin_config", "plugin_config_save", "plugin_convert", "plugin_file", "plugin_project_action", "plugin_project_check",
+__all__ = ["plugin_check", "plugin_config", "plugin_config_save", "plugin_convert", "plugin_file", "plugin_project_action",
+           "plugin_project_applicability", "plugin_project_check", "plugin_project_types",
            "plugin_service",
            "plugin_service_log", "plugins_install", "plugins_job", "plugins_list", "plugins_toggle", "theme_set"]

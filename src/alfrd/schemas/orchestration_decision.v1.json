@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/avikhagol/alfrd/schemas/orchestration_decision.v1.json",
+  "title": "alfrd.orchestration/1 decision",
+  "description": "The answer to a blocker: a chosen option and/or a free-text answer, by a person or by the orchestrator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "choice"
+      ]
+    },
+    {
+      "required": [
+        "answer"
+      ]
+    }
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+      "description": "The blocker id this decides."
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "question": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10
+    },
+    "choice": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "answer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "decided_by": {
+      "enum": [
+        "user",
+        "orchestrator"
+      ]
+    }
+  }
+}

@@ -17,6 +17,7 @@ from alfrd.events import EVENTS_FILE, EventLog
 from alfrd.execution import ExecutionError, load_execution
 from alfrd.manifest import ManifestError, validate_manifest
 from alfrd.runtime import scheduler
+from alfrd.manifest_paths import project_manifest
 
 
 def stamp(seconds_ago=0.0):
@@ -93,7 +94,7 @@ def test_prefix_matching_and_stop_plan_duplicate():
 
 
 def test_manifest_and_execution_check_routes(project):
-    base = yaml.safe_load((project / "alfrd.yaml").read_text())
+    base = yaml.safe_load((project_manifest(project)).read_text())
     validate_manifest({**base, "notify": {"routes": [{"via": "desktop", "on": ["plan.*"]}]}})
     for routes in ([{"via": "desktop"}], [{"via": "webhook", "on": ["*"]}], "x"):
         with pytest.raises(ManifestError, match="notify"):
@@ -110,7 +111,7 @@ def test_bare_yaml_on_key_is_accepted(project):
     routes = yaml.safe_load("- via: desktop\n  on: [review.pending, plan.*]\n")
     assert True in routes[0]
     assert notify.validate_routes(routes) == [{"via": "desktop", "on": ["review.pending", "plan.*"]}]
-    base = yaml.safe_load((project / "alfrd.yaml").read_text())
+    base = yaml.safe_load((project_manifest(project)).read_text())
     validate_manifest({**base, "notify": {"routes": routes}})
     configure(project, notify={"routes": routes})
     assert load_execution(project).settings["notify_routes"] == [{"via": "desktop", "on": ["review.pending", "plan.*"]}]

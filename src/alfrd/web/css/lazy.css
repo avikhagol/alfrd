@@ -311,12 +311,13 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 @media(max-width:479px) { .plug-facts { grid-template-columns:1fr; gap:4px; } .plug-facts dd { margin-bottom:8px; } }
 /* Settings → Plugins → Configure: settings form and background services. */
 .plug-config { grid-column: 1 / -1; min-width: 0; }
-.plug-form fieldset, .ag-panels fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 10px; margin: 0 0 10px; min-width: 0; }
+.plug-form fieldset, .ag-panels fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px 14px; margin: 0 0 10px; min-width: 0; }
 .plug-form legend, .ag-panels legend { font-weight: 600; padding: 0 4px; }
-.plug-form label { display: block; margin-top: 8px; }
 .plug-form fieldset > small { display: block; margin-top: 2px; }
-.plug-field { display: flex; gap: 8px; margin-top: 4px; }
-.plug-field input { flex: 1; min-width: 0; }
+.plug-setting { margin-top: 12px; }
+.plug-label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; font-size: 12px; color: var(--text-2); }
+.plug-field { display: flex; gap: 8px; }
+.plug-help { display: block; margin-top: 4px; }
 .plug-form-actions, .plug-svc-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
 .plug-svc-actions label { margin: 0; }
 .plug-svc { padding: 6px 0; overflow-wrap: anywhere; }
@@ -353,7 +354,7 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 
 .ho-artifact p:empty { display: none; }
 .ho-markdown pre code { border: 0; padding: 0; background: none; }
-.plug-form .plug-field-bool { min-height: 44px; display: flex; align-items: center; gap: 8px; }
+.plug-form .plug-field-bool { min-height: 32px; }
 
 /* Workflow editor (components/workflow_editor.js) */
 .wf-info.wfe-on { flex-direction: column; align-items: stretch; gap: 10px; border-color: var(--accent-border); }
@@ -416,3 +417,42 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 .wfe-msg { color: var(--fail-text); min-height: 1em; margin: 2px 0; font-size: 12px; }
 .wfe-adv summary { cursor: pointer; font-size: 12px; color: var(--text-2); margin: 6px 0; }
 .wfe-yaml { max-height: 60vh; overflow: auto; }
+
+/* Plugin pages (#/plugin/<id>) and the project file explorer (api.fileExplorer). */
+.plugin-page { padding: 4px 0 24px; max-width: 1100px; }
+.plugin-page-head h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+.plugin-page-state .callout { flex-direction: column; }
+.plugin-page h2:focus-visible, .fx [aria-current]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fx-crumbs ol { display: flex; flex-wrap: wrap; gap: 4px; list-style: none; margin: 0 0 8px; padding: 0; font-size: 13px; }
+.fx-crumbs li + li::before { content: "/"; margin-right: 4px; color: var(--text-3); }
+.fx-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--r); }
+.fx-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 6px 10px; min-height: 40px; }
+.fx-row + .fx-row { border-top: 1px solid var(--border); }
+.fx-name { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.fx-name .ic { width: 16px; height: 16px; flex: none; }
+@media (max-width: 640px) { .fx-row { grid-template-columns: minmax(0, 1fr) auto; } .fx-kind { display: none; } }
+/* Settings → Plugins: where a plugin applies (project types). */
+.plug-applies summary { cursor: pointer; font-size: 12px; color: var(--text-2); margin-top: 4px; }
+.plug-applies-form fieldset { display: flex; flex-wrap: wrap; gap: 6px 14px; border: 1px solid var(--border); border-radius: var(--r); padding: 6px 10px; margin: 8px 0; }
+.plug-applies-form legend { font-size: 12px; color: var(--text-2); }
+.plug-applies-form [data-pa-msg] { color: var(--fail-text); min-height: 1em; margin: 2px 0; }
+.plug-applies-form input:is([type=radio], [type=checkbox]):focus-visible, .plug-applies summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Configure tab (canvas_ops.js) and the shortcut reference (shortcuts.js) */
+.sx { display: flex; flex-direction: column; gap: 10px; }
+.sx .field { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.sx fieldset { border: 0; padding: 0; }
+.sx .wfe-deps { display: flex; flex-wrap: wrap; gap: 6px; }
+.sx .chip.muted { opacity: .6; }
+.sx-skip { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.keys-modal { width: min(640px, calc(100vw - 24px)); }
+.keys-ref h3 { margin: 14px 0 6px; font-size: 13px; }
+.keys-ref dl { margin: 0; display: grid; gap: 4px; }
+.keys-ref dl > div { display: grid; grid-template-columns: minmax(120px, 34%) 1fr; gap: 12px; align-items: baseline; }
+.keys-ref dd { margin: 0; }
+.keys-ref kbd { font: 12px var(--mono, monospace); padding: 1px 6px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; background: var(--surface-2, var(--surface)); }
+@media (max-width: 600px) { .keys-ref dl > div { grid-template-columns: 1fr; gap: 2px; } }
+/* chat_runs.js: a chat session's run in Workflow → Graph / List */
+.cr-pane { display: flex; flex-direction: column; gap: 10px; padding: 12px; min-height: 100%; box-sizing: border-box; }
+.cr-banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cr-graph { flex: 1; display: flex; min-height: 360px; } .cr-graph .gv { flex: 1; } .cr-graph .gv-canvas { height: 60vh; flex: none; }
+[data-cr-task] { cursor: pointer; } [data-cr-cell] { cursor: pointer; }

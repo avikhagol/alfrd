@@ -335,9 +335,18 @@ def _write_manifest(root: Path, form_id: str, changes: Mapping[str, Any], source
     except Exception as exc:  # noqa: BLE001 - schema errors read well as they are
         raise QuickstartError(f"alfrd.yaml would not be valid: {exc}") from exc
     updated = replace_sections(text, old, new)
-    history.save(root, MANIFEST, updated, source=source, message=f"quickstart {form_id}: " + ", ".join(sorted(changes))[:200], force=True)
+    # The conflict guard stays on: an edit made since `text` was read (Studio, editor) is not overwritten.
+    # With only the template default there is no file on disk to compare, so the guard passes.
+    base = text if path.is_file() else None
+    try:
+        history.save(root, MANIFEST, updated, source=source, message=f"quickstart {form_id}: " + ", ".join(sorted(changes))[:200], base_text=base)
+    except history.Conflict as conflict:
+        raise QuickstartError(f"{conflict}; reload the form and apply again") from conflict
     try:
         load_execution(root)
     except (ExecutionError, ValueError) as exc:
-        history.save(root, MANIFEST, text, source=source, message=f"quickstart {form_id}: reverted", force=True)
+        try:  # revert only our own write
+            history.save(root, MANIFEST, text, source=source, message=f"quickstart {form_id}: reverted", base_text=updated)
+        except history.Conflict:
+            pass  # edited meanwhile: keep the newer file
         raise QuickstartError(f"alfrd.yaml would not load: {exc}") from exc

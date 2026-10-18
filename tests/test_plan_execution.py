@@ -660,3 +660,34 @@ def test_a_copied_project_never_adopts_the_originals_commands(tmp_path):
         for proc in procs.values():
             proc.kill()
             proc.wait(5)
+
+
+def test_studio_stop_one_unit(studio, project, monkeypatch):
+    """POST …/units/<unit>/stop: SIGTERM to that command only; its cell is cancelled, the run goes on."""
+    client, h, pid = studio
+    monkeypatch.setenv("FAKE_AVICA_SLEEP", "30")
+    rows = [{"target": "T1", "files": "a.idifits"}, {"target": "T2", "files": "b.idifits"}]
+    resp = client.post(f"/api/studio/projects/{pid}/plans", json={"rows": rows, "steps": STEPS[:1], "concurrency": 2}, headers=h)
+    assert resp.status_code == 201, resp.get_json()
+    plan_id = resp.get_json()["plan"]["id"]
+    folder = scheduler.PlanDir(project, plan_id)
+    running = lambda: [u for u in folder.units() if u.get("status") == "running" and u.get("pid")]  # noqa: E731
+    assert _wait(lambda: len(running()) == 2)
+    first, other = sorted(running(), key=lambda u: u["target"])
+    url = f"/api/studio/projects/{pid}/plans/{plan_id}/units/{first['id']}/stop"
+    assert client.post(url, json={}).status_code == 403  # loopback + CSRF like the other plan controls
+    assert client.post(f"/api/studio/projects/{pid}/plans/{plan_id}/units/nope/stop", json={}, headers=h).status_code == 404
+    stopped = client.post(url, json={}, headers=h)
+    assert stopped.status_code == 202, stopped.get_json()
+    unit_file = folder.units_dir / f"{first['id']}.json"
+    assert _wait(lambda: json.loads(unit_file.read_text()).get("status") == "cancelled", timeout=40)
+    assert not scheduler.pid_alive(first["pid"], first["proc_start"])
+    assert _cells(project)["T1"]["preprocess_fitsidi"] == "cancelled"
+    # The other target's command and the plan keep running.
+    assert scheduler.pid_alive(other["pid"], other["proc_start"])
+    assert folder.load()["status"] == "running" and _cells(project)["T2"]["preprocess_fitsidi"] == "running"
+    assert "stop_units" not in json.loads(folder.control_file.read_text())
+    # Stopping a unit that already ended is a conflict.
+    assert client.post(url, json={}, headers=h).status_code == 409
+    scheduler.control(project, plan_id, "cancel")
+    assert _wait(lambda: folder.load()["status"] == "cancelled", timeout=40)

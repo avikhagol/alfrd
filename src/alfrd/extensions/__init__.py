@@ -14,7 +14,7 @@ Where things live (resolved per call, so XDG changes in tests apply):
 ``plugins_dir()/site`` (installed plugins, after site-packages on ``sys.path``),
 ``themes_dir()/<id>/theme.css`` (drop-in themes), ``state_file()``
 (``{"disabled": [...], "theme": "obsidian-orbit", "catalog_url": ..., "gui_install": true,
-"plugin_actions": true, "autostart": ["<plugin>:<service>"]}``).
+"plugin_actions": true, "autostart": ["<plugin>:<service>"], "project_types": {"<id>": ["avica"] | "all"}}``).
 """
 
 from __future__ import annotations
@@ -253,10 +253,18 @@ class Plugin:
     step_hooks: StepHooks | None = None  # before/after each launched unit, in the plan runner
     check_project: Callable | None = None  # check_project(root, values) -> (level, text): protected Studio check
     project_actions: tuple[ProjectAction, ...] = ()  # Studio calls on one project (see ProjectAction)
+    #: Project types (``template:`` names such as ``avica``; free text) the plugin is meant for; ``None`` = all.
+    #: Users can override it globally and per project (:mod:`alfrd.extensions.applicability`).
+    project_types: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         for name in ("requires_bin", "viewers", "panels", "converters", "settings", "services", "project_actions"):
             object.__setattr__(self, name, _tuple(getattr(self, name)))
+        if self.project_types is not None:
+            raw = _tuple(self.project_types)
+            if not raw or not all(isinstance(t, str) and t.strip() for t in raw):
+                raise ValueError("project_types must be None (all project types) or a non-empty list of names")
+            object.__setattr__(self, "project_types", tuple(dict.fromkeys(t.strip() for t in raw)))
         if not all(isinstance(a, ProjectAction) for a in self.project_actions):
             raise TypeError("project_actions must be alfrd.extensions.ProjectAction values")
         ids = [a.id for a in self.project_actions]
@@ -368,7 +376,7 @@ def read_state() -> dict[str, Any]:
     not https/file is ignored.
     """
     state: dict[str, Any] = {"disabled": [], "theme": DEFAULT_THEME, "catalog_url": None, "gui_install": True,
-                             "plugin_actions": True, "autostart": []}
+                             "plugin_actions": True, "autostart": [], "project_types": {}}
     data = _raw_state()
     if isinstance(data.get("disabled"), list):
         state["disabled"] = sorted({str(x) for x in data["disabled"]})
@@ -382,6 +390,13 @@ def read_state() -> dict[str, Any]:
         state["plugin_actions"] = data["plugin_actions"]
     if isinstance(data.get("autostart"), list):
         state["autostart"] = sorted({str(x) for x in data["autostart"]})
+    if isinstance(data.get("project_types"), dict):  # global applicability overrides: {id: [types] | "all"}
+        from alfrd.extensions.applicability import parse_types
+
+        for key, value in data["project_types"].items():
+            parsed = parse_types(value)
+            if parsed is not False:
+                state["project_types"][str(key)] = parsed
     return state
 
 
@@ -420,6 +435,24 @@ def set_autostart(key: str, on: bool) -> dict[str, Any]:
     keys = set(read_state()["autostart"])
     (keys.add if on else keys.discard)(key)
     return _update_state(autostart=sorted(keys))
+
+
+def set_project_types(plugin_id: str, types: list[str] | tuple[str, ...] | str | None) -> dict[str, Any]:
+    """Global applicability override: a list of project types, ``"all"``, or ``None`` (back to the plugin's default)."""
+    from alfrd.extensions.applicability import parse_types
+
+    if not _ID.match(plugin_id or ""):
+        raise ValueError(f"invalid plugin id {plugin_id!r}")
+    raw = _raw_state().get("project_types")
+    current = dict(raw) if isinstance(raw, dict) else {}
+    if types is None:
+        current.pop(plugin_id, None)
+    else:
+        parsed = parse_types(types)
+        if parsed is False:
+            raise ValueError('project_types must be "all" or a non-empty list of project type names')
+        current[plugin_id] = "all" if parsed is None else list(parsed)
+    return _update_state(project_types=current)
 
 
 def set_theme(theme_id: str) -> dict[str, Any]:
@@ -470,6 +503,7 @@ class Record:
             out["services"] = [s.id for s in self.plugin.services]
             out["step_hooks"] = self.plugin.step_hooks is not None
             out["project_actions"] = [a.id for a in self.plugin.project_actions]
+            out["project_types"] = list(self.plugin.project_types) if self.plugin.project_types is not None else None
         return out
 
 
@@ -520,6 +554,8 @@ def discover() -> list[Record]:
 
 _LOADED: list[Record] | None = None
 _APPLIED_PANELS: list[str] = []
+#: Panel kind -> the plugin that registered it (applicability filters panels per project).
+PANEL_OWNERS: dict[str, str] = {}
 
 
 def safe_mode() -> bool:
@@ -535,6 +571,7 @@ def _unapply() -> None:
 
     for kind in _APPLIED_PANELS:
         layout_generic.unregister_panel(kind)
+        PANEL_OWNERS.pop(kind, None)
     _APPLIED_PANELS.clear()
 
 
@@ -554,6 +591,7 @@ def _apply(plugin: Plugin) -> None:
             layout_generic.unregister_panel(kind)
         raise
     _APPLIED_PANELS.extend(done)
+    PANEL_OWNERS.update({kind: plugin.id for kind in done})
 
 
 def _auto(plugin_id: str, auto: Callable) -> Callable:
@@ -660,7 +698,7 @@ def reset() -> None:
 
 __all__ = [
     "ALFRD_PLUGIN_API", "Converter", "DEFAULT_THEME", "GROUP", "PanelSpec", "Plugin", "ProjectAction", "Record", "SETTING_KINDS", "Service",
-    "SettingField", "StepContext", "StepHooks", "active", "add_site", "api_ok", "discover", "get", "load", "loaded", "module_dir", "plugins_dir",
-    "read_state", "reset", "safe_mode", "set_autostart", "set_enabled", "set_theme",
+    "PANEL_OWNERS", "SettingField", "StepContext", "StepHooks", "active", "add_site", "api_ok", "discover", "get", "load", "loaded", "module_dir", "plugins_dir",
+    "read_state", "reset", "safe_mode", "set_autostart", "set_enabled", "set_project_types", "set_theme",
     "site_dir", "state_file", "themes_dir", "web_dir", "write_state",
 ]

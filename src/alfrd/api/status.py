@@ -336,7 +336,7 @@ def plan_status(root: str | Path, plan: str | None = None, *, detail: str = "sum
     cfg = None
     error = None
     try:
-        cfg = load_execution(base)
+        cfg = sch.plan_config(base, data) if data.get("chat") else load_execution(base)
         table = sch.table_for(cfg, csv_path, data.get("steps"))
     except Exception as exc:  # noqa: BLE001 - reported, never raised: the plan may still be readable
         error = str(exc)
@@ -495,12 +495,16 @@ def list_plans(root: str | Path, *, project: Mapping[str, str] | None = None) ->
         raise StatusNotFound(f"project folder {base} not found")
     info = dict(project) if project else project_info(base)
     items = []
-    for data in sch.list_plans(base):
+    # Workflow runs first (newest first), then chat sessions' plans (``run_kind: chat`` with the session title).
+    for data in sch.list_plans(base) + sch.chat_plans(base):
         folder = sch.PlanDir(base, data["id"])
         runner = runner_info(folder, data)
+        chat = bool(data.get("chat"))
         items.append({"id": data["id"], "status": data.get("status"), "csv": data.get("csv"), "mode": data.get("mode"),
                       "created_at": utc(data.get("created")), "counts": data.get("counts") or {},
-                      "runner_alive": runner["alive"], "stale": runner["stale"]})
+                      "runner_alive": runner["alive"], "stale": runner["stale"],
+                      "run_kind": "chat" if chat else "workflow",
+                      **({"title": sch.chat_title(base, data), "chat": data["chat"]} if chat else {})})
     return {"schema": LIST_SCHEMA, "generated_at": _now_utc(),
             "project": {"name": info["name"], "identifier": info["identifier"]}, "plans": items}
 

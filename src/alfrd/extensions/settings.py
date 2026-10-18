@@ -58,6 +58,9 @@ def _filled(value: Any) -> bool:
     return value not in (None, "")
 
 
+_CHOICES = re.compile(r"[A-Za-z0-9_.-]+(?:\|[A-Za-z0-9_.-]+)+")
+
+
 def public(plugin: Plugin) -> list[dict[str, Any]]:
     """The form: every field with its value, except a secret, which only reports ``set``."""
     saved = values(plugin.id)
@@ -65,6 +68,8 @@ def public(plugin: Plugin) -> list[dict[str, Any]]:
     for field in plugin.settings:
         item = {"key": field.key, "label": field.label or field.key, "kind": field.kind, "required": field.required,
                 "help": field.help, "pattern": field.pattern, "placeholder": field.placeholder}
+        if field.kind == "text" and _CHOICES.fullmatch(field.pattern):
+            item["choices"] = field.pattern.split("|")  # shown as a dropdown instead of free text
         if field.kind == "secret":
             item["set"] = _filled(saved.get(field.key))
         else:

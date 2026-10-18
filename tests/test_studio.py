@@ -67,11 +67,16 @@ LAZY_MODULES = {
     "js/components/removal_dialog.js", "js/components/file_autocomplete.js",
     "js/data/run_grid.js", "js/components/jobs_tray.js",
     "js/components/folder_create.js", "js/components/settings_dialog.js", "js/utils/keep_view.js",
+    "js/components/canvas_ops.js", "js/components/shortcuts.js",
     "js/data/run_history.js",
     "js/components/yaml_form.js", "js/data/yaml_form.js", "js/data/demo.js",
-    "js/data/folder_scan.js",
+    "js/data/folder_scan.js", "js/components/notifications.js",
     "js/components/settings_plugins_view.js", "js/components/plugin_jobs.js", "js/components/plugins_install_dialog.js", "js/components/plugins_browse.js", "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
     "js/components/plugin_config.js", "js/components/plugin_dialogs.js", "js/data/presence.js",
+    "js/components/plugin_pages.js", "js/components/file_explorer.js", "js/components/plugin_applicability.js",
+    "js/components/chat_view.js", "js/components/chat_settings.js", "js/components/graph_view.js", "js/data/chat.js",
+    "js/components/chat_dock.js", "js/components/chat_composer.js", "js/components/chat_runs.js",
+    "js/components/project_canvas.js", "js/data/project_draft.js",
 }
 
 
@@ -127,7 +132,17 @@ def test_startup_payload_under_178kb_compressed():
     # gzip, 347 B headroom under 189,440 (t006, 2026-10-10). Further loading UI must trim or go lazy.
     # Closing loading UX: 188,679 B startup; 761 B headroom. Redundant shipped
     # commentary trimmed; both caps unchanged. Lazy stays 198,478 B (2026-10-10).
-    assert total < 185 * 1024, f"{total} bytes gzip"
+    # Workspace/orchestration Phase 2 (2026-10-17): target creation trimmed to 189,421 B; then
+    # components/notifications.js loads on the first alfrd event (-3 KiB) and pays for the
+    # target-scoped Workflow header: 186,863 B, 2,577 B headroom. Lazy 206,337 B. Caps unchanged.
+    # Plugin pages (rail "Plugins" group, #/plugin/<id> view, section availability filter): 187,364 B.
+    # Workspace Phase 3 (2026-10-18): canvas hooks (ports, edge hit paths, context menu / key routing,
+    # compact + fullscreen), pushState history, global shortcut guard, unsaved-edit warnings and the
+    # lost-connection notice: 187,364 → 192,296 B. Menus, connect, Configure and the shortcut dialog are
+    # lazy (canvas_ops.js, shortcuts.js). Avi approved raising the cap: 185 → 189 KiB (193,536 bytes).
+    # Chat dock toggle (button, Alt+Shift+A, dock state) in app.js, dock CSS, shortcut entry: 193,070 -> 194,226 B.
+    # Owner approved raising the cap: 189 -> 191 KiB (195,584 bytes).
+    assert total < 191 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_payload_under_106kb_compressed():
@@ -204,9 +219,27 @@ def test_lazy_payload_under_106kb_compressed():
     # T9b (Workflow settings + Stages dialogs, template drafts, live region; t006-claude,
     # 2026-10-10): 194,592 → 198,475 B (+3,883 B, within the pre-approved 4 KiB). Cap set to the
     # absolute 194 KiB ceiling; anything more needs trimming.
+    # 2026-10-17: Avi raised the ceiling to 204 KiB for the workspace/orchestration work.
     # Workflow completion: list action announcements + removal of reset defaults on Save:
     # startup 186,129 B; lazy 198,478 B (178 B below the unchanged cap, 2026-10-10).
-    assert total < 194 * 1024, f"{total} bytes gzip"
+    # Workspace Phase 2 (2026-10-17): plugin pages (plugin_pages.js), the project file explorer
+    # (file_explorer.js), plugin availability by project type (plugin_applicability.js, Settings rule
+    # details) and their CSS, all on demand: 206,390 → 215,526 B. Avi approved raising the lazy cap:
+    # 204 → 212 KiB (217,088 bytes). Startup grew 186,963 → 187,364 B (rail group, page view hook,
+    # section filter); its 185 KiB cap is unchanged.
+    # Workspace Phase 3 (2026-10-18): canvas_ops.js (context menus, connect/disconnect, Configure tab,
+    # run/stop actions), shortcuts.js, workflow_edit.js dependency edits and their CSS: 215,577 → 226,611 B.
+    # Avi approved raising the lazy cap: 212 → 224 KiB (229,376 bytes).
+    # Workspace Phase 4b (2026-10-18): the Chat section (chat_view.js, data/chat.js), the shared graph canvas
+    # (graph_view.js), Settings → Agent chat (chat_settings.js), the New-project canvas (project_canvas.js,
+    # data/project_draft.js) and css/chat.css, all on demand: 226,611 → 259,635 B. Owner approved raising
+    # the lazy cap as needed: 224 → 256 KiB (262,144 bytes). Startup grew 192,384 → 193,070 B (Chat and
+    # New-project routes, lazy view loader, chat icon, Settings card); its 189 KiB cap is unchanged.
+    # Chat dock (chat_dock.js, chat_composer.js), promote dialog, token report, usage table: 259,635 -> 269,163 B.
+    # Owner approved raising the cap: 256 -> 264 KiB (270,336 bytes).
+    # Chat round 2026-10-18 (activity strip, /setup, full-screen graph, chat runs in Workflow): 269,210 -> ~285,400 B.
+    # Raised under the standing "raise JS caps as needed" decision: 264 -> 288 KiB (294,912 bytes).
+    assert total < 288 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

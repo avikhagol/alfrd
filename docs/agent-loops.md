@@ -76,6 +76,27 @@ logical turn (`retry_of`), and the model used is recorded.
 
 ## Configuring commands
 
+### Lean agent startup
+
+A Claude entrypoint (or workflow step) can start without everything the CLI loads by default.
+`lean: true` on an entrypoint or step adds, for Claude only, these flags (all in `claude --help`):
+`--strict-mcp-config` (only MCP servers named by `--mcp-config`, so none), `--setting-sources
+project,local` (no user settings: user plugins, hooks, MCP servers) and `--disable-slash-commands`
+(no skills). Finer control: `mcp: none | default | [file.json, ...]` (files go to `--mcp-config`),
+`plugins: false` (the setting-sources flag) and `skills: false`; they override what `lean` implies.
+A command that already contains one of these flags is left alone. Codex and generic commands never
+get them. Existing projects start unchanged (default off); the agent-loop template sets `lean: true`
+on its `claude` entrypoint and the chat presets `claude` and `sonnet` are lean. Project-level
+`CLAUDE.md` and project settings are still read.
+
+### Usage and cost
+
+Claude emits one `result` event per wake-up (background tasks add more). ALFRD sums the tokens of
+all result events of a turn (a repeated event id counts once) and takes the cost from the latest
+one, because `total_cost_usd` is cumulative. Reports show new (uncached) input, cache read, cache
+write, output and cost per turn and for the plan. `execution.warn_turn_cost_usd: <usd>` flags a turn
+that costs more (badge, `budget.warning` event, `cost_warnings` in the plan status); it never stops it.
+
 ### Models and Claude activity
 
 Project settings → **Agents / human review** has a model field for each Claude
@@ -377,8 +398,11 @@ remain in the project's `.alfrd/plans/`, keyed by plan ID and selected target.
 Optional task iteration settings live in `<target>/.alfrd-task.json` and are
 snapshotted into the plan, so tasks may use different turn counts — e.g.
 `small-task` 2 and `long-task` 5. The project's iterations are the maximum;
-creating a task or starting a plan above it is refused, and Overview flags a
-task left above a lowered maximum without rewriting it.
+creating a task above it is refused. If a workflow edit lowers the maximum,
+existing tasks use the new maximum for previews and future runs. Their saved
+counts and historical run snapshots remain intact. Rerunning a task also adds
+any newly configured turn columns to the shared CSV, preserving other tasks'
+cells and metadata.
 
 With `loop.workspace: worktree` (the default for new projects) each task gets a
 git worktree at `<target>/workspace` on branch `alfrd/<target>`, made from the

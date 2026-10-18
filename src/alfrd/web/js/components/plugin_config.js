@@ -10,12 +10,15 @@ const time = (t) => (t ? new Date(t * 1000).toLocaleTimeString() : "");
 
 function field(f, canWrite) {
   const id = `plug-set-${esc(f.key)}`, secret = f.kind === "secret", off = canWrite ? "" : "disabled";
-  const help = f.help ? `<small class="muted" id="${id}-help">${esc(f.help)}</small>` : "";
+  const help = f.help ? `<small class="muted plug-help" id="${id}-help">${esc(f.help)}</small>` : "";
   const described = f.help ? `aria-describedby="${id}-help"` : "";
-  if (f.kind === "bool") return `<label class="plug-field-bool"><input type="checkbox" id="${id}" ${described} name="${esc(f.key)}" ${f.value ? "checked" : ""} ${off}> ${esc(f.label)}</label>${help}`;
+  if (f.kind === "bool") return `<div class="plug-setting"><label class="check plug-field-bool"><input type="checkbox" id="${id}" ${described} name="${esc(f.key)}" ${f.value ? "checked" : ""} ${off}> <span>${esc(f.label)}</span></label>${help}</div>`;
   const hint = secret && f.set ? "Saved · leave empty to keep it" : f.placeholder || "";
-  return `<label for="${id}">${esc(f.label)}${f.required ? ' <small class="muted">required</small>' : ""}${secret ? ` <span class="badge tone-${f.set ? "ok" : "muted"}">${f.set ? "set" : "not set"}</span>` : ""}</label>
-<div class="plug-field"><input id="${id}" name="${esc(f.key)}" type="${secret ? "password" : f.kind === "number" ? "number" : "text"}" value="${secret ? "" : esc(f.value ?? "")}" placeholder="${esc(hint)}" autocomplete="off" spellcheck="false" ${described} ${f.kind === "number" ? 'step="any"' : ""} ${f.key === "hold_minutes" ? 'min="0"' : ""} ${off}>${secret && f.set && canWrite ? `<button type="button" class="btn sm ghost" data-plug-clear="${esc(f.key)}">Clear</button>` : ""}</div>${help}`;
+  const control = f.choices
+    ? `<select class="input" id="${id}" name="${esc(f.key)}" ${described} ${off}><option value="">Default</option>${f.choices.map((c) => `<option ${c === f.value ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
+    : `<input class="input" id="${id}" name="${esc(f.key)}" type="${secret ? "password" : f.kind === "number" ? "number" : "text"}" value="${secret ? "" : esc(f.value ?? "")}" placeholder="${esc(hint)}" autocomplete="off" spellcheck="false" ${described} ${f.kind === "number" ? 'step="any"' : ""} ${f.key === "hold_minutes" ? 'min="0"' : ""} ${off}>`;
+  return `<div class="plug-setting"><label class="plug-label" for="${id}">${esc(f.label)}${f.required ? ' <small class="muted">required</small>' : ""}${secret ? ` <span class="badge tone-${f.set ? "ok" : "muted"}">${f.set ? "set" : "not set"}</span>` : ""}</label>
+<div class="plug-field">${control}${secret && f.set && canWrite ? `<button type="button" class="btn sm" data-plug-clear="${esc(f.key)}">Clear</button>` : ""}</div>${help}</div>`;
 }
 
 function service(s, canWrite) {
@@ -68,7 +71,7 @@ export function attach(ctx, panel, canWrite) {
     if (!form) return;
     event.preventDefault();
     const id = form.dataset.plugForm, values = {};
-    for (const input of form.querySelectorAll("input[name]")) values[input.name] = input.type === "checkbox" ? input.checked : input.value;
+    for (const input of form.querySelectorAll("input[name],select[name]")) values[input.name] = input.type === "checkbox" ? input.checked : input.value;
     await busy(form.querySelector("[type=submit]"), async () => {
       try {
         const c = await server.mutate(`${base(id)}/config`, { values });

@@ -284,9 +284,10 @@ def _template(root: Path) -> str | None:
 
     from alfrd.studio_defs import template_name
 
-    for name in ("alfrd.yaml", "alfrd.yml"):
-        path = root / name
-        if path.is_file():
+    from alfrd.manifest_paths import project_manifest
+
+    for path in (project_manifest(root), root / "alfrd.yml"):
+        if path is not None and path.is_file():
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
             return template_name(data) if isinstance(data, Mapping) else None
     return None

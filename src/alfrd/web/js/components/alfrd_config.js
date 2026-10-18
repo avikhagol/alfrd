@@ -170,6 +170,14 @@ export function mount(el, ctx) {
         }
       } catch (error) { ctx.toast(error.message, "fail"); }
     }
+    if (a === "chat") {
+      const st = stateOf(p, SETTINGS);
+      import("./chat_settings.js").then((m) => m.openChatSettings(ctx, p, st.text, (text, andSave) => {
+        st.text = text; setDirty(p, st, true); st.report = validate(ctx, text); st.aliases = null;
+        if (project(ctx) === p) render(el, ctx);
+        if (andSave && project(ctx) === p) save(el, ctx); else ctx.toast("Chat settings applied — Save alfrd.yaml to keep them", "ok");
+      })).catch((error) => ctx.toast(error.message, "fail"));
+    }
     if (a === "revert") { templateGeneration += 1; ui.text = ui.base = loadedText(ctx, p); ui.previewTpl = null; setDirty(p, ui, false); ui.report = null; ui.aliases = null; render(el, ctx); }
     if (a === "download") download("alfrd.yaml", ui.text, "text/yaml");
     if (a === "history") {
@@ -297,6 +305,7 @@ export function render(el, ctx) {
       <button class="btn sm" data-act="download">${icon("download")} Download</button>
       ${ctx.state.mode === "server" && tree.provider === "server" ? `<button class="btn sm" data-act="history" title="Earlier versions of alfrd.yaml: diff and restore">${icon("clock")} History</button>` : ""}
       <button class="btn sm ${ui.dirty ? "primary" : ""}" data-act="save">${icon("save")} Save alfrd.yaml</button></div>
+      <div id="ps-loc"></div>
       <p class="muted small">${esc(where)} Ctrl+S saves. After saving, the workflow, stages, metadata health, logs and field aliases are re-read from the file.</p>
       ${ui.previewTpl ? `<p class="callout warn small" role="status">Previewing template <b>${esc(ui.previewTpl)}</b>. Save to apply, Revert to discard.</p>` : ""}
       <div class="ps-status" id="ps-status"></div></div>
@@ -312,6 +321,8 @@ export function render(el, ctx) {
         <section class="card"><h4>Agents &amp; review</h4><p class="muted small">Choose models, enable human adjustments after selected turns, or edit the goal for the next run.</p>
           <div class="row gap wrap"><button class="btn" data-act="agents">Agents &amp; review</button>${ctx.state.mode === "server" ? '<button class="btn" data-act="task">Edit task</button>' : ''}</div>
         </section>
+        <section class="card"><h4>${icon("chat")} Agent chat</h4><p class="muted small">Chat agents and their roles, entrypoints, models and personas; the orchestrator; cost, time, retry and depth limits per request.</p>
+          <button class="btn" data-act="chat">Chat agents &amp; limits</button></section>
         <section class="card">
           <h4>${icon("arrows")} Field aliases</h4>
           <p class="muted small">Older names → names used now, applied to workflow steps, result CSV rows and folder/file names while reading (<code>project_settings.field_aliases</code>). End both sides with <code>*</code> to rewrite a prefix.</p>
@@ -336,6 +347,9 @@ export function render(el, ctx) {
   restoreEditor($("#ps-yaml", el), keep);
   renderStatus(el, ctx);
   ctx.setFooterRight(ui.dirty ? "alfrd.yaml: unsaved changes" : "alfrd.yaml");
+  if (p && ctx.state.mode === "server" && tree.provider === "server") {
+    import("./manifest_location.js").then((m) => m.showLocation($("#ps-loc", el), ctx, p, () => { shown = null; if (el.isConnected) render(el, ctx); })).catch(() => {});
+  }
   const formHost = $("#ps-form-host", el);
   if (formHost) import("./yaml_form.js").then((m) => m.showYamlForm(el, formHost, ui.text, {
     setText: (text) => { ui.text = text; setDirty(p, ui, true); ui.report = ui.aliases = null; shown = signature(ctx, p); shownText = text; renderStatus(el, ctx); },

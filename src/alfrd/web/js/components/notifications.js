@@ -30,7 +30,7 @@ export async function handleNotifications(ctx, project, events) {
     if (browserEnabled() && browserState() === "granted" && DEFAULT_KINDS.includes(event.kind)) {
       try {
         const notification = new Notification(title, { body: event.turn ? `Turn ${event.turn}/${event.turns || "?"}` : "ALFRD", tag: `${event.plan}:${event.kind}`, silent: true });
-        notification.onclick = () => { window.focus(); if (link) window.location.hash = link; notification.close(); };
+        notification.onclick = () => { window.focus(); if (link) window.location.replace(link); notification.close(); };
       } catch (error) { ctx.log?.("warn", `Browser notification: ${error.message}`, "studio"); }
     }
   }

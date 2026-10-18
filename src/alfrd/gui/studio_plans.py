@@ -88,6 +88,9 @@ def _write_rows(cfg, path: Path, payload: dict) -> None:
                 selected = [row for row in table.rows if row.target == target]
                 if len(selected) != 1:
                     raise ExecutionError(f"unknown task target: {target}")
+                # A workflow edit may add or rename turns. Keep other tasks'
+                # cells and metadata, but include every current turn on rerun.
+                table.header.extend(step for step in cfg.step_ids if step not in table.header)
                 selected[0].values.update({step: pc.TODO for step in cfg.step_ids})
                 selected[0].values[cfg.files_column] = item["files"] or "task.md"
                 pc.atomic_write(path, pc.dump(table.header, [row.values for row in table.rows]))
@@ -180,6 +183,21 @@ def plan_action(project_name: str, plan_id: str, action: str):
         return _json_error(error, 404)
     _poke(project_name)
     return jsonify(plan=plan)
+
+
+@studio_api.post("/studio/projects/<project_name>/plans/<plan_id>/units/<unit_id>/stop")
+def plan_unit_stop(project_name: str, plan_id: str, unit_id: str):
+    """Stop one running command of a plan (SIGTERM to its process group; marked cancelled)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", plan_id):
+        return _json_error(ValueError("bad plan id"), 400)
+    try:
+        unit = scheduler.stop_unit(_project_root(project_name), plan_id, unit_id)
+    except ExecutionError as error:
+        return _json_error(error, 404)
+    except ValueError as error:
+        return _json_error(error, 409 if "not running" in str(error) else 400)
+    _poke(project_name)
+    return jsonify(ok=True, unit={k: unit.get(k) for k in ("id", "steps", "rows", "target", "status")}, requested="stop"), 202
 
 
 MAX_ARTIFACT_BYTES = 256 * 1024
@@ -447,7 +465,7 @@ def task_create(project_name: str):
             except ValueError as error:
                 workspace = {"workspace": None, "warning": str(error)}
         _poke(project_name)
-        return jsonify(name=name, files="task.md", **workspace), 201
+        return jsonify(name=name, files="task.md", kind="task", **workspace), 201
     except (FileExistsError, pc.DuplicateRowError) as error:
         return _json_error(error, 409)
     except (ValueError, OSError) as error:
@@ -631,6 +649,8 @@ def plan_add_row(project_name: str, plan_id: str):
         plan = folder.load()
     except ExecutionError as error:
         return _json_error(error, 404)
+    if plan.get("chat"):
+        return _json_error(ValueError("a chat session's tasks come from the chat, not added rows"), 400)
     try:
         cfg = load_execution(root)
         plan_steps = list(plan.get("steps") or cfg.step_ids)
@@ -662,6 +682,8 @@ def plan_cells(project_name: str, plan_id: str):
         root = _project_root(project_name)
         folder = scheduler.PlanDir(root, plan_id)
         plan = folder.load()
+        if plan.get("chat"):
+            raise ExecutionError("retry or cancel a chat session's tasks from the chat")
         cfg = load_execution(root)
         cells = {}
         for item in items:

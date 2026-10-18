@@ -159,7 +159,12 @@ export async function scanProjectFolder(root, { onProgress = () => {}, statOnly 
   let top = await children(root);
   let base = root;
   let prefix = "";
-  let manifest = top.find((c) => c.kind === "file" && MANIFEST.test(c.name));
+  let manifest = null;
+  let manifestRel = "";
+  const nestedDir = top.find((c) => c.kind === "directory" && c.name === ".alfrd"); // .alfrd/alfrd.yaml outranks a root file
+  const nested = nestedDir && (await children(nestedDir.handle)).find((x) => x.kind === "file" && x.name === "alfrd.yaml");
+  if (nested) { manifest = nested; manifestRel = ".alfrd/alfrd.yaml"; }
+  if (!manifest) manifest = top.find((c) => c.kind === "file" && MANIFEST.test(c.name));
   if (!manifest) {
     for (const c of top.filter((x) => x.kind === "directory")) {
       const inner = await children(c.handle);
@@ -178,7 +183,7 @@ export async function scanProjectFolder(root, { onProgress = () => {}, statOnly 
     ? await read(manifest.handle)
     : { file: { size: fallback.length, lastModified: 0 }, text: fallback };
   if (!manifest) manifest = { name: "alfrd.yaml", default: true };
-  entries.push({ rel: manifest.name, name: manifest.name, size: manifestRead.file.size, mtime: manifestRead.file.lastModified, text: manifestRead.text, default: manifest.default || undefined });
+  entries.push({ rel: manifestRel || manifest.name, name: manifest.name, size: manifestRead.file.size, mtime: manifestRead.file.lastModified, text: manifestRead.text, default: manifest.default || undefined });
   let parsed = null;
   try { parsed = parseYaml(manifestRead.text || ""); } catch { /* buildBundle reports the error */ }
   const block = (parsed && typeof parsed.avica === "object" && parsed.avica) || {};

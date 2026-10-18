@@ -250,6 +250,7 @@ const P = {
   fold: '<path d="M9 6l6 6-6 6"/>',
   unfold: '<path d="M15 6l-6 6 6 6"/>',
   bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4zM10 21h4"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
 };
 
@@ -304,4 +305,23 @@ export function routeHash(view, project, target) {
 
 export function chooseTarget(targets, ...preferred) {
   return preferred.find((id) => targets.some((t) => t.id === id)) || targets[0]?.id || null;
+}
+
+/** Point the URL at `url`: a new history entry (Back/Forward step through it), or `replace` for normalization. */
+export function setRoute(url, { replace = false } = {}) {
+  if (location.hash === url) return false;
+  history[replace ? "replaceState" : "pushState"](null, "", url);
+  return true;
+}
+
+/** Typing target: global single-key and Ctrl/Cmd shortcuts stay out of it. */
+export function isEditable(el) {
+  return Boolean(el && (el.isContentEditable || el.closest?.("input:not([type=checkbox],[type=radio],[type=button],[type=submit]), textarea, select, [contenteditable]:not([contenteditable=false])")));
+}
+
+export const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgentData?.platform || navigator.platform || "");
+
+/** "Ctrl+Alt+N" as this platform writes it: ⌘⌥N on macOS. */
+export function keyLabel(combo, mac = MAC) {
+  return mac ? combo.replace(/Ctrl\+/g, "⌘").replace(/Alt\+/g, "⌥").replace(/Shift\+/g, "⇧") : combo;
 }

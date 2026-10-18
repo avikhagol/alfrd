@@ -59,6 +59,7 @@ export function openSettings(ctx, app) {
       : `<p class="muted">Project management is available when connected to an ALFRD server.</p>`,
     prefs: `<div class="set-prefs">
         <label class="check"><input type="checkbox" id="set-live" ${app.live.enabled ? "checked" : ""}> <span><b>Live updates</b><small>Follow the folder and open logs without Re-scan. ${liveNote} Paused while the tab is hidden.</small></span></label>
+        <label class="check"><input type="checkbox" id="set-chat" ${ctx.chatOn?.() ? "checked" : ""}> <span><b>Chat mode</b><small>Chat with the project's agents: the Chat section, the chat dock (Alt+Shift+A) and chat sessions' runs in Workflow. Off by default; remembered in this browser.</small></span></label>
         <label class="field"><span>Rows per page</span><select id="set-page" class="input sm">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
       </div>`,
     notify: notificationPanel(ctx),
@@ -70,8 +71,8 @@ export function openSettings(ctx, app) {
         <div><span>Mode</span><b>alfrd ${esc(sess.version || "")}</b><small>runtime ${sess.runtime_enabled ? "on" : "off"} · changes ${canWrite ? "allowed (this machine)" : "read-only"}</small></div>
         <div><span>Data</span><b>${esc(state.source)}</b></div>
       </div>
-      <div class="row gap wrap"><button class="btn sm danger" id="set-quit" ${sess.can_quit ? "" : "disabled"}>${icon("power")} Quit alfrd serve</button>
-        <span class="muted small">${sess.can_quit ? "Same as Ctrl+C in its terminal." : "Only from this machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>`
+      <div class="row gap wrap"><button class="btn sm" id="set-restart" ${sess.can_restart ? "" : "disabled"}>${icon("sync")} Restart</button><button class="btn sm danger" id="set-quit" ${sess.can_quit ? "" : "disabled"}>${icon("power")} Quit alfrd serve</button>
+        <span class="muted small">${sess.can_quit ? "Restart reloads code and plugins; runs continue. Quit is Ctrl+C in its terminal." : "Only from this machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>`
       : `<p class="muted">Browser-only mode. No ALFRD server is connected.</p><div class="set-facts"><div><span>Data</span><b>${esc(state.source)}</b></div></div>`,
   };
   ctx.modal(`
@@ -96,7 +97,13 @@ export function openSettings(ctx, app) {
     $("#set-create", root)?.addEventListener("click", () => { close(); app.newProject(); });
     $("#set-open", root)?.addEventListener("click", () => { close(); app.openProject(); });
     $("#set-quit", root)?.addEventListener("click", () => { close(); app.quitServer(); });
+    $("#set-restart", root)?.addEventListener("click", async ({ currentTarget: b }) => {
+      if (!confirm("Restart alfrd serve? Runs continue; this page reloads.")) return;
+      b.disabled = true;
+      try { await (await import("./plugin_jobs.js")).restartServer(); } catch (error) { ctx.toast(error.message, "warn"); b.disabled = false; }
+    });
     $("#set-live", root).addEventListener("change", (e) => app.setLive(e.target.checked));
+    $("#set-chat", root).addEventListener("change", (e) => { ctx.setChat(e.target.checked); ctx.toast(`Chat mode ${e.target.checked ? "on" : "off"}`, "ok"); });
     $("#set-page", root).addEventListener("change", (e) => { ctx.setPrefs({ pageSize: Number(e.target.value) }); ctx.update(); });
     $("#set-reset-ui", root).addEventListener("click", () => {
       resetUi();

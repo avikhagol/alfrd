@@ -64,7 +64,7 @@ commands, so you can always disable or remove a broken plugin.
 | `~/.local/share/alfrd/plugins/installed.json` | id, distribution, version, source, sha256 (local files), install time, owned distributions |
 | `~/.local/share/alfrd/plugins/.install.lock` | one install/remove/update at a time |
 | `~/.local/share/alfrd/themes/<id>/` | drop-in themes |
-| `~/.config/alfrd/plugins.json` | `disabled`, `theme`, `catalog_url`, `gui_install`, `plugin_actions`, `autostart` |
+| `~/.config/alfrd/plugins.json` | `disabled`, `theme`, `catalog_url`, `gui_install`, `plugin_actions`, `autostart`, `project_types` (global [project type](#project-types) overrides) |
 | `~/.config/alfrd/plugin-settings.json` | each plugin's settings, secrets included (mode 0600; never in `alfrd.yaml`) |
 | `~/.local/share/alfrd/plugins/services/<id>-<service>.log` | output of a plugin service started by `alfrd serve` (cut to 512 KiB past 1 MiB) |
 | `~/.local/share/alfrd/plugins/catalog.json` | validated catalog cache, normally valid for 24 hours |
@@ -147,6 +147,7 @@ Manifest fields (`alfrd.extensions.Plugin`, plugin API version `1`):
 | `check_project` | `check_project(root, values) -> (level, text)`: an explicit Studio project check; `level` is `ok`, `warn` or `fail`. Return safe plain text; `ValueError` messages may be shown, other exceptions show only their type. |
 | `step_hooks` | `StepHooks(before=None, after=None, timeout=30.0)`: called by the plan runner around each launched unit (see [Step hooks](#step-hooks)) |
 | `project_actions` | `ProjectAction(id, run, mutating=False, timeout=30.0)`: Studio calls on one project that return data or write project files (see [Project actions](#project-actions)) |
+| `project_types` | the project types the plugin is meant for, e.g. `["avica"]`; `None` (the default) means every type. Users can override it (see [Project types](#project-types)) |
 
 A panel kind registered by a plugin is accepted in `views.metadata`
 (see [template-views.md](template-views.md)) and may take its own keys; the
@@ -164,6 +165,48 @@ run checks. The callback receives the catalog-resolved root and saved settings;
 the client cannot supply a path or override credentials. The reply is `{level, text}`,
 with whitespace collapsed and text limited to 120 characters. Unlike Settings Test,
 the callback decides whether missing settings matter (an off mapping may need none).
+
+### Project types
+
+A project's type is its `template:` in `alfrd.yaml` (`basic`, `avica`, `agent-loop` or any
+custom name; an `avica:` block implies `avica`, and a manifest without either counts as
+`basic`). It is free text, read from the configuration, never from a fixed list.
+
+```python
+plugin = Plugin(id="potterish", version="1", project_types=["avica"])  # None (default): every type
+```
+
+Users decide where a plugin applies. The first rule that exists wins:
+
+1. **This project**, in its active `alfrd.yaml` (written through the history and the stale-file guard):
+
+   ```yaml
+   plugins:
+     potter: {enabled: false}                  # off in this project, whatever the types say
+     myplugin: {project_types: [avica, my-lab]} # or "all"; enabled: true turns it on regardless
+   ```
+2. **All projects**, in `plugins.json`: `"project_types": {"myplugin": ["avica"]}` (or `"all"`).
+3. **The plugin's default**, `Plugin.project_types` (and a browser `projectTypes`, see below).
+
+Plugins that declare nothing keep applying to every project type. Settings → Plugins
+shows, for the selected project, a muted **Not for <type> projects** badge on a plugin that
+doesn't apply, the reason and which rule decided it, and **Change where it applies…**
+(for all projects or for this project only).
+
+An inapplicable plugin contributes nothing to that project, and the server enforces it:
+its panels (listed or automatic) are left out of views, its project actions and project
+checks answer HTTP 403 with `reason: "not_applicable"` (before any plugin code runs), and
+the plan runner skips its step hooks for units of that project. In the browser its pages,
+Overview sections and actions, and palette commands are hidden. Services, settings, themes,
+viewers and converters are server-wide, not project-scoped, so they stay available.
+
+Routes (authentication, loopback and CSRF as for other plugin changes):
+
+| route | what |
+|---|---|
+| `GET /studio/plugins?project=<p>` | adds per plugin `available`, `unavailable_reason`, `applicability` (`source`: `default`/`global`/`project`, the effective `project_types`, `default`, `global`, `project`), plus `project_type`, `project_types_known`, `has_manifest` and `manifest_hash` |
+| `POST /studio/plugins/<id>/project-types` | `{"project_types": [..] \| "all" \| null}`: the global override (`null` = back to the default) |
+| `POST /studio/projects/<p>/plugins/<id>/applicability` | `{"enabled": bool \| null, "project_types": [..] \| "all" \| null, "base_hash"}`: this project's override in its active `alfrd.yaml`; `null` removes a key, an absent key keeps it; 409 when the file changed since `manifest_hash` |
 
 ### Automatic panels
 
@@ -504,7 +547,11 @@ function escapeText(text) {
 | `registerOverviewAction({id, order=100, render})` | Stable toolbar host after Export in server-mode Overview. `render(project, host, ctx)` runs on mount and scope changes; project is null for All projects. Preserve controls when updating scope. Errors are logged under Plugins without interrupting other mounts. |
 | `menu(anchor, items)` | Shell menu with keyboard navigation and Escape/focus return. Items have label, optional hint/disabled/icon and run; `"-"` adds a separator. Returns a function that closes the menu. |
 | `projectName(project)` | Display name for a project, falling back to its identifier. |
-| `registerProjectSection({id, title, order=100, render})` | Collapsible card after Latest run on the project home (also available for loop projects). `render(project, host, ctx)` writes DOM and may return a Promise; runs on mount and project changes. Ids use `[a-z0-9_-]+`; repeated ids replace registrations. Collapse is remembered per id. All projects has no sections. Errors stay in the section and are logged under Plugins. |
+| `registerPage({id, title, render, order=100, icon="metadata", projectTypes?})` | A page under **Plugins** in the sidebar, at `#/plugin/<id>?p=<project>`, rendered in the main area (also listed in the command palette as *Open <title>*). `render(box, page)` writes DOM into `box` and may return a Promise; `page` is `{project, projectType, signal, refresh()}`. `signal` aborts when the page is left or the project changes. The host shows the loading, not-found, *choose a project*, not-available (with the reason) and render-error (with Retry) states. Ids use `[a-z0-9_-]+`; a repeated id replaces the page. `projectTypes` acts as the plugin's default when no setting overrides it. Use pages for a plugin's own UI; keep Overview for short project summaries. |
+| `measurementSets(project)` | `GET /studio/projects/<p>/measurement-sets`: `{root, configured, artifacts, entries: [{path, name, artifact}], notes, truncated}` (see [Project files](#project-files)). |
+| `listFiles(project, path="")` | `GET /studio/projects/<p>/files?path=`: one folder of the project (see [Project files](#project-files)). |
+| `fileExplorer(box, {project, select(entry, listing), selectable?, selectLabel?, start?, label?})` | Mounts the host's project explorer (breadcrumbs, Up, keyboard-reachable buttons, empty and error states). `selectable` defaults to `.ms` entries; `select` gets the entry and the listing (`listing.root` is the absolute project folder). Resolves to `{load(path), destroy()}`. |
+| `registerProjectSection({id, title, order=100, render})` | Collapsible card after Latest run on the project home (also available for loop projects). For short summaries; a plugin's full UI belongs on a page. `render(project, host, ctx)` writes DOM and may return a Promise; runs on mount and project changes. Ids use `[a-z0-9_-]+`; repeated ids replace registrations. Collapse is remembered per id. All projects has no sections. Errors stay in the section and are logged under Plugins. |
 | `action(project, pluginId, actionId, payload={})` | POST a project action; resolves to its `data` or throws its safe error. HTTP errors retain the host's access, CSRF and policy handling. |
 | `dialog({title, body, actions, wide=false})` | `body` must be an HTMLElement (appended directly); `actions` are `{label, tone, run(handle)}`. Tones: `primary`, `danger`, default. Returns `{close, root, footer, setDirty, setBusy}`. Async actions disable footer buttons and block closure; failures toast. Mark a saved draft with `setDirty(false)` before `close()`. A close requested during an action runs when it finishes. Escape/backdrop/Close ask before discarding dirty edits. |
 | `confirm(text, {tone="default", confirmLabel="Confirm", cancelLabel="Cancel"}={})` | Resolves to a boolean. In an API dialog, temporarily replaces its footer with a confirmation strip and focuses Cancel. Escape/backdrop cancels that choice. Otherwise uses a small modal; no stacked modals. Text is inserted as textContent. |
@@ -514,6 +561,27 @@ function escapeText(text) {
 | `targets(project)` | Target names already loaded in the Studio for that project (no request); an empty list when none are loaded. |
 | `sanitize(html)` | Synchronous DOMPurify HTML sanitization; use it before inserting untrusted HTML. No sandbox is created. |
 | `convert(path, to="pdf", project?)` | Returns a Promise of a Blob; defaults to the selected project. Revoke object URLs you create when their content closes. |
+
+Each plugin gets its own API object, so its pages, sections, Overview actions and commands
+follow its [project types](#project-types) for the selected project.
+
+### Project files
+
+`GET /studio/projects/<p>/measurement-sets` lists the `.ms` folders the project's active
+`alfrd.yaml` (merged with its template) declares: every `artifacts:` entry with
+`kind: directory` whose `path_pattern` or `fallback_patterns` end in `.ms` (the packaged
+default has `measurement_sets: {workdir}/**/*.ms`). `**` matches any number of folders;
+placeholders follow the other artifact patterns. There is no extra configuration field.
+`configured: false` means no such entry exists, and `notes` explain empty results (for
+example a `{workdir}` pattern in a project without work folders). At most 500 entries.
+
+`GET /studio/projects/<p>/files?path=<rel>` lists one folder below the project root, for
+projects without such a declaration. Entries are `{name, path, kind, size?, link?, outside?,
+browsable}` with `kind` `dir`, `ms`, `file`, `link` or `broken`. It never leaves the root:
+`..` and absolute paths are refused (400), a symlink that resolves outside the project is
+listed as `kind: "link", outside: true` but never followed (403 when asked for), `.ms` and
+`.flagversions` folders are leaves (400 when asked for), a missing folder is 404, and hidden
+names are not listed. At most 2,000 entries per folder (`truncated`).
 
 Viewer files contain `project`, `path`, `name`, `mime`, `url`, and `text` for text
 viewers. Extensions are tried before exact MIME types, then MIME wildcards.

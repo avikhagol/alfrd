@@ -10,6 +10,7 @@ from __future__ import annotations
 from flask import jsonify, request
 
 from alfrd import targets_csv as tc
+from alfrd.runtime import plan_csv as pc
 from alfrd.execution import ExecutionError
 
 from .studio import _json_error, _poke, _project_root, studio_api
@@ -74,6 +75,59 @@ def targets_save(project_name: str):
     _poke(project_name)
     return jsonify(spec=spec.to_dict(), rows=result["rows"],
                    **{k: result[k] for k in ("added", "updated", "unchanged", "removed")})
+
+
+def _creates_tasks(root) -> bool:
+    """True when new targets are task folders (folder-based agent loop: every handoff has ``{target}``)."""
+    from alfrd.execution import load_task_execution
+
+    steps = load_task_execution(root, None).steps
+    return bool(steps) and all(s.iterations and s.handoff and all("{target}" in v for v in s.handoff.values())
+                               for s in steps)
+
+
+@studio_api.get("/studio/projects/<project_name>/targets/new")
+def targets_new_info(project_name: str):
+    """What the header's New target form creates here: a task folder (``task``) or a targets-file row."""
+    try:
+        root = _project_root(project_name)
+        kind = "task" if _creates_tasks(root) else "target"
+        spec = None if kind == "task" else tc.load_spec(root)
+    except (ExecutionError, ValueError) as error:
+        return _json_error(error, 400)
+    except OSError as error:
+        return _json_error(error, 500)
+    return jsonify(kind=kind, needs_task=kind == "task", file="<task>/task.md" if kind == "task" else spec.rel)
+
+
+@studio_api.post("/studio/projects/<project_name>/targets/add")
+def targets_add(project_name: str):
+    """Create one target from the header picker (``{name, code?, task?}``).
+
+    A folder-based agent-loop project gets a task folder and a plan row (the
+    ``POST …/tasks`` route); any other project gets a row in its targets file.
+    An existing name is a 409, so a double submit cannot add it twice.
+    """
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    try:
+        if "/" in name or "\\" in name:
+            raise ValueError("target names cannot contain / or \\")
+        root = _project_root(project_name)
+        if _creates_tasks(root):
+            from .studio_plans import task_create
+            return task_create(project_name)
+        spec = tc.load_spec(root)
+        name = pc.check_target(name)
+        if any(r["target"] == name for r in tc.read(spec)["rows"]):
+            return _json_error(ValueError(f"target {name!r} already exists in {spec.rel}"), 409)
+        tc.add(spec, name, code=str(payload.get("code") or ""))
+    except (ExecutionError, ValueError) as error:
+        return _json_error(error, 400)
+    except OSError as error:
+        return _json_error(error, 500)
+    _poke(project_name)
+    return jsonify(name=name, kind="target", file=spec.rel), 201
 
 
 @studio_api.post("/studio/projects/<project_name>/targets/remove")

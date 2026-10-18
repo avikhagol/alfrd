@@ -68,3 +68,8 @@ export function isDirty(project) { return meta(project).dirty.size > 0; }
 /** Forget one project's workspace entirely (after removal). */
 export function dropWorkspace(project) { spaces.delete(keyOf(project)); }
 
+
+/** Every unsaved edit as [project, what] ("settings", "workflow", "inspector"…), for leave warnings. */
+export function unsaved() {
+  return [...spaces].flatMap(([k, s]) => [...s.meta.dirty].map((what) => [k, what]));
+}

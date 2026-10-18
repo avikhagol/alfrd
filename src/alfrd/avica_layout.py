@@ -101,20 +101,20 @@ def load_yaml_cached(path: str | Path) -> Any:
 
 
 def manifest_avica(root: str | Path) -> dict[str, Any]:
-    """Return the optional ``avica:`` block of ``alfrd.yaml`` (or ``.alfrd.yaml``)."""
+    """Return the optional ``avica:`` block of the active manifest (see alfrd.manifest_paths)."""
     import yaml
 
     from alfrd.manifest_default import default_manifest_data
+    from alfrd.manifest_paths import project_manifest
 
-    for name in ("alfrd.yaml", ".alfrd.yaml"):
-        path = Path(root) / name
-        if path.is_file():
-            try:
-                data = load_yaml_cached(path) or {}
-            except (yaml.YAMLError, OSError):
-                return {}
-            block = data.get("avica") if isinstance(data, dict) else None
-            return dict(block) if isinstance(block, dict) else {}
+    path = project_manifest(root)
+    if path is not None:
+        try:
+            data = load_yaml_cached(path) or {}
+        except (yaml.YAMLError, OSError):
+            return {}
+        block = data.get("avica") if isinstance(data, dict) else None
+        return dict(block) if isinstance(block, dict) else {}
     block = default_manifest_data(root).get("avica")  # no local alfrd.yaml: the default one
     return dict(block) if isinstance(block, dict) else {}
 
@@ -908,7 +908,9 @@ def collect_studio_files(root: str | Path, log_tail: int = 64 * 1024, read: bool
     base = Path(root).resolve()
     from alfrd.manifest_default import default_manifest_path, default_manifest_text
 
-    manifest = next((base / n for n in ("alfrd.yaml", ".alfrd.yaml") if (base / n).is_file()), None)
+    from alfrd.manifest_paths import project_manifest
+
+    manifest = project_manifest(base)
     default_path = default_manifest_path() if manifest is None else None
     if manifest is None and default_path is None:
         raise FileNotFoundError(f"no alfrd.yaml in {base} and no default alfrd.yaml")

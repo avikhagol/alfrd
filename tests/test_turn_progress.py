@@ -9,6 +9,7 @@ from test_agent_loop import project, service  # noqa: F401
 from alfrd.agent_loop import progress_file, retry_note
 from alfrd.execution import ExecutionError, load_execution
 from alfrd.runtime import scheduler
+from alfrd.manifest_paths import project_manifest
 
 
 def prompts(root):
@@ -55,13 +56,13 @@ def test_a_retried_turn_is_told_about_the_failed_attempt(project, monkeypatch):
 
 
 def test_progress_can_be_switched_off_and_is_checked(project):
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     data["loop"]["progress"] = False
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    (project_manifest(project)).write_text(yaml.safe_dump(data, sort_keys=False))
     folder = scheduler.create_plan(project)
     scheduler.Runner(project, folder.id).run()
     assert "PROGRESS" not in prompts(project)[0]
     data["loop"]["progress"] = "../outside.md"
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    (project_manifest(project)).write_text(yaml.safe_dump(data, sort_keys=False))
     with pytest.raises(ExecutionError, match="loop.progress"):
         load_execution(project)

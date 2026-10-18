@@ -190,7 +190,25 @@ class PlanDir:
     def set_control(self, action: str, **extra: Any) -> None:
         if action not in ("run", "pause", "cancel"):
             raise ExecutionError(f"unknown control action {action!r}")
-        _write_json(self.control_file, {"action": action, "at": now_iso(), **extra})
+        stops = self.stop_requests()  # pending single-unit stops survive a pause/resume
+        _write_json(self.control_file, {"action": action, "at": now_iso(), **({"stop_units": stops} if stops else {}), **extra})
+
+    def stop_requests(self) -> list[str]:
+        """Units a person asked to stop (``control.json`` ``stop_units``); the runner handles them."""
+        data = _read_json(self.control_file, {}) or {}
+        units = data.get("stop_units") if isinstance(data, dict) else None
+        return [str(u) for u in units] if isinstance(units, list) else []
+
+    def set_stop_requests(self, units: Iterable[str]) -> None:
+        data = _read_json(self.control_file, {}) or {}
+        data = data if isinstance(data, dict) else {}
+        data.setdefault("action", "run")
+        listed = list(dict.fromkeys(str(u) for u in units))
+        if listed:
+            data["stop_units"] = listed
+        else:
+            data.pop("stop_units", None)
+        _write_json(self.control_file, data)
 
     @property
     def overrides_file(self) -> Path:
@@ -236,17 +254,42 @@ def plans_root(root: str | Path) -> Path:
     return Path(root).resolve() / PLANS_DIR
 
 
-def list_plans(root: str | Path) -> list[dict[str, Any]]:
+def _plan_records(root: str | Path) -> list[dict[str, Any]]:
     base = plans_root(root)
     if not base.is_dir():
         return []
-    out = []
-    for folder in base.iterdir():
-        data = _read_json(folder / "plan.json")
-        if isinstance(data, dict):
-            out.append(data)
+    out = [data for data in (_read_json(folder / "plan.json") for folder in base.iterdir()) if isinstance(data, dict)]
     # created_ns orders plans made within the same second ("created" has 1 s resolution).
     return sorted(out, key=lambda p: (str(p.get("created") or ""), int(p.get("created_ns") or 0)), reverse=True)
+
+
+def list_plans(root: str | Path, *, include_chat: bool = False) -> list[dict[str, Any]]:
+    """Plans of a project, newest first. Chat sessions' plans (``plan["chat"]``, see alfrd.chat)
+    are left out unless ``include_chat``: they are not workflow runs."""
+    return [p for p in _plan_records(root) if include_chat or not p.get("chat")]
+
+
+def chat_plans(root: str | Path) -> list[dict[str, Any]]:
+    """Only the chat sessions' plans (see :func:`list_plans`)."""
+    return [p for p in _plan_records(root) if p.get("chat")]
+
+
+def chat_title(root: str | Path, plan: Mapping[str, Any]) -> str | None:
+    """A chat plan's session title (``.alfrd/chat/<session>/session.json``), else None."""
+    sid = str((plan.get("chat") or {}).get("session") or "")
+    if not sid or not re.fullmatch(r"[A-Za-z0-9_.-]+", sid):
+        return None
+    data = _read_json(Path(root).resolve() / ".alfrd" / "chat" / sid / "session.json", {})
+    return str(data.get("title") or "") or None if isinstance(data, dict) else None
+
+
+def plan_config(root: str | Path, plan: Mapping[str, Any]) -> ExecutionConfig:
+    """The execution config a plan runs with: the workflow's, or its chat session's (alfrd.chat)."""
+    if plan.get("chat"):
+        from alfrd import chat
+
+        return chat.execution_config(root, plan["chat"]["session"])
+    return load_execution(root, iterations=(plan.get("loop") or {}).get("iterations"))
 
 
 def active_plan(root: str | Path, csv_file: str | Path | None = None, target: str | None = None) -> dict[str, Any] | None:
@@ -349,6 +392,66 @@ def serialize_settings(plan: Mapping[str, Any], cfg: ExecutionConfig | None = No
         return list(plan.get("serialize_on") or []), str(plan.get("serialize_match") or "all")
     settings = cfg.settings if cfg is not None else {}
     return list(settings.get("serialize_on") or []), str(settings.get("serialize_match") or "all")
+
+
+def dependency_state(table: pc.PlanTable, row: pc.PlanRow) -> tuple[str, list[str]]:
+    """``("ready" | "waiting" | "failed", keys)`` for a row's ``depends_on`` column.
+
+    A dependency is done when every cell of its row is done or skipped; it failed when
+    a cell is failed, blocked or cancelled. Unknown names wait (a row may be added later).
+    """
+    deps = pc.dependencies(row)
+    if not deps:
+        return "ready", []
+    by_key = {r.key: r for r in table.rows}
+    by_target: dict[str, list[pc.PlanRow]] = {}
+    for r in table.rows:
+        by_target.setdefault(r.target, []).append(r)
+    waiting: list[str] = []
+    failed: list[str] = []
+    for name in deps:
+        rows = [by_key[name]] if name in by_key else by_target.get(name, [])
+        if not rows:
+            waiting.append(name)
+        for other in rows:
+            cells = [other.cell(s) for s in table.steps]
+            if any(c in (pc.FAILED, pc.BLOCKED, pc.CANCELLED) for c in cells):
+                failed.append(other.key)
+            elif not all(c in (pc.DONE, "skip") for c in cells):
+                waiting.append(other.key)
+    if failed:
+        return "failed", failed
+    return ("waiting", waiting) if waiting else ("ready", [])
+
+
+def depends_hold(table: pc.PlanTable) -> Callable[[pc.PlanRow, "UnitSpec"], dict[str, Any] | None]:
+    """A ``pick_rows`` hold: rows whose dependencies are not done wait (kind ``depends``) and take no slot."""
+    def hold(row: pc.PlanRow, spec: UnitSpec) -> dict[str, Any] | None:
+        state, keys = dependency_state(table, row)
+        if state == "ready":
+            return None
+        return {"row": row.key, "target": row.target, "code": row.code, "kind": "depends", "depends_on": keys,
+                "blocked_by": keys[0] if keys else None,
+                "reason": f"{'blocked' if state == 'failed' else 'waiting'}: depends on {', '.join(keys)}"}
+    return hold
+
+
+def blocked_dependents(table: pc.PlanTable) -> dict[tuple[str, str], str]:
+    """``todo`` cells of rows whose dependencies failed, transitively → ``blocked``."""
+    cells: dict[tuple[str, str], str] = {}
+    changed = True
+    while changed:
+        changed = False
+        for row in table.rows:
+            todo = [s for s in table.steps if row.cell(s) == pc.TODO and (row.key, s) not in cells]
+            if not todo or not pc.dependencies(row):
+                continue
+            if dependency_state(table, row)[0] == "failed":
+                for step in todo:
+                    cells[(row.key, step)] = pc.BLOCKED
+                    row.values[step] = pc.BLOCKED  # in memory only, so dependents of this row follow
+                changed = True
+    return cells
 
 
 @dataclass
@@ -944,6 +1047,8 @@ def control(root: str | Path, plan_id: str, action: str, *, retry_failed: bool =
     folder = PlanDir(Path(root).resolve(), plan_id)
     plan = folder.load()
     if action == "resume":
+        if retry_failed and plan.get("chat"):
+            raise ExecutionError("a chat session retries its tasks from the chat (Retry on the task)")
         if retry_failed:
             reset_failed(load_execution(folder.root), folder.csv_path(plan))
         folder.set_control("run")
@@ -967,6 +1072,33 @@ def control(root: str | Path, plan_id: str, action: str, *, retry_failed: bool =
                 folder.save(plan)
         return folder.load()
     raise ExecutionError(f"unknown action {action!r}")
+
+
+_UNIT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def stop_unit(root: str | Path, plan_id: str, unit_id: str, *, spawn: bool = True) -> dict[str, Any]:
+    """Stop one running command (SIGTERM to its process group, SIGKILL after ``kill_grace``).
+
+    The request goes through the plan's control file; the runner signals the unit and
+    finalizes it as ``cancelled`` (its cell becomes ``cancelled``, so that target's later
+    steps wait; retry it through the cell). Other units and the plan keep running. With no
+    live runner, one is started to adopt the command and carry out the stop.
+    """
+    if not _UNIT_ID.fullmatch(unit_id or ""):
+        raise ValueError("bad unit id")
+    folder = PlanDir(Path(root).resolve(), plan_id)
+    folder.load()
+    unit = _read_json(folder.units_dir / f"{unit_id}.json")
+    if not isinstance(unit, dict):
+        raise ExecutionError(f"unit {unit_id!r} not found in plan {plan_id!r}")
+    if unit.get("status") != "running":
+        raise ValueError(f"unit {unit_id} is not running ({unit.get('status') or 'unknown'})")
+    with pc.locked(folder.path / "control.lock"):
+        folder.set_stop_requests([*folder.stop_requests(), unit_id])
+    if not _runner_alive_settled(folder) and spawn:
+        spawn_runner(folder)
+    return unit
 
 
 # ---------------------------------------------------------------------------
@@ -1154,7 +1286,7 @@ class Runner:
         key = (str(path), path.stat().st_mtime_ns if path and path.exists() else None,
                overrides.stat().st_mtime_ns if overrides.exists() else None)
         if self._cfg is None or key != self._cfg_key:
-            cfg = load_execution(self.folder.root, iterations=self.plan.get("loop", {}).get("iterations"))
+            cfg = plan_config(self.folder.root, self.plan)
             self._cfg, self._cfg_key = apply_overrides(cfg, self.folder.overrides()), key
         return self._cfg
 
@@ -1303,6 +1435,10 @@ class Runner:
         self.event("plan.started", f"runner {os.getpid()} on {self.host} started", pid=os.getpid(), host=self.host)
         self.log(f"plan {self.folder.id}: {self.csv_file} mode={self.plan['mode']} concurrency={self.plan['concurrency']}")
         self.adopt()
+        if self.plan.get("chat"):
+            from alfrd import chat
+
+            chat.recover(self)  # results a previous runner finalized but did not hand to the chat
         beat = float(self.plan.get("heartbeat") or 10)
         last_beat = 0.0
         final = "finished"
@@ -1342,6 +1478,11 @@ class Runner:
             else:
                 started = self.schedule()
                 if not self.live and not started and not self.delayed:
+                    if self.plan.get("chat") and not self.stop_new:
+                        from alfrd import chat
+
+                        if not chat.settle(self):
+                            continue  # a chat message added work meanwhile
                     final = "failed" if self.stop_new else "finished"
                     break
             self._nap()
@@ -1437,11 +1578,29 @@ class Runner:
                 return 0
             steps = [s for s in table.steps if any(r.cell(s) == pc.TODO for r in rows)]
             return self.launch(UnitSpec(rows, steps, mode), table)
+        if self.plan.get("chat"):
+            from alfrd import chat
+
+            chat.before_schedule(self)  # request budgets (cost, wall clock): stop and flag
+            table = self.table()
+        blocked = blocked_dependents(table)
+        if blocked:
+            self.set_cells(blocked, only_if={k: {pc.TODO} for k in blocked})
+            self.log(f"blocked (a dependency failed): {', '.join(sorted({k for k, _ in blocked}))}")
+            if self.plan.get("chat"):
+                from alfrd import chat
+
+                chat.after_blocked(self, sorted({k for k, _ in blocked}))
+            table = self.table()
         names, match = serialize_settings(self.plan, self.cfg)
         units: list[dict[str, Any]] | None = None
+        waits_on = depends_hold(table)
 
         def hold(row: pc.PlanRow, spec: UnitSpec) -> dict[str, Any] | None:
             nonlocal units
+            held = waits_on(row, spec)
+            if held is not None:
+                return held
             if spec.mode != "step" or not (self.cfg.step(spec.steps[0]).after or self.cfg.step(spec.steps[0]).at):
                 return None
             units = self.folder.units() if units is None else units
@@ -1457,7 +1616,7 @@ class Runner:
             names=names, match=match, base=self.cfg.cwd, running_rows=self._busy_rows(),
             started_rows=self.started_rows, locks={self._lock_key(l.unit) for l in self.live.values()} - {None}, hold=hold,
         )
-        if not picked.start and not self.live and any(w.get("kind") != "delay" for w in picked.waiting):
+        if not picked.start and not self.live and any(w.get("kind") not in ("delay", "depends") for w in picked.waiting):
             # Safety net: nothing runs, yet rows wait on each other. Release the holds rather
             # than end the plan with cells still to do.
             self.log("rows wait on each other with nothing running; releasing their holds")
@@ -1596,7 +1755,13 @@ class Runner:
             **self._lineage(spec),
         }
         cells_rows = spec.rows
+        chat_model = None
         try:
+            if self.plan.get("chat"):
+                from alfrd import chat
+
+                # the task's own prompt: task context + artifact refs only; an orchestrator call's model
+                chat_model = chat.prepare_launch(self, spec, unit)
             step = self.cfg.step(spec.steps[0]) if spec.mode == "step" else None
             values = values_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
             if step and step.handoff:
@@ -1616,6 +1781,14 @@ class Runner:
                 unit.update(agent=step.entrypoint or step.base_step, agent_step=True, requested_model=step.model,
                             adapter=step.adapter, manual=step.manual)
             argv, env, timeout = command_for(self.cfg, spec, {**self.plan, "unit_id": unit["id"]}, self.csv_file)
+            row_limit = pc.number(row, pc.SECONDS_COLUMN) if spec.mode != "batch" else None
+            if row_limit:  # a row's own limit (max_seconds column) caps the step's
+                timeout = min(timeout, row_limit) if timeout else row_limit
+            if chat_model and step:
+                from alfrd.agent_io import adapter_for, agent_command
+
+                argv = list(agent_command(argv, chat_model, adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
+                unit.update(requested_model=chat_model)
             fallback = self._fallback_model(step, unit) if step else None
             if fallback:
                 from alfrd.agent_io import adapter_for, agent_command
@@ -1733,6 +1906,10 @@ class Runner:
         if attempt > 1:
             self.event("turn.retrying", history=False, unit=unit, attempt=attempt, retry_of=unit.get("retry_of"))
         self.event("turn.started", history=False, unit=unit, steps=list(spec.steps), attempt=attempt)
+        if self.plan.get("chat"):
+            from alfrd import chat
+
+            chat.on_launched(self, unit)
         return 1
 
     def _workdir_path(self, spec: UnitSpec) -> str | None:
@@ -1836,7 +2013,21 @@ class Runner:
             self.event("turn.idle", history=False, unit=unit, quiet_for=quiet_for)
             live.idle_activity = latest
 
+    def handle_stop_requests(self) -> None:
+        """Stop the units listed in ``control.json`` ``stop_units`` (see :func:`stop_unit`)."""
+        asked = self.folder.stop_requests()
+        if not asked:
+            return
+        for unit_id in asked:
+            live = self.live.get(unit_id)
+            if live is not None and not live.killed_at:
+                self.kill(live, "cancelled")  # finalize() reports it as a cancelled turn.finished event
+        with pc.locked(self.folder.path / "control.lock"):
+            # Keep only requests for units this runner does not know yet (e.g. still being adopted).
+            self.folder.set_stop_requests(u for u in self.folder.stop_requests() if u not in asked)
+
     def poll(self) -> None:
+        self.handle_stop_requests()
         for unit_id, live in list(self.live.items()):
             self.agent_metadata(live.unit)
             alive = self._alive(live)
@@ -2109,11 +2300,20 @@ class Runner:
                 failed_step = None
                 self.event("turn.fallback_model", f"{unit['id']}: failed on its model; next attempt uses a fallback model",
                            unit=unit, next_attempt=True)
+        if status == "failed" and failed_step and self._retry(unit, reason):
+            failed_step = None  # the cell is todo again: nothing is blocked
         if isinstance(exit_data, dict) and isinstance(exit_data.get("usage"), dict):
             unit["usage"] = exit_data["usage"]  # peak memory, CPU s, cores, I/O, wall (alfrd.runtime.usage)
         if adopted:
             unit["note"] = "finalized after a runner restart"
+        warn = self.cfg.settings.get("warn_turn_cost_usd")
+        cost = unit.get("total_cost_usd")
+        if warn and isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > warn:
+            unit["cost_warning"] = {"limit": "warn_turn_cost_usd", "value": cost, "bound": warn}
         self.folder.save_unit(unit)
+        if unit.get("cost_warning"):
+            self.event("budget.warning", f"{unit['id']}: cost ${cost:.4f} > warning ${warn}", history=False, unit=unit,
+                       limit="warn_turn_cost_usd", value=cost, bound=warn)
         self.log(f"{unit['id']}: {status} (exit {exit_code})")
         self.event("turn.failed" if status == "failed" else "turn.finished", history=False, unit=unit, status=status,
                    exit_code=exit_code, error=error, outcome=unit.get("outcome"), adopted=adopted)
@@ -2121,6 +2321,35 @@ class Runner:
         if status == "failed" and failed_step:
             rows = [r for r in (self.table().row(k) for k in unit.get("rows") or [unit["row"]]) if r]
             self.after_failure(rows, failed_step)
+        if self.plan.get("chat"):
+            from alfrd import chat
+
+            chat.on_finalized(self, unit)
+
+    def _retry(self, unit: dict[str, Any], reason: str | None) -> bool:
+        """Bounded automatic retry of a failed step (the row's ``max_retries`` column); True when queued again.
+
+        Not for agent-loop turns (they have their own retry and fallback rules), a cancel or a budget stop.
+        """
+        if unit.get("mode") != "step" or unit.get("handoff") or str(reason or "").startswith(("cancelled", "budget")):
+            return False
+        keys = list(unit.get("rows") or [unit["row"]])
+        table = self.table()
+        rows = [r for r in (table.row(k) for k in keys) if r]
+        allowed = max((pc.number(r, pc.RETRIES_COLUMN) or 0 for r in rows), default=0)
+        attempt = int(unit.get("attempt_number") or 1)
+        if attempt > int(allowed):
+            return False
+        step = unit["steps"][0]
+        retry = {(k, step): pc.TODO for k in keys}
+        self.set_cells(retry, only_if={k: {pc.FAILED} for k in retry})
+        later = {(k, s): pc.TODO for k in keys for s in unit["steps"][1:]}
+        if later:
+            self.set_cells(later, only_if={k: {pc.BLOCKED} for k in later})
+        unit["retry_scheduled"] = True
+        self.folder.save_unit(unit)
+        self.log(f"{unit['id']}: failed; retry {attempt} of {int(allowed)} queued")
+        return True
 
     def _fallback_eligible(self, unit: Mapping[str, Any], exit_code: int | None, reason: str | None,
                            outcome: tuple[str | None, str | None]) -> bool:
@@ -2188,7 +2417,7 @@ def reconcile(root: str | Path, *, spawn: bool = True) -> list[dict[str, Any]]:
     """
     base = Path(root).resolve()
     actions = []
-    for plan in list_plans(base):
+    for plan in list_plans(base) + chat_plans(base):
         if plan.get("status") not in ACTIVE:
             continue
         folder = PlanDir(base, plan["id"])
@@ -2279,14 +2508,16 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
     selected = "id" if plan_id is not None else "default"
     if plan_id is None:
         if not plans:
-            return {"plan": None, "plans": [], "selected": selected}
+            return {"plan": None, "plans": [], "chat_plans": chat_runs(base), "selected": selected}
         plan_id = default_plan_id(base, plans, activity)
     folder = PlanDir(base, plan_id)
     plan = folder.load()
     all_units = folder.units()
     waiting: list[dict[str, Any]] = []
+    warn_turn = None
     try:
-        cfg = load_execution(base, iterations=plan.get("loop", {}).get("iterations"))
+        cfg = plan_config(base, plan)
+        warn_turn = cfg.settings.get("warn_turn_cost_usd")
         parsed = table_for(cfg, folder.csv_path(plan), plan.get("steps"))
         if plan.get("targets"):
             parsed.rows = [r for r in parsed.rows if r.target in plan["targets"]]
@@ -2306,7 +2537,10 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
     return {
         "loop": loop_status(plan, all_units),
         "agent_totals": agent_totals(all_units),
-        "plan": plan,
+        # execution.warn_turn_cost_usd and the turns that cost more (budget.warning)
+        "cost_warnings": {"warn_turn_cost_usd": warn_turn,
+                          "units": [u["id"] for u in all_units if u.get("cost_warning")]},
+        "plan": {**plan, "title": chat_title(base, plan)} if plan.get("chat") else plan,
         "control": folder.control(),
         "runner": runner,
         "table": table,
@@ -2321,8 +2555,21 @@ def plan_status(root: str | Path, plan_id: str | None = None, *, units: int = 20
                    **(activity.get(p["id"]) or {"working": False, "phase": p.get("status"), "turn": None,
                                                 "turns": None, "agent": None})}
                   for p in _listed(plans, plan_id)],
+        "chat_plans": chat_runs(base),
         "selected": selected,
     }
+
+
+def chat_runs(root: str | Path, limit: int = 20) -> list[dict[str, Any]]:
+    """Chat sessions' plans for run pickers (newest ``limit`` plus active ones): never workflow runs."""
+    out = []
+    for i, p in enumerate(chat_plans(root)):
+        if i >= limit and p.get("status") not in ACTIVE:
+            continue
+        out.append({"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"),
+                    "run_kind": "chat", "chat": p.get("chat"), "title": chat_title(root, p),
+                    **plan_activity(root, p)})
+    return out
 
 
 def _listed(plans: Sequence[Mapping[str, Any]], plan_id: str, limit: int = 20) -> list[Mapping[str, Any]]:
@@ -2344,7 +2591,8 @@ def waiting_rows(plan: Mapping[str, Any], table: pc.PlanTable, units: Sequence[M
     picked = pick_rows(table, mode=str(plan.get("mode") or "step"), on_failure=str(plan.get("on_failure") or "stop_target"),
                        limit=limit, free=max(0, limit - len(running)), names=names, match=match, base=cfg.cwd,
                        running_rows={k for u in running for k in (u.get("rows") or [u.get("row")])},
-                       started_rows={k for u in units for k in (u.get("rows") or [u.get("row")]) if k}, locks=locks)
+                       started_rows={k for u in units for k in (u.get("rows") or [u.get("row")]) if k}, locks=locks,
+                       hold=depends_hold(table))
     return picked.waiting
 
 
@@ -2388,8 +2636,8 @@ def queue(table: Mapping[str, Any], durations: Mapping[str, float], concurrency:
 
 
 __all__ = [
-    "PlanDir", "Runner", "active_plan", "add_row", "conflict_groups", "control", "create_plan", "list_plans",
-    "pick_rows", "plan_status", "preview", "reconcile", "reset_failed", "resolve_csv", "spawn_runner", "step_durations", "verify_steps",
+    "PlanDir", "Runner", "active_plan", "add_row", "chat_plans", "chat_runs", "chat_title", "conflict_groups", "control", "create_plan", "list_plans",
+    "pick_rows", "plan_config", "plan_status", "preview", "reconcile", "reset_failed", "resolve_csv", "spawn_runner", "step_durations", "verify_steps",
 ]
 
 

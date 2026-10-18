@@ -1,4 +1,6 @@
 // Project-home slots shared by the overview and the full-trust plugin API.
+// ctx.pluginApplies (set by plugin_pages.js) hides contributions of plugins that don't apply to the project.
+const off = (ctx, spec, project) => ctx.pluginApplies?.(spec.plugin, spec.projectTypes, project) === false;
 const sections = new Map();
 const actions = new Map();
 const actionMounts = new WeakMap();
@@ -22,6 +24,7 @@ export function renderOverviewActions(box, ctx) {
   const project = ctx.state.selectedProject === "all" ? null : ctx.state.selectedProject;
   for (const spec of [...actions.values()].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))) {
     let entry = cache.get(spec.id);
+    if (off(ctx, spec, project)) { entry?.host.remove(); cache.delete(spec.id); continue; }
     if (!entry || entry.spec !== spec) {
       const host = document.createElement("span");
       host.dataset.pluginAction = spec.id;
@@ -58,6 +61,7 @@ export function renderProjectSections(box, project, ctx) {
   }
   for (const spec of [...sections.values()].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))) {
     let entry = cache.nodes.get(spec.id);
+    if (off(ctx, spec, project)) { entry?.section.remove(); cache.nodes.delete(spec.id); continue; }
     if (!entry || entry.spec !== spec) {
       const section = document.createElement("section");
       section.className = "card setup-card plug-section";

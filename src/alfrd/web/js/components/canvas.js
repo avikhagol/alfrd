@@ -6,21 +6,34 @@
 // views show its progress. Without a server the old DAG *simulation* remains:
 // it only animates the graph in this browser and never executes anything.
 
-import { $, $$, on, esc, icon, short, hms, elapsed, storage, loadUi, saveUi } from "../utils/dom.js";
+import { $, $$, on, esc, icon, short, hms, elapsed, storage, loadUi, saveUi, isEditable, keyLabel } from "../utils/dom.js";
 import { STEP_STATUS } from "../data/model.js";
 import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
 import { logItem, logForTarget, projectLogs, zoomablePre } from "./logview.js";
 import { scoped } from "../data/workspace.js";
-import { RUN_STATUS, CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, renderSchedule, runTargets, usageButton } from "./plans.js";
+import { RUN_STATUS, CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, releasePlanPin, renderSchedule, runTargets, usageButton, withChatRuns } from "./plans.js";
 
 let wfe = null; // workflow_editor.js, loaded on first use
 const loadEditor = () => import("./workflow_editor.js").then((m) => (wfe = m));
 const canEditWf = (ctx, p) => p && ctx.state.trees?.[p]?.manifestText != null;
+let ops = null; // canvas_ops.js: context menus, connect, step configuration (loaded on first use)
+const loadOps = () => import("./canvas_ops.js").then((m) => (ops = m));
+const COMPACT = "ui:shell.v2.compact";
+/** Compact workflow mode: header and sidebar stay, the main area shows only the canvas. */
+export const compact = () => storage.get(COMPACT, false) === true;
+document.body?.classList.toggle("wf-compact", compact());
+export function setCompact(ctx, on = !compact()) {
+  storage.set(COMPACT, on); // at once: a reload right after keeps it
+  document.body.classList.toggle("wf-compact", on);
+  ctx.update();
+  requestAnimationFrame(() => { const el = $("#view-workflow"); if (el) drawViewport(el); });
+}
+const mode = () => (compact() ? "graph" : ui.mode); // compact shows the graph; the saved mode is kept
 
 const W = 1040;
 const GAP = 32;
-const NODE_H = 128;
+export const NODE_H = 128;
 const BANNER_H = 46;
 const STAGE_GAP = 40;
 
@@ -113,9 +126,12 @@ function computeLayout(ctx) {
   const wf = wfOf(ctx);
   const key = `layout:${wf.name}:${wf.steps.map((s) => s.key).join(",")}`;
   if (ui.layoutKey !== key || !ui.layoutLoaded) {
-    if (ui.layoutKey !== key) ui.fitted = false; // a different workflow: fit once
+    const same = ui.layoutKey?.startsWith(`layout:${wf.name}:`) && ui.layoutLoaded;
+    if (!same) ui.fitted = false; // a different workflow: fit once
+    // A step added or removed keeps the other steps where they were placed.
+    const carried = same ? Object.fromEntries(Object.entries(ui.layout || {}).filter(([k]) => wf.steps.some((s) => s.key === k))) : {};
     ui.layoutKey = key;
-    ui.layout = storage.get(key, {});
+    ui.layout = storage.get(key, null) || carried;
     ui.layoutLoaded = true;
   }
   const pos = {};
@@ -132,7 +148,7 @@ function computeLayout(ctx) {
       const row = Math.floor(i / perRow);
       const auto = { x: col * (w + GAP), y: y + row * (NODE_H + GAP), w };
       const saved = ui.layout[k];
-      pos[k] = saved ? { ...auto, x: saved.x, y: saved.y } : auto;
+      pos[k] = saved ? { ...auto, x: saved.x, y: saved.y, ...(saved.w ? { w: saved.w } : {}) } : auto; // a step placed on the canvas keeps its width
     });
     y += Math.ceil(n / perRow) * (NODE_H + GAP) - GAP + STAGE_GAP;
   });
@@ -141,7 +157,7 @@ function computeLayout(ctx) {
   return { pos, banners, width: maxX, height: maxY };
 }
 
-function edgePath(a, b) {
+export function edgePath(a, b) {
   if (Math.abs(a.y - b.y) < NODE_H / 2) {
     const leftToRight = a.x < b.x;
     const x1 = leftToRight ? a.x + a.w : a.x;
@@ -176,7 +192,7 @@ export function mount(el, ctx) {
     <div class="wf-main">
       <div class="wf-stage">
         <div class="wf-info" id="wf-info"></div><span class="sr-only" aria-live="polite" id="wfe-live"></span>
-        <div class="canvas" id="wf-canvas" tabindex="0" aria-label="Workflow graph. Drag to pan, Ctrl+wheel to zoom.">
+        <div class="canvas" id="wf-canvas" tabindex="0" aria-label="Workflow graph. Arrows pick a step; Shift+F10 opens its menu. Drag to pan, Ctrl+wheel to zoom." aria-keyshortcuts="Shift+F10 N C E Delete F">
           <div class="world" id="wf-world"></div>
           <div class="minimap" id="minimap-panel"></div>
         </div>
@@ -187,16 +203,21 @@ export function mount(el, ctx) {
     </div></div>`;
 
   const canvasEl = $("#wf-canvas", el);
+  const api = apiFor(el, ctx);
   let drag = null;
   canvasEl.addEventListener("pointerdown", (e) => {
     const node = e.target.closest(".node");
     if (e.target.closest(".minimap, .setup-card, .node-add, .wfe-node-tools") || e.button !== 0) return;
-    if (node && !e.target.closest("button")) {
+    if (e.target.closest("[data-port]") && node) {
+      drag = { kind: "link", key: node.dataset.key, over: null };
+      loadOps();
+    } else if (node && !e.target.closest("button")) {
       const key = node.dataset.key;
       const p = ui.currentLayout.pos[key];
       drag = { kind: "node", key, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
     } else if (!node) {
-      drag = { kind: "pan", sx: e.clientX, sy: e.clientY, ox: ui.panX, oy: ui.panY };
+      const edge = e.target.closest("[data-edge]"); // a click on it (no pan) opens its menu
+      drag = { kind: "pan", sx: e.clientX, sy: e.clientY, ox: ui.panX, oy: ui.panY, edge: edge && { ...edge.dataset } };
       canvasEl.classList.add("panning");
     }
     if (drag) canvasEl.setPointerCapture(e.pointerId);
@@ -206,10 +227,12 @@ export function mount(el, ctx) {
     const dx = e.clientX - drag.sx;
     const dy = e.clientY - drag.sy;
     if (drag.kind === "pan") {
+      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
       ui.panX = drag.ox + dx;
       ui.panY = drag.oy + dy;
       applyTransform(el);
-    } else {
+    } else if (drag.kind === "link") ops?.linkMove(api, drag, e, NODE_H);
+    else {
       if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
       if (!drag.moved) return;
       const p = ui.currentLayout.pos[drag.key];
@@ -220,14 +243,17 @@ export function mount(el, ctx) {
       drawEdges(el, ctx);
     }
   });
-  const end = () => {
+  const end = (ev) => {
+    if (drag?.kind === "link") { const d = drag; loadOps().then((m) => m.linkEnd(ctx, api, d)); }
+    if (drag?.edge && !drag.moved) { const { from, to } = drag.edge, x = ev.clientX, y = ev.clientY; loadOps().then((m) => m.edgeMenu(ctx, api, from, to, x, y)); }
     if (drag?.kind === "node") {
       if (drag.moved) {
         const p = ui.currentLayout.pos[drag.key];
-        ui.layout[drag.key] = { x: p.x, y: p.y };
+        ui.layout[drag.key] = { ...ui.layout[drag.key], x: p.x, y: p.y };
         storage.set(ui.layoutKey, ui.layout);
         drawMinimap(el, ctx);
-      } else select(ctx, drag.key);
+      } else if (ops?.connecting()) ops.pick(ctx, api, drag.key);
+      else select(ctx, drag.key);
     }
     drag = null;
     canvasEl.classList.remove("panning");
@@ -245,8 +271,29 @@ export function mount(el, ctx) {
       applyTransform(el);
     }
   }, { passive: false });
+  canvasEl.addEventListener("contextmenu", (e) => {
+    if (e.target.closest(".minimap") || isEditable(e.target)) return;
+    e.preventDefault();
+    const edge = e.target.closest("[data-edge]");
+    loadOps().then((m) => (edge ? m.edgeMenu(ctx, api, edge.dataset.from, edge.dataset.to, e.clientX, e.clientY)
+      : m.openMenu(ctx, api, { key: e.target.closest(".node")?.dataset.key || null, x: e.clientX, y: e.clientY })));
+  });
   canvasEl.addEventListener("keydown", (e) => {
-    if (e.target.closest("[data-wfe]")) return;
+    if (e.target.closest("[data-wfe]") || isEditable(e.target)) return;
+    if (ops?.connecting() && ops.key(ctx, api, e)) return;
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      e.preventDefault();
+      loadOps().then((m) => m.openMenu(ctx, api, { key: ui.selected || null }));
+      return;
+    }
+    if (plain && /^[nNcCeE]$|^(Delete|Backspace)$/.test(e.key) && !e.shiftKey) {
+      e.preventDefault();
+      loadOps().then((m) => m.key(ctx, api, e));
+      return;
+    }
+    if (plain && (e.key === "f" || e.key === "F")) { e.preventDefault(); toggleFullscreen(el, ctx); return; }
+    if (plain && e.key === "0") { e.preventDefault(); fit(el); return; }
     const node = e.target.closest(".node");
     if (node && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault(); select(ctx, node.dataset.key);
@@ -275,6 +322,15 @@ export function mount(el, ctx) {
   on(el, "click", "[data-plan-more]", () => $("[data-plan-pick]", el)?.focus());
   on(el, "change", "[data-plan-pick]", (e, sel) => loadPlan(ctx, wfProject(ctx), { id: sel.value }));
   on(el, "click", "[data-tab]", (e, b) => { ui.tab = b.dataset.tab; remember(); renderInspector(el, ctx); });
+  ["input", "change", "click"].forEach((type) => on(el, type, "[data-sx]", (e, t) => loadOps().then((m) => m.inspectorEvent(ctx, api, e, t))));
+  document.addEventListener("fullscreenchange", () => {
+    const fs = document.fullscreenElement;
+    // Menus, dialogs and toasts must render inside the fullscreen element to be seen.
+    ["#modal-host", "#toasts"].forEach((id) => { const n = $(id); if (n) (fs || document.body).appendChild(n); });
+    const b = $("[data-act=fullscreen]", el);
+    if (b) { b.setAttribute("aria-pressed", String(Boolean(fs))); b.title = fs ? "Exit fullscreen (F)" : "Fullscreen (F)"; }
+    requestAnimationFrame(() => drawViewport(el));
+  });
   on(el, "click", "[data-fold=inspector]", () => { ui.inspector = !ui.inspector; remember(); ctx.update(); requestAnimationFrame(() => drawViewport(el)); });
   on(el, "click", "#minimap-panel .mm-svg", (e, svg) => {
     const r = svg.getBoundingClientRect();
@@ -300,6 +356,40 @@ export function mount(el, ctx) {
   });
 }
 
+/** What canvas_ops.js may use of this view (kept small: canvas.js loads at startup). */
+function apiFor(el, ctx) {
+  return {
+    ui, el,
+    project: () => wfProject(ctx),
+    steps: () => steps(ctx),
+    statusOf: (key) => statusOf(ctx, key),
+    overlay: () => overlay(ctx),
+    plans: () => plansAvailable(ctx, wfProject(ctx)),
+    canEdit: () => Boolean(canEditWf(ctx, wfProject(ctx))),
+    editor: () => loadEditor(),
+    wfe: () => wfe,
+    pos: (key) => ui.currentLayout?.pos[key] || null,
+    select: (key) => select(ctx, key),
+    focus: () => $("#wf-canvas", el)?.focus({ preventScroll: true }),
+    announce: (text) => { const n = $("#wfe-live", el); if (n) { n.textContent = ""; requestAnimationFrame(() => { n.textContent = text; }); } },
+    worldAt(cx, cy) {
+      const r = $("#wf-canvas", el).getBoundingClientRect();
+      return { x: (cx - r.left - ui.panX) / ui.zoom, y: (cy - r.top - ui.panY) / ui.zoom };
+    },
+    place(key, x, y) { ui.layout[key] = { x: Math.round(x / 8) * 8, y: Math.round(y / 8) * 8, w: 320 }; storage.set(ui.layoutKey, ui.layout); },
+    fit: () => fit(el),
+    fullscreen: () => toggleFullscreen(el, ctx),
+    compact: () => setCompact(ctx),
+  };
+}
+
+function toggleFullscreen(el, ctx) {
+  const root = el.querySelector(".wf");
+  if (document.fullscreenElement) document.exitFullscreen?.();
+  else if (root?.requestFullscreen) root.requestFullscreen().catch((error) => ctx.toast(`Fullscreen: ${error.message}`, "warn"));
+  else ctx.toast("Fullscreen is not available in this browser", "warn");
+}
+
 function ensureDraft(ctx) {
   const s = stepByKey(ctx, ui.selected);
   if (!ui.draft || ui.draft.key !== ui.selected) {
@@ -315,6 +405,7 @@ export function showStep(ctx, key) {
 
 function select(ctx, key) {
   if (!key) return;
+  if (ops && key !== ui.selected && !ops.mayLeaveStep(ctx, wfProject(ctx))) return; // unapplied step configuration
   ui.selected = key;
   wfe?.selectStep(wfProject(ctx), key);
   ui.inspector = true;
@@ -385,6 +476,8 @@ function act(el, ctx, name, button) {
       remember();
       ctx.update();
       break;
+    case "fullscreen": toggleFullscreen(el, ctx); break;
+    case "compact": setCompact(ctx); break;
     case "validate": validate(ctx); break;
     case "sim": toggleSim(ctx); break;
     case "sim-stop": stopSim(ctx); break;
@@ -398,6 +491,8 @@ function act(el, ctx, name, button) {
       ctx.menu(button, [
         { label: "Export workflow YAML", icon: "download", run: () => ctx.dataItems().find((it) => it.label?.startsWith("Workflow YAML"))?.run() },
         { label: "Clear simulation", icon: "reset", run: () => { resetSimulation(); ctx.update(); } },
+        ...(plansAvailable(ctx, wfProject(ctx)) && server.session?.mutations_enabled ? [{ label: "Schedule a run…", icon: "clock", hint: "start time or delay", run: () => loadOps().then((m) => m.schedule(ctx, wfProject(ctx))) }] : []),
+        { label: "Keyboard shortcuts", icon: "info", hint: "?", run: () => ctx.openShortcuts?.() },
         ...(plansAvailable(ctx, wfProject(ctx)) ? [{ label: "Simulate in the browser (nothing runs)", icon: "play", run: () => toggleSim(ctx) }] : []),
         { label: "Open log stream", icon: "log", run: () => ctx.renderConsole() },
       ]);
@@ -610,12 +705,15 @@ function overallPct(ctx) {
 async function fetchRunLogs(ctx) {
   const t = ctx.target();
   if (!t?.runId) return;
+  const signal = ctx.selection();
   try {
-    const data = await server.runLogs(t.runId);
+    const data = await server.runLogs(t.runId, signal);
+    if (signal.aborted) return; // another target is selected now
     const lines = (data.logs || data.entries || []).map((l) => (typeof l === "string" ? l : `${l.created_at || ""} ${l.level || ""} ${l.message || JSON.stringify(l)}`));
     t._runLogs = lines;
     ctx.update();
   } catch (error) {
+    if (signal.aborted) return;
     ctx.toast(`Logs unavailable: ${error.message}`, "fail");
   }
 }
@@ -623,12 +721,18 @@ async function fetchRunLogs(ctx) {
 // ---------------------------------------------------------------------------
 // Rendering
 
-export function leave() {
+// A chat session's run picked in Runs replaces Graph / List (components/chat_runs.js) until
+// Back to the workflow, another run, or leaving Workflow (other sections show workflow runs only).
+const chatRun = (ctx, p) => planOf(p)?.plan?.chat && ctx.chatOn?.();
+const unpinChat = (ctx, p) => { if (planOf(p)?.plan?.chat) { releasePlanPin(p); loadPlan(ctx, p, { quiet: true }); } };
+
+export function leave(ctx) {
   /* keep simulation running in the background */
+  if (ctx) unpinChat(ctx, wfProject(ctx));
 }
 
 export function showRun(ctx, project, id = null) {
-  if (ctx.switchProject) ctx.switchProject(project, { restoreView: false });
+  if (ctx.switchProject) ctx.switchProject(project, { restoreView: false, push: true });
   else ctx.state.selectedProject = project;
   if (ctx.target()?.project !== project) ctx.state.selectedTarget = null;
   if (id) loadPlan(ctx, project, { id }); // that run, not the newest
@@ -645,30 +749,35 @@ export function render(el, ctx) {
   const project = wfProject(ctx);
   const plans = plansAvailable(ctx, project);
   if (plans && planOf(project) === null && !planRequested.has(project)) { planRequested.add(project); loadPlan(ctx, project, { quiet: true }); }
+  if (plans) scopeRun(ctx, project);
   if (ui.mode === "schedule" && !plans) ui.mode = "graph";
+  if (plans && !ctx.chatOn?.()) unpinChat(ctx, project);
+  const m = mode(), cr = plans && m !== "schedule" && chatRun(ctx, project);
   renderToolbar(el, ctx);
   renderInfo(el, ctx);
   const list = $("#wf-list", el);
   const canvasEl = $("#wf-canvas", el);
   const sched = $("#wf-sched", el);
-  list.hidden = ui.mode !== "list";
-  sched.hidden = ui.mode !== "schedule";
+  list.hidden = m !== "list" && !cr;
+  sched.hidden = m !== "schedule";
   // Each project remembers its own mode: never keep another project's rows in an inactive pane.
   if (list.hidden) list.innerHTML = "";
   if (sched.hidden) sched.innerHTML = "";
-  el.querySelector(".wf")?.classList.toggle("list-mode", ui.mode !== "graph");
-  el.querySelector(".wf")?.classList.toggle("sched-mode", ui.mode === "schedule");
-  canvasEl.hidden = ui.mode !== "graph";
-  if (!steps(ctx).length && ui.mode !== "schedule") {
-    const box = ui.mode === "list" ? list : $("#wf-world", el);
-    if (ui.mode === "graph") { box.style.transform = "none"; $("#minimap-panel", el).hidden = true; }
+  el.querySelector(".wf")?.classList.toggle("list-mode", m !== "graph" || Boolean(cr));
+  el.querySelector(".wf")?.classList.toggle("sched-mode", m === "schedule");
+  canvasEl.hidden = m !== "graph" || Boolean(cr);
+  if (cr) withChatRuns(ctx, (c) => c.renderPane(list, ctx, project, m));
+  else if (!steps(ctx).length && m !== "schedule") {
+    const box = m === "list" ? list : $("#wf-world", el);
+    if (m === "graph") { box.style.transform = "none"; $("#minimap-panel", el).hidden = true; }
     if (!wfe) loadEditor().then(() => ctx.update());
-    box.innerHTML = !wfe ? "" : wfe.editing(project) && ui.mode === "list" ? wfe.editList(ctx, project) : wfe.emptyState(ctx, project);
-  } else if (ui.mode === "list" && wfe?.editing(project) && wfe.canAddInGraph(project)) $("#wf-list", el).innerHTML = wfe.editList(ctx, project);
-  else if (ui.mode === "list") renderList(el, ctx);
-  else if (ui.mode === "schedule") renderSchedule(sched, ctx, project);
+    box.innerHTML = !wfe ? "" : wfe.editing(project) && m === "list" ? wfe.editList(ctx, project) : wfe.emptyState(ctx, project);
+  } else if (m === "list" && wfe?.editing(project) && wfe.canAddInGraph(project)) $("#wf-list", el).innerHTML = wfe.editList(ctx, project);
+  else if (m === "list") renderList(el, ctx);
+  else if (m === "schedule") renderSchedule(sched, ctx, project);
   else renderGraph(el, ctx);
   renderInspector(el, ctx);
+  ops?.decorate(apiFor(el, ctx));
   const ap = plans ? activePlan(project) : null;
   const right = sim.active
     ? `<span class="chip ${!isFinished() ? "tone-run" : ""}"><i class="dot"></i>${isFinished() ? "Simulation finished" : sim.paused ? "Simulation paused" : "Simulating"}</span>`
@@ -687,7 +796,15 @@ function runGroup(ctx, project) {
     <button class="icon-btn" data-plan="dry" title="Dry run: list the commands a run would start, in order (nothing runs)" aria-label="Dry run">${icon("list")}</button>
     ${ctx.state.workflow.template === "agent-loop" || ctx.state.workflow.steps.some((s) => s.handoff) ? '<button class="btn sm" data-plan="task">Edit task</button><button class="btn sm" data-plan="agents">Agents &amp; review</button>' : ''}
     ${ap ? `<button class="btn sm" data-plan="schedule" title="Run ${esc(ap.plan.id)}">${icon(ap.plan.start_at ? "clock" : ap.plan.status === "running" ? "sync" : "pause", ap.plan.status === "running" && ap.runner?.alive && !ap.plan.start_at ? "spin" : "")} ${esc(ap.plan.start_at ? "Scheduled" : RUN_STATUS[ap.plan.status] || ap.plan.status)} ${counts.done || 0}/${total}</button>` : ""}
+    ${canRun && ap && planOf(project)?.plan?.id === ap.plan.id ? planControls(ap.plan) : ""}
   </div>`;
+}
+
+// Pause / Resume / Run now / Cancel for the run shown, only those valid in its state.
+function planControls(p) {
+  const b = (act, ic, label) => `<button class="icon-btn" data-plan="${act}" aria-label="${label} run ${esc(p.id)}" title="${label}">${icon(ic)}</button>`;
+  return (p.start_at ? b("start-now", "play", "Start now") : p.status === "running" ? b("pause", "pause", "Pause (the current command finishes)") : b("resume", "play", "Resume"))
+    + b("cancel", "stop", "Cancel (stops running commands)");
 }
 
 function renderToolbar(el, ctx) {
@@ -718,13 +835,32 @@ function renderToolbar(el, ctx) {
       <button class="icon-btn" data-act="fit" aria-label="Fit to view" title="Fit to view">${icon("fit")}</button>
       <button class="icon-btn" data-act="reset-layout" aria-label="Reset layout" title="Reset layout">${icon("reset")}</button>
       <button class="icon-btn ${ui.minimap ? "on" : ""}" data-act="minimap" aria-label="Toggle mini-map" title="Mini-map">${icon("map")}</button>
+      ${document.fullscreenEnabled ? `<button class="icon-btn" data-act="fullscreen" aria-pressed="${Boolean(document.fullscreenElement)}" aria-label="Fullscreen" title="${document.fullscreenElement ? "Exit fullscreen" : "Fullscreen"} (F)">${icon("expand")}</button>` : ""}
       <button class="icon-btn" data-act="more" aria-label="More">${icon("more")}</button>
-    </div>`;
+    </div>
+    <button class="btn sm wf-compact-btn" data-act="compact" aria-pressed="${compact()}" title="${compact() ? "Show the summaries, inspector and logs again" : "Show only the canvas"} (${keyLabel("Alt+Shift+C")})">${icon(compact() ? "unfold" : "fold")} ${compact() ? "Exit compact" : "Compact"}</button>`;
 }
 
 const MAX_INFO_TARGETS = 3;
+// A plan without a targets list runs every row of its table.
+export const hasTarget = (p, name) => (p.targets?.length ? p.targets.includes(name) : !p.target || p.target === name);
+const scopedFor = new Map(); // project → header target the shown run was chosen for
+const scopedRun = new Map(); // project → run id loaded for it (not "picked" by hand)
 
-// With runs: the shown run's targets (working / scheduled, else newest, or the picked one), never the header selection.
+// Once per header target: if the shown run lacks it, load its newest run (an active one first).
+// A run picked by hand afterwards stays until the target changes.
+export function scopeRun(ctx, project) {
+  const t = ctx.target(), s = planOf(project);
+  if (t?.project !== project) return scopedFor.delete(project);
+  if (!s?.plans || scopedFor.get(project) === t.name) return;
+  scopedFor.set(project, t.name);
+  if (runTargets(s)?.targets.includes(t.name)) return;
+  const has = (p) => hasTarget(p, t.name);
+  const run = s.plans.find((p) => has(p) && ["running", "paused", "interrupted"].includes(p.status)) || s.plans.find(has);
+  if (run) { scopedRun.set(project, run.id); loadPlan(ctx, project, { id: run.id, quiet: true }); }
+}
+
+// With runs: the header target's run (see scopeRun), else the shown run's targets.
 // Without runs (imports, offline): the header selection overlays its results.
 export function infoHead(ctx, project) {
   const facts = (t) => {
@@ -740,8 +876,17 @@ export function infoHead(ctx, project) {
   const name = ctx.projectName(project);
   const status = planOf(project);
   const run = runTargets(status);
+  if (run?.plan.chat) return { title: `${name} / Chat session: ${run.plan.title || run.plan.chat.session}`, run, line: `Selected run ${run.plan.id} · tasks generated by the chat` };
+  const lead = run?.picked && scopedRun.get(project) !== run.plan.id ? "Selected run" : run?.active ? "Current run" : "Last run";
+  if (t?.project === project && status) {
+    const f = facts(t), title = `${name} / Target: ${t.name}`, pre = f.line ? `${f.line} · ` : "";
+    if (run?.targets.includes(t.name)) {
+      const more = run.targets.length - 1;
+      return { title, correlator: f.correlator, run, line: `${pre}${lead} ${run.plan.id}${more ? ` (with ${more} other target${more > 1 ? "s" : ""})` : ""}` };
+    }
+    if (!status.plans?.some((p) => hasTarget(p, t.name))) return { title, correlator: f.correlator, line: `${pre}No runs for ${t.name} yet. Start one with Run…` };
+  }
   if (!run) return { title: `${name} / ${status ? "No runs yet" : "Loading runs…"}`, line: status ? "Start one with Run…; its target appears here." : "The current run's target appears here." };
-  const lead = run.picked ? "Selected run" : run.active ? "Current run" : "Last run";
   const shown = run.targets.slice(0, MAX_INFO_TARGETS).join(", ") + (run.targets.length > MAX_INFO_TARGETS ? ` +${run.targets.length - MAX_INFO_TARGETS} more` : "");
   const one = run.targets.length === 1 ? ctx.state.targets?.find((x) => x.project === project && x.name === run.targets[0]) : null;
   const f = facts(one);
@@ -759,7 +904,7 @@ function renderInfo(el, ctx) {
   const project = wfProject(ctx);
   const info = $("#wf-info", el);
   info.classList.toggle("wfe-on", Boolean(wfe?.editing(project)));
-  if (wfe?.editing(project)) { info.innerHTML = wfe.editBar(ctx, project, ui.mode === "graph", ui.selected); return; }
+  if (wfe?.editing(project)) { info.innerHTML = wfe.editBar(ctx, project, mode() === "graph", ui.selected); return; }
   const h = infoHead(ctx, project);
   const paramSource = ctx.state.paramSource || "AVICA defaults";
   $("#wf-info", el).innerHTML = `
@@ -784,7 +929,9 @@ function nodeHtml(ctx, s, p) {
   const params = Object.entries(s.params).slice(0, 3);
   const sel = ui.selected === s.key;
   const tools = wfe ? wfe.nodeTools(wfProject(ctx), s.key) : "";
-  return `<div class="node st-${st} ${sel ? "sel" : ""} ${s.skipped ? "skipped" : ""} ${tools ? "editable" : ""}" data-key="${esc(s.key)}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px" role="button" tabindex="${tools ? "0" : "-1"}" aria-label="${esc(s.key)} ${esc(s.skipped ? "Skipped" : label)}">
+  const waits = s.depends.length ? `Waits for ${s.depends.join(", ")}` : "Starts first (no dependencies)";
+  const port = canEditWf(ctx, wfProject(ctx)) && !s.skipped ? '<span class="node-port" data-port title="Drag onto another step: that step then waits for this one"></span>' : "";
+  return `<div class="node st-${st} ${sel ? "sel" : ""} ${s.skipped ? "skipped" : ""} ${tools ? "editable" : ""}" data-key="${esc(s.key)}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px" role="button" tabindex="${tools ? "0" : "-1"}" title="${esc(waits)}" aria-label="${esc(s.key)} ${esc(s.skipped ? "Skipped" : label)}. ${esc(waits)}">${port}
     ${st === "running" ? `<div class="node-prog"><i style="width:${simulating ? pct : 60}%"></i></div>` : ""}
     <div class="node-h">
       <span class="node-ic">${icon(s.icon)}</span>
@@ -838,11 +985,14 @@ function drawEdges(el, ctx) {
   if (!g) return;
   const L = ui.currentLayout;
   const skipped = new Set(steps(ctx).filter((s) => s.skipped).map((s) => s.key));
+  const editable = canEditWf(ctx, wfProject(ctx));
   g.innerHTML = steps(ctx).flatMap((s) => s.depends.filter((d) => L.pos[d]).map((d) => {
     const cls = skipped.has(d) || skipped.has(s.key) ? "e-idle e-skip" : edgeClass(ctx, d, s.key);
     const k = cls.split(" ")[0].slice(2);
-    return `<path d="${edgePath(L.pos[d], L.pos[s.key])}" class="edge ${cls}" marker-end="url(#ar-${k})"><title>${esc(d)} → ${esc(s.key)}</title></path>`;
-  })).join("");
+    const path = edgePath(L.pos[d], L.pos[s.key]);
+    const hl = ui.selected === d || ui.selected === s.key ? " e-hl" : ""; // the selected step's dependencies
+    return `<path d="${path}" class="edge ${cls}${hl}" marker-end="url(#ar-${k})"><title>${esc(d)} → ${esc(s.key)}</title></path>${editable && !cls.includes("e-skip") ? `<path d="${path}" class="edge-hit" data-edge data-from="${esc(d)}" data-to="${esc(s.key)}"><title>${esc(s.key)} waits for ${esc(d)} (click to disconnect)</title></path>` : ""}`;
+  })).join("") + '<path id="wf-link" class="edge e-link" d=""/>';
 }
 
 function drawMinimap(el, ctx) {
@@ -903,7 +1053,10 @@ function field(group, key, value, source) {
 
 function renderInspector(el, ctx) {
   const box = $("#wf-inspector", el);
+  const configurable = canEditWf(ctx, wfProject(ctx));
+  if (ui.tab === "step" && !configurable) ui.tab = "params";
   el.querySelector(".wf-main").classList.toggle("insp-folded", !ui.inspector);
+  el.querySelector(".wf-main").classList.toggle("insp-cfg", ui.inspector && ui.tab === "step"); // stays in compact mode
   if (!ui.inspector) {
     box.innerHTML = `<button class="fold-bar" data-fold="inspector" title="Show step inspector" aria-label="Show step inspector" aria-expanded="false">${icon("unfold")}<span>Inspector · ${esc(ui.selected || "")}</span></button>`;
     return;
@@ -942,11 +1095,13 @@ function renderInspector(el, ctx) {
     <header class="insp-h"><span class="node-ic">${icon(s.icon)}</span><div class="grow"><div class="row gap"><b class="mono">${esc(s.key)}</b><span class="chip caps">${esc(s.category)}</span></div><div>${esc(s.label)}</div></div><button class="icon-btn sm" data-fold="inspector" title="Fold inspector" aria-label="Fold inspector" aria-expanded="true">${icon("fold")}</button></header>
     ${progressLine}${planLine}
     <nav class="tabs" role="tablist">
+      ${configurable ? `<button role="tab" data-tab="step" class="${ui.tab === "step" ? "on" : ""}" aria-selected="${ui.tab === "step"}" title="Command, dependencies, inputs and outputs (E)">Configure</button>` : ""}
       <button role="tab" data-tab="params" class="${ui.tab === "params" ? "on" : ""}">Parameters</button>
       <button role="tab" data-tab="bindings" class="${ui.tab === "bindings" ? "on" : ""}">Bindings (${s.inputs.length + s.outputs.length})</button>
       <button role="tab" data-tab="logs" class="${ui.tab === "logs" ? "on" : ""}">Logs${nLogs ? ' <i class="dot run"></i>' : ""}</button>
     </nav>
     <div class="insp-b">
+      ${ui.tab === "step" ? (ops ? ops.inspector(ctx, apiFor(el, ctx), s.key) : (loadOps().then(() => ctx.update()), '<p class="muted small">Loading…</p>')) : ""}
       ${ui.tab === "params" ? `
         ${s.description ? `<p class="muted small">${esc(s.description)}</p>` : ""}
         <p class="small muted">${avica ? `Parameters of <code>${esc(s.key)}</code> from <b class="mono">${esc(paramFrom)}</b> (<code>alfrd avica summary</code>). <b>Apply</b> writes <code>${esc(s.key)}.&lt;param&gt; = value</code> to avica.inp${ctx.canWrite(project) ? "" : " (downloaded: no writable folder)"}.` : "Parameters from the step's <code>params:</code> in alfrd.yaml."}</p>
@@ -971,7 +1126,7 @@ function renderInspector(el, ctx) {
       ` : ""}
     </div>
     <footer class="insp-f">
-      <div class="row gap"><button class="btn primary grow" data-act="apply" id="wf-apply" ${ui.draft && ui.draft.key === s.key ? "" : "disabled"}>Apply changes</button><button class="btn" data-act="reset">Reset</button></div>
+      ${ui.tab === "step" ? "" : `<div class="row gap"><button class="btn primary grow" data-act="apply" id="wf-apply" ${ui.draft && ui.draft.key === s.key ? "" : "disabled"}>Apply changes</button><button class="btn" data-act="reset">Reset</button></div>`}
       ${plansAvailable(ctx, project)
         ? `<button class="btn block" data-plan="new" data-only="${esc(s.key)}" ${server.session?.mutations_enabled ? "" : "disabled"} title="Run ${esc(s.key)} for ${t ? esc(t.name) : "targets"} with the command from alfrd.yaml">${icon("play")} Run step…</button>`
         : `<button class="btn block" data-act="sim-step" title="Browser simulation only; nothing is executed">${icon("play")} Simulate step</button>`}

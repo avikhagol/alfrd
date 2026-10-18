@@ -30,10 +30,10 @@ export function typeahead(items, index, typed) {
 }
 
 /**
- * trigger: <button> containing a `.picker-val` span. opts: {label, onChange(value), filterAt = 8, empty}.
+ * trigger: <button> containing a `.picker-val` span. opts: {label, onChange(value), filterAt = 8, empty, action() → {label, run()} | null: a button below the list}.
  * Returns {set(items, value), open(), close()}; items: [{value, label, detail?, badge?}].
  */
-export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "Nothing to choose" }) {
+export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "Nothing to choose", action = () => null }) {
   const valEl = trigger.querySelector(".picker-val");
   let items = [], value = null, typed = "", typedAt = 0, refresh;
   trigger.setAttribute("aria-haspopup", "listbox");
@@ -67,16 +67,18 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
 
   function open() {
     if (openPop) { const same = openPop.trigger === trigger; openPop.close(); if (same) return; }
-    if (!items.length) return;
+    const act = action();
+    if (!items.length && !act) return;
     const el = document.createElement("div");
     el.className = "menu picker-pop";
     const id = `pk-${Math.random().toString(36).slice(2, 8)}`;
     const withFilter = items.length > filterAt;
     el.innerHTML = `${withFilter ? `<input class="input sm picker-filter" type="search" placeholder="Filter ${esc(label.toLowerCase())}s" aria-label="Filter ${esc(label.toLowerCase())}s" aria-controls="${id}" autocomplete="off" spellcheck="false">` : ""}
-      <div class="picker-list" id="${id}" role="listbox" tabindex="0" aria-label="${esc(label)}"></div>`;
+      <div class="picker-list" id="${id}" role="listbox" tabindex="0" aria-label="${esc(label)}"></div>${act ? `<button type="button" class="picker-action">${icon("plus")}${esc(act.label)}</button>` : ""}`;
     document.body.appendChild(el);
     const list = el.querySelector(".picker-list");
     const filter = el.querySelector(".picker-filter");
+    const actBtn = el.querySelector(".picker-action");
     let shown = items, active = Math.max(0, items.findIndex((it) => it.value === value));
 
     const ids = new Map();
@@ -84,7 +86,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     const paint = (scroll = true) => {
       list.innerHTML = shown.length ? shown.map((it, i) => `<div role="option" id="${optionId(it)}" aria-labelledby="${optionId(it)}-name" aria-describedby="${optionId(it)}-description" data-i="${i}" aria-selected="${it.value === value}" class="${i === active ? "active" : ""}">
           <span class="picker-opt-l"><span id="${optionId(it)}-name">${esc(it.label)}</span>${it.badge ? `<small class="picker-badge" aria-hidden="true">${esc(it.badge)}</small>` : ""}</span><span class="sr-only" id="${optionId(it)}-description">${esc([it.badge, it.detail].filter(Boolean).join(". "))}</span>${it.detail ? `<small class="picker-opt-d" aria-hidden="true">${esc(it.detail)}</small>` : ""}${it.value === value ? icon("check", "picker-check") : ""}</div>`).join("")
-        : `<p class="muted small picker-none">No matches</p>`;
+        : `<p class="muted small picker-none">${esc(items.length ? "No matches" : empty)}</p>`;
       list.querySelectorAll(".picker-opt-d").forEach((d) => fitMiddle(d, d.textContent, d.clientWidth));
       const target = filter || list;
       if (shown[active]) target.setAttribute("aria-activedescendant", optionId(shown[active])); else target.removeAttribute("aria-activedescendant");
@@ -106,7 +108,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
       if (next !== null) { e.preventDefault(); active = next; paint(); return; }
       if (e.key === "Enter") { e.preventDefault(); choose(shown[active]); return; }
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); return; }
-      if (e.key === "Tab") { close(false); return; }
+      if (e.key === "Tab") { if (actBtn && !e.shiftKey) { e.preventDefault(); actBtn.focus(); } else close(true); return; }
       if (!filter && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         typed = Date.now() - typedAt > 700 ? e.key.toLowerCase() : typed + e.key.toLowerCase();
         typedAt = Date.now();
@@ -117,6 +119,11 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     list.addEventListener("keydown", onKey);
     filter?.addEventListener("keydown", onKey);
     filter?.addEventListener("input", () => { shown = filterItems(items, filter.value); active = 0; paint(); });
+    actBtn?.addEventListener("click", () => { close(true); act.run(); });
+    actBtn?.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); }
+      else if (e.key === "Tab" && !e.shiftKey) close(true); // focus the trigger so Tab continues after it, not from the page top
+    });
     list.addEventListener("click", (e) => { const o = e.target.closest("[data-i]"); if (o) choose(shown[Number(o.dataset.i)]); });
     list.addEventListener("mousemove", (e) => {
       const o = e.target.closest("[data-i]");
@@ -128,7 +135,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     el.style.minWidth = `${Math.min(window.innerWidth - 16, Math.max(240, r.width))}px`;
     el.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8))}px`;
     paint();
-    (filter || list).focus();
+    (items.length ? filter || list : actBtn).focus();
     trigger.setAttribute("aria-expanded", "true");
     const outside = (e) => { if (!el.contains(e.target) && !trigger.contains(e.target)) close(false); };
     const dismiss = () => close(false);
@@ -148,7 +155,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     set(next, selected) {
       items = next;
       value = selected;
-      trigger.disabled = !items.length;
+      trigger.disabled = !items.length && !action();
       fit();
       refresh?.();
     },

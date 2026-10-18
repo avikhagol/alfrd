@@ -12,6 +12,7 @@ from test_telegram_notifier import ROUTE, TOKEN, FakeAPI
 from typer.testing import CliRunner
 
 from alfrd import notifiers, notify
+from alfrd.manifest_paths import project_manifest
 
 STEPS = ["s1", "s2", "s3", "s4"]
 T1 = {"row": "r1", "target": "T1", "cells": {"s1": "done", "s2": "done", "s3": "running", "s4": "todo"},
@@ -592,11 +593,11 @@ def test_real_agent_loop_handoff(bot, tmp_path, monkeypatch):
     script.write_text("import pathlib,sys\nsys.stdin.read()\n"
                       f"text={RESPONSE!r}+'\\nAgent: '+sys.argv[1]\n"
                       "if sys.argv[1]=='codex': pathlib.Path(sys.argv[2]).write_text(text)\nelse: print(text)\n")
-    data = yaml.safe_load((root / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(root)).read_text())
     for entry in data["entrypoint"]:
         entry["cmd"] = [sys.executable, str(script), entry["name"], "{response_file}"]
     data["execution"]["usage_interval"] = 0
-    (root / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    (project_manifest(root)).write_text(yaml.safe_dump(data, sort_keys=False))
     monkeypatch.setattr(scheduler, "POLL", .03)
     plans = module.Plans(service)
     folder = scheduler.create_plan(root)
