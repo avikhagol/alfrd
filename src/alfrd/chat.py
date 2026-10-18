@@ -2225,6 +2225,48 @@ def probe(root: str | Path) -> dict[str, Any]:
             "huggingface": {"token": token}, "codex": codex_models()}
 
 
+_TOML_SECTION = re.compile(r"^\s*\[\s*([^\]]+?)\s*\]\s*(?:#.*)?$")
+_TOML_MODEL = re.compile(r"""^\s*model\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:#.*)?$""")
+
+
+def _codex_config_models(text: str, add) -> str | None:
+    """``model`` at the top of Codex's config.toml (the default) and in each ``[profiles.<name>]``.
+
+    tomllib when available (Python 3.11+), else a line reader for these two simple cases (3.10)."""
+    try:
+        import tomllib
+    except ImportError:
+        tomllib = None
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(text)
+        except ValueError:
+            data = None
+        if data is not None:
+            default = data.get("model") if isinstance(data.get("model"), str) else None
+            add(default)
+            for profile in (data.get("profiles") or {}).values():
+                if isinstance(profile, Mapping):
+                    add(profile.get("model"))
+            return default
+    default, section = None, ""
+    for line in text.splitlines():
+        head = _TOML_SECTION.match(line)
+        if head:
+            section = head.group(1)
+            continue
+        found = _TOML_MODEL.match(line)
+        if not found:
+            continue
+        name = found.group(1) if found.group(1) is not None else found.group(2)
+        if section == "":
+            default = default or name
+            add(name)
+        elif section.startswith("profiles."):
+            add(name)
+    return default
+
+
 def codex_models(home: str | Path | None = None) -> dict[str, Any]:
     """Model names this machine's Codex knows, read from its own files only (nothing is run or fetched):
     ``config.toml`` (``model`` and each profile's ``model``) and ``models_cache.json`` when Codex keeps one.
@@ -2237,15 +2279,8 @@ def codex_models(home: str | Path | None = None) -> dict[str, Any]:
         if isinstance(name, str) and 0 < len(name) <= 120 and name.strip() == name and name not in found:
             found.append(name)
 
-    with contextlib.suppress(OSError, ValueError, ImportError):
-        import tomllib
-
-        data = tomllib.loads((folder / "config.toml").read_text(encoding="utf-8"))
-        default = data.get("model") if isinstance(data.get("model"), str) else None
-        add(default)
-        for profile in (data.get("profiles") or {}).values():
-            if isinstance(profile, Mapping):
-                add(profile.get("model"))
+    with contextlib.suppress(OSError, ValueError):
+        default = _codex_config_models((folder / "config.toml").read_text(encoding="utf-8"), add)
     with contextlib.suppress(OSError, ValueError):
         cache = json.loads((folder / "models_cache.json").read_text(encoding="utf-8"))
         items = cache.get("models") if isinstance(cache, Mapping) else cache
