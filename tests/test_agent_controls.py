@@ -14,10 +14,11 @@ from alfrd.agent_loop import approve_response, sha256
 from alfrd.execution import load_execution
 from alfrd.runtime import scheduler
 from alfrd.api import status as api
+from alfrd.manifest_paths import project_manifest
 
 
 def configure(project, *, review=False):
-    path = project / "alfrd.yaml"
+    path = project_manifest(project)
     data = yaml.safe_load(path.read_text())
     data["workflows"][0]["repeat"]["iterations"] = 2
     data["project_settings"] = {"human_review": review}
@@ -67,6 +68,60 @@ def test_model_arguments_and_stream_preserve_other_flags():
     argv, model, _ = agent_command(["codex", "exec", "-m", "old", "-"], "new")
     assert argv[-3:] == ("--model", "new", "-")
     assert "-m" not in argv
+
+
+def test_lean_startup_arguments():
+    from alfrd.agent_io import adapter_for, startup_options
+
+    base = ["claude", "-p", "--output-format", "text"]
+    assert startup_options({}) == {} and agent_command(base)[0] == tuple(base)          # default: unchanged
+    lean = startup_options({"lean": True})
+    assert lean == {"mcp": "none", "plugins": False, "skills": False}
+    argv = agent_command(base, "sonnet", True, startup=lean)[0]
+    assert argv[:2] == ("claude", "-p")
+    for flag in ("--strict-mcp-config", "--disable-slash-commands"):
+        assert argv.count(flag) == 1
+    assert argv[argv.index("--setting-sources") + 1] == "project,local"
+    assert "--mcp-config" not in argv and argv[argv.index("--model") + 1] == "sonnet"
+    # chosen MCP servers only; plugins and skills kept
+    keep = startup_options({"lean": True, "mcp": ["mcp/db.json", "mcp/web.json"], "plugins": True, "skills": True})
+    assert keep == {"mcp": ["mcp/db.json", "mcp/web.json"]}
+    argv = list(agent_command(["claude", "-p", "-"], startup=keep)[0])
+    at = argv.index("--mcp-config")
+    assert argv[at:at + 4] == ["--mcp-config", "mcp/db.json", "mcp/web.json", "--strict-mcp-config"] and argv[-1] == "-"
+    assert "--setting-sources" not in argv and "--disable-slash-commands" not in argv
+    assert startup_options({"plugins": False}) == {"plugins": False}
+    assert list(agent_command(["claude", "-p"], startup={"plugins": False})[0]) == ["claude", "-p", "--setting-sources", "project,local"]
+    # a command that already chooses these flags is left alone; Codex and generic agents have no equivalent
+    own = ["claude", "-p", "--strict-mcp-config", "--mcp-config", "x.json"]
+    assert list(agent_command(own, startup=lean)[0]) == own
+    assert list(agent_command(["codex", "exec", "-"], startup=lean)[0]) == ["codex", "exec", "-"]
+    assert list(agent_command(["agy"], adapter=adapter_for(name="generic"), startup=lean)[0]) == ["agy"]
+    for bad in ({"lean": "yes"}, {"mcp": "some"}, {"mcp": []}, {"plugins": "no"}):
+        with pytest.raises(ValueError):
+            startup_options(bad)
+
+
+def test_lean_entrypoint_option_reaches_the_step_command(tmp_path):
+    from alfrd.execution import ExecutionError
+
+    (tmp_path / "alfrd.yaml").write_text(yaml.safe_dump({
+        "version": 1, "name": "lean",
+        "entrypoint": [{"name": "claude", "cmd": ["claude", "-p"], "lean": True, "mcp": ["tools.json"],
+                        "stdin_file": "p.md", "output_file": "r.md", "output_capture": "stdout"},
+                       {"name": "plain", "cmd": ["claude", "-p"], "stdin_file": "p.md", "output_file": "r.md",
+                        "output_capture": "stdout"}],
+        "workflows": [{"name": "w", "steps": ["a", "b"]}],
+        "steps": {"a": {"entrypoint": "claude"}, "b": {"entrypoint": "plain"}}}))
+    cfg = load_execution(tmp_path)
+    lean, plain = cfg.step("a").argv, cfg.step("b").argv
+    assert "--strict-mcp-config" in lean and "tools.json" in lean and "--disable-slash-commands" in lean
+    assert not {"--strict-mcp-config", "--setting-sources", "--disable-slash-commands"} & set(plain)
+    data = yaml.safe_load((tmp_path / "alfrd.yaml").read_text())
+    data["entrypoint"][0]["mcp"] = "everything"
+    (tmp_path / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    with pytest.raises(ExecutionError, match="mcp must be"):
+        load_execution(tmp_path)
 
 
 def test_claude_result_records_tokens_and_cost(tmp_path):
@@ -169,6 +224,48 @@ def test_claude_status_note_after_the_report_does_not_replace_the_handoff(tmp_pa
     assert response.read_text() == later  # the last valid handoff wins
 
 
+def test_claude_empty_background_result_does_not_fail_a_later_handoff(tmp_path):
+    """Seen 2026-10-17: note, empty task-notification result, then the real report."""
+    from alfrd.agent_loop import REQUIRED_HEADINGS
+
+    response = tmp_path / "response.md"
+    stream = ClaudeStream(response, tmp_path / "unit.exit", headings=list(REQUIRED_HEADINGS))
+    for text in ("The suite is still running.", "", RESPONSE):
+        stream.feed(json.dumps({"type": "result", "subtype": "success", "result": text}) + "\n")
+    assert stream.close() is None
+    assert response.read_text() == RESPONSE
+    stream = ClaudeStream(response, tmp_path / "unit.exit", headings=list(REQUIRED_HEADINGS))
+    for text in ("", RESPONSE):
+        stream.feed(json.dumps({"type": "result", "subtype": "success", "result": text}) + "\n")
+    assert stream.close() is None
+    stream = ClaudeStream(tmp_path / "r2.md", tmp_path / "u2.exit")
+    stream.feed(json.dumps({"type": "result", "subtype": "success", "result": ""}) + "\n")
+    assert stream.close() == "Claude returned no final text"
+
+
+def test_claude_usage_sums_every_result_and_keeps_the_latest_cumulative_cost(tmp_path):
+    """A run with background-task follow-ups emits several results: tokens per result, cost cumulative."""
+    stream = ClaudeStream(tmp_path / "response.md", tmp_path / "unit.exit")
+    results = [
+        {"uuid": "a", "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 1000,
+                                 "cache_creation_input_tokens": 50}, "total_cost_usd": 0.10},
+        {"uuid": "b", "usage": {"input_tokens": 20, "output_tokens": 5, "cache_read_input_tokens": 2000,
+                                 "cache_creation_input_tokens": 0}, "total_cost_usd": 0.15},
+        {"uuid": "c", "usage": {"input_tokens": 3, "output_tokens": 7, "cache_read_input_tokens": 300}, "total_cost_usd": 0.18},
+    ]
+    for index, result in enumerate(results):
+        stream.feed(json.dumps({"type": "result", "subtype": "success", "result": f"reply {index}", **result}) + "\n")
+    stream.feed(json.dumps({"type": "result", "subtype": "success", "result": "reply 2", **results[2]}) + "\n")  # repeated uuid
+    assert stream.close() is None
+    meta = json.loads((tmp_path / "unit.agent.json").read_text())
+    usage = meta["usage"]
+    assert usage["input_tokens"] == 123 and usage["output_tokens"] == 22
+    assert usage["cache_read_input_tokens"] == 3300 and usage["cache_creation_input_tokens"] == 50
+    assert usage["input_uncached_tokens"] == 123
+    assert usage["total_tokens"] == 123 + 22 + 3300 + 50
+    assert meta["total_cost_usd"] == 0.18 and meta["results"] == 3 and meta["usage_source"] == "claude_result"
+
+
 def test_human_adjustment_blocks_next_agent_and_survives_runner_death(project):
     configure(project, review=True)
     original = (project / "task/next-step-codex.md").read_text()
@@ -212,7 +309,7 @@ def test_cancel_pending_human_review_preserves_handoff(project):
 
 def test_review_wait_respects_total_runtime_budget(project):
     configure(project, review=True)
-    path = project / "alfrd.yaml"
+    path = project_manifest(project)
     data = yaml.safe_load(path.read_text())
     data["execution"].update(max_runtime=3, kill_grace=.2)
     path.write_text(yaml.safe_dump(data))
@@ -237,7 +334,7 @@ def test_real_shim_stream_reports_model_and_publishes_only_result(project, tmp_p
     ]
     executable.write_text(f"#!{sys.executable}\nimport json,sys\nsys.stdin.read()\nfor event in {events!r}: print(json.dumps(event), flush=True)\n")
     executable.chmod(0o755)
-    path = project / "alfrd.yaml"
+    path = project_manifest(project)
     data = yaml.safe_load(path.read_text())
     data["entrypoint"][0].update(cmd=[str(executable), "-p", "--output-format", "text"], model="requested-model")
     path.write_text(yaml.safe_dump(data))
@@ -271,7 +368,7 @@ def test_claude_that_lingers_after_its_final_result_is_stopped_and_succeeds(proj
     executable.write_text(f"#!{sys.executable}\nimport json,sys,time\nsys.stdin.read()\n"
                           f"for event in {events!r}: print(json.dumps(event), flush=True)\ntime.sleep(600)\n")
     executable.chmod(0o755)
-    path = project / "alfrd.yaml"
+    path = project_manifest(project)
     data = yaml.safe_load(path.read_text())
     data["entrypoint"][0].update(cmd=[str(executable), "-p", "--output-format", "text"])
     path.write_text(yaml.safe_dump(data))

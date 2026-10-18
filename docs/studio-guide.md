@@ -212,7 +212,8 @@ Edit them in **Settings → Project settings**.
 - **Metadata** – metadata health per step. `avica.meta` grouped by step. AVICA config. rPicard inputs.
 - **Results** – time and progress. **Recent only** (default) or **Full history**. Below: one card per `kind: collection` artifact (rPicard diagnostics). Nothing is read until you press **Show** (server mode).
 - **Logs** – every declared log. Grouped by step or artifact. Click to open. `⤢` for full screen, `>_` to follow it in a Log Stream tab.
-- **Settings** – edit, validate and save `alfrd.yaml`. Field alias form.
+- **Chat** – talk to the project's agents (server mode); see [Chat with the agents](#chat-with-the-agents).
+- **Settings** – edit, validate and save `alfrd.yaml`. Field alias form. **Agent chat** edits the `chat:` block.
 
 Status rule: successes only = completed. Failures only = failed. Both = partial.
 
@@ -253,6 +254,156 @@ Comments inside a rewritten section may be reformatted. Browser and server savin
 follow the rules in [Two modes](#two-modes).
 
 ---
+
+## Work on the canvas
+
+Everything the step forms do is also available on the **Graph** itself; edits go to the same draft
+(Save writes the active `alfrd.yaml` with the stale-file guard, and is refused with a clear message
+when the workflow would contain a dependency cycle, a step waiting on itself or an unknown step —
+the server checks this for every save, not only the Studio's).
+
+- **Right-click empty space → Add step here.** The new step is placed there and opens in the
+  inspector's **Configure** tab: label, name, command or entrypoint, the steps it waits for, inputs,
+  outputs, stage, time limit, start delay, status source and skip. **Apply to draft** makes one
+  undoable change; **More options…** opens the full step form. Leaving a step with unapplied
+  Configure changes asks first.
+- **Right-click a step** for Configure, Connect, Disconnect…, Add a step after it, Skip / unskip,
+  Delete, and run actions (below).
+- **Connect** by dragging from the dot at the bottom of a step onto another step (that step then
+  waits for the first). A step that would create a cycle is marked red while you hover it, and the
+  drop is refused with the cycle, e.g. *prep → step → prep*. **Disconnect** from the step menu, or
+  click an arrow.
+- **Run actions** (`alfrd serve`, same machine): **Run <step>…**; for the header target's cell in
+  the run shown: **Stop** (that command only), **Retry**, **Skip**, **Open its log**. The empty-space
+  menu and the toolbar have **Run workflow…**, **Schedule a run…**, **Pause**, **Resume** /
+  **Start now** and **Cancel**, each shown only when it applies.
+- Arrows and edge colours show status and dependencies; the selected step's arrows are drawn bolder,
+  and a step's tooltip lists what it waits for.
+
+Every right-click action has a keyboard equivalent with the canvas focused: arrow keys select a step,
+**Shift+F10** or the **Menu** key opens its menu, **N** adds a step after it, **E** configures it,
+**C** starts connecting (arrows pick the step that should wait, **Enter** connects, **Esc** cancels),
+**Delete** deletes it (asks first), **+ / −** zoom, **0** fits, **F** toggles fullscreen.
+
+### Compact mode and fullscreen
+
+**Compact** (toolbar button, palette, or Alt+Shift+C — ⌥⇧C on macOS) keeps the header and sidebar and
+shows only the canvas with the run controls, zoom and an **Exit compact** button; the summary, the
+mini-map, the list/runs switch, the footer and the log strip are hidden (the Configure inspector
+still opens when you configure a step). The choice is remembered in this browser across reloads.
+**Fullscreen** (toolbar button or **F**) is separate: it shows the Workflow view with the browser
+fullscreen; Esc or **F** leaves it. Neither changes the selected target or affects a running plan.
+
+## Chat with the agents
+
+**Chat** in the sidebar (server mode; `#/chat/<session>?p=<project>`) is a conversation with the
+project's orchestrator and its specialist agents. It is off by default: turn on **Chat mode** in Studio
+settings → Preferences (per browser). Off, the Chat entry, the dock button, Alt+Shift+A, the palette
+entries and chat runs in Workflow are hidden. How requests run, the protocol and the bounds are
+in [orchestration.md](orchestration.md).
+
+- **Sessions** are listed on the left; **New** starts one. The open session is in the URL, so Back /
+  Forward and a reload return to it.
+- **Composer:** Enter sends, Shift+Enter adds a line. A message that starts with `@agent` goes
+  straight to that agent (no orchestrator call); typing `@` at the start lists the configured agents
+  with their labels and roles (arrows, Enter or Tab to pick, Esc to close). Global shortcuts stay off
+  while you type. A leading `/` opens the commands: `/setup` (who does what, with which model:
+  orchestrator and escalation models, role → agent, model, fallback agent, availability, and **New agent**:
+  a Codex / Claude Code / Antigravity agent with its own model, e.g. `@luna` on Codex `gpt-5.6-luna`, or a
+  preset for Ollama / Hugging Face / any OpenAI-compatible endpoint), `/help`, `/new`, `/graph`.
+- **Activity:** every running call (orchestrator planning included) has a card under the transcript
+  with its model, elapsed time and the end of its log, following new lines; **Open log** opens the full
+  log (it can be minimized to the Log Stream). Task messages link to their log and reply.
+- **Transcript:** your messages, the orchestrator's plan and final answer, each agent's result
+  summary with its artifacts (**View** fetches that version of the file, `path@sha256`, a page at a
+  time), and ALFRD's notes (errors, budget stops). **Full transcript** loads a task's attempts and,
+  per attempt, its prompt or reply only when you open it.
+- **Task graph:** the request's tasks on the canvas renderer of the Workflow view (status colours,
+  owner, dependencies; delegated sub-tasks dotted; orchestrator calls with an accent border and dotted
+  links to the tasks they planned). **Full screen** (button, **F** on the graph, or `/graph`) opens it
+  over the whole window; Esc returns. Click a task, or focus the graph and use the
+  arrows and Enter, for its details: acceptance criteria, budget, dependencies, attempts and usage,
+  result, artifacts, and **Cancel** (queued, waiting or running tasks) or **Retry** (failed, blocked,
+  cancelled or stopped tasks; the tasks it blocked run again too).
+- **Blockers and decisions:** a task that needs you shows its question, the options and an answer
+  field; **Send decision** lets it continue. Blockers addressed to the orchestrator are marked as such.
+- **Progress:** the newest active request's tasks done, cost and time against its bounds (meters turn
+  amber at 80 % and red at the limit), tokens and orchestrator calls, plus the session totals. Cost
+  shows "—" for agents whose CLI does not report it.
+- **Updates** arrive through the live event stream (the badge says *Live* or *Disconnected*);
+  nothing polls while it works. With live updates off, an active request is re-read every 15 s and
+  the refresh button re-reads it at once.
+
+### Chat dock
+
+The chat icon in the top bar (or **Alt+Shift+A**, also from the dock's own message field) opens a
+dock on the right of every project view: Workflow, Results, Overview, Schedule, plugin pages. It shows
+the session you last opened (a selector switches or starts one), its transcript, the composer (same
+`@agent` completion; Enter sends, Shift+Enter adds a line) and one progress line for the active
+request: tasks done, cost against the bound, elapsed time, tokens and warning badges. **Open full**
+goes to the Chat page (graph, decisions, sessions). Open or closed and the width (drag its left edge,
+or arrow keys on it) are remembered in this browser. In compact workflow mode the dock stays hidden
+unless you open it by hand. Windows 900 px wide or narrower show it as an overlay on top of the view
+(Esc or the close button returns). It loads on the first open, updates from the same live event stream
+as the Chat page, and is a labelled landmark (`aria-expanded` on its button).
+
+Each chat session is also a run: Workflow → Runs lists it under *Chat sessions* (tasks × agents grid,
+logs, usage, Pause / Resume / Cancel, **Open in Chat**), and with it picked Graph and List show its
+tasks. It never counts as the active workflow run. Each task shows its attempts with **Open log**
+and its handoff folder, and **Promote to workflow** (Chat page) previews the request's tasks as
+workflow steps, then saves them into the active `alfrd.yaml` with the usual history, changed-on-disk
+and cycle checks.
+
+Token and cost report: Chat shows, per task, request and session, new input, cache read, cache write,
+output and cost; Schedule shows the same per turn and for the plan (Agent tokens line, Usage table).
+Warning budgets `execution.warn_turn_cost_usd` and `chat.warn_task_cost_usd` mark turns or tasks that
+cost more with a badge and a `budget.warning` event; nothing is stopped.
+
+**Settings → Agent chat → Chat agents & limits** edits the `chat:` block of the active `alfrd.yaml`:
+the agents (label, entrypoint, model, adapter, persona, roles; add your own or re-add a preset), the
+orchestrator, tasks at once, recent messages in planning, the final-summary call and the per-request
+bounds (depth, retries, cost, time, tasks). **Apply to draft** puts it in the Settings editor;
+**Apply and save** also saves through the usual path (version history, and the changed-on-disk check:
+if the file changed since it was loaded you see the difference instead of overwriting it).
+
+## New project on a canvas
+
+**New project → Design on canvas…** (or `#/new-project`) plans a project before creating it:
+
+1. **Folder**, **name**, **template** (every template ALFRD ships, e.g. basic, avica, agent-loop) and
+   **configuration file** (`.alfrd/alfrd.yaml` by default, or a root `alfrd.yaml`).
+2. **Start** with the template's workflow (its steps and dependencies, made explicit; skipped steps are
+   left out) or an empty canvas.
+3. On the canvas: **Add step** (N), select a step to set its id, label, agent (one of the template's
+   entrypoints, or its own command) and persona, and the steps it waits for. Connect by dragging a
+   step's bottom handle onto another, or with **C**, the arrows and Enter; click an arrow to
+   disconnect; Delete removes the selected step. A connection that would make a cycle is refused with
+   the cycle. Agent-loop templates show their turn sequence instead: add, remove or change turns, and
+   give the initial task and iterations.
+4. **Targets:** the first targets (rows of `alfrd.targets.csv`), or for an agent loop the first
+   task's folder name.
+5. **Validate** lists what must be fixed; **Create project** validates again on the server, writes the
+   files (in `.alfrd/` unless you chose the root file) and opens the project on **Workflow** with the
+   first target selected.
+
+The draft is kept in this browser (it survives a reload) until it is created or discarded. The short
+**Quick dialog…** remains for folder, name and template only.
+
+## Keyboard and browser
+
+Press **?** (or choose *Keyboard shortcuts* in the palette or the footer) for the full list, written
+with your platform's keys (⌘ ⌥ ⇧ on macOS, Ctrl Alt Shift elsewhere). Global shortcuts — **?**,
+Ctrl/⌘+K (palette), Ctrl/⌘+Alt+N (new target), Alt+Shift+S (sidebar), Alt+Shift+C (compact), Alt+Shift+A (chat dock) — do
+nothing while you type in a field. Browser shortcuts are left alone.
+
+The URL holds the section, project and target (`#/workflow?p=<project>&t=<target>`). Choosing a
+section, project or target adds a history entry, so **Back** / **Forward** step through them, and a
+reload restores them. (Because of that, **Quit** may not be able to close the tab; it then says so.)
+
+Unsaved edits — the `alfrd.yaml` editor in Settings, a workflow draft and unapplied Configure
+changes — are kept per project while you move around the Studio (leaving the view shows a reminder),
+and the browser asks before a reload or closing the tab would lose them. A lost connection to
+`alfrd serve` shows a notice at the top of the page until it is back.
 
 ## AVICA specifics
 

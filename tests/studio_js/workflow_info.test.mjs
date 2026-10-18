@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 globalThis.document = { hidden: false, addEventListener() {} };
 const { server } = await import("../../src/alfrd/web/js/data/server.js");
 const { loadPlan, forgetPlan, runTargets } = await import("../../src/alfrd/web/js/components/plans.js");
-const { infoHead } = await import("../../src/alfrd/web/js/components/canvas.js");
+const { infoHead, scopeRun } = await import("../../src/alfrd/web/js/components/canvas.js");
 
 const targets = [
   { id: "a:T1", project: "a", name: "T1", columns: { RA: "12h", CORRELATOR: "DiFX" } },
@@ -45,11 +45,69 @@ test("scheduled runs label their start; facts come from the run target", () => w
 test("finished run falls back to the last run and uses its table rows", () => withStatus("a", {
   plan: { id: "r3", status: "finished" }, table: { rows: [{ target: "T1" }, { target: "T2" }] }, plans: [],
 }, () => {
-  const h = infoHead(context("a", "a:T1"), "a");
+  const h = infoHead(context("a", null), "a");
   assert.equal(h.title, "A / Targets (2): T1, T2");
   assert.equal(h.run.label, "Done");
   assert.match(h.line, /^Last run r3$/);
 }));
+
+test("a header target in the shown run scopes the title to it", () => withStatus("a", {
+  plan: { id: "r3", status: "finished" }, table: { rows: [{ target: "T1" }, { target: "T2" }] }, plans: [],
+}, () => {
+  const h = infoHead(context("a", "a:T1"), "a");
+  assert.equal(h.title, "A / Target: T1");
+  assert.equal(h.correlator, "DiFX");
+  assert.equal(h.run.label, "Done");
+  assert.equal(h.line, "RA: 12h · Last run r3 (with 1 other target)");
+}));
+
+test("a header target with no run says so instead of showing another target's run", () => withStatus("a", {
+  plan: { id: "r4", status: "finished", targets: ["T2"] }, plans: [{ id: "r4", status: "finished", targets: ["T2"] }],
+}, () => {
+  const h = infoHead(context("a", "a:T1"), "a");
+  assert.equal(h.title, "A / Target: T1");
+  assert.equal(h.run, undefined);
+  assert.match(h.line, /No runs for T1 yet\. Start one with Run/);
+}));
+
+async function scoped(status, selected) {
+  const asked = [], old = server.planStatus, ctx = context("a", selected);
+  server.planStatus = async (p, id) => { asked.push(id); return structuredClone(id ? { ...status, plan: { id, status: "finished", targets: ["T1"] }, selected: "id" } : status); };
+  try {
+    await loadPlan(ctx, "a", { quiet: true });
+    scopeRun(ctx, "a"); scopeRun(ctx, "a"); // once per header target
+    await new Promise((r) => setTimeout(r, 0));
+    return asked;
+  } finally { server.planStatus = old; forgetPlan("a"); scopeRun(context("a"), "a"); }
+}
+
+test("selecting a target loads its newest run, an active one first, once", async () => {
+  const plans = [{ id: "new", status: "finished", targets: ["T2"] }, { id: "mid", status: "finished", targets: ["T1"] },
+    { id: "act", status: "paused", targets: ["T1", "T2"] }];
+  assert.deepEqual(await scoped({ plan: { id: "new", status: "finished", targets: ["T2"] }, plans }, "a:T1"), [null, "act"]);
+  assert.deepEqual(await scoped({ plan: { id: "new", status: "finished", targets: ["T2"] }, plans: plans.slice(0, 2) }, "a:T1"), [null, "mid"]);
+});
+
+test("a run loaded for the header target is the last run, not a hand-picked one", async () => {
+  const ctx = context("a", "a:T1"), old = server.planStatus;
+  const plans = [{ id: "new", status: "finished", targets: ["T2"] }, { id: "mid", status: "finished", targets: ["T1"] }];
+  server.planStatus = async (p, id) => structuredClone(id ? { plan: { ...plans[1] }, plans, selected: "id" } : { plan: { ...plans[0] }, plans, selected: "default" });
+  try {
+    await loadPlan(ctx, "a", { quiet: true });
+    scopeRun(ctx, "a");
+    await new Promise((r) => setTimeout(r, 0));
+    const h = infoHead(ctx, "a");
+    assert.equal(h.title, "A / Target: T1");
+    assert.equal(h.line, "RA: 12h · Last run mid");
+  } finally { server.planStatus = old; forgetPlan("a"); scopeRun(context("a"), "a"); }
+});
+
+test("the shown run is kept when it has the target; no target or no run loads nothing", async () => {
+  const plans = [{ id: "r", status: "finished", targets: ["T1"] }];
+  assert.deepEqual(await scoped({ plan: plans[0], plans }, "a:T1"), [null]);
+  assert.deepEqual(await scoped({ plan: plans[0], plans }, null), [null]);
+  assert.deepEqual(await scoped({ plan: plans[0], plans }, "a:T2"), [null]);
+});
 
 test("a run picked from history is labelled as selected", () => withStatus("a", {
   plan: { id: "old", status: "failed", target: "T2" }, selected: "id", plans: [],

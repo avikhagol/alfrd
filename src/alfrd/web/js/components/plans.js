@@ -118,7 +118,7 @@ export function activePlan(project, target = null) {
   const s = planOf(project);
   const active = (p) => p && ["running", "paused", "interrupted"].includes(p.status);
   const matches = (p) => !target || p.target === target || p.targets?.includes(target);
-  if (active(s?.plan) && (matches(s.plan) || s.table?.rows?.some((r) => r.target === target))) return s;
+  if (active(s?.plan) && !s.plan.chat && (matches(s.plan) || s.table?.rows?.some((r) => r.target === target))) return s;
   const plan = s?.plans?.find((p) => active(p) && matches(p));
   return plan ? { plan } : null;
 }
@@ -308,6 +308,20 @@ function rememberSections(box) {
 }
 
 
+/** The run picker: workflow runs, then (Chat mode on) chat sessions' runs in their own group. */
+export function runPicker(ctx, s) {
+  const p = s.plan, o = (x, label) => `<option value="${esc(x.id)}" ${x.id === p?.id ? "selected" : ""}>${esc(label)}</option>`;
+  const chats = ctx.chatOn?.() ? s.chat_plans || [] : [], runs = (s.plans || []).map((x) => o(x, `Run ${x.id} · ${phaseLabel(x)}${x.working ? " · working" : ""}`)).join("");
+  return `<select class="input sm" data-plan-pick aria-label="Run" title="${esc(p ? `Run ${p.id} · ${phaseLabel(p)}` : "Run")}">${p ? "" : "<option value=\"\">Choose a run…</option>"}${chats.length
+    ? `${runs && `<optgroup label="Workflow runs">${runs}</optgroup>`}<optgroup label="Chat sessions">${chats.map((x) => o(x, `Chat · ${x.title || x.id} · ${phaseLabel(x)}`)).join("")}</optgroup>` : runs}</select>`;
+}
+let crm = null, crLoad = null;
+/** Calls fn with components/chat_runs.js (chat sessions' runs in Workflow), loading it on first use. */
+export function withChatRuns(ctx, fn) {
+  if (crm) return fn(crm);
+  crLoad ||= import("./chat_runs.js").then((m) => { crm = m; ctx.update(); }, (e) => { crLoad = null; ctx.toast(`Chat runs: ${e.message}`, "fail"); });
+}
+
 export function renderSchedule(box, ctx, project) {
   if (!plansAvailable(ctx, project)) {
     box.innerHTML = `<div class="empty">${icon("server")}<p>Runs need <code>alfrd serve</code>. From a terminal: <code>alfrd plan new --targets …</code>, <code>alfrd plan run</code>, <code>alfrd plan status</code>.</p></div>`;
@@ -315,12 +329,15 @@ export function renderSchedule(box, ctx, project) {
   }
   const entry = cache.get(project);
   if (!entry || entry.want) { box.innerHTML = `<div class="empty">Loading runs…</div>`; if (!entry) loadPlan(ctx, project); return; }
+  // Idle runs are not polled: re-read a stale list so runs started elsewhere (e.g. a new chat session) show up.
+  if (!entry.loading && Date.now() - (entry.fetched || 0) > 10000) loadPlan(ctx, project, { quiet: true });
   const s = entry.status;
   if (!s?.plan) {
-    box.innerHTML = `<div class="empty">${icon("play")}<p>No run yet for this project.</p><button class="btn primary" data-plan="new">${icon("play")} Run…</button>${entry.error ? `<div class="callout fail" role="alert">${esc(entry.error)}<button class="btn" data-plan="refresh">Retry</button><button class="btn" data-plan="dismiss-error">Dismiss</button></div>` : ""}</div>`;
+    box.innerHTML = `<div class="empty">${icon("play")}<p>No run yet for this project.</p>${ctx.chatOn?.() && s?.chat_plans?.length ? runPicker(ctx, s) : ""}<button class="btn primary" data-plan="new">${icon("play")} Run…</button>${entry.error ? `<div class="callout fail" role="alert">${esc(entry.error)}<button class="btn" data-plan="refresh">Retry</button><button class="btn" data-plan="dismiss-error">Dismiss</button></div>` : ""}</div>`;
     return;
   }
   const p = s.plan;
+  if (p.chat) return withChatRuns(ctx, (m) => m.renderRun(box, ctx, project, s));
   const canAct = Boolean(server.session?.mutations_enabled);
   const steps = s.table?.steps || [];
   const rows = s.table?.rows || [];
@@ -343,7 +360,7 @@ export function renderSchedule(box, ctx, project) {
     ${entry.error ? `<div class="callout fail" role="alert"><span>${esc(entry.error)}</span><button class="btn sm" data-plan="refresh">Retry</button><button class="btn sm" data-plan="dismiss-error">Dismiss</button></div>` : ""}
     ${runSwitcher(s)}
     <div class="sched-h">
-      <select class="input sm" data-plan-pick aria-label="Run" title="${esc(`Run ${p.id} · ${phaseLabel(p)}`)}">${(s.plans || []).map((x) => `<option value="${esc(x.id)}" ${x.id === p.id ? "selected" : ""}>Run ${esc(x.id)} · ${esc(phaseLabel(x) + (x.working ? " · working" : ""))}</option>`).join("")}</select>
+      ${runPicker(ctx, s)}
       ${p.start_at ? "" : `<span class="badge tone-${PLAN_TONE[p.status] || "muted"}" title="${esc(runnerTitle(s))}">${icon(p.status === "running" ? "sync" : p.status === "finished" ? "checkCircle" : "info", p.status === "running" && s.runner?.alive ? "spin" : "")}${esc(RUN_STATUS[p.status] || p.status)}</span>`}
       ${p.start_at ? `<span class="badge tone-warn" title="The runner waits until then (alfrd plan start-now runs it at once)">${icon("clock")}Scheduled · starts ${esc(p.start_at.replace("T", " ").slice(0, 16))}</span>${canAct ? `<button class="btn sm primary" data-plan="start-now">${icon("play")} Run now</button>` : ""}` : ""}
       <div class="plan-bar" title="${pct}% of planned cells done"><i style="width:${pct}%"></i></div><span class="tabular small">${tot.done || 0}/${all}</span>
@@ -357,6 +374,7 @@ export function renderSchedule(box, ctx, project) {
       <button class="btn sm" data-plan="more" aria-haspopup="menu" title="Cancel, add a target, new run, usage, runner log …">${icon("more")} More</button>
     </div>
     <p class="sched-meta muted small"><span class="mono" title="Run CSV">${esc(p.csv)}</span> · ${esc(RUN_MODE[p.mode] || p.mode)} · concurrency ${esc(p.concurrency)} · ${esc(RUN_FAILURE[p.on_failure] || p.on_failure)} · ${esc(runnerTitle(s))}</p>
+    ${tokenMeta(s)}
     ${s.loop ? `<p class="sched-meta"><b>Turn ${esc(s.loop.turn)} of ${esc(s.loop.turns)}${s.loop.iteration_unit === "turns" ? "" : ` · Iteration ${esc(s.loop.iteration)}/${esc(s.loop.iterations)}`} · ${esc(s.loop.agent || "ready")}${s.loop.roles?.length ? ` as ${esc(s.loop.roles.join(" + "))}` : ""}</b> · ${esc(RUN_PHASE[s.loop.phase] || "Queued")} · Model: ${esc(s.loop.model || (s.loop.requested_model ? `${s.loop.requested_model} (requested)` : "not reported"))} · ${esc(loopElapsed([{ ...s.loop, status: "running" }]))}</p><p class="muted small">Pause finishes the current turn. Cancel stops it now.</p>` : ""}
     <div class="sched-b dock-${esc(orderPrefs().dock)}${orderPrefs().folded ? " order-folded" : ""}">
       <section class="sched-grid">
@@ -376,6 +394,17 @@ export function renderSchedule(box, ctx, project) {
     </div>`; });
 }
 
+/** Plan token report (new input · cache read · cache write · output · cost) and the turns over execution.warn_turn_cost_usd. */
+function tokenMeta(s) {
+  const t = s.agent_totals || {}, warned = s.cost_warnings?.units?.length || 0;
+  const k = (v) => (v >= 1e4 ? `${Math.round(v / 1e3)}k` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : String(v));
+  const parts = [["new input", t.input_uncached_tokens], ["cache read", t.cache_read_input_tokens], ["cache write", t.cache_creation_input_tokens], ["output", t.output_tokens]]
+    .filter(([, v]) => Number.isFinite(v)).map(([l, v]) => `${l} ${k(v)}`);
+  if (Number.isFinite(t.total_cost_usd)) parts.push(`$${t.total_cost_usd.toFixed(t.total_cost_usd < 1 ? 3 : 2)}`);
+  if (!parts.length && !warned) return "";
+  return `<p class="sched-meta small" data-tokens="plan"><b>Agent tokens</b> <span class="muted">${esc(parts.join(" · ") || "not reported")}</span>${warned ? ` <button class="badge tone-warn" data-plan="usage" title="Turns over execution.warn_turn_cost_usd">${icon("alert")}<span>${warned} turn${warned > 1 ? "s" : ""} over $${esc(s.cost_warnings.warn_turn_cost_usd)}</span></button>` : ""}</p>`;
+}
+
 function unitRow(project, u, status) {
   const meta = CELL[status === "done" ? "done" : status] || CELL[u.status] || CELL.todo;
   const time = u.finished && u.started ? short((new Date(u.finished) - new Date(u.started)) / 1000)
@@ -385,7 +414,7 @@ function unitRow(project, u, status) {
   return `<tr class="c-${esc(u.status || status)}" title="${esc(tip)}"><td><span class="mono"><b>${esc(u.target || "*")}</b></span> <span class="mono small muted">${esc((u.steps || [u.step]).join(", "))}</span>${u.error ? `<div class="fail-t small ellip">${esc(String(u.error).slice(0, 80))}</div>` : ""}</td>
     <td class="ord-st">${icon(meta.icon, u.status === "running" ? "spin" : "")}</td>
     <td class="tabular small">${esc(time)}</td>
-    <td class="ord-a">${logButtons(project, u.log)}${usageButton(project, u)}</td></tr>`;
+    <td class="ord-a">${u.cost_warning ? `<span class="badge tone-warn" title="Cost $${esc(u.cost_warning.value)} > warning $${esc(u.cost_warning.bound)}">${icon("alert")}<span>$${esc(Number(u.cost_warning.value).toFixed(2))}</span></span>` : ""}${logButtons(project, u.log)}${usageButton(project, u)}</td></tr>`;
 }
 
 function orderList(s, project) {
@@ -506,6 +535,7 @@ export function cellMenu(ctx, project, anchor) {
     { label: "Follow in Log Stream", icon: "log", disabled: !u?.log, run: () => dockLog(ctx, project, u.log) },
     { label: "Resource usage", icon: "graph", disabled: !u?.usage_file, run: () => loadUsage().then((m) => m.openUsage(ctx, project, u, () => unitById(project, u.id) || u)) },
     { label: "Retry (todo)", icon: "reset", disabled: !can || v === "todo", run: () => set("todo") },
+    ...(v === "running" && u?.status === "running" && server.session?.mutations_enabled ? [{ label: "Stop this command…", icon: "stop", run: () => import("./canvas_ops.js").then((m) => m.stopUnit(ctx, project, s.plan.id, u)) }] : []),
     { label: "Start step at… (all targets)", icon: "clock", disabled: !can || !["running", "paused"].includes(s?.plan?.status), run: () => setStart(ctx, project, s.plan.id, step) },
     { label: "Skip", icon: "minus", disabled: !can || Boolean(s?.plan?.loop) || v === "skip", run: () => set("skip") },
     ...(u?.argv ? [{ label: "Copy command", icon: "copy", run: () => navigator.clipboard?.writeText(u.argv.join(" ")) }] : []),
@@ -647,7 +677,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
         <label class="field" ${isLoop ? "hidden" : ""}><span>Mode</span><select class="input" id="run-mode">${["step", "target", "batch"].map((m) => `<option value="${m}" ${st.mode === m ? "selected" : ""} ${m !== "step" && !info.settings[`${m}_entrypoint`] ? "disabled" : ""}>${esc(RUN_MODE[m])}</option>`).join("")}</select><small class="muted">Order of work. Batch sends all selected work to one command.</small></label>
         <label class="field" ${isLoop ? "hidden" : ""}><span>Targets at once</span><input class="input" id="run-conc" type="number" min="1" max="64" value="${esc(st.concurrency)}"></label>
         <label class="field" ${isLoop ? "hidden" : ""}><span>On failure</span><select class="input" id="run-fail">${["stop_target", "continue", "stop_plan"].map((m) => `<option value="${m}" ${st.on_failure === m ? "selected" : ""}>${esc(RUN_FAILURE[m])}</option>`).join("")}</select><small class="muted">What happens after a step fails.</small></label>
-        <label class="field"><span>Start at <span class="muted">(optional)</span></span><input class="input" id="run-at" type="datetime-local" min="${esc(localStamp(new Date()))}" max="${esc(localStamp(new Date(Date.now() + 7 * 864e5)))}"><small class="muted">Empty starts now. Up to 7 days ahead; the machine must be on then.</small></label>
+        <label class="field"><span>Start at <span class="muted">(optional)</span></span><input class="input" id="run-at" type="datetime-local" min="${esc(localStamp(new Date()))}" max="${esc(localStamp(new Date(Date.now() + 7 * 864e5)))}"><span class="row gap">${[[15, "+15 min"], [60, "+1 h"], [240, "+4 h"]].map(([m, l]) => `<button type="button" class="btn sm" data-run-in="${m}">${l}</button>`).join("")}</span><small class="muted">Empty starts now. Up to 7 days ahead; the machine must be on then.</small></label>
         <label class="field"><span>Status from</span><input class="input" value="${esc({ exit_code: "Command exit code", result_csv: "Results CSV", both: "Exit code and results CSV" }[st.status_from] || st.status_from)}" disabled title="execution.status_from in alfrd.yaml"></label>
       </div>
       <div id="run-error" class="callout fail" role="alert" hidden></div>
@@ -655,6 +685,7 @@ export async function openRunDialog(ctx, project, { dry = false, only = null, ta
     </div>
     <footer class="modal-f row gap right"><button class="btn" id="run-dry">${icon("list")} Preview commands</button>${dry ? "" : `<button class="btn primary" id="run-go" ${server.session?.mutations_enabled ? "" : "disabled title='Only from a browser on the same machine'"}>${icon("play")} Start run</button>`}</footer>`, (root, close) => {
     attachFits(ctx, project, root);
+    root.addEventListener("click", (e) => { const m = e.target.closest("[data-run-in]")?.dataset.runIn; if (m) $("#run-at", root).value = localStamp(new Date(Date.now() + m * 6e4)); });
     const go = $("#run-go", root);
     const canStart = go && !go.disabled;
     const picker = mountStepPicker($("#run-steps", root), {

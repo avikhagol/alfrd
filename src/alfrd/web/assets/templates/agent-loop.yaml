@@ -27,6 +27,9 @@ quickstart:
 entrypoint:
   - name: claude
     cmd: [claude, -p, --permission-mode, acceptEdits, --output-format, text]
+    # lean: start without MCP servers, user plugins/settings and skills (--strict-mcp-config,
+    # --setting-sources project,local, --disable-slash-commands). mcp: [file.json] keeps chosen servers.
+    lean: true
     stdin_file: "{prompt_file}"
     output_file: "{response_file}"
     output_capture: stdout

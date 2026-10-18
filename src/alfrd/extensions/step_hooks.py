@@ -8,7 +8,8 @@ A hook can't fail, hang or change a step: each call runs in a daemon worker thre
 that is abandoned after the hook's ``timeout``; an exception or timeout comes back as
 a one-line :class:`Failure` the runner writes to ``runner.log`` and as a
 ``plugin.hook_failed`` event. Safe mode (``ALFRD_NO_PLUGINS=1``) and disabled
-plugins give no hooks. Plugins are loaded once per process (:func:`alfrd.extensions.load`);
+plugins give no hooks. Plugins that don't apply to the unit's project type
+(:mod:`alfrd.extensions.applicability`) are skipped. Plugins are loaded once per process (:func:`alfrd.extensions.load`);
 the disabled list is re-read on every call, so disabling applies from the next unit.
 """
 
@@ -73,6 +74,13 @@ def run_isolated(fn: Callable[..., Any], args: tuple, timeout: float, name: str 
     return box.get("value"), None
 
 
+def _applying(active: list[tuple[str, StepHooks]], ctx: StepContext) -> list[tuple[str, StepHooks]]:
+    """Only the hooks of plugins that apply to the unit's project type."""
+    from alfrd.extensions.applicability import available
+
+    return [(pid, spec) for pid, spec in active if available(pid, ctx.project_root or None)]
+
+
 def _copy(ctx: StepContext) -> StepContext:
     import copy
 
@@ -83,7 +91,7 @@ def call_before(ctx: StepContext, active: list[tuple[str, StepHooks]] | None = N
     """Run every ``before`` hook: ``({plugin_id: state}, failures)``; a failed hook's state is ``None``."""
     states: dict[str, Any] = {}
     failures: list[Failure] = []
-    for plugin_id, spec in hooks() if active is None else active:
+    for plugin_id, spec in _applying(hooks() if active is None else active, ctx):
         if spec.before is None:
             continue
         value, error = run_isolated(spec.before, (_copy(ctx),), float(spec.timeout), f"alfrd-hook-{plugin_id}")
@@ -97,7 +105,7 @@ def call_after(ctx: StepContext, states: Mapping[str, Any] | None,
                active: list[tuple[str, StepHooks]] | None = None) -> list[Failure]:
     """Run every ``after`` hook with its plugin's ``before`` state (``None`` when there is none)."""
     failures: list[Failure] = []
-    for plugin_id, spec in hooks() if active is None else active:
+    for plugin_id, spec in _applying(hooks() if active is None else active, ctx):
         if spec.after is None:
             continue
         state = (states or {}).get(plugin_id)

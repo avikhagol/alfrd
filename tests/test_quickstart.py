@@ -7,6 +7,7 @@ from alfrd import quickstart
 from alfrd.execution import load_execution
 from alfrd.project_creation import create_project
 from alfrd.runtime import RuntimeService, RuntimeStore
+from alfrd.manifest_paths import project_manifest
 
 
 @pytest.fixture
@@ -82,23 +83,23 @@ def test_agent_loop_form_configures_entrypoints_and_loop(loop):
     assert [s.entrypoint for s in cfg.steps] == ["claude", "claude", "codex", "claude", "claude", "codex"]
     assert cfg.steps[0].model == "opus" and cfg.steps[0].fallback_models == ("sonnet",)
     assert all(s.human_review for s in cfg.steps) and cfg.loop_workspace == "shared"
-    data = yaml.safe_load((loop / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(loop)).read_text())
     claude = next(e for e in data["entrypoint"] if e["name"] == "claude")
     assert claude["model"] == "opus" and "model" not in next(e for e in data["entrypoint"] if e["name"] == "codex")
     quickstart.apply(loop, "setup", {"entrypoint.claude.model": ""})
-    assert "model" not in next(e for e in yaml.safe_load((loop / "alfrd.yaml").read_text())["entrypoint"] if e["name"] == "claude")
+    assert "model" not in next(e for e in yaml.safe_load((project_manifest(loop)).read_text())["entrypoint"] if e["name"] == "claude")
 
 
 def test_manifest_changes_that_do_not_load_are_reverted(loop):
-    before = (loop / "alfrd.yaml").read_text()
+    before = (project_manifest(loop)).read_text()
     with pytest.raises(quickstart.QuickstartError, match="would not load"):
         quickstart.apply(loop, "setup", {"workflows.0.repeat.sequence": "claude, gemini"})
-    assert (loop / "alfrd.yaml").read_text() == before
+    assert (project_manifest(loop)).read_text() == before
     assert load_execution(loop).steps[0].entrypoint == "claude"
 
 
 def test_manifest_write_keeps_untouched_sections_byte_for_byte(loop):
-    path = loop / "alfrd.yaml"
+    path = project_manifest(loop)
     path.write_text("# my comment\n" + path.read_text().replace("execution:\n", "execution:  # keep me\n", 1))
     quickstart.apply(loop, "setup", {"entrypoint.claude.model": "opus"})
     text = path.read_text()
@@ -106,7 +107,7 @@ def test_manifest_write_keeps_untouched_sections_byte_for_byte(loop):
 
 
 def test_custom_form_from_alfrd_yaml_and_bad_declarations(loop):
-    path = loop / "alfrd.yaml"
+    path = project_manifest(loop)
     data = yaml.safe_load(path.read_text())
     data["quickstart"]["notes"] = {"type": "form", "target": "settings.inp",
                                    "fields": {"OWNER": "textbox", "MODE": {"type": "select", "options": ["a", "b"]}, "DIR": "path"}}

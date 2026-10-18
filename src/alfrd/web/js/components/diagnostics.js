@@ -57,15 +57,18 @@ export function refresh(host, ctx) {
 async function loadRuns(card, ctx, st) {
   const body = $(".coll-body", card);
   body.innerHTML = `<p class="muted small">Listing runs…</p>`;
+  // Another target selected meanwhile: refresh() already asked for its list, drop this reply.
+  const asked = st.filter.target, ask = st.ask = (st.ask || 0) + 1, stale = () => st.ask !== ask;
   try {
-    const q = { name: st.name, ...(st.filter.target ? { target: st.filter.target } : {}) };
+    const q = { name: st.name, ...(asked ? { target: asked } : {}) };
     const res = await server.collections(st.project, q);
+    if (stale()) return;
     st.runs = res.runs || [];
     st.run = st.runs.find((r) => r.id === st.run)?.id || filtered(st)[0]?.id || null;
     if (st.other && !st.runs.some((r) => r.id === st.other)) st.other = null;
     draw(card, ctx, st);
   } catch (error) {
-    body.innerHTML = `<p class="callout warn">${icon("alert")}<span>${esc(error.message)}</span></p>`;
+    if (!stale()) body.innerHTML = `<p class="callout warn">${icon("alert")}<span>${esc(error.message)}</span></p>`;
   }
 }
 

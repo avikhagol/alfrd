@@ -46,6 +46,37 @@ workflows:
       - rpicard
 ```
 
+## File locations
+
+A project folder can hold its configuration in three places. The first one that
+exists is **active**: it is the only one read, and the only one every save,
+history restore and quickstart writes.
+
+| Precedence | File | Notes |
+|---|---|---|
+| 1 | `.alfrd/alfrd.yaml` | canonical; new projects (CLI and Studio) start here |
+| 2 | `alfrd.yaml` | project root; still fully supported |
+| 3 | `.alfrd.yaml` | legacy alias |
+
+Lower files are *shadowed*: kept on disk, never read, never written, never
+deleted. The project root is the folder that contains `.alfrd/`, so relative
+paths (`plan_csv`, `targets.csv`, `avica.target_dir`) resolve the same way
+wherever the file lives. Settings → Project shows the active path and says so
+when a root file is being ignored.
+
+Move an existing root file into `.alfrd/` (never done silently):
+
+```bash
+alfrd manifest migrate DIR --dry-run     # show the plan (and a diff when .alfrd/alfrd.yaml differs)
+alfrd manifest migrate DIR               # copy to .alfrd/alfrd.yaml, old file -> alfrd.yaml.migrated
+alfrd manifest migrate DIR --keep shadow # leave the old file in place (ignored)
+alfrd manifest migrate DIR --force       # replace a different .alfrd/alfrd.yaml (kept as .bak)
+```
+
+The Studio offers the same under Settings → Project (**Move to .alfrd/…**).
+`alfrd projects create DIR --config-location root` writes a root `alfrd.yaml`
+instead of the default `.alfrd/alfrd.yaml`.
+
 ## Placeholders
 
 - `{workdir}` – a work folder, e.g. `reductions/RDV41/wd`

@@ -95,4 +95,4 @@ curl -H "Authorization: Bearer $T" http://127.0.0.1:5000/api/v1/projects
 Log text is bounded: at most 200 lines / 64 KiB, ANSI codes stripped, and only
 logs of the plan's own commands are read.
 
-Pause / resume / cancel are not part of this API (use `alfrd plan pause|resume|cancel`).
+Pause / resume / cancel are not part of this API (use `alfrd plan pause|resume|cancel`). Studio-only controls (loopback + CSRF), including stopping a single command with `POST /api/studio/projects/<p>/plans/<id>/units/<unit>/stop`, are described in [Plans](plans.md#stopping-one-command).

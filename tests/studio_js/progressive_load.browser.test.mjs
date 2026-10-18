@@ -14,8 +14,9 @@ test("progressive startup, failures, retry and persistent picker in Chromium", {
     try {
       const path = new URL(req.url, "http://local").pathname;
       const file = new URL(path === "/" ? "index.html" : path.slice(1), web);
+      const body = await readFile(file); // read first: a missing file (e.g. an unrouted API call during teardown) is a 404
       res.writeHead(200, { "Content-Type": mime[extname(file.pathname)] || "application/octet-stream" });
-      res.end(await readFile(file));
+      res.end(body);
     } catch { res.writeHead(404); res.end(); }
   });
   await new Promise((r) => http.listen(0, "127.0.0.1", r));

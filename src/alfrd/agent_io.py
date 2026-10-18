@@ -85,6 +85,19 @@ def token_usage(value, cached_in_input=False):
     return result
 
 
+def sum_usage(usages, cached_in_input=False):
+    """Field-wise sum of normalized usages; a field stays unknown when no usage reported it."""
+    usages = [u for u in usages if isinstance(u, dict)]
+    if not usages:
+        return None
+    out = {}
+    for key in USAGE_KEYS:
+        known = [u[key] for u in usages if isinstance(u.get(key), int) and not isinstance(u.get(key), bool)]
+        out[key] = sum(known) if known else None
+    out["input_uncached_tokens"] = uncached_input(out, cached_in_input)
+    return out
+
+
 def uncached_input(usage, cached_in_input):
     """Unknown unless every count it depends on was reported."""
     total, cached = usage.get("input_tokens"), usage.get("cache_read_input_tokens")
@@ -151,10 +164,71 @@ def agent_totals(units):
     return result
 
 
-def agent_command(argv, model=None, stream=False, access=None, adapter=None, fallback=None):
+STARTUP_KEYS = ("lean", "mcp", "plugins", "skills")
+
+
+def startup_options(spec):
+    """Validated lean-startup options of an entrypoint or step (``lean``, ``mcp``, ``plugins``, ``skills``).
+
+    ``lean: true`` means ``mcp: none``, ``plugins: false`` and ``skills: false`` unless one is given.
+    Returns {} when nothing is asked for (existing projects start agents unchanged). Raises ValueError.
+    """
+    spec = spec or {}
+    if not any(key in spec for key in STARTUP_KEYS):
+        return {}
+    lean = spec.get("lean", False)
+    if not isinstance(lean, bool):
+        raise ValueError("lean must be true or false")
+    out = {"mcp": "none", "plugins": False, "skills": False} if lean else {}
+    mcp = spec.get("mcp")
+    if mcp is not None:
+        if isinstance(mcp, str) and mcp in ("none", "default"):
+            out["mcp"] = mcp
+        elif isinstance(mcp, list) and mcp and all(isinstance(m, str) and m.strip() for m in mcp):
+            out["mcp"] = [m.strip() for m in mcp]
+        else:
+            raise ValueError("mcp must be none, default or a list of MCP config files (or JSON strings)")
+    for key in ("plugins", "skills"):
+        if key in spec and spec[key] is not None:
+            if not isinstance(spec[key], bool):
+                raise ValueError(f"{key} must be true or false")
+            out[key] = spec[key]
+    return {k: v for k, v in out.items() if not (k == "mcp" and v == "default") and v is not True}
+
+
+# Claude Code CLI flags for lean startup (checked against `claude --help`, 2.1.x):
+#   --strict-mcp-config            use only MCP servers from --mcp-config (none when it is not given)
+#   --mcp-config <configs...>      load MCP servers from these JSON files or strings
+#   --setting-sources project,local  skip user settings (~/.claude/settings.json: user plugins, hooks, MCP servers)
+#   --disable-slash-commands       disable all skills (and slash commands)
+LEAN_FLAGS = ("--strict-mcp-config", "--mcp-config", "--setting-sources", "--disable-slash-commands")
+
+
+def startup_args(adapter, startup):
+    """CLI arguments for ``startup`` (see :func:`startup_options`); only Claude has such flags."""
+    if not startup or adapter.name != "claude":
+        return []
+    args = []
+    mcp = startup.get("mcp")
+    if isinstance(mcp, list):
+        args += ["--mcp-config", *mcp]  # variadic: always followed by another option below
+    if mcp is not None:
+        args.append("--strict-mcp-config")
+    if startup.get("plugins") is False:
+        args += ["--setting-sources", "project,local"]
+    if startup.get("skills") is False:
+        args.append("--disable-slash-commands")
+    return args
+
+
+def agent_command(argv, model=None, stream=False, access=None, adapter=None, fallback=None, startup=None):
     args = list(argv or [])
     adapter = adapter or adapter_for(args)
     agent = adapter.name
+    lean = startup_args(adapter, startup)
+    if lean and not any(a.split("=")[0] in LEAN_FLAGS for a in args):  # a command that sets them itself wins
+        at = len(args) - 1 if args and args[-1] == "-" else len(args)
+        args[at:at] = lean
     if model and adapter.model_option:
         args = set_option(args, adapter.model_option[0], model, adapter.model_option[1])
     if fallback and adapter.native_fallback:
@@ -181,6 +255,9 @@ def agent_command(argv, model=None, stream=False, access=None, adapter=None, fal
     return tuple(args), chosen, stream and adapter.stream
 
 
+NO_FINAL_TEXT = "Claude returned no final text"
+
+
 class ClaudeStream:
     """Keep raw events for inspection, log activity, capture only a successful result."""
 
@@ -188,12 +265,14 @@ class ClaudeStream:
         self.response = response
         self.headings = headings  # a handoff's required headings: a result with them is not replaced by one without
         self.kept_valid = False
+        self.wrote_text = False
         self.events = exit_file.with_suffix(".events.jsonl").open("w", encoding="utf-8")
         self.metadata_path = exit_file.with_suffix(".agent.json")
         self.metadata = {"models": [], "result_seen": False, "error": None, "usage": None, "usage_source": "unavailable", "total_cost_usd": None}
         self.saw_deltas = False
         self.pending_tasks: set[str] = set()  # background agents/shells Claude still waits on
         self.settled_at: float | None = None  # monotonic time of a final result with nothing pending
+        self.result_usage: dict[str, dict] = {}  # usage per result event (uuid, else its position)
 
     def feed(self, line: str):
         self.events.write(line)
@@ -233,10 +312,19 @@ class ClaudeStream:
                     print(block.get("text", ""), flush=True)
         elif kind == "result":
             self.metadata["result_seen"] = True
-            self.metadata["usage"] = token_usage(event.get("usage"))
+            # A run emits one result per wake-up (background-task follow-ups too). Each result's
+            # usage covers that wake-up only, so tokens are summed (a repeated uuid counts once);
+            # total_cost_usd is already cumulative for the session, so the latest one is kept.
+            usage = token_usage(event.get("usage"))
+            key = str(event.get("uuid") or f"#{len(self.result_usage)}")
+            if usage:
+                self.result_usage[key] = usage
+            self.metadata["usage"] = sum_usage(self.result_usage.values())
+            self.metadata["results"] = len(self.result_usage)
             self.metadata["usage_source"] = "claude_result" if self.metadata["usage"] else "unavailable"
             cost = event.get("total_cost_usd")
-            self.metadata["total_cost_usd"] = cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0 else None
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0:
+                self.metadata["total_cost_usd"] = cost
             if event.get("is_error") or event.get("subtype") not in (None, "success"):
                 self.metadata["error"] = event.get("result") or str(event.get("errors") or event.get("subtype"))
                 print(f"\n[claude] Error: {self.metadata['error']}", flush=True)
@@ -249,10 +337,15 @@ class ClaudeStream:
                 if valid or not self.kept_valid:
                     atomic_text(self.response, event["result"])
                     self.kept_valid = self.kept_valid or valid
+                    self.wrote_text = True
                 else:
                     print("\n[alfrd] Kept the earlier handoff: a later Claude result has no handoff headings.", flush=True)
-            else:
-                self.metadata["error"] = "Claude returned no final text"
+                if self.metadata["error"] == NO_FINAL_TEXT:
+                    self.metadata["error"] = None  # a later result supplied the text
+            elif not self.wrote_text:
+                # A background task can wake Claude for an empty follow-up result; that
+                # only fails the turn when no result with text arrives at all.
+                self.metadata["error"] = NO_FINAL_TEXT
             if not self.pending_tasks and not self.metadata["error"]:
                 self.settled_at = time.monotonic()
             for name in (event.get("modelUsage") or {}):

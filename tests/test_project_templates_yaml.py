@@ -11,6 +11,7 @@ from alfrd.manifest import parse_manifest
 from alfrd.project_creation import create_project
 from alfrd.runtime import RuntimeService, RuntimeStore
 from alfrd.studio_defs import template_path
+from alfrd.manifest_paths import project_manifest
 
 WEB = Path(__file__).parents[1] / "src/alfrd/web/js/utils/yaml_parser.js"
 TEMPLATES = sorted(p.stem for p in template_path("basic").parent.glob("*.yaml"))
@@ -35,7 +36,7 @@ def service(tmp_path):
 def test_created_project_parses_the_same_in_python_and_studio(service, tmp_path, template):
     root = tmp_path / template
     create_project(service, root, template=template, task="Do the task")
-    text = (root / "alfrd.yaml").read_text()
+    text = (project_manifest(root)).read_text()
     data = yaml.safe_load(text)
     parse_manifest(data)
     assert js_parse(text) == json.loads(json.dumps(data))

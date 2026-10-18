@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from alfrd.manifest import ProjectManifest, load_manifest as load_project_manifest, parse_manifest
+from alfrd.manifest_paths import project_root
 
 from .models import (
     Artifact,
@@ -270,7 +271,7 @@ class RuntimeService:
         document = (
             manifest if isinstance(manifest, ProjectManifest) else load_project_manifest(manifest)
         )
-        root = root_path or (document.path.parent if document.path is not None else None)
+        root = root_path or (project_root(document.path) if document.path is not None else None)
         if root is None:
             raise ValueError("root_path is required for an in-memory manifest")
         # Validate even caller-constructed typed manifests before persisting.

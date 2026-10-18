@@ -6,6 +6,7 @@ from alfrd.execution import load_execution
 from alfrd.project_creation import create_project
 from alfrd.runtime import RuntimeService, RuntimeStore
 from alfrd.studio_defs import studio_manifest, template_path
+from alfrd.manifest_paths import project_manifest
 
 _TEMPLATE = yaml.safe_load(template_path("avica").read_text())["steps"]
 AVICA_STEPS = [s for s, spec in _TEMPLATE.items() if not spec.get("skip")]  # phaseshift is skipped by default
@@ -21,7 +22,7 @@ def avica(tmp_path):
 
 
 def edit(root, change):
-    path = root / "alfrd.yaml"
+    path = project_manifest(root)
     data = yaml.safe_load(path.read_text())
     change(data)
     path.write_text(yaml.safe_dump(data, sort_keys=False))

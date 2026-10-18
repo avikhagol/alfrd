@@ -4,7 +4,7 @@ import { server } from "../data/server.js";
 import { reportServerErrors, applyTheme, fetchPlugins } from "./plugin_api.js";
 import { restartTitles, key, title, renderPlugins, pluginProblems } from "./settings_plugins_view.js";
 export { renderPlugins, pluginProblems } from "./settings_plugins_view.js";
-let browse, config;
+let browse, config, appliesForm;
 const extend = (...args) => (browse ||= import("./plugins_browse.js")).then(m => m.enhance(...args));
 const configure = (...args) => (config ||= import("./plugin_config.js")).then(m => m.attach(...args));
 export async function mountPlugins(ctx, root) {
@@ -30,7 +30,7 @@ export async function mountPlugins(ctx, root) {
     busy = true;
     $("[data-plug-refresh]", panel)?.setAttribute("disabled", "");
     try {
-      list = await fetchPlugins();
+      list = await fetchPlugins(ctx.state.selectedProject);
       reportServerErrors(list, ctx);
       busy = false;
       draw("Plugins refreshed.");
@@ -43,6 +43,24 @@ export async function mountPlugins(ctx, root) {
   panel.onclick = async (event) => {
     if (event.target.closest("[data-plug-open],[data-plug-more]")) return (await extend(ctx, panel, list, refresh, restartTitles)).click(event);
     if (event.target.closest("[data-plug-refresh]")) return refresh();
+    const where = event.target.closest("[data-plug-applies]");
+    if (where) {
+      const id = where.dataset.plugApplies, box = [...panel.querySelectorAll("[data-plug-applies-body]")].find((b) => b.dataset.plugAppliesBody === id);
+      const p = list.plugins.find((x) => x.id === id);
+      if (!box || !p) return;
+      if (!box.hidden) { box.hidden = true; box.replaceChildren(); where.setAttribute("aria-expanded", "false"); return; }
+      const form = await (appliesForm ||= import("./plugin_applicability.js"));
+      where.setAttribute("aria-expanded", "true");
+      form.open(box, list, p, {
+        cancel: () => { box.hidden = true; box.replaceChildren(); where.setAttribute("aria-expanded", "false"); where.focus(); },
+        done: async (message) => {
+          (await import("./plugin_pages.js")).invalidate();
+          await refresh();
+          announce(message); ctx.toast(message, "ok"); ctx.update?.();
+        },
+      });
+      return;
+    }
     const cfg = event.target.closest("[data-plug-config]");
     if (cfg) return (await configure(ctx, panel, canWrite)).toggle(cfg.dataset.plugConfig);
     const errorButton = event.target.closest("[data-plug-error]");

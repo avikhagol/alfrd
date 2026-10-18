@@ -4,8 +4,9 @@ import { $, $$, esc, icon, loadCss } from "../utils/dom.js";
 import { parseYaml } from "../utils/yaml_parser.js";
 import { manifestToWorkflows } from "../data/model.js";
 import { loadTemplate, templateName } from "../data/defs.js";
+import { markDirty } from "../data/workspace.js";
 import {
-  ON_FAILURE, STEP_ID, addStage, addStep, applySettings, changedSections, defaultEntrypoint, editorSteps, entrypointNames, firstWorkflowOf,
+  ON_FAILURE, STEP_ID, addStage, isDelay, addStep, applySettings, changedSections, defaultEntrypoint, editorSteps, entrypointNames, firstWorkflowOf,
   joinCommand, moveStep, removeStep, sequenceOf, setSequence, setSkip, setStages, setTotalTurns, slugFor, splitCommand,
   stageList, updateStep, withWorkflow, workflowKind, workflowSettings, workflowText,
 } from "../data/workflow_edit.js";
@@ -13,8 +14,6 @@ import {
 loadCss("css/lazy.css");
 
 const drafts = new Map(); // project -> {base, data, history, template, file}
-const DELAY = /^\+?(\d+(\.\d+)?|(\d+d)?(\d+h)?(\d+m)?(\d+s)?)$/i;
-const isDelay = (v) => typeof v === "number" || (typeof v === "string" && v.trim() !== "" && DELAY.test(v.replace(/\s/g, "")));
 
 export function editing(project) {
   return Boolean(project && drafts.has(project));
@@ -41,8 +40,28 @@ export async function startEdit(ctx, project) {
   return true;
 }
 
+/** The draft of `project` (canvas_ops.js edits it through `edit`). */
+export const draftOf = (project) => drafts.get(project) || null;
+export const isDirty = (project) => Boolean(drafts.has(project) && dirty(drafts.get(project)));
+
+/** Start a draft when there is none; false when alfrd.yaml is not loaded or does not parse. */
+export async function ensureEditing(ctx, project) {
+  return drafts.has(project) || startEdit(ctx, project);
+}
+
+/** Apply `fn(data, template)` to the draft (undoable); returns false and toasts on an error. */
+export function edit(ctx, project, fn, id = null, message = "Draft updated; Save to keep changes") {
+  return change(ctx, project, fn, id, null, message);
+}
+
+/** Open the step form (Add / Edit) for the canvas. */
+export function openStep(ctx, project, id = null, at = null) {
+  stepDialog(ctx, project, id, at);
+}
+
 function stopEdit(ctx, project, message = "Changes discarded") {
   drafts.delete(project);
+  markDirty(project, "workflow", false);
   ctx.update();
   focusAction(null, "start");
   announce(message);
@@ -91,10 +110,13 @@ function change(ctx, project, fn, id = null, action = "edit", message = "Draft u
     if (id) d.selected = id;
     d.message = message;
     ctx.update();
-    focusAction(id, action);
+    if (action) focusAction(id, action);
     announce(message);
+    return true;
   } catch (error) {
     ctx.toast(error.message, "fail");
+    announce(error.message);
+    return false;
   }
 }
 
@@ -122,6 +144,7 @@ function draftErrors(d) {
 export function editBar(ctx, project, graph = false, selected = null) {
   const d = drafts.get(project);
   const changed = dirty(d);
+  markDirty(project, "workflow", changed); // beforeunload and the project list badge
   const errors = draftErrors(d);
   const kind = workflowKind(d.data, d.template);
   const writable = ctx.canWrite(project);
@@ -317,6 +340,7 @@ async function save(ctx, project) {
   try {
     await ctx.saveManifest(project, text);
     drafts.delete(project);
+    markDirty(project, "workflow", false);
     ctx.toast(`Workflow saved to ${d.file}`, "ok");
     ctx.update();
     focusAction(null, "start");

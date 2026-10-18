@@ -30,7 +30,11 @@ function summaryHtml(u) {
     ${u.limited ? '<p class="muted small">Not Linux: wall time only.</p>' : ""}${u.cgroup_memory_peak ? `<p class="muted small">systemd-run unit memory.peak: ${bytes(u.cgroup_memory_peak)} (whole runner)</p>` : ""}`;
 }
 
-const tokenKeys = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "total_tokens"];
+const tokenKeys = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "total_tokens", "input_uncached_tokens"];
+// The report's columns: new (uncached) input, cache read, cache write, output, total.
+const reportKeys = [["input_uncached_tokens", "New input"], ["cache_read_input_tokens", "Cache read"], ["cache_creation_input_tokens", "Cache write"],
+  ["output_tokens", "Output"], ["total_tokens", "Total tokens"]];
+const fresh = (usage) => usage?.input_uncached_tokens ?? (usage && !("input_uncached_tokens" in usage) ? usage.input_tokens : null);
 const number = (value) => Number.isFinite(value) ? value.toLocaleString() : "—";
 const cost = (value) => Number.isFinite(value) ? `$${value.toFixed(4)}` : "—";
 
@@ -44,12 +48,14 @@ export function agentTotals(units) {
     total_cost_usd: sum(units.map((u) => u.total_cost_usd)) };
 }
 
-export function agentUsageHtml(units, planTotals = null) {
+export function agentUsageHtml(units, planTotals = null, warnings = null) {
   const agents = units.filter((u) => u.handoff || u.agent || Object.hasOwn(u, "agent_usage"));
   if (!agents.length) return "";
-  const cells = (usage, totalCost) => tokenKeys.map((key) => `<td class="tabular">${esc(number(usage?.[key]))}</td>`).join("") + `<td class="tabular">${esc(cost(totalCost))}</td>`;
+  const cells = (usage, totalCost) => reportKeys.map(([key]) => `<td class="tabular">${esc(number(key === "input_uncached_tokens" ? fresh(usage) : usage?.[key]))}</td>`).join("") + `<td class="tabular">${esc(cost(totalCost))}</td>`;
   const totals = planTotals || agentTotals(agents);
-  return `<h4>Agent token usage</h4><table class="tbl small"><thead><tr><th>Turn</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache creation</th><th>Total tokens</th><th>Cost (USD)</th></tr></thead><tbody>${agents.map((u) => `<tr><td class="mono">${esc(u.id || u.agent || "Turn")}</td>${cells(u.agent_usage, u.total_cost_usd)}</tr>`).join("")}</tbody><tfoot><tr><th>${planTotals || agents.length > 1 ? "Plan" : "Turn"} total (reported)</th>${cells(totals, totals.total_cost_usd)}</tr></tfoot></table><p class="muted small">— means unavailable. Totals sum reported values only.</p>`;
+  const warn = (u) => (u.cost_warning ? ` <span class="badge tone-warn" title="Over execution.warn_turn_cost_usd">${icon("alert")}<span>over $${esc(u.cost_warning.bound)}</span></span>` : "");
+  const over = agents.filter((u) => u.cost_warning).length;
+  return `<h4>Agent token usage</h4>${over ? `<p class="small"><span class="badge tone-warn" role="status">${icon("alert")}<span>${over} turn${over === 1 ? "" : "s"} over the $${esc(warnings?.warn_turn_cost_usd ?? agents.find((u) => u.cost_warning).cost_warning.bound)} warning</span></span></p>` : ""}<table class="tbl small"><thead><tr><th>Turn</th>${reportKeys.map(([, label]) => `<th>${label}</th>`).join("")}<th>Cost (USD)</th></tr></thead><tbody>${agents.map((u) => `<tr><td class="mono">${esc(u.id || u.agent || "Turn")}${u.model ? `<div class="muted small">${esc(u.model)}</div>` : ""}${warn(u)}</td>${cells(u.agent_usage, u.total_cost_usd)}</tr>`).join("")}</tbody><tfoot><tr><th>${planTotals || agents.length > 1 ? "Plan" : "Turn"} total (reported)</th>${cells(totals, totals.total_cost_usd)}</tr></tfoot></table><p class="muted small">New input is input not served from the cache; cache write is input written to the cache. — means unavailable. Totals sum reported values only; Claude's cost is cumulative per turn.</p>`;
 }
 
 export function openUsage(ctx, project, unit, refresh = null) {
@@ -95,7 +101,7 @@ export function openUsageTable(ctx, project, status) {
   loadCss("css/lazy.css");
   const rows = usageTable(status?.units || []);
   ctx.modal(`<header class="modal-h"><h2>${icon("graph")} Resource usage per step · <span class="mono">${esc(status?.plan?.id || "")}</span></h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b">${agentUsageHtml(status?.units || [], status?.agent_totals)}${rows.length ? `<table class="tbl small"><thead><tr><th>Step</th><th>Commands</th><th>Median wall</th><th>Median cores</th><th>Median peak memory</th><th>Highest peak</th><th>CPU total</th></tr></thead><tbody>
+    <div class="modal-b">${agentUsageHtml(status?.units || [], status?.agent_totals, status?.cost_warnings)}${rows.length ? `<table class="tbl small"><thead><tr><th>Step</th><th>Commands</th><th>Median wall</th><th>Median cores</th><th>Median peak memory</th><th>Highest peak</th><th>CPU total</th></tr></thead><tbody>
       ${rows.map((r) => `<tr><td class="mono">${esc(r.step)}</td><td class="tabular">${r.n}</td><td class="tabular">${esc(short(r.wall || 0))}</td><td class="tabular">${esc(r.cores ?? "—")}</td><td class="tabular">${bytes(r.mem || 0)}</td><td class="tabular">${bytes(r.peak || 0)}</td><td class="tabular">${esc(short(r.cpu))}</td></tr>`).join("")}</tbody></table>`
       : '<p class="muted small">No finished command has a usage summary yet (plans started with ALFRD 0.2.0.8 record one).</p>'}
       <p class="muted small">Per command, summed over all its processes on this machine (MPI ranks included); open a command's usage from its row for the curves.</p></div>`, null, "wide");

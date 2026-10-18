@@ -11,8 +11,17 @@ from typing import Any, Mapping
 import yaml
 from jsonschema import Draft202012Validator
 
-MANIFEST_FILENAME = "alfrd.yaml"
-MANIFEST_ALIAS_FILENAME = ".alfrd.yaml"
+from alfrd.manifest_paths import (
+    DEFAULT_NEW_MANIFEST,
+    MANIFEST_ALIAS_FILENAME,
+    MANIFEST_CANDIDATES,
+    MANIFEST_FILENAME,
+    STATE_DIRNAME,
+    manifest_location,
+    project_manifest,
+    project_root,
+)
+
 MANIFEST_VERSION = 1
 _SCHEMA_FILENAME = "project-manifest-v1.schema.json"
 
@@ -136,26 +145,24 @@ class ProjectManifest:
 def discover_manifest(start: str | Path | None = None) -> Path:
     """Find a project manifest by walking toward the filesystem root.
 
-    The historical ``alfrd.yaml`` name takes precedence when both supported
-    names exist in the same directory.
+    In each folder the precedence of :data:`MANIFEST_CANDIDATES` applies; an
+    explicitly named manifest file is replaced by its folder's active one, so
+    a shadowed file is never read (or written) by mistake.
     """
 
     candidate = Path.cwd() if start is None else Path(start).expanduser()
     if candidate.is_file():
         if candidate.name in {MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME}:
-            legacy = candidate.parent / MANIFEST_FILENAME
-            if candidate.name == MANIFEST_ALIAS_FILENAME and legacy.is_file():
-                return legacy.resolve()
-            return candidate.resolve()
+            active = project_manifest(project_root(candidate))
+            return (active or candidate).resolve()
         candidate = candidate.parent
     else:
         candidate = candidate.resolve()
 
     for directory in (candidate, *candidate.parents):
-        for filename in (MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME):
-            manifest = directory / filename
-            if manifest.is_file():
-                return manifest.resolve()
+        manifest = project_manifest(directory)
+        if manifest is not None:
+            return manifest.resolve()
 
     raise ManifestNotFoundError(
         f"Could not find {MANIFEST_FILENAME!r} from {candidate} or any parent directory"
@@ -278,9 +285,15 @@ __all__ = [
     "ArtifactDefinition",
     "DEFAULT_ARTIFACT_KIND",
     "Entrypoint",
+    "DEFAULT_NEW_MANIFEST",
     "MANIFEST_ALIAS_FILENAME",
+    "MANIFEST_CANDIDATES",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
+    "STATE_DIRNAME",
+    "manifest_location",
+    "project_manifest",
+    "project_root",
     "ManifestError",
     "ManifestNotFoundError",
     "ProjectManifest",

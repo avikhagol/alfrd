@@ -14,10 +14,11 @@ from alfrd.agent_io import agent_totals, codex_report, token_usage
 from alfrd.agent_loop import approve_response, compact_report, expand_steps, reject_response, sha256, task_iterations
 from alfrd.execution import ExecutionError, load_execution, parse_delay
 from alfrd.runtime import scheduler
+from alfrd.manifest_paths import project_manifest
 
 
 def edit(root, change):
-    path = root / "alfrd.yaml"
+    path = project_manifest(root)
     data = yaml.safe_load(path.read_text())
     change(data)
     path.write_text(yaml.safe_dump(data, sort_keys=False))
@@ -149,7 +150,7 @@ def test_studio_workflow_save_moves_full_length_tasks_to_the_new_pattern(service
     (project / "task/.alfrd-task.json").write_text(json.dumps({"iterations": 2, "version": 2}) + "\n")
     (project / "short").mkdir()
     (project / "short/.alfrd-task.json").write_text(json.dumps({"iterations": 1, "version": 2}) + "\n")
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     data["workflows"][0]["repeat"].update(iterations=4, sequence=["claude", "codex", "claude", "codex"])
     response = client.post(prefix + "/manifest", json={"text": yaml.safe_dump(data), "force": True}, headers=headers)
     assert response.status_code == 200, response.get_json()

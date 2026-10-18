@@ -13,6 +13,7 @@ from typing import Optional
 import typer
 
 from alfrd import get_alfrd_dir
+from alfrd.manifest_paths import project_root as _manifest_root
 
 
 alfrd_cli = typer.Typer()
@@ -502,10 +503,15 @@ def projects_create(
     iterations: Optional[int] = typer.Option(None, "--iterations", min=1, max=2 * MAX_ITERATIONS,
                                              help="Agent loops: total turns (the project maximum)."),
     sequence: Optional[str] = typer.Option(None, "--sequence", help="Agent loops: comma-separated agents for one pass, e.g. claude,claude,codex."),
+    config_location: str = typer.Option(".alfrd", "--config-location", help="Where alfrd.yaml goes: .alfrd (.alfrd/alfrd.yaml, default) or root (alfrd.yaml; lower precedence)."),
     db: Optional[str] = typer.Option(None, "--db", help="Runtime SQLite database."),
 ):
     """Scaffold and register a project without starting its commands."""
     from alfrd.project_creation import create_project
+    from alfrd.manifest_paths import MANIFEST_FILENAME, NESTED_MANIFEST
+
+    if config_location not in (".alfrd", "root"):
+        raise typer.BadParameter("use .alfrd or root", param_hint="--config-location")
 
     try:
         from alfrd.studio_defs import template_path
@@ -522,7 +528,7 @@ def projects_create(
         agents = [a.strip() for a in sequence.split(",") if a.strip()] if sequence else None
         project, _ = create_project(_runtime_service(db), path, name=name, template=template,
                                     task=task, iterations=DEFAULT_ITERATIONS if iterations is None else iterations,
-                                    sequence=agents)
+                                    sequence=agents, manifest=NESTED_MANIFEST if config_location == ".alfrd" else MANIFEST_FILENAME)
     except (ValueError, OSError) as error:
         print(f"error: {error}")
         raise typer.Exit(1)
@@ -673,18 +679,56 @@ def manifest_default(
         return
     target = Path(output).expanduser()
     if target.is_dir():
-        target = target / "alfrd.yaml"
+        from alfrd.manifest_paths import new_manifest_path
+
+        target = new_manifest_path(target)  # the active manifest, else .alfrd/alfrd.yaml (never a shadowed file)
     if target.exists() and not force:
         raise typer.BadParameter(f"{target} exists (use --force to overwrite)")
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(default_manifest_text(target.resolve().parent) or "", encoding="utf-8")
-    if target.name == "alfrd.yaml":
+    from alfrd.manifest_paths import project_manifest
+
+    root = _manifest_root(target.resolve())
+    if target.name == "alfrd.yaml" and project_manifest(root) == target.resolve():
         from alfrd import history
 
         try:
-            history.record(target.resolve().parent, "alfrd.yaml", source="cli", message="alfrd manifest default")
+            history.record(root, "alfrd.yaml", source="cli", message="alfrd manifest default")
         except (history.HistoryError, OSError):
             pass
     print(f"Wrote {target} (from {path}).")
+
+
+@manifest_cli.command("migrate")
+def manifest_migrate(
+    path: str = typer.Argument(".", help="Project folder (or its alfrd.yaml)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change; write nothing."),
+    keep: str = typer.Option("rename", "--keep", help="rename: the old file becomes <name>.migrated; shadow: leave it (ignored, lower precedence)."),
+    force: bool = typer.Option(False, "--force", help="Replace a different .alfrd/alfrd.yaml (kept as .alfrd/alfrd.yaml.bak)."),
+):
+    """Move alfrd.yaml into .alfrd/alfrd.yaml (copy, validate, rename the old file; nothing is deleted)."""
+    from alfrd import manifest_migrate as migrate
+    from alfrd.manifest_paths import project_root
+
+    target = Path(path).expanduser().resolve()
+    root = project_root(target) if target.is_file() else target
+    try:
+        info = migrate.plan(root, keep)
+        print(f"{info['status']}: {info['source'] or '-'} -> {info['target']}" + (f" (old file -> {info['rename_to']})" if info["rename_to"] else ""))
+        if info["diff"]:
+            print(info["diff"], end="")
+        if info["error"]:
+            print(f"error: {info['error']}")
+        if dry_run or info["status"] in ("nothing", "no_manifest"):
+            raise typer.Exit(0 if info["status"] != "no_manifest" and not info["error"] else 1)
+        migrate.apply(root, keep, force)
+    except migrate.MigrateConflict:
+        print("conflict: .alfrd/alfrd.yaml differs; rerun with --force to replace it")
+        raise typer.Exit(1)
+    except (migrate.MigrateError, ValueError, OSError) as error:
+        print(f"error: {error}")
+        raise typer.Exit(1)
+    print(f"Moved to {root / info['target']}")
 
 
 @import_cli.command("avica-run")
@@ -718,7 +762,7 @@ def import_avica_run_command(
             reductions_dir,
             project_name=project,
             steps=steps,
-            project_root=document.path.parent if document.path else Path(manifest).parent,
+            project_root=_manifest_root(document.path) if document.path else Path(manifest).parent,
         )
     except (FileNotFoundError, ValueError) as error:
         print(f"AVICA import failed: {error}")
@@ -1419,6 +1463,84 @@ def plan_runner(plan_id: str, root: str = _ROOT_OPT):
     from alfrd.runtime import scheduler
 
     raise typer.Exit(code=scheduler.Runner(root, plan_id).run())
+
+
+chat_cli = typer.Typer(help="Project chat: an orchestrator and specialist agents on the plan runner (docs/orchestration.md).",
+                       no_args_is_help=True)
+alfrd_cli.add_typer(chat_cli, name="chat")
+
+
+def _chat_call(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except (LookupError, ValueError, PermissionError) as exc:
+        print(f"error: {exc}")
+        raise typer.Exit(code=1) from None
+
+
+@chat_cli.command("new")
+def chat_new(title: Optional[str] = typer.Option(None, "--title"), root: str = _ROOT_OPT):
+    """Start a chat session; prints its id."""
+    from alfrd import chat
+
+    print(_chat_call(chat.create_session, Path(root).resolve(), title)["id"])
+
+
+@chat_cli.command("list")
+def chat_list(root: str = _ROOT_OPT):
+    from alfrd import chat
+
+    for item in _chat_call(chat.list_sessions, Path(root).resolve()):
+        print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}")
+
+
+@chat_cli.command("send")
+def chat_send(session: str, text: str, root: str = _ROOT_OPT):
+    """Send a message ("@agent …" goes to that agent directly); the runner starts in the background."""
+    from alfrd import chat
+
+    out = _chat_call(chat.post_message, Path(root).resolve(), session, text)
+    print(f"{out['request']['id']}: {out['request']['mode']} → {out['task']['row']}")
+
+
+@chat_cli.command("show")
+def chat_show(session: str, json_out: bool = typer.Option(False, "--json"), root: str = _ROOT_OPT):
+    """Messages, tasks (with status), open decisions and usage of a session."""
+    import json as _json
+
+    from alfrd import chat
+
+    state = _chat_call(chat.session_state, Path(root).resolve(), session)
+    if json_out:
+        print(_json.dumps(state, indent=2, default=str))
+        return
+    for m in state["messages"]:
+        print(f"[{m['role']}{'/' + m['agent'] if m.get('agent') else ''}] {m['text']}")
+    for t in state["tasks"]:
+        print(f"  {t['row']:<28} {t['kind']:<8} {t['owner']:<8} {t['status']}")
+    for d in state["blockers"]:
+        print(f"  decision {d['id']}: {d['question']} {d.get('options') or ''}")
+    cost = state["usage"].get("total_cost_usd")
+    print(f"usage: {state['usage']['turns']} turns" + (f", ${cost:.4f}" if cost is not None else ""))
+
+
+@chat_cli.command("probe")
+def chat_probe(root: str = _ROOT_OPT):
+    """Which chat agents can run here (programs on PATH), a local Ollama and its models, HF_TOKEN set (JSON)."""
+    import json as _json
+
+    from alfrd import chat
+
+    print(_json.dumps(_chat_call(chat.probe, Path(root).resolve()), indent=2))
+
+
+@chat_cli.command("decide")
+def chat_decide(session: str, decision: str, choice: Optional[str] = typer.Option(None, "--choice"),
+                answer: Optional[str] = typer.Option(None, "--answer"), root: str = _ROOT_OPT):
+    from alfrd import chat
+
+    _chat_call(chat.decide, Path(root).resolve(), session, decision, choice=choice, answer=answer)
+    print("decided")
 
 
 plugin_cli = typer.Typer(help="Manage trusted plugins and Studio themes.", no_args_is_help=True)

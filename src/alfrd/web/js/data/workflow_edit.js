@@ -9,7 +9,10 @@ export const STEP_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const SECTIONS = ["workflows", "steps", "stages", "execution", "step_defaults"];
 const sectionsOf = (data) => [...new Set([...SECTIONS, ...Object.keys(isMap(data) ? data : {})])];
 // Keys the step form edits; other keys of a step mapping (metadata, params, …) are kept as they are.
-const FORM_KEYS = ["label", "category", "stage", "description", "cmd", "entrypoint", "depends_on", "after", "timeout", "status_from", "logs", "skip"];
+const FORM_KEYS = ["label", "category", "stage", "description", "cmd", "entrypoint", "depends_on", "after", "timeout", "status_from", "logs", "skip", "inputs", "outputs"];
+const DELAY = /^\+?(\d+(\.\d+)?|(\d+d)?(\d+h)?(\d+m)?(\d+s)?)$/i;
+/** `after:` as a delay (number or duration), not a step name. */
+export const isDelay = (v) => typeof v === "number" || (typeof v === "string" && v.trim() !== "" && DELAY.test(v.replace(/\s/g, "")));
 
 const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
 const isMap = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -59,6 +62,8 @@ export function editorSteps(data, template = null) {
       timeout: merged.timeout ?? null,
       status_from: merged.status_from ?? null,
       logs: Array.isArray(merged.logs) ? merged.logs : [],
+      inputs: Array.isArray(merged.inputs) ? merged.inputs.map(String) : [],
+      outputs: Array.isArray(merged.outputs) ? merged.outputs.map(String) : [],
       fromTemplate: Boolean(tplSteps[id]),
     };
   });
@@ -255,6 +260,73 @@ export function setStages(data, list, template = null) {
     return isMap(old) ? { ...clone(old), id, title } : { id, title };
   });
   return out;
+}
+
+// --- dependencies (canvas connect / disconnect) -----------------------------
+
+/** {step: [steps it waits on]} as the workflow runs it: depends_on, else a step-name `after`, else the previous step. */
+export function dependencyMap(data, template = null) {
+  const rows = editorSteps(data, template).filter((r) => !r.skip);
+  const skipped = new Set(editorSteps(data, template).filter((r) => r.skip).map((r) => r.id));
+  const out = {};
+  rows.forEach((r, i) => {
+    const named = r.after != null && !isDelay(r.after) ? [String(r.after)] : null;
+    const deps = r.depends_on ?? named;
+    out[r.id] = deps == null ? (i ? [rows[i - 1].id] : []) : deps.filter((d) => !skipped.has(d));
+  });
+  return out;
+}
+
+/** A dependency cycle as [a, b, …, a] in run order (a runs before b …), or null. */
+export function findCycle(deps) {
+  const state = {}, stack = [];
+  const visit = (n) => {
+    state[n] = 1; stack.push(n);
+    for (const d of deps[n] || []) {
+      if (state[d] === 1) return [...stack.slice(stack.indexOf(d)), d].reverse();
+      if (d in deps && !state[d]) { const c = visit(d); if (c) return c; }
+    }
+    stack.pop(); state[n] = 2;
+    return null;
+  };
+  for (const n of Object.keys(deps)) if (!state[n]) { const c = visit(n); if (c) return c; }
+  return null;
+}
+
+/** Why `to` cannot wait on `from` (null when it can). */
+export function connectProblem(data, from, to, template = null) {
+  const deps = dependencyMap(data, template);
+  if (!(from in deps) || !(to in deps)) return `Both steps must be in the workflow and not skipped.`;
+  if (from === to) return `A step cannot wait on itself.`;
+  if (deps[to].includes(from)) return `${to} already waits on ${from}.`;
+  const cycle = findCycle({ ...deps, [to]: [...deps[to], from] });
+  return cycle ? `This would create a dependency cycle: ${cycle.join(" → ")}.` : null;
+}
+
+/** Set the steps `id` waits on (explicit depends_on); refuses unknown steps and cycles. */
+export function setDependencies(data, id, list, template = null) {
+  const deps = dependencyMap(data, template);
+  const next = [...new Set((list || []).map(String))];
+  const bad = next.find((d) => d === id || !(d in deps));
+  if (bad) throw new Error(bad === id ? "A step cannot wait on itself." : `Unknown step "${bad}".`);
+  const cycle = findCycle({ ...deps, [id]: next });
+  if (cycle) throw new Error(`This would create a dependency cycle: ${cycle.join(" → ")}.`);
+  const row = editorSteps(data, template).find((r) => r.id === id);
+  return updateStep(data, id, { depends_on: next, ...(row?.after != null && !isDelay(row.after) ? { after: null } : {}) }, template);
+}
+
+/** `to` waits on `from` (a canvas edge from → to). */
+export function connectSteps(data, from, to, template = null) {
+  const problem = connectProblem(data, from, to, template);
+  if (problem) throw new Error(problem);
+  return setDependencies(data, to, [...dependencyMap(data, template)[to], from], template);
+}
+
+/** `to` no longer waits on `from`; with nothing left it starts first (depends_on: []). */
+export function disconnectSteps(data, from, to, template = null) {
+  const deps = dependencyMap(data, template)[to];
+  if (!deps?.includes(from)) throw new Error(`${to} does not wait on ${from}.`);
+  return setDependencies(data, to, deps.filter((d) => d !== from), template);
 }
 
 // --- workflow settings (execution / step_defaults / workflow entrypoint) ----------

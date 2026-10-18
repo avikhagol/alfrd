@@ -1,6 +1,4 @@
-import { handleNotifications, browserEnabled } from "./components/notifications.js";
-
-import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget } from "./utils/dom.js";
+import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget, setRoute, isEditable, keyLabel } from "./utils/dom.js";
 import { projectLabels } from "./utils/text_fit.js";
 import { mountPicker } from "./components/picker.js";
 import { stepParamsFromConfig } from "./data/avica.js";
@@ -26,20 +24,34 @@ import * as canvas from "./components/canvas.js";
 import * as metadata from "./components/metadata.js";
 import * as results from "./components/results.js";
 import * as config from "./components/alfrd_config.js";
-import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace } from "./data/workspace.js";
+import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace, unsaved } from "./data/workspace.js";
 import { forgetPlan, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
 watchThemeAccent(); // tab icon follows the theme accent
 const DEMO_ALFRD_PROJECT = "avica-demo"; // data/demo.js's key; the demo data itself loads on demand
 
 export let VERSION = "standalone";
 
+/** A section whose module loads on its first visit (chat, New project canvas). */
+function lazyView(load) {
+  let mod = null, loading = null;
+  return { leave: (c) => mod?.leave?.(c), render(el, c) {
+    if (mod) return mod.render(el, c);
+    if (!el.firstChild) el.innerHTML = '<p class="empty" role="status">Loading…</p>';
+    loading ||= load().then((m) => { mod = m; scheduleRender(); }, (e) => { loading = null; el.innerHTML = `<p class="callout fail" role="alert">${esc(e.message)}</p>`; });
+  } };
+}
 const VIEWS = [
   { id: "overview", label: "Overview", icon: "overview", mod: overview },
   { id: "workflow", label: "Workflow", icon: "workflow", mod: canvas },
   { id: "metadata", label: "Metadata", icon: "metadata", mod: metadata },
   { id: "results", label: "Results", icon: "results", mod: results },
   { id: "logs", label: "Logs", icon: "log", mod: logs },
+  { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js")) },
   { id: "config", label: "Settings", icon: "project", mod: config },
+  { id: "new-project", label: "New project", icon: "plus", page: true, mod: lazyView(() => import("./components/project_canvas.js")) },
+  // #/plugin/<id>: pages from api.registerPage (components/plugin_pages.js lists them under "Plugins" in the rail).
+  { id: "plugin", label: "Plugin page", icon: "metadata", page: true, mod: { render: (el) => ctx.renderPluginPage ? ctx.renderPluginPage(el)
+    : (el.innerHTML = `<div class="empty"><h2>Plugin page</h2><p>${state.mode === "server" ? "Loading plugins…" : "Plugin pages need alfrd serve."}</p></div>`) } },
 ];
 
 
@@ -494,7 +506,7 @@ function resolveInitialProject() {
   switchProject(def && ids.includes(def) ? def : ids.length === 1 ? ids[0] : "all", { render: false });
 }
 
-function switchProject(project, { render = true, restoreView = true, syncUrl = true } = {}) {
+function switchProject(project, { render = true, restoreView = true, syncUrl = true, push = false } = {}) {
   const next = project && project !== "all" ? project : "all";
   const before = state.selectedProject || "all";
   if (before !== next) {
@@ -513,8 +525,10 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
   const inScope = ctx.scopedTargets();
   state.selectedTarget = chooseTarget(inScope, storage.get("ui:app.targets", {})[next], incoming.target);
   rememberTarget();
-  if (syncUrl) history.replaceState(null, "", routeHash(state.view, next, state.selectedTarget));
-  if (before !== next && restoreView && incoming.view && incoming.view !== state.view) goTo(incoming.view);
+  // A project picked by the user is a history entry (Back returns); first-load normalization replaces.
+  const view = before !== next && restoreView && incoming.view && incoming.view !== state.view ? incoming.view : state.view;
+  if (syncUrl) setRoute(routeHash(view, next, state.selectedTarget), { replace: !(push && before !== next) });
+  if (view !== state.view) route();
   if (before !== next) {
     const top = incoming.scroll[incoming.view || state.view] || 0;
     requestAnimationFrame(() => requestAnimationFrame(() => { const m = $("#main"); if (m) m.scrollTop = top; }));
@@ -1264,9 +1278,9 @@ function modal(html, setup, cls = "") {
   host.onclick = (e) => {
     if (e.target.closest("[data-close]")) close();
   };
+  const before = document.activeElement;
   setup?.(root, close);
-  const focusable = root.querySelector("input,button:not([data-close]),select,textarea");
-  focusable?.focus();
+  if (document.activeElement === before) root.querySelector("input,button:not([data-close]),select,textarea")?.focus(); // setup may have chosen the focus
   return close;
 }
 ctx.modal = modal;
@@ -1280,7 +1294,7 @@ function menu(anchor, items) {
   anchor.setAttribute("aria-controls", el.id);
   anchor.setAttribute("aria-expanded", "true");
   el.innerHTML = items.map((it, i) => (it === "-" ? `<hr>` : `<button role="menuitem" data-i="${i}" ${it.disabled ? "disabled" : ""}>${icon(it.icon || "caret")}<span>${esc(it.label)}</span>${it.hint ? `<small>${esc(it.hint)}</small>` : ""}</button>`)).join("");
-  document.body.appendChild(el);
+  (document.fullscreenElement || document.body).appendChild(el); // visible in fullscreen too
   const r = anchor.getBoundingClientRect();
   el.style.top = `${r.bottom + 6}px`;
   el.style.left = `${Math.min(r.left, window.innerWidth - el.offsetWidth - 12)}px`;
@@ -1322,7 +1336,7 @@ async function openSettings() {
 
 const showProject = async (project, template) => {
   await loadServer();
-  switchProject(project.identifier, { restoreView: false });
+  switchProject(project.identifier, { restoreView: false, push: true });
   ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
 };
 async function newProject(path, open) {
@@ -1330,6 +1344,16 @@ async function newProject(path, open) {
   catch (error) { ctx.toast(error.message, "fail"); }
 }
 const openProject = () => newProject("", 1);
+ctx.newProject = newProject;
+/** After the New-project canvas: open the project on Workflow with `target` selected. */
+ctx.openCreated = async (project, target) => {
+  const data = await loadServer();
+  switchProject(project.identifier, { restoreView: false, push: true });
+  await Promise.race([data?.settled, new Promise((r) => setTimeout(r, 15000))]).catch(() => {});
+  const t = state.targets.find((x) => x.project === project.identifier && x.name === target);
+  if (t) { state.selectedTarget = t.id; rememberTarget(); }
+  goTo("workflow");
+};
 
 /** After removal: drop only that project's workspace, run polling and Log Stream tabs. */
 function removeWorkspace(project) {
@@ -1350,7 +1374,7 @@ function removeWorkspace(project) {
 }
 
 async function quitServer() {
-  if (!confirm("Quit alfrd?\n\nThe server stops. This page stops updating. Start it again with `alfrd serve`.")) return;
+  if (!confirm(`Quit alfrd?\n\nThe server stops. This page stops updating. Start it again with \`alfrd serve\`.${unsaved().length ? "\n\nUnsaved changes in this tab will be lost." : ""}`)) return;
   try {
     await server.quit();
   } catch (error) {
@@ -1382,22 +1406,31 @@ function rememberTarget() {
 /** Make id the header target (as the Target picker does). */
 function selectTarget(id) {
   if (pendingLink) pendingLink.target = pendingLink.plan = null;
-  state.selectedTarget = chooseTarget(ctx.scopedTargets(), id);
+  const next = chooseTarget(ctx.scopedTargets(), id);
+  if (next !== state.selectedTarget) bumpSelection();
+  state.selectedTarget = next;
   rememberTarget();
-  history.replaceState(null, "", routeHash(state.view, state.selectedProject, state.selectedTarget));
+  setRoute(routeHash(state.view, state.selectedProject, state.selectedTarget)); // Back returns to the previous target
   scheduleRender();
 }
 ctx.selectTarget = selectTarget;
+let selectionAc = new AbortController();
+const bumpSelection = () => { selectionAc.abort(); selectionAc = new AbortController(); };
+/** AbortSignal for a request made for the selected target; aborted (so the reply is stale) after a switch. */
+ctx.selection = () => selectionAc.signal;
 
 function goTo(view) {
   rememberTarget();
-  const url = routeHash(view, state.selectedProject, state.selectedTarget);
-  if (location.hash !== url) location.replace(url);
+  if (setRoute(routeHash(view, state.selectedProject, state.selectedTarget))) route();
 }
 ctx.openAliasRules = openAliasRules;
 
 ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) this.providers.push(fn); } };
-ctx.views = VIEWS.map(({ id, label, icon: ic }) => ({ id, label, icon: ic }));
+// Chat mode (Studio settings → Preferences, per browser, off by default): the Chat section, dock and chat runs.
+function chatOn() { return storage.get("ui:chat.enabled", false) === true; }
+ctx.chatOn = chatOn;
+ctx.setChat = (on) => { storage.set("ui:chat.enabled", Boolean(on)); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
+Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
 ctx.goTo = goTo;
 ctx.rescan = () => rescan();
 ctx.reloadAll = () => reloadAll();
@@ -1446,10 +1479,64 @@ ctx.openPalette = async (query = "") => {
     ctx.toast(`Palette: ${error.message}`, "fail");
   }
 };
+// Global keys never act while typing in a field (the field keeps Ctrl/Cmd+K, ? and the rest).
 document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); ctx.openPalette(); }
+  if (e.isComposing || isEditable(e.target)) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); ctx.openPalette(); }
+  if (mod && e.altKey && e.code === "KeyN" && canCreateTarget()) { e.preventDefault(); newTarget(); }
+  if (e.altKey && e.shiftKey && !mod && e.code === "KeyC") { e.preventDefault(); toggleCompact(); }
+  if (e.altKey && e.shiftKey && !mod && e.code === "KeyA" && dockAvailable()) { e.preventDefault(); setChatDock(); }
+  if (e.key === "?" && !mod && !e.altKey && $("#modal-host").hidden) { e.preventDefault(); ctx.openShortcuts(); }
 });
+function toggleCompact() {
+  if (state.view !== "workflow") { canvas.setCompact(ctx, true); goTo("workflow"); } else canvas.setCompact(ctx);
+}
+// The chat dock's own composer keeps Alt+Shift+A (the handler above ignores fields).
+document.addEventListener("keydown", (e) => {
+  if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyA" && !e.isComposing && e.target.closest?.("#chat-dock") && isEditable(e.target)) { e.preventDefault(); setChatDock(false); }
+});
+// Chat dock (components/chat_dock.js, loaded on the first open): open/closed and width per browser.
+const dockUi = { open: false, width: 380, ...storage.get("ui:chat.dock", {}) };
+let dockMod = null, dockExplicit = false;
+const dockAvailable = () => chatOn() && state.mode === "server" && Boolean(activeProject()) && !["chat", "new-project"].includes(state.view);
+function setChatDock(open = !dockUi.open) {
+  dockUi.open = open;
+  dockExplicit = open; // opened by hand: shown in compact workflow mode too (a remembered open state is not)
+  storage.set("ui:chat.dock", { open, width: dockUi.width });
+  renderChatDock({ focus: true });
+}
+async function renderChatDock({ focus = false } = {}) {
+  const el = $("#chat-dock"), btn = $("#btn-chat-dock");
+  if (!el || !btn) return;
+  const avail = dockAvailable(), show = avail && dockUi.open;
+  btn.hidden = !avail;
+  btn.setAttribute("aria-expanded", String(show));
+  btn.classList.toggle("on", show);
+  $("#app").dataset.dock = show ? (dockExplicit ? "explicit" : "open") : "closed";
+  if (!show) {
+    if (!el.hidden) { dockMod?.hide(); el.hidden = true; if (focus && avail) btn.focus(); }
+    return;
+  }
+  try { dockMod ||= await import("./components/chat_dock.js"); } catch (error) { ctx.toast(`Chat dock: ${error.message}`, "fail"); return; }
+  dockMod.render(el, ctx, { width: dockUi.width, focus, isOpen: () => dockUi.open && dockAvailable(),
+    onWidth: (w) => { dockUi.width = w; storage.set("ui:chat.dock", { open: dockUi.open, width: w }); }, onClose: () => setChatDock(false) });
+}
+ctx.palette.register(() => (dockAvailable() ? [{ id: "chat-dock", group: "action", icon: "chat", label: dockUi.open ? "Close the chat dock" : "Open the chat dock",
+  detail: `action · ${keyLabel("Alt+Shift+A")}`, run: () => setChatDock() }] : []));
+ctx.openShortcuts = () => import("./components/shortcuts.js").then((m) => m.openShortcuts(ctx)).catch((e) => ctx.toast(`Shortcuts: ${e.message}`, "fail"));
+ctx.palette.register(() => [
+  { id: "shortcuts", group: "action", icon: "info", label: "Keyboard shortcuts", detail: "action · ?", run: ctx.openShortcuts },
+  { id: "compact", group: "action", icon: "fold", label: canvas.compact() ? "Exit compact workflow mode" : "Compact workflow mode", detail: `action · ${keyLabel("Alt+Shift+C")}`, run: toggleCompact },
+]);
+// Unsaved edits (alfrd.yaml editor, workflow draft, step Configure form) survive switching views and
+// projects in this tab, but not a reload or closing it.
+window.addEventListener("beforeunload", (e) => { if (unsaved().length) { e.preventDefault(); e.returnValue = ""; } });
 
+const canCreateTarget = () => state.mode === "server" && server.session?.mutations_enabled && state.trees?.[activeProject()]?.provider === "server";
+const newTarget = () => import("./components/new_target.js")
+  .then((m) => m.openNewTarget(ctx, activeProject(), ctx.scopedTargets().map((t) => t.name)))
+  .catch((e) => ctx.toast(`New target: ${e.message}`, "fail"));
 
 const MAX_ONLY = 150; // more changed files than this: re-read the whole project
 const pending = new Map(); // project -> {changed:Set, removed:Set, full:boolean}
@@ -1564,7 +1651,7 @@ function liveRuntime() {
 
 const live = createLive({
   mode: () => state.mode,
-  watchHidden: () => state.mode === "server" && browserEnabled(),
+  watchHidden: () => state.mode === "server" && loadUi("notifications", {}).browser === true, // saved by notifications.js
   available: () => server.session?.live?.enabled !== false,
   projects: projectsFollowed,
   folders: () => (state.mode === "server" ? [] : Object.entries(state.folders).filter(([p, h]) => h && state.trees?.[p]).map(([project, handle]) => ({ project, handle }))),
@@ -1576,7 +1663,7 @@ const live = createLive({
   onLogs: liveLogs,
   onRuntime: liveRuntime,
   onPluginJob: () => renderJobs(),
-  onAlfrd: (project, events) => handleNotifications(ctx, project, events).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server")),
+  onAlfrd: (project, events) => (window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project, events } })), import("./components/notifications.js").then((m) => m.handleNotifications(ctx, project, events)).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server"))),
   onResync: (project) => (loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
   onStatus: (status) => { state.liveStatus = status; renderLiveBadge(); },
 });
@@ -1684,7 +1771,14 @@ function renderLiveBadge() {
     st.interval ? `every ${st.interval < 10 ? st.interval.toFixed(1) : Math.round(st.interval)} s while busy` : "",
   ].filter(Boolean).join(" · ");
   b.setAttribute("aria-pressed", live.enabled ? "true" : "false");
+  const lost = state.mode === "server" && (kind === "reconnecting" || navigator.onLine === false);
+  const notice = $("#conn-notice");
+  if (notice && notice.hidden === lost) {
+    notice.hidden = !lost;
+    notice.textContent = lost ? `Connection to alfrd serve lost${st.detail ? ` (${st.detail})` : ""}. Retrying; what is on screen may be out of date and saves will fail until it is back.` : "";
+  }
 }
+["online", "offline"].forEach((t) => window.addEventListener(t, () => { renderLiveBadge(); live.kick?.(); }));
 setInterval(() => { if (!document.hidden) renderLiveBadge(); }, 5000);
 
 async function onLiveBadge() {
@@ -1774,7 +1868,8 @@ function renderShell() {
       <div class="picker"><button class="picker-btn" id="pick-target">${icon("target")}<span class="picker-l">Target</span><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button></div>
       <button class="btn sm jobs-btn" id="btn-jobs" aria-haspopup="dialog" hidden>${icon("play")} <span id="jobs-label">Jobs</span></button><span class="sr-only" id="jobs-live" aria-live="polite"></span>
       <span class="grow"></span>
-      <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (Ctrl+K)">${icon("search")}</button>
+      <button class="icon-btn" id="btn-chat-dock" aria-label="Chat dock" aria-controls="chat-dock" aria-expanded="false" aria-keyshortcuts="Alt+Shift+A" title="Chat with the agents beside this view (Alt+Shift+A)" hidden>${icon("chat")}</button>
+      <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (${keyLabel("Ctrl+K")})">${icon("search")}</button>
       <button class="live-badge live-off" id="btn-live" aria-pressed="false"><i></i><span>Live off</span></button>
       <button class="icon-btn" id="btn-rescan" aria-label="Re-scan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")}</button>
       <button class="icon-btn" id="btn-data" aria-label="Import / Export" aria-haspopup="menu" title="Import / Export">${icon("transfer")}</button>
@@ -1783,22 +1878,27 @@ function renderShell() {
     </header>
     <nav class="rail" aria-label="Workspace">
       <div class="rail-head"><span class="rail-label">Workspace</span></div>
-      <div class="rail-links" id="rail-links">${VIEWS.map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
+      <div class="rail-links" id="rail-links">${VIEWS.filter((v) => !v.page).map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
+      <div id="rail-plugins" class="rail-plugins" hidden></div>
       <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
     <span id="project-load-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
-    <main id="main" tabindex="-1"><div id="project-load-notice" hidden></div>${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
+    <main id="main" tabindex="-1"><div id="conn-notice" class="callout warn small" role="status" hidden></div><div id="project-load-notice" hidden></div>${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
     <footer class="footbar">
       <span>${icon("database")} <span id="foot-storage"></span></span>
       <span class="vsep"></span>
       <span id="foot-mode"></span>
       <span class="vsep"></span>
       <button class="link-btn" id="foot-logs">${icon("log")} <span id="foot-logcount"></span></button>
+      <span class="vsep"></span>
+      <button class="link-btn" id="foot-keys" aria-keyshortcuts="?" title="Keyboard shortcuts (?)">${icon("info")} Shortcuts</button>
       <span class="grow"></span>
       <span id="footer-right"></span>
     </footer>
+    <aside id="chat-dock" class="chat-dock" hidden aria-label="Chat"></aside>
     <section class="dock-strip" id="dock-strip" hidden aria-label="Followed log"></section>
     <section class="console" id="console" hidden aria-label="Log stream"></section>`;
+  $("#btn-chat-dock").addEventListener("click", () => setChatDock());
   $("#btn-jobs").addEventListener("click", async (e) => {
     try {
       lazy.jobs ||= import("./components/jobs_tray.js");
@@ -1812,7 +1912,7 @@ function renderShell() {
     const d = dockedLogs().find((x) => x.key === key);
     if (!d) return;
     if (a.dataset.strip === "follow") setDockFollow(key, !dockInfo(key).follow);
-    if (a.dataset.strip === "open") switchProject(d.project);
+    if (a.dataset.strip === "open") switchProject(d.project, { push: true });
     if (a.dataset.strip === "expand") { state.consoleTab = key; state.consoleOpen = true; renderConsole(); }
   });
 
@@ -1825,12 +1925,14 @@ function renderShell() {
   $("#btn-data").addEventListener("click", (e) => menu(e.currentTarget, dataItems()));
   $("#btn-settings").addEventListener("click", openSettings);
   $("#btn-quit").addEventListener("click", quitServer);
-  pickers.project = mountPicker($("#pick-project"), { label: "Project", onChange: (value) => switchProject(value) });
+  pickers.project = mountPicker($("#pick-project"), { label: "Project", onChange: (value) => switchProject(value, { push: true }) });
   $("#main").addEventListener("click", (e) => {
     const b = e.target.closest("[data-ws-open]");
-    if (b) switchProject(b.dataset.wsOpen, { restoreView: false });
+    if (b) switchProject(b.dataset.wsOpen, { restoreView: false, push: true });
   });
-  pickers.target = mountPicker($("#pick-target"), { label: "Target", empty: "No targets", onChange: selectTarget });
+  pickers.target = mountPicker($("#pick-target"), { label: "Target", empty: "No targets", onChange: selectTarget,
+    action: () => (canCreateTarget() ? { label: "New target…", run: newTarget } : null) });
+  $("#foot-keys").addEventListener("click", () => ctx.openShortcuts());
   $("#foot-logs").addEventListener("click", () => {
     state.consoleOpen = !state.consoleOpen;
     renderConsole();
@@ -1840,7 +1942,7 @@ function renderShell() {
 }
 
 function renderHeader() {
-  VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); });
+  VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) { a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); a.hidden = v.id === "chat" && !chatOn(); } });
   const badge = $("#mode-badge");
   const live = state.mode === "server";
   $("#btn-projects").title = live ? (server.session?.mutations_enabled ? "New project or open a project" : PROJECTS_LOCAL) : "Choose a project";
@@ -2073,7 +2175,7 @@ ctx.showDock = (key) => {
   ctx.toast("Following in the Log Stream — switch views freely", "ok");
 };
 
-const NEEDS_PROJECT = { workflow: "edit its workflow", metadata: "browse its metadata", config: "edit its settings" };
+const NEEDS_PROJECT = { chat: "chat with its agents", workflow: "edit its workflow", metadata: "browse its metadata", config: "edit its settings", plugin: "open this plugin page" };
 
 function askForProject(el, view) {
   const loading = view === "workflow" && activeProject() && state.workflowFile.loading;
@@ -2150,6 +2252,7 @@ function renderAll() {
   });
   if (focusedHeading && document.activeElement === document.body) { const h = $(`#view-${state.view} h2`); if (h) { h.tabIndex = -1; h.focus({ preventScroll: true }); } }
   renderLoading();
+  renderChatDock();
   renderFooter();
   renderStrip();
   renderJobs();
@@ -2165,14 +2268,21 @@ function applyRunLink(url) {
 }
 function route() {
   const url = parseRoute(location.hash);
-  const id = url.view;
+  const [id, page] = url.view.split("/");
+  if (id === "plugin") state.pluginPage = page || "";
+  if (id === "chat") state.chatSession = page || "";
   if (url.project && (url.project === "all" || ctx.projects().some((p) => p.id === url.project))) {
     if (state.selectedProject !== url.project) switchProject(url.project, { render: false, restoreView: false, syncUrl: false });
     state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[url.project], state.selectedTarget);
     rememberTarget();
   }
-  const next = VIEWS.some((v) => v.id === id) ? id : "overview";
-  if (next !== state.view) VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
+  const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) ? id : "overview";
+  if (next !== state.view) {
+    VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
+    const watch = { config: ["settings"], workflow: ["workflow", "inspector"] }[state.view] || [];
+    const kept = unsaved().filter(([, what]) => watch.includes(what)).map(([p]) => ctx.projectName(p));
+    if (kept.length) ctx.toast(`Unsaved changes in ${[...new Set(kept)].join(", ")} are kept in this tab. Save them before closing or reloading it.`, "warn");
+  }
   state.view = next;
   if (!url.plan) linkedRoute = "";
   applyRunLink(url);
@@ -2190,8 +2300,8 @@ async function boot() {
     if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
     const href = a.getAttribute("href"), url = parseRoute(href);
-    // replace, not push: a tab with one history entry is one the Studio may close on Quit.
-    if (url.plan || url.project) { location.replace(href); route(); }
+    // A history entry, so Back/Forward step through sections and targets (Quit then asks to close the tab).
+    if (url.plan || url.project) { setRoute(href); route(); }
     else goTo(url.view);
   });
   route();
@@ -2236,7 +2346,7 @@ async function boot() {
   if (state.mode !== "server") resolveInitialProject(); // loadServer resolves it for server mode
   setActive(state.selectedProject);
   if (session && !state.demoEnabled && !server.authRequired) {
-    import("./components/plugin_api.js").then(async (p) => p.activateAll(await p.fetchPlugins(), ctx))
+    import("./components/plugin_api.js").then(async (p) => p.activateAll(await p.fetchPlugins(state.selectedProject), ctx))
       .catch((error) => { if (!server.authRequired) ctx.log("error", error.message, "plugins"); });
   }
   scheduleRender();

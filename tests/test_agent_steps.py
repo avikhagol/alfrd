@@ -78,3 +78,46 @@ def test_a_claude_step_streams_for_token_usage_when_it_has_an_output_file(pipeli
     steps = {s.id: s for s in load_execution(pipeline).steps}
     assert steps["ask"].agent and steps["ask"].claude_stream and "stream-json" in steps["ask"].argv
     assert steps["ask_bare"].agent and not steps["ask_bare"].claude_stream   # no file to put the answer in: plain text
+
+
+FAKE_CLAUDE = """import json, sys
+sys.stdin.read()
+for i, cost in enumerate((0.2, 0.35, 0.5)):  # three results: a report and two background follow-ups
+    print(json.dumps({"type": "result", "subtype": "success", "uuid": f"r{i}", "result": "answer" if i == 0 else "",
+                      "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100,
+                                "cache_creation_input_tokens": 20}, "total_cost_usd": cost}), flush=True)
+"""
+
+
+def test_turn_cost_warning_and_summed_usage(pipeline, tmp_path):
+    bins = tmp_path / "bin"
+    bins.mkdir()
+    (bins / "claude").write_text(f"#!{sys.executable}\n{FAKE_CLAUDE}")
+    (bins / "claude").chmod(0o755)
+    data = yaml.safe_load((pipeline / "alfrd.yaml").read_text())
+    data["entrypoint"].append({"name": "claude", "cmd": [str(bins / "claude"), "-p"], "stdin_file": "reviews/{target}-prompt.md",
+                               "output_file": "reviews/{target}-c.md", "output_capture": "stdout"})
+    data["steps"]["ask"] = {"entrypoint": "claude"}
+    data["workflows"][0]["steps"] = ["ask"]
+    data["execution"]["warn_turn_cost_usd"] = 0.4
+    (pipeline / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    pc.create(pipeline / "alfrd.plan.csv", [{"target": "alpha"}], ["ask"], ["ask"], key_column="TARGET_NAME",
+              files_column="FILENAMES", code_column="PROJECT_CODE", workdir_column="WORKDIR")
+    folder = scheduler.create_plan(pipeline)
+    scheduler.Runner(pipeline, folder.id).run()
+    unit = folder.units()[-1]
+    assert unit["status"] == "done"
+    usage = unit["agent_usage"]
+    assert (usage["input_tokens"], usage["output_tokens"], usage["cache_read_input_tokens"], usage["cache_creation_input_tokens"]) == (30, 15, 300, 60)
+    assert unit["total_cost_usd"] == 0.5 and unit["cost_warning"] == {"limit": "warn_turn_cost_usd", "value": 0.5, "bound": 0.4}
+    status = scheduler.plan_status(pipeline, folder.id)
+    assert status["cost_warnings"] == {"warn_turn_cost_usd": 0.4, "units": [unit["id"]]}
+    assert status["agent_totals"]["total_cost_usd"] == 0.5
+    from alfrd.events import EVENTS_FILE
+
+    kinds = [__import__("json").loads(line)["kind"] for line in (folder.path / EVENTS_FILE).read_text().splitlines()]
+    assert kinds.count("budget.warning") == 1
+    data["execution"]["warn_turn_cost_usd"] = -1
+    (pipeline / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    with pytest.raises(Exception, match="warn_turn_cost_usd"):
+        load_execution(pipeline)

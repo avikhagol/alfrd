@@ -44,6 +44,8 @@ INLINE_TYPES: dict[str, str] = {
 #: Never inline (scriptable in a browser): served as attachments only.
 NEVER_INLINE = frozenset({".svg", ".html", ".htm", ".xhtml", ".js", ".xml"})
 MAX_FILES = 5000
+#: Folders listed but never entered (a Measurement Set is opened as a whole).
+LEAF_SUFFIXES = (".ms", ".flagversions")
 MAX_RUNS = 200
 _STAMP = re.compile(r"(\d{4})-?(\d{2})-?(\d{2})[_T-]?(\d{2})[-_:]?(\d{2})[-_:]?(\d{2})")
 _PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
@@ -245,7 +247,7 @@ def _walk(folder: Path, depth: int) -> Iterable[tuple[str, os.DirEntry[str]]]:
         for entry in entries:
             rel = f"{prefix}{entry.name}"
             if entry.is_dir(follow_symlinks=False):
-                if level + 1 < depth and not entry.name.endswith((".ms", ".flagversions")):
+                if level + 1 < depth and not entry.name.endswith(LEAF_SUFFIXES):
                     dirs.append((Path(entry.path), f"{rel}/", level + 1))
             elif entry.is_file(follow_symlinks=False):
                 yield rel, entry
@@ -317,4 +319,4 @@ def resolve_file(root: str | Path, name: str, run: str, path: str) -> tuple[Path
     return target, media, media != "application/octet-stream"
 
 
-__all__ = ["CollectionError", "INLINE_TYPES", "MAX_FILES", "collections", "list_files", "list_runs", "public_spec", "resolve_file"]
+__all__ = ["CollectionError", "INLINE_TYPES", "LEAF_SUFFIXES", "MAX_FILES", "collections", "list_files", "list_runs", "public_spec", "resolve_file"]

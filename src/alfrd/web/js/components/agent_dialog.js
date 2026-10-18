@@ -36,11 +36,12 @@ export async function openProject(ctx, onOpened, path, create) {
 export async function openCreateProject(ctx, onCreated, path = "") {
   const { templates } = await server.projectTemplates();
   const canOpen = server.canBrowse();
-  ctx.modal(`<header class="modal-h"><h2>New project</h2><span class="grow"></span>${canOpen ? `<button class="btn sm" id="create-open" title="Open a folder that already has alfrd.yaml">${icon("folder")} Open existing project…</button>` : ""}<button class="btn" data-close>Close</button></header>
+  ctx.modal(`<header class="modal-h"><h2>New project</h2><span class="grow"></span>${canOpen ? `<button class="btn sm" id="create-open" title="Open a folder that already has alfrd.yaml">${icon("folder")} Open existing project…</button>` : ""}<a class="btn sm" href="#/new-project" id="create-canvas" title="Plan steps, dependencies, agents and targets on a canvas first">${icon("workflow")} Design on canvas…</a><button class="btn" data-close>Close</button></header>
     <form id="create-project"><div class="modal-b">
     <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project" value="${esc(path)}"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
     <label class="field"><span>Name</span><input class="input" name="name" placeholder="Folder name"></label>
     <label class="field"><span>Template</span><select class="input" name="template">${templates.map((t) => `<option value="${esc(t.name)}" ${t.name === "basic" ? "selected" : ""}>${esc(t.name)} — ${esc(t.description)}</option>`).join("")}</select></label>
+    <label class="field"><span>Configuration file</span><select class="input" name="manifest"><option value=".alfrd/alfrd.yaml" selected>.alfrd/alfrd.yaml (default)</option><option value="alfrd.yaml">alfrd.yaml in the project root (lower precedence)</option></select></label>
     <label class="field" data-loop-field><span>Initial task (for agent workflows)</span><textarea class="input" name="task" rows="5"></textarea></label>
     <label class="field" data-loop-field><span>Agent sequence (one pass, repeats)</span><input class="input" name="sequence" placeholder="claude, codex" value="claude, codex"></label>
     <label class="field" data-loop-field><span>Iterations (total turns; the project maximum)</span><input class="input" name="iterations" type="number" min="1" max="${MAX_TURNS}" value="${DEFAULT_ITERATIONS}"></label>
@@ -48,6 +49,7 @@ export async function openCreateProject(ctx, onCreated, path = "") {
     <p id="create-error" class="callout fail" role="alert" hidden></p></div><footer class="modal-f"><button class="btn primary" type="submit">Create project</button></footer></form>`, (root, close) => {
     let browser;
     const alert = root.querySelector("#create-error");
+    root.querySelector("#create-canvas").addEventListener("click", () => close());
     root.querySelector("#create-open")?.addEventListener("click", () => { close(); openProject(ctx, onCreated, "", (folder) => openCreateProject(ctx, onCreated, folder)); });
     const open = (folder) => openPath(ctx, onCreated, close, alert, folder);
     root.querySelector("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder(root.querySelector("#create-folders"), root.querySelector('[name="path"]'), { connect: (paths) => open(paths[0]) }); };

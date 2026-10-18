@@ -256,7 +256,9 @@ def connect_manifest_path(path: str):
         abort(403, description="runtime mutations are disabled")
     from alfrd.runtime.identity import project_identifier
 
-    root_path = manifest_path.parent.resolve()  # the folder itself for the default manifest
+    from alfrd.manifest_paths import project_root
+
+    root_path = project_root(manifest_path).resolve()  # the folder itself for the default manifest
     identifier = project_identifier(root_path, manifest.name)
     try:
         existing = service.get_project_by_identifier(identifier)

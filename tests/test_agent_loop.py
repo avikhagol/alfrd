@@ -14,6 +14,7 @@ from alfrd.project_creation import create_project
 from alfrd.runtime import RuntimeService, RuntimeStore
 from alfrd.runtime import scheduler
 from alfrd.agent_loop import submit_response
+from alfrd.manifest_paths import project_manifest
 
 
 RESPONSE = "\n".join(f"## {heading}\nChecked." for heading in (
@@ -47,11 +48,11 @@ def project(tmp_path, service, monkeypatch):
         "if agent=='codex': pathlib.Path(sys.argv[2]).write_text(text)\n"
         "else: print(text)\n"
     )
-    data = yaml.safe_load((root / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(root)).read_text())
     for entry in data["entrypoint"]:
         entry["cmd"] = [sys.executable, str(script), entry["name"], "{response_file}"]
     data["execution"]["usage_interval"] = 0
-    (root / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    (project_manifest(root)).write_text(yaml.safe_dump(data, sort_keys=False))
     monkeypatch.setattr(scheduler, "POLL", .03)
     yield root
     for plan in scheduler.list_plans(root):
@@ -61,11 +62,11 @@ def project(tmp_path, service, monkeypatch):
 
 def legacy_layout(root, iterations=5):
     """Rewrite the project to the pre-sequence layout (steps × passes)."""
-    data = yaml.safe_load((root / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(root)).read_text())
     data["workflows"][0] = {"name": "agent-loop", "repeat": {"iterations": iterations}, "steps": [
         {"id": "claude-turn", "entrypoint": "claude", "handoff": {"input": "{target}/next-step-claude.md", "output": "{target}/next-step-codex.md"}},
         {"id": "codex-turn", "entrypoint": "codex", "handoff": {"input": "{target}/next-step-codex.md", "output": "{target}/next-step-claude.md"}}]}
-    (root / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    (project_manifest(root)).write_text(yaml.safe_dump(data, sort_keys=False))
     rewrite_plan_csv(root)
     return data
 
@@ -100,10 +101,10 @@ def test_scaffold_and_register_ordered_workflow(service, tmp_path):
     assert len(persisted.steps) == 10
     assert (root / "task/next-step-claude.md").read_text() == "Build it\n"
     assert len(scheduler.table_for(load_execution(root), root / "alfrd.plan.csv").rows) == 1
-    before = (root / "alfrd.yaml").read_bytes()
+    before = (project_manifest(root)).read_bytes()
     with pytest.raises(FileExistsError):
         create_project(service, root, task="other")
-    assert (root / "alfrd.yaml").read_bytes() == before
+    assert (project_manifest(root)).read_bytes() == before
 
 
 @pytest.mark.parametrize("iterations", [0, -1, 201, True, "5"])
@@ -121,7 +122,7 @@ def test_basic_project_and_cli(service, tmp_path):
     result = CliRunner().invoke(alfrd_cli, ["projects", "create", str(tmp_path / "basic"),
                                           "--db", str(tmp_path / "cli.sqlite")])
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "basic" / "alfrd.yaml").exists()
+    assert (project_manifest(tmp_path / "basic")).exists()
     assert not (tmp_path / "basic" / "next-step-claude.md").exists()
 
 
@@ -161,9 +162,9 @@ def test_failed_turn_never_publishes_or_starts_next(project, monkeypatch, failur
 
 
 def test_pause_manual_response_and_resume(project):
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     data["entrypoint"][0]["manual"] = True
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     folder = scheduler.create_plan(project)
     scheduler.spawn_runner(folder)
     assert wait(lambda: any(u.get("manual") for u in folder.units()))
@@ -305,7 +306,7 @@ def test_missing_input_and_outside_handoff_stop_before_execution(project):
     assert not (project / "calls.jsonl").exists()
     data = legacy_layout(project)
     data["workflows"][0]["steps"][0]["handoff"]["input"] = "../outside.md"
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     with pytest.raises(ValueError, match="inside"):
         load_execution(project)
 
@@ -328,12 +329,12 @@ def test_workspace_lock_blocks_another_loop(project, tmp_path):
 
     other = tmp_path / "other"
     other.mkdir()
-    for name in ("alfrd.yaml", "alfrd.plan.csv", "task/next-step-claude.md", "task/next-step-codex.md"):
+    for name in (".alfrd/alfrd.yaml", "alfrd.plan.csv", "task/next-step-claude.md", "task/next-step-codex.md"):
         (other / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(project / name, other / name)
-    data = yaml.safe_load((other / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(other)).read_text())
     data["execution"]["cwd"] = str(project)
-    (other / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(other)).write_text(yaml.safe_dump(data))
     (project / "hold").touch()
     first = scheduler.create_plan(project)
     scheduler.spawn_runner(first)
@@ -354,7 +355,7 @@ def test_changed_workflow_stops_at_turn_boundary(project):
     folder = scheduler.create_plan(project)
     scheduler.spawn_runner(folder)
     assert wait(lambda: folder.units() and folder.units()[0].get("pid"))
-    path = project / "alfrd.yaml"
+    path = project_manifest(project)
     data = yaml.safe_load(path.read_text())
     data["execution"]["timeout"] = 123
     path.write_text(yaml.safe_dump(data, sort_keys=False))
@@ -365,10 +366,10 @@ def test_changed_workflow_stops_at_turn_boundary(project):
 
 
 def test_total_runtime_limit_stops_active_turn(project):
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     data["execution"]["max_runtime"] = 2
     data["execution"]["kill_grace"] = .2
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     (project / "hold").touch()
     folder = scheduler.create_plan(project)
     scheduler.Runner(project, folder.id).run()
@@ -447,10 +448,10 @@ def test_response_contract_and_default_parity(project):
 
 def test_invalid_manual_response_keeps_waiting_then_recovers(project):
     from alfrd.agent_loop import MAX_RESPONSE_BYTES, ResponseValidationError
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     data["entrypoint"][0]["manual"] = True
     data["workflows"][0]["repeat"]["iterations"] = 2
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     folder = scheduler.create_plan(project)
     scheduler.spawn_runner(folder)
     assert wait(lambda: folder.units() and folder.units()[0].get("handoff"))
@@ -513,7 +514,7 @@ def test_launch_failure_calls_after_failure_once(project, monkeypatch):
 
 
 def test_hidden_manifest_runs_loop(project):
-    (project / "alfrd.yaml").rename(project / ".alfrd.yaml")
+    project_manifest(project).rename(project / ".alfrd.yaml")
     folder = scheduler.create_plan(project)
     scheduler.Runner(project, folder.id).run()
     assert folder.load()["status"] == "finished"
@@ -523,7 +524,7 @@ def test_hidden_manifest_runs_loop(project):
 def test_custom_headings_and_contract_survive_manual_submission(project):
     from alfrd.agent_loop import prepare, publish, ResponseValidationError
 
-    manifest = project / "alfrd.yaml"
+    manifest = project_manifest(project)
     data = yaml.safe_load(manifest.read_text())
     data["loop"] = {"headings": ["Outcome", "Next"], "contract": {
         "first": "Inspect the custom goal.", "middle": "Continue the custom goal.",
@@ -581,7 +582,7 @@ def test_cli_unused_iterations_and_template_validation(tmp_path):
 def test_project_agent_folder_and_bash_settings(project):
     from alfrd.agent_io import agent_command
 
-    manifest = project / "alfrd.yaml"
+    manifest = project_manifest(project)
     data = yaml.safe_load(manifest.read_text())
     data["project_settings"] = {"agent_access": {"folders": ["../reference notes", "../other notes"],
         "bash_commands": ["git status *", "pytest *"], "sandbox": "workspace-write"}}
@@ -605,7 +606,7 @@ def test_studio_loop_options_and_cell_errors(service, tmp_path, project, monkeyp
     from alfrd.gui import create_app
     from alfrd.gui.services import RuntimeCatalogReader
 
-    manifest = project / "alfrd.yaml"
+    manifest = project_manifest(project)
     data = yaml.safe_load(manifest.read_text())
     data["loop"] = {"task_row": "custom-task"}
     manifest.write_text(yaml.safe_dump(data))
@@ -635,11 +636,11 @@ PERSONAS = {
 
 
 def set_personas(root, roles, personas=PERSONAS):
-    data = yaml.safe_load((root / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(root)).read_text())
     data.setdefault("project_settings", {})["personas"] = personas
     data["workflows"][0]["repeat"]["iterations"] = 4
     data["workflows"][0]["roles"] = roles
-    (root / "alfrd.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    (project_manifest(root)).write_text(yaml.safe_dump(data, sort_keys=False))
     return data
 
 
@@ -682,7 +683,7 @@ def test_persona_cycles(project, schedule, expected):
 def test_persona_step_fallback(project):
     data = set_personas(project, [])
     data["workflows"][0]["steps"] = [{"id": "claude", "role": ["manager", "reviewer"]}]
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     steps = load_execution(project).steps
     assert [[r["key"] for r in s.roles] for s in steps] == [["manager", "reviewer"], [], ["manager", "reviewer"], []]
     from alfrd.agent_loop import prepare
@@ -724,9 +725,9 @@ def test_persona_definitions_without_assignments_preserve_prompt(project):
     before = load_execution(project)
     record = prepare(project, project / "parity", before.steps[0], "p", "u", target="task")
     original = Path(record["prompt_file"]).read_bytes()
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     data.setdefault("project_settings", {})["personas"] = PERSONAS
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     after = load_execution(project)
     record = prepare(project, project / "parity", after.steps[0], "p", "u", target="task")
     assert Path(record["prompt_file"]).read_bytes() == original
@@ -738,7 +739,7 @@ def test_invalid_step_role_even_with_schedule(project, role):
     from alfrd.execution import ExecutionError
     data = set_personas(project, ["manager"])
     data["workflows"][0]["steps"] = [{"id": "claude", "role": role}]
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     with pytest.raises(ExecutionError, match="role must|unknown persona"):
         load_execution(project)
 
@@ -747,7 +748,7 @@ def test_nonrepeated_turn_roles(project):
     legacy_layout(project)
     data = set_personas(project, ["manager", "reviewer"])
     del data["workflows"][0]["repeat"]
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     config = load_execution(project)
     assert config.step_ids == ["claude-turn", "codex-turn"]
     assert [s.roles[0]["key"] for s in config.steps] == ["manager", "reviewer"]
@@ -772,7 +773,7 @@ def test_studio_instruction_yaml_roundtrip(project, instructions):
         "process.stdout.write(text);"
     )
     result = subprocess.run([node, "--input-type=module", "-e", script], input=json.dumps(data), text=True, capture_output=True, check=True)
-    (project / "alfrd.yaml").write_text(result.stdout)
+    (project_manifest(project)).write_text(result.stdout)
     assert yaml.safe_load(result.stdout)["project_settings"]["personas"]["writer"]["instructions"] == instructions
     assert load_execution(project).steps[0].roles[0]["instructions"] == instructions
 
@@ -831,7 +832,7 @@ def test_task_rename_moves_files_csv_and_history(service, tmp_path, project):
     from alfrd import history
     client, headers, prefix = task_client(service, tmp_path)
     assert client.post(prefix + "/tasks", json={"name": "old", "task": "Rename me", "iterations": 4}, headers=headers).status_code == 201
-    manifest = project / "alfrd.yaml"
+    manifest = project_manifest(project)
     data = yaml.safe_load(manifest.read_text())
     data["history"]["files"] += ["old/task.md"]
     manifest.write_text(yaml.safe_dump(data, sort_keys=False))
@@ -880,7 +881,7 @@ def test_task_paths_reject_unsafe_names(service, tmp_path, project, name):
 
 def test_legacy_root_handoff_manifest_still_runs(project):
     import shutil
-    manifest = project / "alfrd.yaml"
+    manifest = project_manifest(project)
     data = legacy_layout(project)
     data["history"]["files"] = ["alfrd.yaml", "task.md", "next-step-*.md"]
     data["workflows"][0]["repeat"]["iterations"] = 1
@@ -921,7 +922,7 @@ def test_rerunning_finished_task_resets_only_selected_row(service, tmp_path, pro
 
 
 def test_history_and_comments_do_not_change_workflow_hash(project):
-    manifest = project / "alfrd.yaml"
+    manifest = project_manifest(project)
     original = scheduler.manifest_hash(project)
     manifest.write_text(manifest.read_text() + "\n# An editorial comment\n")
     assert scheduler.manifest_hash(project) == original

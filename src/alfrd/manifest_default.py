@@ -21,7 +21,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-LOCAL_NAMES = ("alfrd.yaml", ".alfrd.yaml")
+from alfrd.manifest_paths import MANIFEST_CANDIDATES, project_manifest
+
+#: Local manifest locations, highest precedence first (see alfrd.manifest_paths).
+LOCAL_NAMES = MANIFEST_CANDIDATES
 ENV_VAR = "ALFRD_DEFAULT_MANIFEST"
 #: Files that mark a folder as an AVICA project folder (for ``alfrd serve`` in the cwd).
 PROJECT_MARKERS = ("avica.inp", "vasco.inp", "avica.summary.json", "avica.logs", "reductions")
@@ -30,12 +33,8 @@ _NAME_LINE = re.compile(r"^name:[^\n]*$", re.M)
 
 
 def local_manifest(root: str | Path) -> Path | None:
-    """The folder's own ``alfrd.yaml`` (or ``.alfrd.yaml``), if any."""
-    for name in LOCAL_NAMES:
-        path = Path(root) / name
-        if path.is_file():
-            return path
-    return None
+    """The folder's own active manifest (``.alfrd/alfrd.yaml``, ``alfrd.yaml`` or ``.alfrd.yaml``), if any."""
+    return project_manifest(root)
 
 
 def default_manifest_path() -> Path | None:

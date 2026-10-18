@@ -85,7 +85,7 @@ test("app route selects the linked project before opening its run and deduplicat
   const sandbox = { state, parseRoute, linkedRoute: "", location: { hash: "#/workflow?project=p&plan=r&unit=u" },
     ctx: { projects: () => [{ id: "p" }], scopedTargets: () => [], toast() {} },
     switchProject: (p) => { calls.push(["project", p]); state.selectedProject = p; },
-    chooseTarget: () => null, storage: { get: () => ({}) }, rememberTarget() {},
+    chooseTarget: () => null, storage: { get: () => ({}) }, rememberTarget() {}, unsaved: () => [],
     VIEWS: [{ id: "overview", mod: {} }, { id: "workflow", mod: {} }], scheduleRender() {}, plansAvailable: () => true,
     openLinkedRun: async (_, ...args) => { assert.equal(state.selectedProject, "p"); calls.push(["run", ...args]); },
   };

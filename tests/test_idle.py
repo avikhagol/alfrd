@@ -13,12 +13,13 @@ from test_loop_features import set_turns
 from alfrd.agent_loop import approve_response, sha256, submit_response
 from alfrd.execution import ExecutionError, load_execution
 from alfrd.runtime import scheduler
+from alfrd.manifest_paths import project_manifest
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 
 
 def configure(project, **sections):
-    path = project / "alfrd.yaml"
+    path = project_manifest(project)
     data = yaml.safe_load(path.read_text())
     for section, values in sections.items():
         data.setdefault(section, {}).update(values)
@@ -54,7 +55,7 @@ def test_bad_idle_config(project, section, value):
 def test_silent_agent_reports_once_per_quiet_period(project, periods):
     set_turns(project, 1)
     configure(project, notify={"idle_after": 1})
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     script = Path(data["entrypoint"][0]["cmd"][1])
     script.write_text(script.read_text().replace(
         "print('stderr diagnostic',file=sys.stderr)",
@@ -107,7 +108,7 @@ def test_review_and_manual_waits_are_not_idle(project, hold):
     set_turns(project, 1, turns={1: {"human_review": hold == "review"}})
     configure(project, notify={"idle_after": 1})
     if hold == "manual":
-        path = project / "alfrd.yaml"
+        path = project_manifest(project)
         data = yaml.safe_load(path.read_text())
         data["entrypoint"][0]["manual"] = True
         path.write_text(yaml.safe_dump(data))

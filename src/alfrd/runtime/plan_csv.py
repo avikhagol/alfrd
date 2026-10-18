@@ -1,8 +1,14 @@
 """Plan CSV: one row per target, one column per workflow step.
 
 Cells written by people: ``todo`` (run it), empty / ``skip`` / ``-`` (don't).
-Cells written by ALFRD: ``running done failed blocked cancelled interrupted``.
+Cells written by ALFRD: ``running done failed blocked cancelled interrupted``, and
+``waiting`` (held until a person or the orchestrator decides; see alfrd.chat).
 ``queued`` is read as ``todo``.
+
+Optional per-row columns the runner reads (any plan): ``depends_on`` (row keys or
+targets, comma/space separated: the row starts only when each of them is done, and
+is blocked when one fails), ``max_retries`` (automatic retries of a failed step) and
+``max_seconds`` (a time limit per command, capping the step's own).
 
 Other columns (the key column, FITS file names, project code, work dir, notes)
 are kept as they are. ALFRD only rewrites the cells it changes: every update is
@@ -35,11 +41,15 @@ FAILED = "failed"
 BLOCKED = "blocked"
 CANCELLED = "cancelled"
 INTERRUPTED = "interrupted"
+WAITING = "waiting"
 SKIP_VALUES = {"", "skip", "-", "no", "n"}
 TODO_VALUES = {"todo", "queued", "yes", "y", "x", "run"}
 DONE_VALUES = {"done", "ok", "succeeded"}
 STOP_VALUES = {FAILED, BLOCKED, CANCELLED, INTERRUPTED}
-STATES = (TODO, RUNNING, DONE, FAILED, BLOCKED, CANCELLED, INTERRUPTED, "skip")
+STATES = (TODO, RUNNING, DONE, FAILED, BLOCKED, CANCELLED, INTERRUPTED, WAITING, "skip")
+DEPENDS_COLUMN = "depends_on"
+RETRIES_COLUMN = "max_retries"
+SECONDS_COLUMN = "max_seconds"
 
 
 def normalize(value: str | None) -> str:
@@ -65,6 +75,26 @@ class PlanRow:
 
     def cell(self, step: str) -> str:
         return normalize(self.values.get(step))
+
+
+def value(row: "PlanRow", column: str) -> str:
+    """A row's value in ``column`` (case-insensitive), stripped; "" when absent."""
+    found = _find(list(row.values), column)
+    return str(row.values.get(found, "") if found else "").strip()
+
+
+def dependencies(row: "PlanRow") -> list[str]:
+    """Row keys (or targets) named in the row's ``depends_on`` column."""
+    return [d for d in re.split(r"[,;\s]+", value(row, DEPENDS_COLUMN)) if d]
+
+
+def number(row: "PlanRow", column: str) -> float | None:
+    """A non-negative number from ``column``; None when empty or not a number."""
+    try:
+        result = float(value(row, column))
+    except ValueError:
+        return None
+    return result if result >= 0 else None
 
 
 @dataclass
@@ -366,6 +396,50 @@ def add_row(path: str | Path, lock_path: str | Path, steps: Sequence[str], *, ta
         return written
 
 
+def add_rows(path: str | Path, lock_path: str | Path, steps: Sequence[str], rows: Sequence[Mapping[str, object]],
+             *, create: bool = False, **columns: str) -> PlanTable:
+    """Append several rows in one atomic write (same lock as :func:`update`).
+
+    Each item: ``{"target": key, "values": {column: text}, "selected": [step, ...]}``;
+    selected steps start ``todo``, the others empty. Missing columns are added
+    before the first step column (missing step columns at the end). Raises
+    ``DuplicateRowError`` when a key is taken (nothing is written then).
+    """
+    source = Path(path)
+    with locked(lock_path):
+        if source.exists():
+            text = source.read_text(encoding="utf-8-sig")
+        elif create:
+            text = ""
+        else:
+            raise FileNotFoundError(f"plan CSV {source} does not exist")
+        table = parse(text, source, steps, **columns)
+        extra = [str(c) for item in rows for c in dict(item.get("values") or {})]
+        if table.header:
+            header = _with_columns(table.header, list(dict.fromkeys(extra)), steps)
+        else:
+            header = [table.key_column, *dict.fromkeys(c for c in extra if c not in steps)]
+        header += [s for s in steps if s not in header]
+        raw_rows = list(csv.DictReader(io.StringIO(text))) if text else []
+        new_rows = []
+        for item in rows:
+            target = check_target(str(item.get("target") or ""))
+            chosen = set(item.get("selected") or [])
+            row = {h: "" for h in header}
+            row.update({(_find(header, str(c)) or str(c)): str(v) for c, v in dict(item.get("values") or {}).items()})
+            row[_find(header, table.key_column) or header[0]] = target
+            row.update({s: TODO for s in steps if s in chosen})
+            new_rows.append(row)
+        new_text = dump(header, [*raw_rows, *new_rows])
+        written = parse(new_text, source, steps, **columns)
+        keys = [r.key for r in written.rows]
+        dup = next((k for k in keys if re.search(r"#\d+$", k) and k.rsplit("#", 1)[0] in keys), None)
+        if dup:
+            raise DuplicateRowError(f"{dup.rsplit('#', 1)[0]} is already a row in {source.name}")
+        atomic_write(source, new_text)
+        return written
+
+
 def create(path: str | Path, rows: Sequence[Mapping[str, str]], steps: Sequence[str], selected: Iterable[str],
            *, key_column: str, files_column: str, code_column: str, workdir_column: str,
            extra_columns: Sequence[str] = ()) -> Path:
@@ -384,7 +458,7 @@ def create(path: str | Path, rows: Sequence[Mapping[str, str]], steps: Sequence[
 
 
 __all__ = [
-    "BLOCKED", "CANCELLED", "DONE", "FAILED", "INTERRUPTED", "RUNNING", "STATES", "STOP_VALUES", "TODO",
-    "DuplicateRowError", "PlanRow", "PlanTable", "add_row", "atomic_write", "check_target", "conflict_keys", "create",
+    "BLOCKED", "CANCELLED", "DONE", "FAILED", "INTERRUPTED", "RUNNING", "STATES", "STOP_VALUES", "TODO", "WAITING",
+    "DuplicateRowError", "PlanRow", "PlanTable", "add_row", "add_rows", "dependencies", "number", "value", "atomic_write", "check_target", "conflict_keys", "create",
     "dump", "file_names", "join_files", "locked", "normalize", "parse", "read", "row_key", "update",
 ]

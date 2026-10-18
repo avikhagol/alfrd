@@ -56,7 +56,8 @@ compact, versioned JSON form made for you. Prefer it over reading files.
 | Start | `alfrd plan run -C DIR [-j N] [--on-failure stop_target\|continue\|stop_plan] [--retry-failed]` |
 | Pause / resume / stop | `alfrd plan pause` · `alfrd plan resume [--retry-failed]` · `alfrd plan cancel --yes` |
 | After reboot / crash | `alfrd plan reconcile -C DIR`, then `alfrd plan resume` |
-| Check alfrd.yaml | `alfrd manifest validate DIR/alfrd.yaml` |
+| Check alfrd.yaml | `alfrd manifest validate DIR/alfrd.yaml` (config is `.alfrd/alfrd.yaml` > `alfrd.yaml` > `.alfrd.yaml`; the first is active) |
+| Move config into `.alfrd/` | `alfrd manifest migrate DIR [--dry-run] [--keep shadow] [--force]` |
 | No alfrd.yaml (AVICA tree) | `alfrd manifest default -o alfrd.yaml` (edit, then validate) |
 | Studio (web UI) | `alfrd serve --project DIR --no-browser [--port 5000]` (no `-C` here) |
 | Agent loop: run one task | `alfrd plan run -C DIR --target T` (see [references/agent-loops.md](references/agent-loops.md)) |

@@ -303,7 +303,7 @@ class AlfrdWatcher(Watcher):
         from alfrd.runtime import scheduler
         if self._ref is None:
             self._ref = notify.project_ref(self.root)
-        plans = scheduler.list_plans(self.root)
+        plans = scheduler.list_plans(self.root) + scheduler.chat_plans(self.root)
         active = {p["id"] for p in plans if p.get("status") in scheduler.ACTIVE}
         out = []
         for plan in plans:

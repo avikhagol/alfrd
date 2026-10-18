@@ -6,6 +6,7 @@ import { registerPanel } from "./panels.js";
 
 import { registerProjectSection, registerOverviewAction } from "./project_sections.js";
 import { dialog, confirm } from "./plugin_dialogs.js";
+import { bindPages, registerPage, setAvailability, pagesReady, applies } from "./plugin_pages.js";
 
 export const pluginErrors = [];
 const activated = new Set();
@@ -29,7 +30,9 @@ export async function action(project, pluginId, actionId, payload = {}) {
   return result.data;
 }
 
-export const fetchPlugins = () => fetchJSON("/studio/plugins");
+/** The plugin list; with a project it also says which plugins apply to it (available, unavailable_reason). */
+export const fetchPlugins = (project = null) => fetchJSON(`/studio/plugins${project && project !== "all" ? `?project=${encodeURIComponent(project)}` : ""}`);
+const projectPath = (project, rest) => `/studio/projects/${encodeURIComponent(project)}/${rest}`;
 
 export function reportServerErrors(list, ctx) {
   for (const p of list.plugins || []) {
@@ -69,24 +72,36 @@ export function applyTheme(list, id) {
 }
 
 /** The browser API; converters resolve to a Blob, caller owns any object URL it creates.
- * convert(path, to, project?) defaults to the currently selected project.
+ * convert(path, to, project?) defaults to the currently selected project. `plugin` (the plugin id) tags
+ * sections, pages, overview actions and commands so they follow the plugin's availability per project.
  */
-export function api(ctx, purify) {
+export function api(ctx, purify, plugin = null) {
   const commands = [];
   let provider = false;
+  const once = (id, title, detail) => {
+    if (!pluginErrors.some((error) => error.id === id && error.message === detail)) pluginErrors.push({ id, title, message: detail });
+  };
   return {
     registerViewer, registerPanel, action,
-    registerOverviewAction: (spec) => registerOverviewAction(spec, (message) => {
+    registerOverviewAction: (spec) => registerOverviewAction({ ...spec, plugin }, (message) => {
       pluginErrors.push({ id: spec.id, title: spec.title || spec.id, message: `overview action: ${message}` });
     }),
     menu: (...args) => ctx.menu(...args),
     registerProjectSection(spec) {
-      registerProjectSection(spec, (message) => {
-        const detail = `project section: ${message}`;
-        if (!pluginErrors.some((error) => error.id === spec.id && error.message === detail)) {
-          pluginErrors.push({ id: spec.id, title: spec.title, message: detail });
-        }
-      });
+      registerProjectSection(spec && { ...spec, plugin }, (message) => once(spec.id, spec.title, `project section: ${message}`));
+    },
+    /** A page in the sidebar's Plugins group (#/plugin/<id>): render(box, {project, projectType, signal, refresh}). */
+    registerPage(spec) {
+      registerPage(spec, plugin || spec?.id, (message) => once(spec.id, spec.title, `page: ${message}`));
+    },
+    /** Measurement Sets the project's alfrd.yaml declares (artifacts: kind directory, pattern ending in .ms). */
+    measurementSets: (project) => fetchJSON(projectPath(project, "measurement-sets")),
+    /** One folder of the project (confined to its root; .ms folders are leaves). */
+    listFiles: (project, path = "") => fetchJSON(projectPath(project, `files?path=${encodeURIComponent(path)}`)),
+    /** Mount the project file explorer in box; opts: select(entry, listing), selectable(entry), selectLabel, start. */
+    async fileExplorer(box, { project, ...opts }) {
+      const { mountExplorer } = await import("./file_explorer.js");
+      return mountExplorer(box, { list: (path) => fetchJSON(projectPath(project, `files?path=${encodeURIComponent(path)}`)), ...opts });
     },
     dialog: (options) => dialog(ctx, options),
     confirm: (text, options) => confirm(ctx, text, options),
@@ -94,8 +109,8 @@ export function api(ctx, purify) {
       if (!command?.id || !command.label || typeof command.run !== "function") throw new TypeError("registerCommand({id,label,run})");
       const index = commands.findIndex((c) => c.id === command.id);
       if (index >= 0) commands.splice(index, 1);
-      commands.push({ group: "Plugins", icon: "metadata", ...command });
-      if (!provider) { ctx.palette.register(() => commands); provider = true; }
+      commands.push({ group: "Plugins", icon: "metadata", ...command, plugin });
+      if (!provider) { ctx.palette.register(() => commands.filter((c) => applies(c.plugin, c.projectTypes, c.plugin && current(ctx)))); provider = true; }
     },
     toast: (...args) => ctx.toast(...args), fetchJSON,
     project: () => ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : ctx.target()?.project || null,
@@ -107,21 +122,25 @@ export function api(ctx, purify) {
   };
 }
 
+const current = (ctx) => ctx.state.selectedProject !== "all" ? ctx.state.selectedProject : ctx.target?.()?.project || null;
+
 export async function activateAll(list, ctx) {
   reportServerErrors(list, ctx);
+  bindPages(ctx, (project) => fetchPlugins(project));
+  setAvailability(list);
   setConverters((list.plugins || []).filter((p) => p.active).flatMap((p) => (p.converters || []).map((c) => ({ ...c, plugin: p.id, title: p.title }))));
   const theme = (list.plugins || []).find((p) => p.id === list.theme && p.active && p.theme_css);
   if (theme) stylesheet(theme.theme_css, "data-plugin-theme");
-  let sharedApi;
+  let purify;
   for (const p of list.plugins || []) {
     if (!p.active || !p.enabled || activated.has(p.id)) continue;
     try {
       if (p.web?.css) stylesheet(p.web.css, "data-plugin-style", p.id);
       if (p.web?.js) {
-        sharedApi ||= api(ctx, (await import("../vendor/purify.es.mjs")).default);
+        purify ||= (await import("../vendor/purify.es.mjs")).default;
         const mod = await import(p.web.js);
         if (typeof mod.activate !== "function") throw new TypeError("Plugin must export activate(api)");
-        await mod.activate(sharedApi);
+        await mod.activate(api(ctx, purify, p.id));
       }
       activated.add(p.id);
     } catch (error) {
@@ -130,5 +149,6 @@ export async function activateAll(list, ctx) {
       ctx.log("error", `${p.id}: browser: ${message}`, "plugins");
     }
   }
+  pagesReady();
   ctx.update();
 }

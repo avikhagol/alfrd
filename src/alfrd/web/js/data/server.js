@@ -373,8 +373,8 @@ export const server = {
     });
   },
 
-  runLogs(runId) {
-    return getJson(`/runtime/runs/${encodeURIComponent(runId)}/logs`);
+  runLogs(runId, signal) {
+    return getJson(`/runtime/runs/${encodeURIComponent(runId)}/logs`, signal ? { signal } : undefined);
   },
 
   datasetSummary(project, workflow, datasetId) {

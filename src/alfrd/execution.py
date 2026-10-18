@@ -41,7 +41,7 @@ SERIALIZE_MATCH = ("all", "any")
 
 DEFAULT_EXECUTION: dict[str, Any] = {
     "cwd": ".",                    # relative to alfrd.yaml
-    "plan_csv": "alfrd.plan.csv",  # relative to alfrd.yaml
+    "plan_csv": "alfrd.plan.csv",  # relative to the project root (also for .alfrd/alfrd.yaml)
     "mode": "step",
     "concurrency": 1,
     "on_failure": "stop_target",
@@ -67,6 +67,7 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     "usage_interval": 5,           # seconds between resource samples (0 = off)
     "max_runtime": None,          # optional plan wall-clock limit, including pauses
     "idle_after": 600,            # seconds without unit activity (0 = off); notify.idle_after wins
+    "warn_turn_cost_usd": None,   # an agent turn that costs more is flagged (budget.warning), not stopped
 }
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -259,11 +260,15 @@ def merged_manifest(root: str | Path) -> dict[str, Any]:
     return merged
 
 
-def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool = False) -> ExecutionConfig:
-    """``iterations`` overrides the loop length (a task's own count); ``cap`` also refuses more than the project maximum."""
+def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool = False,
+                   merged: Mapping[str, Any] | None = None) -> ExecutionConfig:
+    """``iterations`` overrides the loop length (a task's own count); ``cap`` also refuses more than the project maximum.
+
+    ``merged`` replaces :func:`merged_manifest` (alfrd.chat builds its agents' steps this way).
+    """
     base = Path(root).expanduser().resolve()
     try:
-        merged = merged_manifest(base)
+        merged = copy.deepcopy(dict(merged)) if merged is not None else merged_manifest(base)
     except ValueError as exc:
         raise ExecutionError(str(exc)) from exc
     if iterations is not None:
@@ -393,6 +398,11 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
                 raise ValueError
         except (ValueError, TypeError) as exc:
             raise ExecutionError("execution.max_runtime must be positive seconds") from exc
+    warn = settings.get("warn_turn_cost_usd")
+    if warn is not None:
+        if isinstance(warn, bool) or not isinstance(warn, (int, float)) or not math.isfinite(warn) or warn <= 0:
+            raise ExecutionError("execution.warn_turn_cost_usd must be a positive number of US dollars (or null)")
+        settings["warn_turn_cost_usd"] = float(warn)
     try:
         settings["usage_interval"] = max(0.0, float(settings.get("usage_interval") or 0))
     except (TypeError, ValueError) as exc:
@@ -480,13 +490,19 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
         except ValueError as exc:
             raise ExecutionError(f"step {sid!r}: {exc}") from exc
         native = fallbacks[0] if fallbacks and adapter.native_fallback else None
+        from alfrd.agent_io import startup_options
+
+        try:
+            startup = startup_options(io)
+        except ValueError as exc:
+            raise ExecutionError(f"step {sid!r}: {exc}") from exc
         from alfrd.agent_io import SUPPORTED_AGENTS
 
         # Agent steps in any workflow get what loop turns get: token usage (Claude's stream), retry notes.
         is_agent = bool(handoff) or adapter.name in SUPPORTED_AGENTS or str(spec.get("category") or "").strip().lower() == "agent"
         stream = (bool(handoff) or (is_agent and bool(io.get("output_file")))) and not io.get("manual", False)
         argv, model, claude_stream = agent_command(argv, model, stream=stream, access=access,
-                                                   adapter=adapter, fallback=native) if argv else (None, model, False)
+                                                   adapter=adapter, fallback=native, startup=startup) if argv else (None, model, False)
         steps.append(StepCommand(
             id=sid, argv=argv, entrypoint=entry,
             timeout=float(timeout) if timeout not in (None, "", 0) else None,

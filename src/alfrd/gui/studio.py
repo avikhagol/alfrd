@@ -131,6 +131,7 @@ def presence_api():
 def create_project_api():
     from alfrd.project_creation import create_project
     from alfrd.agent_loop import DEFAULT_ITERATIONS
+    from alfrd.manifest_paths import DEFAULT_NEW_MANIFEST
 
     service = current_app.config.get("RUNTIME_SERVICE")
     if service is None:
@@ -142,7 +143,10 @@ def create_project_api():
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
                                     iterations=payload.get("iterations", DEFAULT_ITERATIONS),
-                                    sequence=payload.get("sequence"))
+                                    sequence=payload.get("sequence"),
+                                    # the Studio keeps ALFRD's config in .alfrd/ unless asked for a root alfrd.yaml
+                                    manifest=payload.get("manifest") or DEFAULT_NEW_MANIFEST,
+                                    draft=payload.get("draft"))
     except FileExistsError as error:
         return _json_error(error, 409)
     except (ValueError, OSError, TypeError) as error:
@@ -151,7 +155,9 @@ def create_project_api():
     if isinstance(scope, list) and project.identifier not in scope:
         scope.append(project.identifier)
     current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
-    return jsonify(name=project.name, identifier=project.identifier, root=project.root_path), 201
+    draft = payload.get("draft") if isinstance(payload.get("draft"), dict) else {}
+    return jsonify(name=project.name, identifier=project.identifier, root=project.root_path,
+                   template=payload.get("template", "basic"), targets=draft.get("targets") or []), 201
 
 
 @studio_api.get("/studio/project-templates")
@@ -534,6 +540,44 @@ def live_changes():
     return jsonify({**hub.changes(since, _live_projects()), "interval": hub.interval, "idle": hub.idle})
 
 
+@studio_api.get("/studio/projects/<project_name>/manifest/location")
+def project_manifest_location(project_name: str):
+    """Which manifest file is active, which are shadowed, and what a migration would do."""
+    from alfrd import manifest_migrate
+    from alfrd.manifest_paths import manifest_location
+
+    root = _project_root(project_name)
+    plan = manifest_migrate.plan(root)
+    return jsonify(manifest_location=manifest_location(root), migration={k: plan[k] for k in ("status", "source", "target", "rename_to", "valid", "error")})
+
+
+@studio_api.post("/studio/projects/<project_name>/manifest/migrate")
+def project_manifest_migrate(project_name: str):
+    """Move the root alfrd.yaml to .alfrd/alfrd.yaml (loopback + CSRF).
+
+    Body ``{"preview": true}`` returns the plan with a diff and writes nothing;
+    ``keep``: ``rename`` (default) or ``shadow``; ``force`` replaces a different
+    ``.alfrd/alfrd.yaml`` (409 with the plan otherwise). Nothing is deleted.
+    """
+    from alfrd import manifest_migrate
+
+    root = _project_root(project_name)
+    payload = request.get_json(silent=True) or {}
+    keep = payload.get("keep", "rename")
+    try:
+        if payload.get("preview"):
+            return jsonify(manifest_migrate.plan(root, keep))
+        result = manifest_migrate.apply(root, keep, force=bool(payload.get("force")))
+    except manifest_migrate.MigrateConflict as conflict:
+        return jsonify(error={"code": 409, "message": str(conflict)}, plan=conflict.plan), 409
+    except (manifest_migrate.MigrateError, ValueError) as error:
+        return _json_error(error, 400)
+    except OSError as error:
+        return _json_error(error, 500)
+    _poke(project_name)
+    return jsonify(result)
+
+
 @studio_api.post("/studio/projects/<project_name>/manifest")
 def project_manifest_save(project_name: str):
     """Save alfrd.yaml from Project settings (loopback + CSRF; old file kept as .bak).
@@ -544,6 +588,7 @@ def project_manifest_save(project_name: str):
     Every save is a version in the history (alfrd.history).
     """
     from alfrd import history
+    from alfrd.manifest_paths import manifest_location
     from alfrd.studio_defs import manifest_file
 
     payload = request.get_json(silent=True) or {}
@@ -553,7 +598,6 @@ def project_manifest_save(project_name: str):
     from alfrd.execution import follow_workflow_edit, workflow_pattern
 
     root = _project_root(project_name)
-    path = manifest_file(root) or root / "alfrd.yaml"
     before = workflow_pattern(root)
     try:
         entry = history.save(root, "alfrd.yaml", text, source="studio", message=payload.get("message"),
@@ -566,7 +610,9 @@ def project_manifest_save(project_name: str):
         return _json_error(error, 400)
     tasks = follow_workflow_edit(root, before)
     _poke(project_name)
-    return jsonify(saved=path.name, backup=f"{path.name}.bak", version=entry, tasks_updated=tasks, project_name=_sync_project_name(project_name, root), hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
+    path = manifest_file(root) or root / "alfrd.yaml"  # the active file (a new one: .alfrd/alfrd.yaml)
+    rel = path.relative_to(root).as_posix()
+    return jsonify(saved=rel, backup=f"{rel}.bak", manifest_location=manifest_location(root), version=entry, tasks_updated=tasks, project_name=_sync_project_name(project_name, root), hash=history.text_hash(text if text.endswith("\n") else text + "\n"))
 
 
 @studio_api.get("/studio/projects/<project_name>/quickstart")
@@ -732,7 +778,7 @@ def _alfrd_files(root: Path, database: Path | None) -> list[Path]:
     if state.is_dir() and not state.is_symlink():
         shared = root == Path.home().resolve() or (database is not None and database.is_relative_to(state))
         if shared:
-            for name in ALFRD_STATE_DIRS:
+            for name in (*ALFRD_STATE_DIRS, "alfrd.yaml", "alfrd.yaml.bak"):  # + a nested manifest
                 add(state / name)
         else:
             add(state)

@@ -16,6 +16,7 @@ from alfrd.gui.model.tables import (
     WorkflowDB,
 )
 from alfrd.manifest import MANIFEST_ALIAS_FILENAME, MANIFEST_FILENAME, ManifestNotFoundError
+from alfrd.manifest_paths import MANIFEST_CANDIDATES, manifest_location, project_manifest, project_root
 
 
 def resolve_selected_manifest(path: str | Path) -> Path:
@@ -30,28 +31,26 @@ def resolve_selected_manifest(path: str | Path) -> Path:
         selected = selected.resolve(strict=True)
     except (OSError, RuntimeError) as error:
         raise ValueError(f"Project path does not exist: {selected}") from error
-    if selected.is_dir():
-        for filename in (MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME):
-            candidate = selected / filename
-            if candidate.is_symlink():
-                raise ValueError("Manifest symbolic links are not accepted.")
-            if candidate.is_file():
-                return candidate.resolve()
-        raise ManifestNotFoundError(
-            f"No {MANIFEST_FILENAME!r} or {MANIFEST_ALIAS_FILENAME!r} exists in {selected}"
-        )
-    if not selected.is_file():
-        raise ValueError("Project path must be a directory or regular manifest file.")
-    if selected.name not in {MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME}:
-        raise ValueError(
-            f"Manifest filename must be {MANIFEST_FILENAME!r} or {MANIFEST_ALIAS_FILENAME!r}."
-        )
-    legacy = selected.parent / MANIFEST_FILENAME
-    if selected.name == MANIFEST_ALIAS_FILENAME and legacy.is_file():
-        if legacy.is_symlink():
+    if not selected.is_dir():
+        if not selected.is_file():
+            raise ValueError("Project path must be a directory or regular manifest file.")
+        if selected.name not in {MANIFEST_FILENAME, MANIFEST_ALIAS_FILENAME}:
+            raise ValueError(
+                f"Manifest filename must be {MANIFEST_FILENAME!r} or {MANIFEST_ALIAS_FILENAME!r}."
+            )
+    # A named file stands for its project: the active manifest is used, so a
+    # shadowed file is never read (or written) instead (alfrd.manifest_paths).
+    root = selected if selected.is_dir() else project_root(selected)
+    for rel in MANIFEST_CANDIDATES:
+        if (root / rel).is_symlink():
             raise ValueError("Manifest symbolic links are not accepted.")
-        return legacy.resolve()
-    return selected
+    active = project_manifest(root)
+    if active is None:
+        raise ManifestNotFoundError(
+            "No manifest exists in "
+            f"{root} (looked for {', '.join(repr(rel) for rel in MANIFEST_CANDIDATES)})"
+        )
+    return active.resolve()
 
 
 
@@ -208,7 +207,8 @@ class RuntimeCatalogReader:
             manifest = load_manifest(resolve_selected_manifest(project.root_path))
         except (ManifestError, OSError, ValueError) as error:
             return {
-                "path": str(Path(project.root_path) / "alfrd.yaml"),
+                "path": str(project_manifest(project.root_path) or Path(project.root_path) / "alfrd.yaml"),
+                "manifest_location": manifest_location(project.root_path),
                 "validation": {"valid": False, "errors": [str(error)]},
                 "sync": {"state": "invalid"},
             }
@@ -223,6 +223,7 @@ class RuntimeCatalogReader:
         }
         return {
             "path": str(manifest.path),
+            "manifest_location": manifest_location(project.root_path),
             "validation": {"valid": True, "errors": []},
             "sync": {"state": "synced" if expected == persisted else "out_of_sync"},
         }

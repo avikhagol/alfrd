@@ -29,7 +29,10 @@ import stat as stat_mod
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-MANIFEST_NAMES = ("alfrd.yaml", ".alfrd.yaml")
+from alfrd.manifest_paths import MANIFEST_CANDIDATES, new_manifest_path, project_manifest
+
+#: Local manifest locations, highest precedence first (see alfrd.manifest_paths).
+MANIFEST_NAMES = MANIFEST_CANDIDATES
 _TOKEN = re.compile(r"(\{\w+\}|\*|\?)")
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 _GROUPS = {
@@ -75,12 +78,8 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def manifest_file(root: str | Path) -> Path | None:
-    """The folder's own alfrd.yaml (the default manifest is not a file of the folder)."""
-    for name in MANIFEST_NAMES:
-        path = Path(root) / name
-        if path.is_file():
-            return path
-    return None
+    """The folder's active manifest (the default manifest is not a file of the folder)."""
+    return project_manifest(root)
 
 
 def template_name(manifest: Mapping[str, Any]) -> str | None:
@@ -546,6 +545,110 @@ def read_range(path: Path, offset: int | None = None, tail: int = 400_000, file:
 # Writes requested by the Studio (loopback + CSRF only; see gui/studio.py)
 
 
+def _workflow_lists(manifest: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    workflows = manifest.get("workflows")
+    if isinstance(workflows, list):
+        return [(str((w or {}).get("name") or i + 1) if isinstance(w, dict) else str(i + 1), w) for i, w in enumerate(workflows)]
+    if isinstance(workflows, dict):
+        return [(str(k), v) for k, v in workflows.items()]
+    return []
+
+
+def _cycle_path(deps: Mapping[str, list[str]]) -> list[str] | None:
+    """One dependency cycle as ``[a, b, …, a]`` (a waits on b …), or None."""
+    state: dict[str, int] = {}
+    stack: list[str] = []
+
+    def visit(node: str) -> list[str] | None:
+        state[node] = 1
+        stack.append(node)
+        for dep in deps.get(node, []):
+            if state.get(dep) == 1:
+                return stack[stack.index(dep):] + [dep]
+            if dep in deps and not state.get(dep):
+                found = visit(dep)
+                if found:
+                    return found
+        stack.pop()
+        state[node] = 2
+        return None
+
+    for node in deps:
+        if not state.get(node):
+            found = visit(node)
+            if found:
+                return found
+    return None
+
+
+def workflow_dependency_errors(manifest: Mapping[str, Any]) -> list[str]:
+    """Self-dependencies, cycles among declared dependencies and (when alfrd.yaml declares them) unknown steps.
+
+    Mirrors the Studio's model (``web/js/data/model.js``): ``depends_on`` / ``needs`` /
+    a step-name ``after``, else the previous step; skipped steps drop out. Agent loops
+    (``repeat`` / ``roles``) order turns themselves and are not checked here.
+    """
+    from alfrd.execution import is_delay
+
+    name = template_name(manifest)
+    template = _load_yaml(template_path(name)) if name and template_path(name) else {}
+    tpl_defs = template.get("steps") if isinstance(template.get("steps"), dict) else {}
+    own_defs = manifest.get("steps") if isinstance(manifest.get("steps"), dict) else {}
+    aliases = (manifest.get("project_settings") or {}).get("field_aliases") or {} if isinstance(manifest.get("project_settings"), dict) else {}
+    errors: list[str] = []
+    for wf_name, wf in _workflow_lists(manifest):
+        if isinstance(wf, dict) and (wf.get("repeat") is not None or "roles" in wf):
+            continue
+        items = wf.get("steps") if isinstance(wf, dict) else wf
+        if isinstance(items, dict):
+            items = [{"id": k, **v} if isinstance(v, dict) else k for k, v in items.items()]
+        if not isinstance(items, list):
+            continue
+        rows: list[tuple[str, Any, bool]] = []  # id, declared deps (None = previous), declared in alfrd.yaml
+        skipped: set[str] = set()
+        for item in items:
+            sid = resolve_alias(_step_id(item), aliases)
+            if not sid:
+                continue
+            inline = item if isinstance(item, dict) else {}
+            mine = own_defs.get(sid) if isinstance(own_defs.get(sid), dict) else {}
+            merged = {**(tpl_defs.get(sid) if isinstance(tpl_defs.get(sid), dict) else {}), **mine, **inline}
+            if merged.get("skip") is True:
+                skipped.add(sid)
+                continue
+            raw = merged.get("depends_on", merged.get("needs"))
+            if raw is None and merged.get("after") is not None and not is_delay(merged.get("after")):
+                raw = merged.get("after")
+            local = any(k in src for src in (inline, mine) for k in ("depends_on", "needs", "after"))
+            deps = None if raw is None else [resolve_alias(str(d), aliases) for d in (raw if isinstance(raw, list) else [raw])]
+            rows.append((sid, deps, local))
+        known = {sid for sid, _, _ in rows}
+        graph: dict[str, list[str]] = {}
+        previous = None
+        for sid, deps, local in rows:
+            listed = [previous] if deps is None and previous else [d for d in deps or [] if d not in skipped]
+            for dep in listed:
+                if dep == sid:
+                    errors.append(f"workflow {wf_name!r}: step {sid!r} depends on itself")
+                elif dep not in known and local:
+                    errors.append(f"workflow {wf_name!r}: step {sid!r} depends on unknown step {dep!r}")
+            # Cycles count declared dependencies only: the implicit "previous step" chain is an
+            # ordering default that a reordered list may contradict without being an error.
+            graph[sid] = [d for d in listed if d in known and d != sid] if deps is not None else []
+            previous = sid
+        cycle = _cycle_path(graph)
+        if cycle:
+            errors.append(f"workflow {wf_name!r}: dependency cycle {' → '.join(reversed(cycle))}")
+    return errors
+
+
+def check_workflow_dependencies(manifest: Mapping[str, Any]) -> None:
+    """Raise ValueError with every dependency problem (see :func:`workflow_dependency_errors`)."""
+    errors = workflow_dependency_errors(manifest)
+    if errors:
+        raise ValueError("Invalid workflow dependencies: " + "; ".join(errors))
+
+
 def save_manifest(root: str | Path, text: str) -> Path:
     """Validate and write alfrd.yaml (previous version kept as ``alfrd.yaml.bak``)."""
     import yaml
@@ -555,7 +658,9 @@ def save_manifest(root: str | Path, text: str) -> Path:
         raise ValueError("alfrd.yaml must be a YAML mapping")
     if not str(data.get("name") or "").strip():
         raise ValueError("alfrd.yaml needs a `name`")
-    path = manifest_file(root) or Path(root) / MANIFEST_NAMES[0]
+    check_workflow_dependencies(data)
+    path = new_manifest_path(root)  # the active file; a new one goes to .alfrd/alfrd.yaml
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         path.with_name(path.name + ".bak").write_bytes(path.read_bytes())
     path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
@@ -602,6 +707,7 @@ def update_key_values(path: str | Path, changes: Mapping[str, Any]) -> dict[str,
 __all__ = [
     "studio_context",
     "allowed_file",
+    "check_workflow_dependencies",
     "collect_log_files",
     "collect_ms_paths",
     "expand_pattern",
@@ -614,4 +720,5 @@ __all__ = [
     "studio_manifest",
     "template_name",
     "update_key_values",
+    "workflow_dependency_errors",
 ]

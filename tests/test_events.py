@@ -14,6 +14,7 @@ from alfrd.agent_loop import approve_response, reject_response, sha256
 from alfrd.api import status as api
 from alfrd.events import EVENT_KINDS, EVENTS_FILE, EventLog, kind_matches
 from alfrd.runtime import scheduler
+from alfrd.manifest_paths import project_manifest
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 
@@ -25,7 +26,7 @@ def events(folder):
 # -- EventLog ----------------------------------------------------------------
 
 def test_kinds_and_prefix_matching():
-    assert len(EVENT_KINDS) == 17
+    assert len(EVENT_KINDS) == 27  # 17 plan/turn kinds + 9 chat orchestration kinds + budget.warning
     assert kind_matches("plan.*", "plan.failed") and kind_matches("review.pending", "review.pending")
     assert kind_matches("*", "turn.idle")
     assert not kind_matches("plan.*", "planner.x") and not kind_matches("plan", "plan.failed")
@@ -125,10 +126,10 @@ def test_failed_turn(project, monkeypatch):
 
 
 def test_runtime_limit_reached_once(project):
-    data = yaml.safe_load((project / "alfrd.yaml").read_text())
+    data = yaml.safe_load((project_manifest(project)).read_text())
     data["execution"]["max_runtime"] = 1
     data["execution"]["kill_grace"] = .2
-    (project / "alfrd.yaml").write_text(yaml.safe_dump(data))
+    (project_manifest(project)).write_text(yaml.safe_dump(data))
     (project / "hold").touch()
     try:
         folder = scheduler.create_plan(project)

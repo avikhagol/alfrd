@@ -202,6 +202,10 @@
           "adapter": {"enum": ["claude", "codex", "generic"]},
           "model_option": {"type": "string", "pattern": "^--?[A-Za-z0-9][A-Za-z0-9-]*$"},
           "fallback_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "lean": {"type": "boolean", "description": "Claude: start without MCP servers, user plugins/settings and skills (docs/agent-loops.md)."},
+          "mcp": {"oneOf": [{"enum": ["none", "default"]}, {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}]},
+          "plugins": {"type": "boolean"},
+          "skills": {"type": "boolean"},
           "timeout": {"type": "number", "exclusiveMinimum": 0},
           "env": {"type": "object"},
           "cmd": {
@@ -259,6 +263,160 @@
             ]
           },
           "viewer": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "chat": {
+      "type": "object",
+      "description": "Project chat (docs/orchestration.md): role presets of the chat agents, the orchestrator and per-request bounds, merged over ALFRD's defaults.",
+      "properties": {
+        "orchestrator": {
+          "type": "string"
+        },
+        "final_summary": {
+          "type": "boolean"
+        },
+        "orchestrator_model": {
+          "type": ["string", "null"]
+        },
+        "escalation_model": {
+          "type": ["string", "null"]
+        },
+        "warn_task_cost_usd": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "history_messages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_depth": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_retries": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "max_cost_usd": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_tasks": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "agents": {
+          "type": "object",
+          "description": "Agent key → preset; null removes a default preset.",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "entrypoint": {
+                    "type": "string"
+                  },
+                  "cmd": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "adapter": {
+                    "type": "string",
+                    "enum": [
+                      "claude",
+                      "codex",
+                      "generic"
+                    ]
+                  },
+                  "roles": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "persona": {
+                    "type": "string"
+                  },
+                  "timeout": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "lean": {
+                    "type": "boolean"
+                  },
+                  "env": {
+                    "type": "object",
+                    "description": "Added to this agent's command environment (e.g. ANTHROPIC_BASE_URL for Claude Code on Ollama).",
+                    "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+                    "additionalProperties": {"type": ["string", "number"]}
+                  },
+                  "fallback": {
+                    "type": "string",
+                    "description": "Another chat agent: a failed attempt that hit a usage/rate/quota limit or an unavailable model moves the row there (one hop each, no loops)."
+                  },
+                  "model_option": {
+                    "type": "string",
+                    "pattern": "^--?[A-Za-z0-9][A-Za-z0-9-]*$"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "plugins": {
+      "type": "object",
+      "description": "Per-project plugin settings: whether a plugin applies to this project. Overrides the global setting and the plugin's default (docs/plugins.md, Project types).",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "enabled": {"type": "boolean", "description": "false turns the plugin off for this project; true turns it on whatever its project types say."},
+          "project_types": {
+            "description": "Project types (template names) the plugin applies to, or \"all\".",
+            "oneOf": [
+              {"type": "string", "enum": ["all"]},
+              {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+            ]
+          }
         },
         "additionalProperties": true
       }
