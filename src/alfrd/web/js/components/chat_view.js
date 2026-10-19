@@ -1,18 +1,18 @@
 // Chat section (#/chat/<session>?p=<project>): sessions, transcript, composer with @agent
 // autocomplete, task graph (graph_view.js, read-only), task detail with Cancel/Retry, decisions,
 // progress and usage against the request's budget. Lazy: loaded on the first visit.
-// Updates come from the live event stream (the session plan's events); the Activity strip
-// (chat_activity.js) polls running units' log tails only while something runs. Slash commands
+// Session snapshots follow the event stream; shared thread/run components poll bounded
+// recorded output and durable mailbox messages. Slash commands
 // (/setup → chat_setup.js, /help, /new, /graph) run here. Full transcripts and artifacts load when opened.
 import { $, $$, esc, icon, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { mountGraph } from "./graph_view.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
-import { mountActivity } from "./chat_activity.js";
+import { mountThread } from "./chat_thread.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
-  parseMention, promotable, requestProgress, statusInfo, timeline, tokenLine,
+  parseMention, promotable, requestProgress, statusInfo, tokenLine, presentMessage,
 } from "../data/chat.js";
 
 const S = { project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
@@ -74,6 +74,7 @@ export function render(el, ctx) {
 function mount(el, ctx, p) {
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
     task: null, sendError: "", keys: {} });
+  act?.stop();
   S.open.clear();
   el.dataset.chat = p;
   el.innerHTML = `<div class="chat">
@@ -82,7 +83,7 @@ function mount(el, ctx, p) {
       <ul class="chat-list" id="chat-list" role="list"></ul></nav>
     <section class="chat-main" aria-label="Conversation">
       <header class="chat-head" id="chat-head"></header>
-      <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-relevant="additions" tabindex="0" aria-label="Messages"></div>
+      <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
       <section class="chat-activity" id="chat-activity" aria-label="Running now" hidden></section>
       ${composerHtml("chat")}
     </section>
@@ -94,7 +95,8 @@ function mount(el, ctx, p) {
     </aside></div>`;
   graph = mountGraph($("#chat-graph", el), { label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
-  act = mountActivity($("#chat-activity", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName,
+  act = mountThread($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
+    select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); $(".chat", host).classList.add("chat-inspect-open"); $("#chat-task", host)?.focus(); },
     openLog: (rel) => openLog(ctxRef, S.project, rel), cancel: (row, b) => taskAction("cancel", row, b) });
   $(".chat-graph-card", el).addEventListener("keydown", (e) => {
     if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.closest(".gv-canvas")) { e.preventDefault(); openGraphFull(); }
@@ -166,7 +168,7 @@ function draw(ctx) {
   drawDecisions();
   const model = S.data ? graphModel(S.data.graph, agents()) : { nodes: [], edges: [] };
   graph?.update(model, S.data ? S.task : null);
-  if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
+  if (full?.host.isConnected) full.g.update(full.request ? graphModel(S.data?.graph, agents(), full.request) : model, S.task); else full = null;
   drawTask(ctx);
   const send = $("#chat-send", host);
   if (send) { send.disabled = S.sending || !S.sid || Boolean(S.settingsError); send.setAttribute("aria-busy", String(S.sending)); }
@@ -189,20 +191,21 @@ function drawHead(ctx) {
   const s = S.sessions?.find((x) => x.id === S.sid);
   if (!changed("head", [s?.title, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) return;
   const flowing = ["live", "polling"].includes(live);
-  $("#chat-head", host).innerHTML = `<h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
+  $("#chat-head", host).innerHTML = `<button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-expanded="false">Sessions</button><h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
     ${S.data?.plan ? `<span class="muted small" title="Session plan ${esc(S.data.plan.id)}">runner ${S.data.plan.runner_alive ? "active" : "idle"}</span>` : ""}
     <span class="badge tone-${flowing ? "ok" : "warn"}" role="status" title="${esc(ctx.state.liveStatus?.detail || "")}">${icon(flowing ? "sync" : "alert")}<span>${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}</span></span>
-    <button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>
+    <button type="button" class="btn sm chat-inspect-toggle" data-chat="inspect" aria-expanded="false">Inspect</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>
     ${S.settingsError ? `<p class="callout fail small chat-wide" role="alert">Chat settings: ${esc(S.settingsError)} — fix the <code>chat:</code> block in <a href="${esc(routeHash("config", S.project, ctx.state.selectedTarget))}">Settings</a>.</p>` : ""}`;
 }
 
-function messageHtml(m) {
-  const who = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.task ? `@${m.agent} · task ${m.task}` : m.agent === orchestrator() ? `Orchestrator · ${agentName(m.agent)}` : agentName(m.agent || "alfrd");
+function messageHtml(original) {
+  const m = presentMessage(original, S.data?.tasks?.find((t) => t.row === original.task));
+  const who = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.task ? `${agentName(m.agent)} · ${S.data?.tasks?.find((t) => t.row === m.task)?.task?.title || "Task result"}` : m.agent === orchestrator() ? `Orchestrator · ${agentName(m.agent)}` : agentName(m.agent || "alfrd");
   const open = m.task && S.open.get(m.task);
   const t = m.task && S.data?.tasks?.find((x) => x.row === m.task), l = t?.logs?.[t.logs.length - 1];
   return `<article class="chat-msg chat-${esc(m.role)}${m.kind ? ` chat-${esc(m.kind)}` : ""}" data-msg="${esc(m.id)}" aria-label="${esc(who)}">
-    <header><b>${esc(who)}</b><time class="muted small" datetime="${esc(m.at)}">${esc(String(m.at || "").slice(11, 16))}</time>${m.request ? `<span class="muted small mono">${esc(m.request)}</span>` : ""}</header>
-    <div class="chat-text">${esc(m.text)}</div>
+    <header><b>${esc(who)}</b><time class="muted small" datetime="${esc(m.at)}">${esc(String(m.at || "").slice(11, 16))}</time></header>
+    <div class="chat-text">${esc(m.text)}</div>${m.technical ? `<details><summary class="small">Technical details</summary><pre class="log chat-pre">${esc(m.technical)}</pre></details>` : ""}
     ${m.artifacts?.length ? `<ul class="chat-arts" aria-label="Artifacts">${m.artifacts.map((r) => artifactItem(r)).join("")}</ul>` : ""}
     ${l?.log ? `<button type="button" class="btn sm link" data-open-log="${esc(l.log)}">${icon("log")} Open log</button>` : ""}${l?.handoff ? `<button type="button" class="btn sm link" data-open-log="${esc(`${l.handoff}/response.md`)}">${icon("file")} Reply</button>` : ""}
     ${m.task ? `<button type="button" class="btn sm link" data-transcript="${esc(m.task)}" aria-expanded="${Boolean(open)}">${icon(open ? "fold" : "unfold")} ${open ? "Hide" : "Full"} transcript</button>${open ? transcriptHtml(m.task) : ""}` : ""}
@@ -226,17 +229,10 @@ function transcriptHtml(row) {
 
 function drawLog() {
   const box = $("#chat-log", host);
-  const msgs = timeline(S.data);
-  const logs = (S.data?.tasks || []).map((t) => t.logs?.length || 0);
-  if (!changed("log", [S.sid, S.loading, S.error, msgs.map((m) => m.id), [...S.open.entries()], logs, S.notes.length])) return;
-  const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-  if (!S.sid) box.innerHTML = `<div class="empty"><p>Start a session with <b>New</b>, then ask for something. The orchestrator plans it into tasks for the agents; <code>@agent</code> talks to one agent directly.</p></div>`;
+  if (S.data) { act?.update(S.data, S.notes.filter((n) => n.sid === S.sid)); return; }
+  if (!S.sid) box.innerHTML = `<div class="empty"><p>Start a session with <b>New</b>, then ask for something.</p></div>`;
   else if (S.error) box.innerHTML = `<div class="callout fail" role="alert">${esc(S.error)} <button type="button" class="btn sm" data-chat="refresh">Retry</button></div>`;
-  else if (S.loading || !S.data) box.innerHTML = `<p class="muted" role="status">Loading the session…</p>`;
-  else if (!msgs.length) box.innerHTML = `<div class="empty"><p>No messages yet. Agents: ${Object.entries(agents()).map(([k, a]) => `<code>@${esc(k)}</code> ${esc((a.roles || []).join(", "))}`).join(" · ")}</p></div>`;
-  else box.innerHTML = msgs.map(messageHtml).join("");
-  if (!S.error && (S.data || !S.sid)) box.insertAdjacentHTML("beforeend", S.notes.filter((n) => n.sid === S.sid).map(messageHtml).join(""));
-  if (atEnd) box.scrollTop = box.scrollHeight;
+  else box.innerHTML = `<p class="muted" role="status">Loading the session…</p>`;
 }
 
 function drawProgress(ctx) {
@@ -252,7 +248,7 @@ function drawProgress(ctx) {
       <p class="small chat-req-text" title="${esc(pr.text)}">${esc(pr.text)}</p>
       ${pr.total ? `<div class="chat-bar" role="progressbar" aria-label="Tasks done" aria-valuemin="0" aria-valuemax="${pr.total}" aria-valuenow="${pr.done}" aria-valuetext="${pr.done} of ${pr.total} tasks done"><i style="width:${Math.round((pr.done / pr.total) * 100)}%"></i></div>
         <p class="small">${pr.done}/${pr.total} done${pr.running ? ` · ${pr.running} running` : ""}${pr.failed ? ` · ${pr.failed} failed or stopped` : ""}</p>` : `<p class="muted small">${pr.mode === "direct" ? "Direct message" : "Planning…"}</p>`}
-      ${meter("Cost", pr.cost, pr.maxCost, pr.costRatio, money(pr.cost), pr.maxCost ? money(pr.maxCost) : "no limit", pr.tone)}
+      ${meter("Cost", pr.cost, pr.maxCost, pr.costRatio, money(req?.usage?.total_cost_usd), pr.maxCost ? money(pr.maxCost) : "no limit", pr.tone)}
       ${meter("Time", pr.seconds, pr.maxSeconds, pr.timeRatio, duration(pr.seconds), pr.maxSeconds ? duration(pr.maxSeconds) : "no limit", pr.tone)}
       <p class="muted small" data-tokens="request">${esc(tokenLine(req?.usage) || "no tokens reported yet")}</p>
       <p class="muted small">${pr.calls} orchestrator call${pr.calls === 1 ? "" : "s"}${S.data?.settings?.orchestrator_model ? ` (${esc(S.data.settings.orchestrator_model)}, escalation ${esc(S.data.settings.escalation_model || "agent model")})` : ""}${req?.usage?.total_cost_usd == null ? " · cost not reported by these agents" : ""}</p>
@@ -276,7 +272,7 @@ function drawDecisions() {
     if (JSON.stringify([...$$("[data-decision]", box)].map((f) => f.dataset.decision)) === JSON.stringify(list.filter((d) => d.needs === "user").map((d) => d.id))) return;
   }
   box.innerHTML = `<h3 id="chat-decisions-h">Blockers and decisions ${list.length ? `<span class="badge tone-warn"><span>${list.length}</span></span>` : ""}</h3>
-    ${list.length ? list.map((d) => d.needs === "user" ? `<form class="chat-decision" data-decision="${esc(d.id)}" aria-label="Decision for task ${esc(d.task)}">
+    ${list.length ? list.map((d) => d.mailbox_message_id ? `<p class="small"><b>${esc(d.question || d.reason)}</b> <button type="button" class="btn sm link" data-mail-jump="${esc(d.mailbox_message_id)}">Answer in conversation</button></p>` : d.needs === "user" ? `<form class="chat-decision" data-decision="${esc(d.id)}" aria-label="Decision for task ${esc(d.task)}">
       <p class="small"><b>${esc(d.question || d.reason)}</b></p>${d.question && d.reason !== d.question ? `<p class="muted small">${esc(d.reason)}</p>` : ""}
       <p class="muted small">Task <span class="mono">${esc(d.task)}</span></p>
       ${d.options?.length ? `<fieldset><legend class="sr-only">Options</legend>${d.options.map((o, i) => `<label class="row gap small"><input type="radio" name="choice" value="${esc(o)}" ${i ? "" : ""}> ${esc(o)}</label>`).join("")}</fieldset>` : ""}
@@ -402,6 +398,14 @@ function bind(el) {
     else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); }
     else if (a === "promote") promoteRequest(b.dataset.request);
     else if (a === "graph-full") openGraphFull();
+    else if (a === "inspect" || a === "sessions") {
+      const open = $(".chat", host).classList.toggle(a === "inspect" ? "chat-inspect-open" : "chat-sessions-open");
+      b.setAttribute("aria-expanded", String(open));
+    }
+    else if (b.dataset.mailJump) {
+      const card = host.querySelector(`[data-mail-id="${CSS.escape(b.dataset.mailJump)}"]`);
+      if (card) { card.scrollIntoView({ block: "center" }); card.querySelector("button,textarea")?.focus(); $(".chat", host).classList.remove("chat-inspect-open"); }
+    }
     else if (b.dataset.openLog) openLog(ctxRef, S.project, b.dataset.openLog);
     else if (b.dataset.transcript) toggleTranscript(b.dataset.transcript);
     else if (b.dataset.part) loadPart(...b.dataset.part.split("|"));
@@ -420,6 +424,15 @@ function bind(el) {
     const button = form.querySelector("button[type=submit]"); button.disabled = true;
     try { await post(S.project, `/sessions/${encodeURIComponent(S.sid)}/decisions/${encodeURIComponent(d.id)}`, body); ctxRef.toast("Decision sent; the task continues", "ok"); S.keys.decisions = null; loadSession(); }
     catch (error) { err.textContent = error.message; button.disabled = false; }
+  });
+  el.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    const chat = $(".chat", host);
+    if (e.target.closest(".chat-side") && chat.classList.contains("chat-inspect-open")) {
+      chat.classList.remove("chat-inspect-open"); $("[data-chat=inspect]", host)?.setAttribute("aria-expanded", "false"); $("[data-chat=inspect]", host)?.focus(); e.preventDefault();
+    } else if (e.target.closest(".chat-sessions") && chat.classList.contains("chat-sessions-open")) {
+      chat.classList.remove("chat-sessions-open"); $("[data-chat=sessions]", host)?.setAttribute("aria-expanded", "false"); $("[data-chat=sessions]", host)?.focus(); e.preventDefault();
+    }
   });
   composer = bindComposer(el, "chat", { agents, orchestrator, send, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { S.drafts.set(S.sid, text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
 }
@@ -497,7 +510,7 @@ async function openSetup() {
   } catch (error) { ctxRef.toast(`Setup: ${error.message}`, "fail"); }
 }
 
-function openGraphFull({ fromComposer = false } = {}) {
+function openGraphFull({ fromComposer = false, request = null } = {}) {
   if (!fromComposer) $("#chat-graph-full", host)?.focus(); // Esc returns here
   ctxRef.modal(`<header class="modal-h"><h2 id="chat-gfull-h">${icon("graph")} Task graph</h2><span class="muted small">Arrows pick a task, Enter opens it · 0 fits</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close full screen">${icon("close")}</button></header>
     <div class="modal-b chat-gfull"><div id="chat-gfull"></div></div>`, (root, close) => {
@@ -505,8 +518,8 @@ function openGraphFull({ fromComposer = false } = {}) {
     const g = mountGraph($("#chat-gfull", root), { label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
       onSelect: (row) => { S.task = row; drawTask(ctxRef); },
       onOpen: (row) => { close(); S.task = row; S.keys.task = null; draw(ctxRef); $("#chat-task", host)?.focus(); } });
-    full = { host: root, g };
-    g.update(S.data ? graphModel(S.data.graph, agents()) : { nodes: [], edges: [] }, S.task);
+    full = { host: root, g, request };
+    g.update(S.data ? graphModel(S.data.graph, agents(), request) : { nodes: [], edges: [] }, S.task);
     requestAnimationFrame(() => { g.fit(); g.focus(); });
   }, "full");
 }

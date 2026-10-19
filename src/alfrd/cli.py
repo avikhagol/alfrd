@@ -18,6 +18,9 @@ from alfrd.manifest_paths import project_root as _manifest_root
 
 alfrd_cli = typer.Typer()
 
+from alfrd.mailbox_cli import cli as mailbox_cli
+alfrd_cli.add_typer(mailbox_cli, name="mailbox")
+
 
 try:
     if hasattr(sys.stdout, 'reconfigure'):

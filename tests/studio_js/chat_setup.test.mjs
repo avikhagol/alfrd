@@ -72,9 +72,9 @@ test("/help lists commands and agents with roles, models and fallbacks", () => {
 });
 
 test("activity labels and when to poll", () => {
-  assert.equal(C.activityLabel({ kind: "plan", request: "r0002" }), "Planning request r0002");
-  assert.equal(C.activityLabel({ kind: "repair", request: "r0002" }), "Repair r0002");
-  assert.equal(C.activityLabel({ kind: "summary", request: "r0003" }), "Summary r0003");
+  assert.equal(C.activityLabel({ kind: "plan", request: "r0002" }), "Planning the tasks");
+  assert.equal(C.activityLabel({ kind: "repair", request: "r0002" }), "Updating the plan");
+  assert.equal(C.activityLabel({ kind: "summary", request: "r0003" }), "Preparing the final answer");
   assert.equal(C.activityLabel({ kind: "task", title: "Write tests", row: "t1" }), "Write tests");
   assert.equal(C.hasActivity({ tasks: [{ status: "done" }], requests: [{ status: "done" }] }), false);
   assert.equal(C.hasActivity({ tasks: [{ status: "running" }] }), true);

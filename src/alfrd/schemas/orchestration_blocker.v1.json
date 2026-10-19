@@ -43,6 +43,10 @@
         "orchestrator"
       ],
       "default": "user"
+    },
+    "mailbox_message_id": {
+      "type": "string",
+      "pattern": "^msg_[a-f0-9]{32}$"
     }
   }
 }

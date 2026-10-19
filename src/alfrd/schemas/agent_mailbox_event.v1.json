@@ -1,0 +1,126 @@
+{
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "const": "alfrd.mailbox/1"
+    },
+    "event_seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "enum": [
+        "ack",
+        "resolved",
+        "expired",
+        "cancelled",
+        "delivery_failed"
+      ]
+    },
+    "message_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+    },
+    "actor": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "agent",
+            "orchestrator",
+            "user"
+          ]
+        },
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "unit_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "agent"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "agent_id",
+              "task_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "user"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 1
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "orchestrator"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "agent_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "task_id"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "protocol",
+    "event_seq",
+    "type",
+    "message_id",
+    "actor",
+    "at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

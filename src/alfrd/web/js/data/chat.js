@@ -148,6 +148,81 @@ export function timeline(state) {
   return [...msgs, ...results].map((m, i) => [m, i]).sort(([a, i], [b, j]) => (a.at && b.at && a.at !== b.at ? (a.at < b.at ? -1 : 1) : i - j)).map(([m]) => m);
 }
 
+/** Public chat copy. Only complete, recognizable protocol envelopes are interpreted;
+ * user JSON and ordinary code examples always remain untouched. Originals stay in details. */
+export function presentMessage(message, task) {
+  const m = message || {}, original = String(m.text || "");
+  const identity = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.agent || "ALFRD";
+  if (m.role !== "assistant") return { ...m, identity, text: original };
+  let text = original, envelope = null, prefix = "";
+  const fences = [...original.matchAll(/(?:^|\n)```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g)];
+  const last = fences.at(-1), fenced = last && !original.slice(last.index + last[0].length).trim() ? last : null;
+  let machine = false;
+  try {
+    const parsed = JSON.parse(fenced ? fenced[1] : original);
+    machine = parsed?.protocol === "alfrd.orchestration/1";
+    if (parsed?.protocol === "alfrd.orchestration/1" && ["result", "plan", "summary"].includes(parsed.kind)) {
+      const valid = parsed.kind === "result" ? ["done", "failed", "blocked"].includes(parsed.result?.status) && typeof parsed.result?.summary === "string" && (parsed.result.artifacts == null || (Array.isArray(parsed.result.artifacts) && parsed.result.artifacts.every((a) => typeof a === "string")))
+        : parsed.kind === "plan" ? Array.isArray(parsed.tasks) || Array.isArray(parsed.decisions) : typeof parsed.message === "string";
+      if (valid) { envelope = parsed; prefix = fenced ? original.slice(0, fenced.index).trim() : ""; }
+    }
+  } catch { /* not a complete protocol result */ }
+  const result = task?.result || envelope?.result;
+  if (envelope) text = [prefix, result?.summary || envelope.message || (envelope.kind === "plan" ? "Planning the tasks" : "")].filter(Boolean).join("\n\n");
+  else if (machine || (/^\s*(?:```json\s*)?\{/.test(fenced ? fenced[1] : original) && /"protocol"\s*:\s*"alfrd\.orchestration\/1"/.test(fenced ? fenced[1] : original))) {
+    text = result?.summary || "The agent’s reply could not be read. You can inspect the output or retry.";
+  } else if (!text.trim() && result) text = result.summary || "The agent finished without a readable summary. Open details to inspect its output.";
+  if (!text.trim() && envelope) text = "The agent finished without a readable summary. Open details to inspect its output.";
+  return { ...m, identity, text, artifacts: result?.artifacts || m.artifacts || [], state: result?.status,
+    technical: text !== original ? original : null };
+}
+
+/** Request membership is explicit, never inferred from timestamps. */
+export function threadGroups(state) {
+  const requests = state?.requests || [], newest = requests.at(-1)?.id;
+  const groups = new Map(requests.map((request) => [request.id, { id: request.id, request, messages: [] }]));
+  const ordered = [];
+  for (const m of timeline(state)) {
+    let group = m.request && groups.get(m.request);
+    if (!group) group = { id: `message:${m.id}`, messages: [] };
+    if (!ordered.includes(group)) ordered.push(group);
+    group.messages.push(m);
+  }
+  for (const group of groups.values()) if (!ordered.includes(group)) ordered.push(group);
+  return ordered.map((g) => {
+    const pending = (state?.blockers || []).some((d) => d.request === g.id || (state?.tasks || []).some((t) => t.row === d.task && t.request === g.id))
+      || Number(g.request?.mailbox?.pending_user) > 0;
+    const active = REQUEST_ACTIVE.includes(g.request?.status) || (state?.tasks || []).some((t) => t.request === g.id && !TERMINAL.includes(t.status));
+    return { ...g, active, pending, open: active || pending || !g.request || g.id === newest,
+      summary: g.request ? requestSummary(state, g.request) : "" };
+  });
+}
+
+export function requestSummary(state, request) {
+  const p = requestProgress(state, request), files = new Set((state?.tasks || []).filter((t) => t.request === request.id).flatMap((t) => t.result?.artifacts || []));
+  const title = String(request.text || "Request").replace(/\s+/g, " ").trim().slice(0, 90);
+  return [title, `${p.done}/${p.total} tasks complete`, ["failed", "stopped", "cancelled"].includes(request.status) ? statusInfo(request.status).label : "",
+    duration(p.seconds), money(request.usage?.total_cost_usd), files.size ? `${files.size} files` : ""].filter(Boolean).join(" · ");
+}
+
+/** Stable attempt identity: parallel tasks and retries never share a disclosure. */
+export const activityKey = (r) => `${r.request || ""}|${r.row}|${r.unit || "queued"}`;
+export function activityRows(state, items = [], request = null) {
+  const rows = [];
+  for (const t of state?.tasks || []) {
+    if (request && t.request !== request) continue;
+    const logs = t.logs?.length ? t.logs : [{ unit: t.units?.at(-1) }];
+    logs.forEach((l, i) => {
+      const live = items.find((r) => r.unit === l.unit && r.row === t.row);
+      rows.push({ ...t, title: t.task?.title || t.title, ...l, cost_usd: l.total_cost_usd,
+        status: l.status || t.status, attempt: i + 1, ...live,
+        ...((TERMINAL.includes(l.status) || (!l.status && TERMINAL.includes(t.status))) ? { status: l.status || t.status } : {}) });
+    });
+  }
+  for (const r of items) if ((!request || r.request === request) && !rows.some((t) => activityKey(t) === activityKey(r))) rows.push(r);
+  return rows;
+}
+
 // --- tasks, decisions ------------------------------------------------------------
 
 export const canCancel = (task) => Boolean(task) && !TERMINAL.includes(task.status);
@@ -334,7 +409,7 @@ export function helpText(settings, where = "chat") {
 /** What a running unit is: "Planning request r0002", "Repair r0002", or the task title. */
 export function activityLabel(r) {
   if (!r?.kind || r.kind === "task") return r?.title || r?.row || "Task";
-  return r.kind === "plan" ? `Planning request ${r.request || ""}`.trim() : `${ORCH_KIND[r.kind] || r.kind} ${r.request || ""}`.trim();
+  return { plan: "Planning the tasks", repair: "Updating the plan", replan: "Updating the plan after your answer", summary: "Preparing the final answer" }[r.kind] || ORCH_KIND[r.kind] || "Orchestrator activity";
 }
 
 /** Whether to poll activity: a running/retrying row or an active request in the session state. */

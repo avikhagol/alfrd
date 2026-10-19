@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
-from alfrd import chat
+from alfrd import chat, mailbox
 from alfrd import orchestration as proto
 from alfrd.execution import ExecutionError
 
@@ -19,6 +19,8 @@ _BASE = "/studio/projects/<project_name>/chat"
 
 
 def _fail(error: Exception):
+    if isinstance(error, mailbox.MailboxError):
+        return jsonify(error={"code": error.status, "message": str(error)}, **error.details), error.status
     if isinstance(error, proto.RefError):
         return _json_error(error, error.status)
     if isinstance(error, LookupError):
@@ -93,6 +95,7 @@ def chat_session_create(project_name: str):
 def chat_session_state(project_name: str, session_id: str):
     """Messages, requests, tasks with statuses, graph (nodes, edges, Mermaid), blockers, decisions and usage."""
     try:
+        _recover_mailbox_delivery(chat.session(_project_root(project_name), session_id))
         return jsonify(chat.session_state(_project_root(project_name), session_id,
                                           messages=request.args.get("messages", default=500, type=int)))
     except Exception as error:  # noqa: BLE001
@@ -104,7 +107,9 @@ def chat_activity(project_name: str, session_id: str):
     """Running units of the session (orchestrator calls too) with the last ``?lines=`` (≤ 400) lines of each log."""
     try:
         return jsonify(chat.activity(_project_root(project_name), session_id,
-                                     lines=request.args.get("lines", default=60, type=int)))
+                                     lines=int(request.args.get("lines", "60")),
+                                     request_id=request.args.get("request"),
+                                     units=request.args.get("units", "").split(",") if request.args.get("units") else None))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 
@@ -205,3 +210,62 @@ def chat_artifact(project_name: str, session_id: str):
 
 
 __all__: list[str] = []
+
+
+_MAILBOX = _BASE + "/sessions/<session_id>/requests/<request_id>/mailbox"
+
+
+def _recover_mailbox_delivery(store):
+    # A previous server may have died after committing a reply but before resume.
+    if chat.process_mailbox(store):
+        chat.resume(store)
+        chat.acknowledge_mailbox_delivery(store)
+
+
+def _mailbox(project_name, session_id, request_id):
+    box = mailbox.Mailbox(_project_root(project_name), session_id, request_id)
+    _recover_mailbox_delivery(box.session)
+    return box
+
+
+@studio_api.route(_MAILBOX + "/messages", methods=["GET", "POST"])
+def mailbox_messages(project_name, session_id, request_id):
+    try:
+        box = _mailbox(project_name, session_id, request_id)
+        if request.method == "GET":
+            return jsonify(box.list(after=request.args.get("after"), limit=int(request.args.get("limit", "100"))))
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        out = box.send(mailbox.USER, payload)
+        chat.server_event(box.session, "mailbox.message", request=request_id, message=out["message"]["id"])
+        _poke(project_name)
+        return jsonify(out), 201 if out["created"] else 200
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_MAILBOX + "/pending")
+def mailbox_pending(project_name, session_id, request_id):
+    try:
+        return jsonify(_mailbox(project_name, session_id, request_id).pending())
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.post(_MAILBOX + "/messages/<message_id>/<operation>")
+def mailbox_action(project_name, session_id, request_id, message_id, operation):
+    try:
+        box = _mailbox(project_name, session_id, request_id)
+        if operation == "ack":
+            out = box.ack(message_id, mailbox.USER)
+        elif operation == "reply":
+            out = box.reply(message_id, mailbox.USER, request.get_json(silent=True))
+            chat.server_event(box.session, "mailbox.resolved", request=request_id, message=message_id)
+            _recover_mailbox_delivery(box.session)
+        else:
+            raise LookupError("unknown mailbox operation")
+        _poke(project_name)
+        return jsonify(out)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)

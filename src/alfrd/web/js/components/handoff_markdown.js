@@ -1,5 +1,20 @@
 import { viewerFor } from "./viewers.js";
 
+// Chat fragments share the handoff viewer and its sanitization contract. Text is
+// installed first, so missing/disabled viewers always have a readable fallback.
+export async function renderMessageMarkdown(target, text) {
+  const viewer = viewerFor("message.md", "text/markdown");
+  if (!viewer || viewer.id === "text") return;
+  try {
+    const host = document.createElement("div");
+    await viewer.render({ text, name: "message.md", mime: "text/markdown" }, host);
+    const { default: purify } = await import("../vendor/purify.es.mjs");
+    if (!target.isConnected || target.textContent !== text) return;
+    target.innerHTML = purify.sanitize(host.innerHTML, { USE_PROFILES: { html: true }, FORBID_TAGS: ["style"], FORBID_ATTR: ["style", "id", "name"] });
+    target.classList.add("chat-markdown");
+  } catch { /* keep the original text */ }
+}
+
 // Use the installed browser viewer; keep the original text independent of its HTML.
 export function mountMarkdown(section, file) {
   const source = section.querySelector("pre"), rendered = section.querySelector("[data-rendered]");

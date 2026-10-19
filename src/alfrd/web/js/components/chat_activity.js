@@ -1,84 +1,96 @@
-// Live activity of a chat session (Chat page and dock): one card per running unit — orchestrator
-// calls included — with owner, what it is, model, elapsed time and a following tail of its log.
-// Polls GET chat/sessions/<sid>/activity every 2 s only while something runs and the page is visible;
-// a 404 (server without the endpoint) hides the strip for good. Lazy (with chat_view / chat_dock).
-import { $, esc, icon } from "../utils/dom.js";
-import { server } from "../data/server.js";
-import { activityLabel, duration } from "../data/chat.js";
+import { $, esc, icon, storage } from "../utils/dom.js";
+import { subscribeActivity } from "../data/chat_live.js";
+import { activityKey, activityLabel, activityRows, duration, money, requestProgress, statusInfo } from "../data/chat.js";
 
-/** Mount on `box`. o: {project(), sid(), busy() → bool, agentName(key), compact, openLog(rel), cancel(row, button)}.
- *  Returns {kick() (refresh now and poll while busy), stop()}. */
+// A request card with stable attempt rows. Output is recorded public activity.
 export function mountActivity(box, o) {
-  let runs = [], at = 0, timer = 0, tick = 0, off = false, inflight = false, key = "";
-  box.hidden = true;
-  const visible = () => box.isConnected && !document.hidden && !box.parentElement?.closest("[hidden]");
-  async function load() {
-    const p = o.project(), sid = o.sid();
-    if (off || !p || !sid || inflight) return;
-    inflight = true;
-    try {
-      const res = await server.request(`/api/studio/projects/${encodeURIComponent(p)}/chat/sessions/${encodeURIComponent(sid)}/activity?lines=40`, { headers: { Accept: "application/json" } });
-      if (res.status === 404 || res.status === 405) { off = true; runs = []; }
-      else if (res.ok) {
-        const body = await res.json();
-        if (p === o.project() && sid === o.sid()) { runs = Array.isArray(body?.running) ? body.running : []; at = Date.now(); }
-      }
-    } catch { /* network hiccup: keep the last cards, try again on the next tick */ }
-    inflight = false;
-    draw();
-  }
-  function schedule() {
-    clearTimeout(timer); timer = 0;
-    if (off || !visible() || !(runs.length || o.busy())) return;
-    timer = setTimeout(async () => { await load(); schedule(); }, 2000);
-  }
-  function elapsed() {
-    $$("[data-el]").forEach((el) => { el.textContent = duration(Math.round(Number(el.dataset.el) + (Date.now() - at) / 1000)); });
-  }
-  const $$ = (sel) => [...box.querySelectorAll(sel)];
+  let subscription, context = "", snapshot = { items: [] }, run, header, body, notice, paused = false;
+  const rows = new Map();
+  const state = () => o.state?.() || {};
+  const rid = () => o.request?.();
+  const pref = (kind, id) => `ui:chat.${kind}:${JSON.stringify([o.project(), o.sid(), id])}`;
+  const visible = () => box.isConnected && !box.closest("[hidden]") && !box.closest("details:not([open])");
   function draw() {
-    box.hidden = off || !runs.length;
-    clearInterval(tick); tick = 0;
-    if (box.hidden) { box.innerHTML = ""; key = ""; return; }
-    const shape = runs.map((r) => r.row).join("|");
-    if (shape !== key) {
-      key = shape;
-      box.innerHTML = `<h3 class="chat-act-h small">${icon("sync", "spin")} Running now (${runs.length})</h3>` + runs.map((r) => `<article class="chat-act${r.kind && r.kind !== "task" ? " chat-act-orch" : ""}" data-run="${esc(r.row)}">
-        <header class="row gap wrap"><b class="small">${esc(o.agentName(r.owner))}</b>${r.kind && r.kind !== "task" ? '<span class="badge tone-muted"><span>Orchestrator</span></span>' : ""}
-          <span class="small grow chat-act-what" data-what></span><span class="muted small mono" data-model></span><span class="small tabular" data-el="0"></span>
-          ${r.log ? `<button type="button" class="btn sm link" data-act-log="${esc(r.log)}" aria-label="Open the full log of ${esc(r.row)}">${icon("log")} Open log</button>` : ""}
-          <button type="button" class="btn sm link danger" data-act-cancel="${esc(r.row)}" aria-label="Cancel ${esc(r.row)}">${icon("stop")} Cancel</button></header>
-        ${o.compact ? "" : `<pre class="log chat-act-tail" tabindex="0" data-follow="1" aria-label="Log tail of ${esc(r.row)}"></pre>`}</article>`).join("");
-      $$("pre[data-follow]").forEach((pre) => pre.addEventListener("scroll", () => {
-        pre.dataset.follow = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24 ? "1" : "0";
-      }, { passive: true }));
+    const req = state().requests?.find((r) => r.id === rid()), p = requestProgress(state(), req);
+    const active = ["planning", "running", "summarizing", "needs_decision"].includes(req?.status);
+    if (!run) {
+      box.hidden = false;
+      box.innerHTML = `<details class="chat-run"><summary></summary><p class="muted small" role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
+      run = $("details", box); header = $("summary", run); body = $("div", run); notice = $("p", run);
+      $("[data-run-graph]", run).onclick = () => o.viewGraph?.(rid());
+      run.open = storage.get(pref("run", rid()), active); if (run.open) run.dataset.auto = "1";
+      run.addEventListener("toggle", () => { if (!run.dataset.auto) storage.set(pref("run", rid()), run.open); delete run.dataset.auto; subscription?.kick(); });
     }
-    for (const r of runs) {
-      const card = box.querySelector(`[data-run="${CSS.escape(r.row)}"]`);
-      if (!card) continue;
-      $("b", card).textContent = o.agentName(r.owner);
-      $("[data-what]", card).textContent = `${activityLabel(r)}${r.attempt > 1 ? ` · attempt ${r.attempt}` : ""}`;
-      $("[data-model]", card).textContent = r.model || "";
-      $("[data-el]", card).dataset.el = String(Number(r.seconds) || 0);
-      const pre = $("pre", card), text = Array.isArray(r.tail) ? r.tail.join("\n") : String(r.tail || "");
-      if (pre && pre.textContent !== text) {
-        pre.textContent = text || "(no output yet)";
-        if (pre.dataset.follow !== "0") pre.scrollTop = pre.scrollHeight;
+    const selection = window.getSelection?.();
+    const protectedContent = run.contains(document.activeElement) || (String(selection || "") && run.contains(selection?.anchorNode));
+    if (run.dataset.active === "1" && !active && !protectedContent) { run.dataset.auto = "1"; run.open = false; }
+    run.dataset.active = active ? "1" : "0";
+    const label = active ? req.status === "planning" ? "Planning the tasks" : req.status === "needs_decision" ? "Needs your answer" : "Working" : req?.status === "done" ? "Run completed" : statusInfo(req?.status).label;
+    header.textContent = [label, p ? `${p.done}/${p.total} tasks complete` : "", p ? duration(p.seconds) : "", money(req?.usage?.total_cost_usd)].filter(Boolean).join(" · ");
+    notice.textContent = snapshot.unsupported ? "Live output unavailable on this server. Open the full transcript for details." : snapshot.stale ? "Updates paused — reconnecting" : "";
+    const data = activityRows(state(), snapshot.items, rid()), keys = new Set(data.map(activityKey));
+    for (const [key, row] of rows) if (!keys.has(key)) { row.el.remove(); rows.delete(key); }
+    for (const r of data) {
+      const key = activityKey(r);
+      let row = rows.get(key);
+      if (!row) {
+        const el = document.createElement("article"); el.className = "chat-run-row";
+        el.innerHTML = `<div class="row gap wrap"><button type="button" class="btn sm link grow chat-task-select"></button><span class="small" data-status></span><span class="small tabular" data-cost></span></div>
+          <details class="chat-output"><summary>Show output</summary><div class="row gap wrap small"><label>Tail <select class="input sm" aria-label="Output lines"><option>40</option><option>100</option><option>200</option><option>400</option></select> lines</label><button type="button" class="btn sm link" data-jump hidden>Jump to latest</button><button type="button" class="btn sm link" data-log>Open log</button><button type="button" class="btn sm link danger" data-cancel>Cancel</button></div><pre class="log chat-act-tail" tabindex="0"></pre><p class="muted small" data-tail-note></p><details><summary class="small">Technical details</summary><pre class="log chat-pre" data-raw></pre></details></details>`;
+        body.append(el);
+        row = { el, details: $(".chat-output", el), pre: $(".chat-act-tail", el), data: r, lines: 40, follow: true };
+        rows.set(key, row);
+        row.details.open = storage.get(pref("tail", key), false);
+        row.details.addEventListener("toggle", () => {
+          storage.set(pref("tail", key), row.details.open);
+          if (row.details.open) { row.follow = true; row.pre.scrollTop = row.pre.scrollHeight; }
+          subscription?.kick();
+        });
+        row.pre.addEventListener("scroll", () => { row.follow = row.pre.scrollHeight - row.pre.scrollTop - row.pre.clientHeight < 24; $("[data-jump]", el).hidden = row.follow; }, { passive: true });
+        $("[data-jump]", el).onclick = () => { row.follow = true; row.pre.scrollTop = row.pre.scrollHeight; $("[data-jump]", el).hidden = true; };
+        $("select", el).onchange = (e) => { row.lines = Number(e.target.value); subscription?.kick(); };
+        $(".chat-task-select", el).onclick = () => o.select?.(row.data.row);
+        $("[data-log]", el).onclick = () => o.openLog(row.data.log);
+        $("[data-cancel]", el).onclick = (e) => o.cancel(row.data.row, e.currentTarget);
       }
+      row.data = r;
+      $(".chat-task-select", row.el).textContent = `${activityLabel(r)} · ${o.agentName(r.owner)}${r.attempt > 1 ? ` · attempt ${r.attempt}` : ""}`;
+      const info = statusInfo(r.status), status = `${icon(info.icon)} ${esc(info.label)}${r.seconds != null ? ` · ${duration(Math.round(r.seconds))}` : ""}`;
+      const statusEl = $("[data-status]", row.el); if (statusEl.innerHTML !== status) statusEl.innerHTML = status;
+      $("[data-cost]", row.el).textContent = money(r.cost_usd);
+      $("[data-log]", row.el).hidden = !r.log;
+      $("[data-cancel]", row.el).hidden = !["running", "retrying", "waiting", "queued"].includes(r.status);
+      const text = Array.isArray(r.display_tail) ? r.display_tail.slice(-row.lines).join("\n") : "No recorded output yet";
+      if (row.pre.textContent !== text) {
+        const top = row.pre.scrollTop; row.pre.textContent = text || "No recorded output yet";
+        row.pre.scrollTop = row.follow ? row.pre.scrollHeight : top;
+        $("[data-jump]", row.el).hidden = row.follow;
+      }
+      row.pre.setAttribute("aria-label", `Recorded output of ${activityLabel(r)}`);
+      $("[data-tail-note]", row.el).textContent = r.tail_truncated ? `Showing the last ${row.lines} lines. Open log for more.` : "";
+      $("[data-raw]", row.el).textContent = Array.isArray(r.tail) ? r.tail.join("\n") : "";
     }
-    elapsed();
-    tick = setInterval(() => { if (box.isConnected) elapsed(); else clearInterval(tick); }, 1000);
   }
-  box.addEventListener("click", (e) => {
-    const b = e.target.closest("button");
-    if (b?.dataset.actLog) o.openLog(b.dataset.actLog);
-    else if (b?.dataset.actCancel) o.cancel(b.dataset.actCancel, b);
-  });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && box.isConnected) api.kick(); });
   const api = {
-    kick() { if (off || !visible()) return; load().then(schedule); },
-    reset() { runs = []; key = ""; draw(); api.kick(); },
-    stop() { clearTimeout(timer); clearInterval(tick); timer = tick = 0; },
+    kick() {
+      const next = JSON.stringify([o.project(), o.sid(), rid()]);
+      if (context !== next) { api.stop(); context = next; rows.clear(); run = null; snapshot = { items: [] }; }
+      if (!o.project() || !o.sid()) return;
+      draw();
+      if (paused) {
+        run.open = storage.get(pref("run", rid()), run.open);
+        for (const [key, row] of rows) row.details.open = storage.get(pref("tail", key), row.details.open);
+        paused = false;
+      }
+      if (!subscription) subscription = subscribeActivity(o.project(), o.sid(), (s) => { if (s.at || s.stale || s.unsupported || !snapshot.at) snapshot = s; draw(); }, {
+        visible, busy: o.busy,
+        units: () => [...rows.values()].filter((r) => run.open && r.details.open && r.data.unit).map((r) => [r.data.unit, r.lines]),
+      });
+      else subscription.kick();
+    },
+    teamMailboxHost() { return $("[data-team-mailbox]", run); },
+    reset() { api.stop(); context = ""; api.kick(); },
+    stop() { subscription?.stop(); subscription = null; paused = true; },
   };
   return api;
 }

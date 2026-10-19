@@ -8,8 +8,8 @@ import { $, esc, icon, storage, routeHash } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
-import { mountActivity } from "./chat_activity.js";
-import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, statusInfo, timeline, tokenLine } from "../data/chat.js";
+import { mountThread } from "./chat_thread.js";
+import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, statusInfo, tokenLine, presentMessage } from "../data/chat.js";
 
 const SESSION_KEY = "ui:chat.session"; // shared with the Chat page: the dock follows the session you last opened
 const MIN = 300, MAX = 720;
@@ -75,6 +75,7 @@ export function hide() {
 const clamp = (w) => Math.max(MIN, Math.min(MAX, Math.round(Number(w) || 380)));
 
 function mount(host, p) {
+  act?.stop();
   el = host;
   Object.assign(D, { project: p, sessions: null, sid: null, data: null, error: "", sendError: "", key: "" });
   host.dataset.project = p || "";
@@ -87,10 +88,11 @@ function mount(host, p) {
       <a class="btn sm" id="cd-full" href="#/chat" title="Open the full Chat page: task graph, decisions, sessions">Open full</a>
       <button type="button" class="icon-btn sm" data-cd="close" aria-label="Close the chat dock" aria-keyshortcuts="Alt+Shift+A" title="Close (Alt+Shift+A)">${icon("close")}</button></header>
     <p class="cd-progress small" id="cd-progress" role="status" aria-live="polite"></p>
-    <div class="chat-log cd-log" id="cd-log" role="log" aria-live="polite" aria-relevant="additions" tabindex="0" aria-label="Messages"></div>
+    <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
     ${composerHtml("cd", { rows: 2, hint: false })}`;
-  act = mountActivity($("#cd-activity", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true,
+  act = mountThread($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid),
+    select: () => { $("#cd-full", el)?.click(); },
     openLog: (rel) => openLog(ctxRef, D.project, rel), cancel: cancelRow });
   composer = bindComposer(host, "cd", { agents, orchestrator: () => D.data?.settings?.orchestrator, send, where: "dock", onCommand: command,
     onError: (m) => { D.sendError = m; draw(); },
@@ -193,28 +195,20 @@ function draw() {
 
 function drawLog() {
   const box = $("#cd-log", el);
-  const msgs = timeline(D.data);
-  const notes = D.notes.filter((n) => n.sid === D.sid);
-  const key = JSON.stringify([D.sid, D.error, Boolean(D.data), msgs.map((m) => m.id + (m.text || "").length), D.sessions?.length, notes.length, (D.data?.tasks || []).map((t) => t.logs?.length || 0)]);
-  if (D.key === key) return;
-  D.key = key;
-  const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  if (D.data) { act?.update(D.data, D.notes.filter((n) => n.sid === D.sid)); return; }
   if (D.error) box.innerHTML = `<p class="callout fail small" role="alert">${esc(D.error)} <button type="button" class="btn sm" data-cd="refresh">Retry</button></p>`;
-  else if (D.sessions && !D.sessions.length) box.innerHTML = `<div class="empty small"><p>No chat session yet.</p><button type="button" class="btn sm primary" data-cd="new">${icon("plus")} New session</button></div>`;
-  else if (!D.data) box.innerHTML = `<p class="muted small" role="status">Loading the session…</p>`;
-  else if (!msgs.length) box.innerHTML = `<p class="muted small">No messages yet. Ask the orchestrator, or start with <code>@agent</code>.</p>`;
-  else box.innerHTML = msgs.slice(-80).map(messageHtml).join("");
-  if (!D.error) box.insertAdjacentHTML("beforeend", notes.map(messageHtml).join(""));
-  if (atEnd || !box.dataset.seen) { box.scrollTop = box.scrollHeight; box.dataset.seen = "1"; }
+  else if (D.sessions && !D.sessions.length) box.innerHTML = `<div class="empty small"><p>No chat session yet.</p><button type="button" class="btn sm primary" data-cd="new">New session</button></div>`;
+  else box.innerHTML = `<p class="muted small" role="status">Loading the session…</p>`;
 }
 
-function messageHtml(m) {
-  const who = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.task ? `@${m.agent} · ${m.task}` : agentName(m.agent || "alfrd");
+function messageHtml(original) {
+  const m = presentMessage(original, D.data?.tasks?.find((t) => t.row === original.task));
+  const who = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.task ? `${agentName(m.agent)} · ${D.data?.tasks?.find((t) => t.row === m.task)?.task?.title || "Task result"}` : agentName(m.agent || "alfrd");
   const t = m.task && D.data?.tasks?.find((x) => x.row === m.task);
   const l = t?.logs?.[t.logs.length - 1], log = l?.log;
   return `<article class="chat-msg chat-${esc(m.role)}${m.kind ? ` chat-${esc(m.kind)}` : ""}" aria-label="${esc(who)}">
     <header><b class="small">${esc(who)}</b><time class="muted small" datetime="${esc(m.at)}">${esc(String(m.at || "").slice(11, 16))}</time></header>
-    <div class="chat-text small">${esc(m.text)}</div>
+    <div class="chat-text">${esc(m.text)}</div>${m.technical ? `<details><summary class="small">Technical details</summary><pre class="log chat-pre">${esc(m.technical)}</pre></details>` : ""}
     ${m.artifacts?.length ? `<p class="muted small mono cd-arts">${m.artifacts.filter((r) => !String(r).includes("/handoffs/")).map((r) => esc(String(r).split("@")[0])).join(" · ")}</p>` : ""}
     ${log ? `<button type="button" class="btn sm link" data-cd-log="${esc(log)}">${icon("log")} Open log</button>` : ""}${l?.handoff ? `<button type="button" class="btn sm link" data-cd-log="${esc(`${l.handoff}/response.md`)}">${icon("file")} Reply</button>` : ""}</article>`;
 }
@@ -230,7 +224,7 @@ function drawProgress() {
     const warned = costWarnings(D.data, pr.id).length;
     html = `<span class="badge tone-${info.tone}">${["planning", "running", "summarizing"].includes(pr.status) ? icon("sync", "spin") : ""}<span>${esc(pr.id)} ${esc(pr.status.replace("_", " "))}</span></span>
       ${pr.total ? `<span>${pr.done}/${pr.total} tasks${pr.running ? ` · ${pr.running} running` : ""}${pr.failed ? ` · ${pr.failed} failed` : ""}</span>` : `<span>${pr.mode === "direct" ? "direct" : "planning"}</span>`}
-      <span class="tabular ${pr.tone === "fail" ? "fail-t" : pr.tone === "warn" ? "warn-t" : ""}">${money(pr.cost)}${pr.maxCost ? ` / ${money(pr.maxCost)}` : ""} · ${duration(pr.seconds)}</span>
+      <span class="tabular ${pr.tone === "fail" ? "fail-t" : pr.tone === "warn" ? "warn-t" : ""}">${money(req?.usage?.total_cost_usd)}${pr.maxCost ? ` / ${money(pr.maxCost)}` : ""} · ${duration(pr.seconds)}</span>
       ${req?.usage ? `<span class="muted" data-tokens="dock">${esc(tokenLine({ ...req.usage, total_cost_usd: null }))}</span>` : ""}
       ${warned ? `<span class="badge tone-warn" title="Tasks over chat.warn_task_cost_usd">${icon("alert")}<span>${warned} over cost warning</span></span>` : ""}
       ${D.data?.blockers?.some((b) => b.needs === "user") ? `<a class="badge tone-warn" href="${esc($("#cd-full", el).getAttribute("href"))}">${icon("alert")}<span>decision needed</span></a>` : ""}`;

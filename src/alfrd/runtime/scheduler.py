@@ -1828,6 +1828,12 @@ class Runner:
                             # Marks every process of this command for usage. Unit ids repeat across plans
                             # (0001-<target>-<step>), so the plan id keeps two live plans apart.
                             "ALFRD_UNIT": f"{self.folder.id}/{unit['id']}"})
+        if self.plan.get("chat"):
+            from alfrd import chat, mailbox
+            chat_store = chat._store_of(self)
+            chat_rec = chat_store.task(unit["row"])
+            process_env.update(mailbox.execution_env(chat_store, chat_rec, unit))
+            self.folder.save_unit(unit)  # bind mailbox context before the child can issue its first command
         usage_dir = self._workdir_path(spec)
         if usage_dir:
             process_env["ALFRD_USAGE_DIR"] = usage_dir
