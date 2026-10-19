@@ -59,7 +59,10 @@ def validate(name, value):
     try:
         _validator(name).validate(value)
     except ValidationError as exc:
-        raise MailboxError(exc.message) from exc
+        field = ".".join(str(part) for part in exc.absolute_path) or "<root>"
+        kind = value.get("kind", name) if isinstance(value, dict) else name
+        raise MailboxError(f"{kind} message field {field}: {exc.message}") from exc
+    # Bound the whole record, including free-form info payloads and nested values.
     if len(canonical(value).encode()) > 32768:
         raise MailboxError("message exceeds 32 KiB", 413)
 

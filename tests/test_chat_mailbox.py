@@ -45,7 +45,7 @@ def test_mailbox_endpoints_bind_identity_and_survive_app_restart(project, client
     request = box.send(AGENT, permission())["message"]
     assert client.get(route + "/pending").get_json()["messages"][0]["id"] == request["id"]
     payload = {"recipient": {"kind": "agent", "agent_id": "codex", "task_id": "a"}, "kind": "info",
-               "subject": "Update", "body": "Keep going", "idempotency_key": "update", "payload": {}}
+               "subject": "Update", "body": "Keep going", "idempotency_key": "update", "payload": {"probe": "ping", "seq": 1}}
     assert client.post(route + "/messages", json=payload).status_code == 403  # CSRF
     first = client.post(route + "/messages", json=payload, headers=client.headers)
     assert first.status_code == 201
@@ -74,6 +74,23 @@ def test_mailbox_endpoints_bind_identity_and_survive_app_restart(project, client
     assert client.get(base + "/requests/r9999/mailbox/messages").status_code == 404
     assert client.get(route + "/messages?limit=no").status_code == 400
     assert client.get(route + "/messages?after=not-a-cursor").status_code == 400
+
+
+def test_mailbox_http_validation_names_kind_and_field(project, client):
+    _, base, _ = setup(project)
+    route = base + "/requests/r0001/mailbox/messages"
+    data = permission()
+    data["payload"]["extra"] = "unexpected"
+    response = client.post(route, json=data, headers=client.headers)
+    assert response.status_code == 400
+    error = response.get_json()["error"]["message"]
+    assert "permission_request message field payload:" in error and "extra" in error
+    del data["payload"]["extra"]
+    del data["payload"]["action"]
+    response = client.post(route, json=data, headers=client.headers)
+    assert response.status_code == 400
+    error = response.get_json()["error"]["message"]
+    assert "permission_request message field payload:" in error and "action" in error
 
 
 def test_activity_final_attempt_filters_bounds_and_display(project, client):
@@ -139,6 +156,9 @@ def test_continuation_outbox_replay_and_mailbox_prompt(project):
     assert len(attempts) == 2
     prompt = (store.tasks_dir / "r0001.a" / "prompt.md").read_text()
     assert "<mailbox-data>" in prompt and mid in prompt
+    assert "[--payload-file <path>]" in prompt
+    assert "optional for info (defaults to {})" in prompt
+    assert "permission_request payload needs action, target, description, scope (once), action_hash" in prompt
     context = folder.path / "mailbox" / "contexts" if hasattr(folder, "path") else project / ".alfrd" / "plans" / store.plan_id / "mailbox" / "contexts"
     assert list(context.glob("*.json"))
     state = chat.session_state(project, sid)

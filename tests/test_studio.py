@@ -239,7 +239,9 @@ def test_lazy_payload_under_106kb_compressed():
     # Owner approved raising the cap: 256 -> 264 KiB (270,336 bytes).
     # Chat round 2026-10-18 (activity strip, /setup, full-screen graph, chat runs in Workflow): 269,210 -> ~285,400 B.
     # Raised under the standing "raise JS caps as needed" decision: 264 -> 288 KiB (294,912 bytes).
-    assert total < 288 * 1024, f"{total} bytes gzip"
+    # Agent mailbox and live chat threads (chat_mailbox.js, chat_thread.js, data/chat_live.js and
+    # chat.css, 1561cd7, 2026-10-19): 286,245 -> 297,373 B. Same standing decision: 288 -> 292 KiB (299,008 bytes).
+    assert total < 292 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

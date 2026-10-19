@@ -20,7 +20,9 @@ Studio routes use the existing authentication and POST CSRF protection. With
   outcome, optional choice_id, answer and action_hash. Question outcomes use
   `answer`; permissions use `approve` or `deny` with the exact action hash.
 
-Message kinds and payloads are defined in `schemas/agent_message.v1.json`.
+Message kinds and payloads are defined in `src/alfrd/schemas/agent_message.v1.json`.
+An `info` payload is any JSON object (default `{}`); every message, payload
+included, must fit in 32 KiB of canonical UTF-8 JSON.
 Permission hashes are `sha256:` plus the SHA-256 digest of canonical UTF-8 JSON
 containing action, target, arguments (default `{}`), and scope. Canonical JSON
 uses sorted keys, no whitespace, and literal Unicode. Scope is `once`.
@@ -34,6 +36,7 @@ and `ALFRD_AGENT_ID`; the context file has mode 0600. Agents use:
 ```sh
 alfrd mailbox read --limit 100
 alfrd mailbox send --to task:frontend --kind info --subject 'API ready' --body-file /tmp/note.txt --key api-ready-1
+alfrd mailbox send --to orchestrator --kind info --subject 'Ping' --body-file /tmp/ping.txt --payload-file /tmp/ping.json --key ping-1
 alfrd mailbox send --to user --kind question --subject 'Choose layout' --body-file /tmp/question.txt --payload-file /tmp/options.json --key layout-1
 alfrd mailbox ack <message-id>
 alfrd mailbox reply <message-id> --answer-file /tmp/answer.txt --key answer-1

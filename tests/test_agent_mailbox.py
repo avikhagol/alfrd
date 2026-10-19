@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from alfrd import chat
 from alfrd.cli import alfrd_cli
-from alfrd.mailbox import Mailbox, MailboxError, USER, action_hash, execution_env
+from alfrd.mailbox import Mailbox, MailboxError, USER, action_hash, execution_env, validate
 from test_chat_orchestration import project, say  # noqa: F401
 
 AGENT = {"kind": "agent", "agent_id": "codex", "task_id": "a", "unit_id": "0002-r0001.a-codex"}
@@ -37,6 +37,65 @@ def permission(key="p", **extra):
 
 def answer(key="reply", **extra):
     return {"idempotency_key": key, "outcome": "answer", "answer": "yes", **extra}
+
+
+def test_info_payload_and_idempotent_resend(box):
+    data = question(kind="info", payload={"probe": "ping", "seq": 1})
+    first = box.send(AGENT, data)
+    assert first["created"] and first["message"]["id"]
+    assert first["message"]["payload"] == data["payload"]
+    validate("agent_message", first["message"])
+    restarted = Mailbox(box.session.root, box.session.id, box.run_id)
+    second = restarted.send(AGENT, data)
+    assert not second["created"]
+    assert second["message"]["id"] == first["message"]["id"]
+    assert len(restarted.list()["messages"]) == 1
+
+
+@pytest.mark.parametrize("payload", [
+    {"nested": {"values": [None, True, 1, "text"]}},
+    {str(i): i for i in range(100)},
+])
+def test_info_free_form_json_object(box, payload):
+    assert box.send(AGENT, question(kind="info", payload=payload))["message"]["payload"] == payload
+
+
+def test_info_payload_size_bound(box):
+    # Fewer than 32 Ki characters, but more than 32 KiB when encoded as UTF-8.
+    with pytest.raises(MailboxError, match="32 KiB") as oversized:
+        box.send(AGENT, question(kind="info", payload={"nested": ["é" * 16384]}))
+    assert oversized.value.status == 413
+    assert box.list()["messages"] == []
+
+
+@pytest.mark.parametrize("field", ["action", "target", "description", "scope", "action_hash", "choices", "extra"])
+def test_permission_payload_stays_strict(box, field):
+    data = permission()
+    if field == "extra":
+        data["payload"][field] = "unexpected"
+    else:
+        del data["payload"][field]
+    with pytest.raises(MailboxError) as invalid:
+        box.send(AGENT, data)
+    assert invalid.value.status == 400
+    assert "permission_request message field payload:" in str(invalid.value)
+    assert field in str(invalid.value)
+    assert box.list()["messages"] == []
+
+
+@pytest.mark.parametrize("field", ["outcome", "choice_id", "answer", "action_hash", "extra"])
+def test_reply_payload_schema_stays_strict(box, field):
+    request = box.send(AGENT, question())["message"]
+    reply = box.reply(request["id"], USER, answer())["message"]
+    if field == "extra":
+        reply["payload"][field] = "unexpected"
+    else:
+        del reply["payload"][field]
+    with pytest.raises(MailboxError) as invalid:
+        validate("agent_message", reply)
+    assert invalid.value.status == 400
+    assert "reply message field payload:" in str(invalid.value)
+    assert field in str(invalid.value)
 
 
 def test_restart_cursor_idempotency_and_ack(box):
@@ -149,6 +208,16 @@ def test_validation_visibility_and_context_cli(box, monkeypatch, tmp_path):
     sent = cli.invoke(alfrd_cli, ["mailbox", "send", "--to", "user", "--subject", "Hello", "--body-file", str(body), "--key", "hello"])
     assert sent.exit_code == 0, sent.output
     assert json.loads(sent.stdout)["message"]["sender"] == AGENT
+    payload = tmp_path / "payload.json"
+    payload.write_text(json.dumps({"probe": "ping", "seq": 1}))
+    args = ["mailbox", "send", "--to", "user", "--subject", "Probe", "--body-file", str(body),
+            "--payload-file", str(payload), "--key", "probe"]
+    first = cli.invoke(alfrd_cli, args)
+    second = cli.invoke(alfrd_cli, args)
+    assert first.exit_code == second.exit_code == 0, (first.output, second.output)
+    assert json.loads(first.stdout)["message"]["payload"] == {"probe": "ping", "seq": 1}
+    assert json.loads(first.stdout)["message"]["id"] == json.loads(second.stdout)["message"]["id"]
+    assert not json.loads(second.stdout)["created"]
 
 
 def test_approval_cannot_outlive_expiry_or_cancellation(box, monkeypatch):
