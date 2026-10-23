@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/avikhagol/alfrd/schemas/orchestration_decision.v1.json",
   "title": "alfrd.orchestration/1 decision",
-  "description": "The answer to a blocker: a chosen option and/or a free-text answer, by a person or by the orchestrator.",
+  "description": "The answer to a blocker: a chosen option and/or a free-text answer, by a person or by the orchestrator. The orchestrator may also move the task to another agent (reassign) or cancel it; only a person grants access.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,6 +17,16 @@
     {
       "required": [
         "answer"
+      ]
+    },
+    {
+      "required": [
+        "reassign"
+      ]
+    },
+    {
+      "required": [
+        "cancel"
       ]
     }
   ],
@@ -56,6 +66,15 @@
         "user",
         "orchestrator"
       ]
+    },
+    "reassign": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$",
+      "description": "Move the blocked task to this chat agent."
+    },
+    "cancel": {
+      "type": "boolean",
+      "description": "Cancel the blocked task (its dependents are blocked)."
     }
   }
 }

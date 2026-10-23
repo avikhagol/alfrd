@@ -120,6 +120,8 @@ test("chat settings: presets merge, the written block round-trips, problems mirr
   assert.match(problems, /orchestrator must be one of/);
   assert.match(problems, /max_retries/);
   assert.match(problems, /max_cost_usd/);
+  assert.equal(C.mergeChat({}).bounds.max_replans, 3);
+  assert.match(C.chatProblems(C.mergeChat({ bounds: { max_replans: -1 } })).join(" "), /max_replans/);
   assert.match(C.chatProblems({ ...s, agents: { "Bad Key": {} }, orchestrator: "Bad Key" }).join(" "), /Agent key/);
 });
 

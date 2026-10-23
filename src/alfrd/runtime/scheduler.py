@@ -1789,6 +1789,17 @@ class Runner:
 
                 argv = list(agent_command(argv, chat_model, adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
                 unit.update(requested_model=chat_model)
+            if self.plan.get("chat") and step and argv:
+                from alfrd.agent_io import adapter_for, agent_command
+
+                # what this task was granted (decisions), and the mailbox command its prompt describes
+                extra = chat.launch_access(self, spec)
+                if extra:
+                    before = list(argv)
+                    argv = list(agent_command(argv, None, access=extra,
+                                              adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
+                    if argv != before:
+                        unit["access_extra"] = {k: v for k, v in extra.items() if k in ("folders", "bash_commands") and v}
             fallback = self._fallback_model(step, unit) if step else None
             if fallback:
                 from alfrd.agent_io import adapter_for, agent_command
@@ -1853,6 +1864,9 @@ class Runner:
         with open(log_path, "a", encoding="utf-8") as log:
             log.write(f"# alfrd plan {self.folder.id} · {spec.target or 'batch'} · {', '.join(spec.steps)} · {now_iso()}\n")
             log.write(f"# cwd {cwd}\n$ {' '.join(argv)}\n")
+            if unit.get("access_extra"):
+                log.write("# access added for this task: " + "; ".join(
+                    f"{k} {', '.join(v)}" for k, v in unit["access_extra"].items()) + "\n")
             log.flush()
             try:
                 shim_args = []

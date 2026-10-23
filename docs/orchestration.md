@@ -27,6 +27,7 @@ chat:
     max_cost_usd: 5           # from the providers' reported total_cost_usd
     max_seconds: 7200         # wall clock from the message
     max_tasks: 20
+    max_replans: 3            # orchestrator wake-ups for blockers; past it, blockers go to the user
   agents:
     claude: {label: Claude (Opus),   entrypoint: claude, model: opus,   roles: [orchestration], lean: true}
     sonnet: {label: Claude (Sonnet), entrypoint: claude, model: sonnet, roles: [test planning, verification, failure analysis], lean: true}
@@ -64,7 +65,15 @@ chat:
    * `needs: user` (default) → `decision.needed`; the task waits (cell `waiting`) until
      `POST …/decisions/<id>` answers it, then runs again with the decision in its prompt.
    * `needs: orchestrator` → one **replan** call that answers with `decisions` (and may add
-     tasks); if it cannot decide, the blocker goes to the user.
+     tasks); if it cannot decide, the blocker goes to the user. At most `bounds.max_replans`
+     replans per request (`budget.exceeded`, `limit: max_replans`); then the user decides.
+   * **Permission blockers** (`kind: permission`, a `requires` block, or a reason worded like a
+     sandbox denial: "requires approval", "outside the allowed directories", "add-dir", …) always go
+     to the user: the orchestrator cannot change an agent's folders or commands. See
+     [Access and permission blockers](#access-and-permission-blockers).
+   * The **same blocker again with the same access** (same owner, command and folders) is not sent
+     to the orchestrator a second time: it goes to the user with a system message and event
+     `task.stuck`.
    * `result.tasks` delegates sub-tasks one level deeper; beyond `max_depth` they are
      refused (`budget.exceeded`, `limit: max_depth`).
 4. **Completion.** When every row of a request is finished, ALFRD makes one **summary**
@@ -131,8 +140,10 @@ max_seconds, max_retries ≤ 5}`. Before a task is accepted as done, ALFRD check
 `expected_outputs` path exists inside the project (a trailing `/` means a folder); if any is missing the
 attempt fails ("expected output(s) missing: …") and is retried within `max_retries`, with no LLM call.
 
-Blocker: `id`, `reason`, `task_id?`, `question?`, `options?`, `needs: user | orchestrator`.
-Decision: `id` (the blocker), `choice` and/or `answer`, `decided_by?`.
+Blocker: `id`, `reason`, `task_id?`, `question?`, `options?`, `needs: user | orchestrator`,
+`kind?: permission | input | other`, `requires?: {folders?, bash_commands?}`.
+Decision: `id` (the blocker), `choice` and/or `answer`, or the orchestrator's `reassign: <agent>` /
+`cancel: true`, `decided_by?`. Only a person grants access.
 
 Example plan reply:
 
@@ -200,6 +211,34 @@ quota error. With no tools it suits the orchestrator, research summaries and wri
 found (`shutil.which`; built-in Python commands are always available), whether Ollama answers at
 `OLLAMA_HOST` (default `http://localhost:11434`, 1 s timeout) with its models, and whether `HF_TOKEN`
 is set. Nothing else is contacted and no token is sent anywhere.
+
+## Access and permission blockers
+
+A task runs with `project_settings.agent_access` (folders → `--add-dir`, `bash_commands` →
+`--allowedTools Bash(...)` for Claude; `sandbox` for Codex) plus what was granted to that task.
+Headless agents cannot ask for approval mid-run, so anything else is denied at once; an approval
+can only take effect at the **next launch**. Chat rows therefore always get `Bash(alfrd mailbox *)`
+(the mailbox their prompt describes), and their prompt has a **Your access** section.
+
+`agent_access` is normalized when it is read: `~` and relative paths are expanded, globs are
+expanded (a pattern that matches nothing is dropped), each folder is passed both as written and
+resolved (symlinks: `/home/…` and `/mnt/…`), a command without `*` (`npm`) also allows
+`npm *`, and read-only helpers (`cd`, `pwd`, `ls`, `cat`, `head`, `tail`, `wc`, `sha256sum`) are added
+(`default_readonly: false` turns that off). Claude Code checks each part of `a && b` / `a | b`.
+
+A blocker that only access can fix gets options that change the next launch, ahead of the agent's own:
+
+* **Grant this task access and re-run: <folders>; commands <…>** — from the blocker's `requires`, else
+  the existing folders named in its reason. Recorded on the task (`access_extra`, `grants`), merged into
+  the next launch, and written to the unit log (`# access added for this task: …`); event
+  `task.access_granted`. Only a person can choose it.
+* **Reassign this task to @<agent>** — agents with a different entrypoint (another Claude has the same
+  sandbox). The old owner's cell becomes `skip`; event `task.reassigned`.
+* **Cancel this task** — the row is cancelled and its dependents are blocked.
+
+An agent option that starts with *Cancel* cancels, one like *Reassign to codex* reassigns. When a
+permission blocker comes back with the same access, re-running it unchanged is refused ("Re-running
+now would hit the same blocker again …"); grant, reassign, cancel, or widen `agent_access` first.
 
 ## Fallback on limits
 

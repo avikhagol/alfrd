@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/avikhagol/alfrd/schemas/orchestration_blocker.v1.json",
   "title": "alfrd.orchestration/1 blocker",
-  "description": "Something a task cannot resolve alone. needs=user asks a person (decision.needed); needs=orchestrator wakes the orchestrator once.",
+  "description": "Something a task cannot resolve alone. needs=user asks a person (decision.needed); needs=orchestrator wakes the orchestrator once. kind=permission (or requires) marks a blocker only access can fix: it always goes to the user, who can grant exactly `requires` for this task.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -47,6 +47,37 @@
     "mailbox_message_id": {
       "type": "string",
       "pattern": "^msg_[a-f0-9]{32}$"
+    },
+    "kind": {
+      "enum": [
+        "permission",
+        "input",
+        "other"
+      ]
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "folders": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "maxItems": 20
+        },
+        "bash_commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "maxItems": 30
+        }
+      }
     }
   }
 }

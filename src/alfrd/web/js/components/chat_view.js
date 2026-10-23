@@ -274,7 +274,7 @@ function drawDecisions() {
   box.innerHTML = `<h3 id="chat-decisions-h">Blockers and decisions ${list.length ? `<span class="badge tone-warn"><span>${list.length}</span></span>` : ""}</h3>
     ${list.length ? list.map((d) => d.mailbox_message_id ? `<p class="small"><b>${esc(d.question || d.reason)}</b> <button type="button" class="btn sm link" data-mail-jump="${esc(d.mailbox_message_id)}">Answer in conversation</button></p>` : d.needs === "user" ? `<form class="chat-decision" data-decision="${esc(d.id)}" aria-label="Decision for task ${esc(d.task)}">
       <p class="small"><b>${esc(d.question || d.reason)}</b></p>${d.question && d.reason !== d.question ? `<p class="muted small">${esc(d.reason)}</p>` : ""}
-      <p class="muted small">Task <span class="mono">${esc(d.task)}</span></p>
+      <p class="muted small">Task <span class="mono">${esc(d.task)}</span></p>${d.kind === "permission" ? `<p class="small warn-t">${d.repeat ? `Blocked ${esc(d.repeat)}× with the same access. ` : ""}An approval cannot reach a running agent: grant access, reassign or cancel to change the next run.</p>` : ""}
       ${d.options?.length ? `<fieldset><legend class="sr-only">Options</legend>${d.options.map((o, i) => `<label class="row gap small"><input type="radio" name="choice" value="${esc(o)}" ${i ? "" : ""}> ${esc(o)}</label>`).join("")}</fieldset>` : ""}
       <label class="field small"><span>${d.options?.length ? "Or answer (optional)" : "Answer"}</span><textarea class="input" name="answer" rows="2" maxlength="8000"></textarea></label>
       <p class="fail-t small" role="alert" data-decision-error></p>

@@ -12,7 +12,7 @@ export const REQUEST_ACTIVE = ["planning", "running", "needs_decision", "summari
 export const DEFAULTS = {
   orchestrator: "claude", orchestrator_model: "sonnet", escalation_model: "opus", final_summary: false, warn_task_cost_usd: null,
   concurrency: 2, history_messages: 8,
-  bounds: { max_depth: 2, max_retries: 1, max_cost_usd: 5, max_seconds: 7200, max_tasks: 20 },
+  bounds: { max_depth: 2, max_retries: 1, max_cost_usd: 5, max_seconds: 7200, max_tasks: 20, max_replans: 3 },
   agents: {
     claude: { label: "Claude (Opus)", entrypoint: "claude", model: "opus", roles: ["orchestration"], lean: true },
     sonnet: { label: "Claude (Sonnet)", entrypoint: "claude", model: "sonnet", roles: ["test planning", "verification", "failure analysis"], lean: true },
@@ -360,6 +360,7 @@ export function chatProblems(s, personas = []) {
   const b = s.bounds || {};
   for (const k of ["max_depth", "max_tasks"]) if (!int(b[k], 1)) errors.push(`${k}: a whole number ≥ 1.`);
   if (!int(b.max_retries, 0) || Number(b.max_retries) > 5) errors.push("max_retries: a whole number from 0 to 5.");
+  if (b.max_replans != null && !int(b.max_replans, 0)) errors.push("max_replans: a whole number ≥ 0.");
   for (const k of ["max_cost_usd", "max_seconds"]) if (!(Number(b[k]) > 0)) errors.push(`${k}: a positive number.`);
   const w = s.warn_task_cost_usd;
   if (w != null && w !== "" && !(Number(w) > 0)) errors.push("Task cost warning: a positive number (empty: no warning).");

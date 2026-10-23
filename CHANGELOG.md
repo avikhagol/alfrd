@@ -2,6 +2,9 @@
 
 ## [0.4.0.0]
 
+- chat: permission blockers no longer loop. A blocker only access can fix (`kind: permission`, `requires`, or worded like a sandbox denial) goes to the user with options ALFRD applies itself: **Grant this task access and re-run** (folders/commands added to that task's next launch only, shown in its log and prompt; event `task.access_granted`), **Reassign this task to @agent** (event `task.reassigned`) and **Cancel this task**. The orchestrator may `reassign` or `cancel` in a decision but never grants. The same blocker with the same access is not replanned again (`task.stuck`), an unchanged re-run of a repeated permission blocker is refused, and `chat.bounds.max_replans` (default 3) caps replans per request. Chat rows always get `Bash(alfrd mailbox *)`; task prompts list the task's access and only the latest decision per blocker; the plan prompt says what each agent can reach.
+- `agent_access`: globs expanded, folders passed as written and resolved (symlinks), bare command patterns also allow `<command> *`, read-only helpers added for Claude (`default_readonly: false` to turn off).
+
 - chat mode toggle: Studio settings → Preferences → **Chat mode** (off by default, per browser) hides the Chat section, the dock, Alt+Shift+A, the palette entries and chat runs in Workflow.
 - chat activity: every running call (orchestrator planning included) shows a live card with model, elapsed time and the end of its log (`GET …/chat/sessions/<s>/activity`); task messages link to their log and reply; orchestrator calls are nodes of the task graph (`kind`, `planned` edges); the graph opens full screen (button, **F**, `/graph`).
 - chat `/setup` and slash commands (`/setup`, `/help`, `/new`, `/graph`): who does what with which model (orchestrator and escalation model, role → agent, model, fallback, availability from `GET …/chat/probe` / `alfrd chat probe`), saved into the `chat:` block (`GET/POST …/chat/settings`, conflict-guarded).

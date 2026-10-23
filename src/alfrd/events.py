@@ -22,7 +22,7 @@ EVENT_KINDS: frozenset[str] = frozenset({
     "task.created", "task.started", "task.finished", "task.blocked",
     "decision.needed", "decision.resolved", "request.finished", "budget.exceeded",
     # a chat row hit a usage/rate/quota limit and moved to its owner's fallback agent
-    "task.fallback",
+    "task.fallback", "task.reassigned", "task.access_granted", "task.stuck",
     # a turn or chat task cost more than its warning budget (execution.warn_turn_cost_usd, chat.warn_task_cost_usd)
     "budget.warning",
 })

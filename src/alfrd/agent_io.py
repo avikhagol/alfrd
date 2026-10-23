@@ -221,6 +221,69 @@ def startup_args(adapter, startup):
     return args
 
 
+# Read-only shell commands a Claude agent may always run once agent_access.bash_commands is set
+# (agent_access.default_readonly: false turns this off). Claude Code checks every part of
+# `a && b` / `a | b` separately, so `cd X && ls | head` needs cd and head too.
+READONLY_COMMANDS = ("cd *", "pwd", "ls *", "cat *", "head *", "tail *", "wc *", "sha256sum *")
+# The mailbox protocol every chat task prompt describes; without it `alfrd mailbox read` is denied.
+MAILBOX_COMMAND = "alfrd mailbox *"
+
+
+def claude_bash_rules(commands, readonly=False):
+    """``Bash(...)`` rules for --allowedTools. A pattern without a wildcard (``npm``) matches only that
+    exact command line in Claude Code, so ``npm install`` would still be denied: such a pattern also
+    gets ``<pattern> *``."""
+    rules = []
+    for command in commands or []:
+        command = str(command).strip()
+        if not command:
+            continue
+        rules.append(command)
+        if "*" not in command and ":" not in command:
+            rules.append(command + " *")
+    if readonly:
+        rules.extend(READONLY_COMMANDS)
+    return [f"Bash({rule})" for rule in dict.fromkeys(rules)]
+
+
+def access_folders(base, folders):
+    """agent_access folders as absolute paths: ``~`` expanded, relative to ``base``, globs expanded (a
+    pattern that matches nothing is dropped), each kept both as written and resolved (symlinks), so an
+    agent that types /home/... and one that types the real /mnt/... path are both allowed."""
+    import glob
+    import os
+
+    out = []
+    for raw in folders or []:
+        path = Path(str(raw)).expanduser()
+        path = path if path.is_absolute() else Path(base) / path
+        text = str(path)
+        if any(ch in text for ch in "*?["):
+            paths = [Path(m) for m in sorted(glob.glob(text)) if Path(m).is_dir()]
+        else:
+            paths = [path]
+        for found in paths:
+            for form in (os.path.normpath(str(found)), str(found.resolve())):
+                if form not in out:
+                    out.append(form)
+    return out
+
+
+def merge_access(*parts):
+    """Several agent_access mappings as one (folders and commands added up; the first sandbox wins)."""
+    out = {"folders": [], "bash_commands": []}
+    for part in parts:
+        if not part:
+            continue
+        out["folders"] = list(dict.fromkeys([*out["folders"], *(part.get("folders") or [])]))
+        out["bash_commands"] = list(dict.fromkeys([*out["bash_commands"], *(part.get("bash_commands") or [])]))
+        if part.get("sandbox") and not out.get("sandbox"):
+            out["sandbox"] = part["sandbox"]
+        if "default_readonly" in part and "default_readonly" not in out:
+            out["default_readonly"] = part["default_readonly"]
+    return out
+
+
 def agent_command(argv, model=None, stream=False, access=None, adapter=None, fallback=None, startup=None):
     args = list(argv or [])
     adapter = adapter or adapter_for(args)
@@ -247,7 +310,9 @@ def agent_command(argv, model=None, stream=False, access=None, adapter=None, fal
         if agent == "claude" and access.get("bash_commands"):
             existing = option(args, "--allowedTools", "--allowed-tools")
             tools = [existing] if existing else []
-            tools.extend(f"Bash({command})" for command in access["bash_commands"])
+            known = set(",".join(tools).split(",")) if tools else set()
+            tools.extend(rule for rule in claude_bash_rules(access["bash_commands"], access.get("default_readonly", True))
+                         if rule not in known)
             args = set_option(args, "--allowedTools", ",".join(tools), "--allowed-tools")
         if agent == "codex" and access.get("sandbox"):
             args = set_option(args, "--sandbox", access["sandbox"], "-s")

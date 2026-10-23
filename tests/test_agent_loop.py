@@ -595,7 +595,9 @@ def test_project_agent_folder_and_bash_settings(project):
     assert claude[claude.index("--add-dir") + 1] == expected
     assert claude[claude.index("--add-dir") + 2] == str((project / "../other notes").resolve())
     assert codex.count("--add-dir") == 2
-    assert claude[claude.index("--allowedTools") + 1] == "Bash(git status *),Bash(pytest *)"
+    rules = claude[claude.index("--allowedTools") + 1].split(",")
+    assert rules[:2] == ["Bash(git status *)", "Bash(pytest *)"]
+    assert {"Bash(cd *)", "Bash(head *)", "Bash(cat *)"} <= set(rules)  # read-only defaults for compound commands
     assert codex[codex.index("--add-dir") + 1] == expected
     assert codex[codex.index("--sandbox") + 1] == "workspace-write"
     assert codex[-1] == "-"

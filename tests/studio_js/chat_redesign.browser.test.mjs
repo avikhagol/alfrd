@@ -43,7 +43,9 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
         { ...approval, id: "orch", seq: 3, kind: "info", recipient: { kind: "orchestrator" }, subject: "Review complete", body: "Ready for summary.", payload: {} }];
       window.fixture = { session: { id: "s", title: "Design chat" }, requests, tasks, messages, settings: DEFAULTS, mailbox_version: 1,
         graph: { nodes: tasks.map((x) => ({ id: x.row, title: x.task.title, owner: x.owner, request: x.request, status: x.status, kind: x.kind })), edges: [] },
-        blockers: [{ id: "d1", task: "r2.a", request: "r2", needs: "user", mailbox_message_id: "permission", question: "Publish preview?", status: "pending" }], decisions: [], plan: { runner_alive: true } };
+        blockers: [{ id: "d1", task: "r2.a", request: "r2", needs: "user", mailbox_message_id: "permission", question: "Publish preview?", status: "pending" },
+          { id: "d2", task: "r2.b", request: "r2", needs: "user", kind: "permission", repeat: 2, reason: "outside the allowed directories", question: "Grant access?", status: "pending",
+            options: ["Grant this task access and re-run: /srv/site", "Reassign this task to @codex", "Cancel this task"] }], decisions: [], plan: { runner_alive: true } };
       window.activityCalls = []; window.mutations = []; window.tailVersion = 1; window.offline = false;
       Object.assign(server, { session: { mutations_enabled: true }, request: async (url) => {
         let data;
@@ -112,6 +114,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       if (width <= 1280) await page.getByRole('button', { name: 'Inspect', exact: true }).click();
       assert.equal(await page.locator('#chat-progress').isVisible(), true);
       assert.equal(await page.locator('#chat-decisions').isVisible(), true);
+      assert.match(await page.locator('[data-decision="d2"]').innerText(), /Blocked 2× with the same access[\s\S]*Grant this task access and re-run: \/srv\/site[\s\S]*Reassign this task to @codex/);
       assert.equal(await page.locator('#chat-graph').isVisible(), true);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       if (width === 1440) {

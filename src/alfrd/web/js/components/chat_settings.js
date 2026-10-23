@@ -45,7 +45,7 @@ export function openChatSettings(ctx, project, text, apply) {
       <fieldset><legend>Defaults per request (bounds)</legend><div class="row gap wrap">
         ${num("bounds.max_depth", "Delegation depth", s.bounds.max_depth, 'min="1"')}${num("bounds.max_retries", "Retries per task", s.bounds.max_retries, 'min="0" max="5"')}
         ${num("bounds.max_cost_usd", "Cost limit (USD)", s.bounds.max_cost_usd, 'min="0" step="0.5"')}${num("bounds.max_seconds", "Time limit (s)", s.bounds.max_seconds, 'min="1"')}
-        ${num("bounds.max_tasks", "Tasks per request", s.bounds.max_tasks, 'min="1"')}</div></fieldset>
+        ${num("bounds.max_tasks", "Tasks per request", s.bounds.max_tasks, 'min="1"')}${num("bounds.max_replans", "Replans per request", s.bounds.max_replans ?? 3, 'min="0" title="Times the orchestrator is woken for blockers; past it, you decide"')}</div></fieldset>
       <div class="cs-table"><table class="tbl small"><caption class="sr-only">Chat agents</caption><thead><tr><th scope="col">Agent</th><th scope="col">Label</th><th scope="col">Entrypoint</th><th scope="col">Model</th><th scope="col">Adapter</th><th scope="col">Persona</th><th scope="col" title="Takes over when this agent reports a usage limit or a missing model">Fallback</th><th scope="col">Roles</th><th scope="col" title="Claude: start without MCP servers, user plugins or skills">Lean</th><th scope="col"><span class="sr-only">Remove</span></th></tr></thead><tbody id="cs-agents"></tbody></table></div>
       <div class="row gap wrap"><label class="sr-only" for="cs-new">New agent key</label><input class="input sm mono" id="cs-new" placeholder="new-agent" aria-describedby="cs-errors">
         <button type="button" class="btn sm" data-cs="add">${icon("plus")} Add agent</button>

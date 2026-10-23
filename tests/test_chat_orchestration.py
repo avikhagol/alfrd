@@ -184,7 +184,8 @@ def test_chat_settings_are_editable_presets_with_bounds(project):
     assert conf["agents"]["sonnet"]["roles"] == ["test planning", "verification", "failure analysis"]
     assert conf["agents"]["codex"]["roles"] == ["design", "development"]
     assert conf["agents"]["agy"]["roles"] == ["research", "image generation"]
-    assert conf["bounds"] == {"max_depth": 2, "max_retries": 1, "max_cost_usd": 5.0, "max_seconds": 7200, "max_tasks": 20}
+    assert conf["bounds"] == {"max_depth": 2, "max_retries": 1, "max_cost_usd": 5.0, "max_seconds": 7200, "max_tasks": 20,
+                              "max_replans": 3}
     configure(project, orchestrator="sonnet", bounds={"max_cost_usd": 1}, agents={"agy": None, "sonnet": {"persona": "tester"}})
     conf = chat.settings(project)
     assert conf["orchestrator"] == "sonnet" and "agy" not in conf["agents"] and conf["bounds"]["max_cost_usd"] == 1
