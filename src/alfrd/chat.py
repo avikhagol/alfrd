@@ -569,6 +569,49 @@ def list_sessions(root: str | Path) -> list[dict[str, Any]]:
     return out
 
 
+TITLE_MAX = 120
+
+
+def rename_session(root: str | Path, sid: str, title: Any) -> dict[str, Any]:
+    """Set a session's title (trimmed, at most TITLE_MAX characters). ValueError for an empty title."""
+    text = " ".join(str(title or "").split())[:TITLE_MAX]
+    if not text:
+        raise ValueError("a chat title can't be empty")
+    store = session(root, sid)
+    with store.lock():
+        data = store.load()
+        data["title"] = text
+        _write(store.session_file, data)
+    return data
+
+
+def delete_session(root: str | Path, sid: str) -> dict[str, Any]:
+    """Remove a session: its folder under .alfrd/chat/ and its plan (events, unit logs, mailbox) under .alfrd/plans/.
+
+    Refused (PermissionError) while a request is still active or the session's runner is alive: cancel its
+    tasks first, so no agent keeps writing into a deleted folder.
+    """
+    import shutil
+
+    store = session(root, sid)
+    folder = _plan_folder(store)
+    with store.lock():
+        data = store.load()
+        active = [r["id"] for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
+        if active:
+            raise PermissionError(f"chat {data.get('title') or sid!r} still has active requests "
+                                  f"({', '.join(active)}); cancel their tasks first")
+        if folder.path.is_dir() and folder.runner_alive():
+            raise PermissionError(f"chat {data.get('title') or sid!r} is still running; wait for its runner to stop")
+        shutil.rmtree(folder.path, ignore_errors=True)
+        # the lock file lives in the session folder: remove everything else, then the folder itself
+        for child in store.dir.iterdir():
+            if child.name != "chat.lock":
+                shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink(missing_ok=True)
+    shutil.rmtree(store.dir, ignore_errors=True)
+    return {"id": sid, "title": data.get("title"), "deleted": True}
+
+
 # ---------------------------------------------------------------------------
 # Rows
 

@@ -6,6 +6,15 @@
 .chat-session { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--r-md, 8px); border: 1px solid transparent; color: inherit; text-decoration: none; }
 .chat-session span.small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-session:hover { background: var(--subtle); }
+.chat-session-item { position: relative; }
+.chat-session-item .chat-session { padding-right: 62px; }
+.chat-session-acts { position: absolute; top: 4px; right: 4px; display: flex; gap: 2px; opacity: 0; }
+.chat-session-item:hover .chat-session-acts, .chat-session-item:focus-within .chat-session-acts, .chat-session.on + .chat-session-acts { opacity: 1; }
+@media (hover: none) { .chat-session-acts { opacity: 1; } }
+.chat-rename { display: flex; gap: 4px; align-items: center; padding: 4px; }
+.chat-rename .input { flex: 1; min-width: 0; }
+.chat-collapse { flex: none; }
+.chat-sessions-collapsed .chat-nav-toggle { display: inline-flex; }
 .chat-session.on { border-color: var(--accent); background: var(--accent-wash, var(--subtle)); }
 .chat-session:focus-visible, .chat-msg button:focus-visible, .chat-mentions li:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .chat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -166,8 +175,13 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .chat-dock .chat-composer { padding-bottom: env(safe-area-inset-bottom); }
 .chat-dock .chat-run { padding: 8px; }
 .chat-dock .chat-history-tools { top: -8px; }
+@media (min-width: 901px) {
+  .chat.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr) 320px; }
+  .chat-sessions-collapsed .chat-sessions { display: none; }
+}
 @media (min-width: 901px) and (max-width: 1280px) {
   .chat { grid-template-columns: 208px minmax(0, 1fr); }
+  .chat.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr); }
   .chat-inspect-toggle { display: inline-flex; }
 }
 @media (max-width: 1280px) {
@@ -179,6 +193,7 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
   .chat-nav-toggle, .chat-inspect-toggle { display: inline-flex; }
   .chat-sessions { display: none; position: absolute; top: 62px; bottom: 12px; left: 12px; width: min(240px, calc(100% - 24px)); z-index: 5; background: var(--surface-float); border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: 12px; box-shadow: var(--shadow-lg); }
   .chat-sessions-open .chat-sessions { display: flex; }
+  .chat-collapse { display: none; }
   .chat-log { padding: 12px; }
   .chat-composer { padding-bottom: env(safe-area-inset-bottom); }
   .chat-dl { grid-template-columns: minmax(0, max-content) minmax(0, 1fr); }

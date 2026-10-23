@@ -15,11 +15,13 @@ import {
   parseMention, promotable, requestProgress, statusInfo, tokenLine, presentMessage,
 } from "../data/chat.js";
 
-const S = { project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
+const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
   error: null, loading: false, task: null, open: new Map(), drafts: new Map(), sending: false, sendError: "", gen: 0, keys: {}, notes: [] };
 let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, composer = null, act = null, full = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
+const COLLAPSE_KEY = "ui:chat.sessionsCollapsed"; // the chat list folded to a rail (wide screens; per browser)
+const wide = () => !window.matchMedia || window.matchMedia("(min-width: 901px)").matches;
 
 async function get(url) {
   const res = await server.request(url, { headers: { Accept: "application/json" } });
@@ -27,7 +29,7 @@ async function get(url) {
   if (!res.ok) { const e = new Error(body?.error?.message || `${res.status} ${res.statusText}`); e.status = res.status; throw e; }
   return body;
 }
-const post = (p, path, body = {}) => server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat${path}`, body);
+const post = (p, path, body = {}, method = "POST") => server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat${path}`, body, method);
 
 window.addEventListener("alfrd-events", (e) => {
   const { project, events } = e.detail || {};
@@ -73,13 +75,15 @@ export function render(el, ctx) {
 
 function mount(el, ctx, p) {
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
-    task: null, sendError: "", keys: {} });
+    task: null, sendError: "", keys: {}, renaming: null });
   act?.stop();
   S.open.clear();
   el.dataset.chat = p;
-  el.innerHTML = `<div class="chat">
-    <nav class="chat-sessions" aria-label="Chat sessions"><div class="row gap"><h2 class="grow" tabindex="-1">Chat</h2>
-      <button type="button" class="btn sm" data-chat="new" title="Start a new chat session">${icon("plus")} New</button></div>
+  const folded = storage.get(COLLAPSE_KEY, false) === true;
+  el.innerHTML = `<div class="chat${folded ? " chat-sessions-collapsed" : ""}">
+    <nav class="chat-sessions" id="chat-sessions" aria-label="Chat sessions"><div class="row gap"><h2 class="grow" tabindex="-1">Chat</h2>
+      <button type="button" class="btn sm" data-chat="new" title="Start a new chat session">${icon("plus")} New</button>
+      <button type="button" class="icon-btn sm chat-collapse" data-chat="collapse" aria-controls="chat-sessions" aria-expanded="true" aria-label="Hide the chat list" title="Hide the chat list">${icon("sidebar")}</button></div>
       <ul class="chat-list" id="chat-list" role="list"></ul></nav>
     <section class="chat-main" aria-label="Conversation">
       <header class="chat-head" id="chat-head"></header>
@@ -177,13 +181,67 @@ function draw(ctx) {
 
 function drawSessions() {
   const box = $("#chat-list", host);
-  if (!changed("sessions", [S.sessions, S.sessionsError, S.sid])) return;
+  // a refresh while a name is being edited keeps the input (and what was typed) as it is
+  if (S.renaming && box.querySelector(`[data-rename="${CSS.escape(S.renaming)}"]`) && S.sessions?.some((x) => x.id === S.renaming)) return;
+  if (!changed("sessions", [S.sessions, S.sessionsError, S.sid, S.renaming])) return;
   if (S.sessionsError) { box.innerHTML = `<li class="callout fail small" role="alert">${esc(S.sessionsError)} <button type="button" class="btn sm" data-chat="reload">Retry</button></li>`; return; }
   if (!S.sessions) { box.innerHTML = `<li class="muted small" role="status">Loading sessions…</li>`; return; }
   if (!S.sessions.length) { box.innerHTML = `<li class="muted small">No sessions yet. <b>New</b> starts one.</li>`; return; }
-  box.innerHTML = S.sessions.map((s) => `<li><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
+  box.innerHTML = S.sessions.map((s) => s.id === S.renaming ? `<li class="chat-session-item"><form class="chat-rename" data-rename="${esc(s.id)}">
+      <label class="sr-only" for="chat-rename-input">Chat name</label><input class="input sm" id="chat-rename-input" name="title" maxlength="120" value="${esc(s.title)}" required>
+      <button type="submit" class="icon-btn sm" aria-label="Save the name" title="Save (Enter)">${icon("check")}</button><button type="button" class="icon-btn sm" data-chat="rename-cancel" aria-label="Keep the old name" title="Cancel (Esc)">${icon("close")}</button></form></li>`
+    : `<li class="chat-session-item"><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
     <b>${esc(s.title)}</b>${s.active_requests ? `<span class="badge tone-run">${icon("sync")}<span>${s.active_requests} active</span></span>` : ""}
-    <span class="muted small">${esc(s.last_message ? `${s.last_message.role === "user" ? "You" : agentName(s.last_message.agent || "alfrd")}: ${s.last_message.text}` : "No messages")}</span></a></li>`).join("");
+    <span class="muted small">${esc(s.last_message ? `${s.last_message.role === "user" ? "You" : agentName(s.last_message.agent || "alfrd")}: ${s.last_message.text}` : "No messages")}</span></a>
+    <span class="chat-session-acts"><button type="button" class="icon-btn sm" data-chat="rename" data-sid-act="${esc(s.id)}" aria-label="Rename ${esc(s.title)}" title="Rename">${icon("edit")}</button><button type="button" class="icon-btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" aria-label="Delete ${esc(s.title)}" title="${s.active_requests ? "Cancel its running tasks before deleting" : "Delete"}" ${s.active_requests ? "disabled" : ""}>${icon("trash")}</button></span></li>`).join("");
+  if (S.renaming) { const input = $("#chat-rename-input", box); if (input && document.activeElement !== input) { input.focus(); input.select(); } }
+}
+
+// --- session list: rename, delete, fold ----------------------------------------
+
+function startRename(sid) { S.renaming = sid; S.keys.sessions = null; drawSessions(); }
+function endRename(focusSid) {
+  S.renaming = null; S.keys.sessions = null; drawSessions();
+  if (focusSid) $(`[data-sid-act="${CSS.escape(focusSid)}"][data-chat=rename]`, host)?.focus();
+}
+
+async function saveRename(sid, title) {
+  const s = S.sessions?.find((x) => x.id === sid);
+  const text = String(title || "").trim();
+  if (!s || !text || text === s.title) { endRename(sid); return; }
+  try {
+    const { session } = await post(S.project, `/sessions/${encodeURIComponent(sid)}`, { title: text }, "PATCH");
+    s.title = session.title; S.keys.head = null;
+    ctxRef.toast(`Chat renamed to “${session.title}”`, "ok");
+  } catch (error) { ctxRef.toast(`Rename: ${error.message}`, "fail"); }
+  endRename(sid);
+  ctxRef.update();
+  loadSessions();
+}
+
+async function deleteSession(sid) {
+  const s = S.sessions?.find((x) => x.id === sid);
+  if (!s || !confirm(`Delete the chat “${s.title}”?\n\nIts messages, tasks, logs and mailbox are removed from .alfrd/ and can't be restored.`)) return;
+  try {
+    await post(S.project, `/sessions/${encodeURIComponent(sid)}`, {}, "DELETE");
+  } catch (error) { ctxRef.toast(`Delete: ${error.message}`, "fail"); return; }
+  const i = S.sessions.findIndex((x) => x.id === sid);
+  S.sessions = S.sessions.filter((x) => x.id !== sid); S.keys.sessions = null; S.drafts.delete(sid);
+  const remembered = storage.get(SESSION_KEY, {}) || {};
+  if (remembered[S.project] === sid) { delete remembered[S.project]; storage.set(SESSION_KEY, remembered); }
+  if (sid === S.sid) { const next = S.sessions[Math.min(i, S.sessions.length - 1)]?.id || null; openSession(next, { replace: true }); if (!next) S.data = null; }
+  ctxRef.toast(`Chat “${s.title}” deleted`, "ok");
+  ctxRef.update();
+  requestAnimationFrame(() => ($("#chat-list .chat-session.on", host) || $("[data-chat=new]", host))?.focus());
+  loadSessions();
+}
+
+function setCollapsed(on) {
+  const chat = $(".chat", host);
+  chat.classList.toggle("chat-sessions-collapsed", on);
+  storage.set(COLLAPSE_KEY, on);
+  $("[data-chat=collapse]", host)?.setAttribute("aria-expanded", String(!on));
+  requestAnimationFrame(() => (on ? $("[data-chat=sessions]", host) : $("[data-chat=collapse]", host))?.focus());
 }
 
 function drawHead(ctx) {
@@ -191,7 +249,7 @@ function drawHead(ctx) {
   const s = S.sessions?.find((x) => x.id === S.sid);
   if (!changed("head", [s?.title, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) return;
   const flowing = ["live", "polling"].includes(live);
-  $("#chat-head", host).innerHTML = `<button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-expanded="false">Sessions</button><h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
+  $("#chat-head", host).innerHTML = `<button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
     ${S.data?.plan ? `<span class="muted small" title="Session plan ${esc(S.data.plan.id)}">runner ${S.data.plan.runner_alive ? "active" : "idle"}</span>` : ""}
     <span class="badge tone-${flowing ? "ok" : "warn"}" role="status" title="${esc(ctx.state.liveStatus?.detail || "")}">${icon(flowing ? "sync" : "alert")}<span>${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}</span></span>
     <button type="button" class="btn sm chat-inspect-toggle" data-chat="inspect" aria-expanded="false">Inspect</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>
@@ -393,6 +451,11 @@ function bind(el) {
     if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { openSession(b.dataset.sid); ctxRef.update(); } return; }
     const a = b.dataset.chat;
     if (a === "new") newSession();
+    else if (a === "rename") startRename(b.dataset.sidAct);
+    else if (a === "rename-cancel") endRename(S.renaming);
+    else if (a === "delete") deleteSession(b.dataset.sidAct);
+    else if (a === "collapse") setCollapsed(true);
+    else if (a === "sessions" && wide() && $(".chat", host).classList.contains("chat-sessions-collapsed")) setCollapsed(false);
     else if (a === "refresh") { loadSession(); loadSessions(); loadSettings(); }
     else if (a === "reload") loadSessions();
     else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); }
@@ -415,6 +478,8 @@ function bind(el) {
   });
   el.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const rename = e.target.closest("[data-rename]");
+    if (rename) { saveRename(rename.dataset.rename, rename.elements.title.value); return; }
     const form = e.target.closest("[data-decision]");
     if (!form) return;
     const d = S.data?.blockers?.find((x) => x.id === form.dataset.decision);
@@ -426,7 +491,10 @@ function bind(el) {
     catch (error) { err.textContent = error.message; button.disabled = false; }
   });
   el.addEventListener("keydown", (e) => {
+    if (e.key === "F2" && e.target.matches?.("a[data-sid]")) { e.preventDefault(); startRename(e.target.dataset.sid); return; }
+    if (e.key === "Delete" && e.target.matches?.("a[data-sid]")) { e.preventDefault(); deleteSession(e.target.dataset.sid); return; }
     if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (e.target.closest("[data-rename]")) { e.preventDefault(); endRename(S.renaming); return; }
     const chat = $(".chat", host);
     if (e.target.closest(".chat-side") && chat.classList.contains("chat-inspect-open")) {
       chat.classList.remove("chat-inspect-open"); $("[data-chat=inspect]", host)?.setAttribute("aria-expanded", "false"); $("[data-chat=inspect]", host)?.focus(); e.preventDefault();

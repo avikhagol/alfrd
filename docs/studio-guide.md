@@ -304,7 +304,12 @@ entries and chat runs in Workflow are hidden. How requests run, the protocol and
 in [orchestration.md](orchestration.md).
 
 - **Sessions** are listed on the left; **New** starts one. The open session is in the URL, so Back /
-  Forward and a reload return to it.
+  Forward and a reload return to it. Hover a session (or focus it) for **Rename** (also F2; Enter saves,
+  Esc cancels) and **Delete** (also the Delete key; asks first). Deleting removes the session's folder in
+  `.alfrd/chat/` and its plan in `.alfrd/plans/chat-<id>/` (messages, tasks, logs, mailbox) for good; it
+  is refused while a request is still active, so cancel its tasks first. The sidebar button next to
+  **New** folds the list away (remembered in this browser); **Chats** in the header brings it back. On a
+  phone **Chats** opens the list as an overlay.
 - **Composer:** Enter sends, Shift+Enter adds a line. A message that starts with `@agent` goes
   straight to that agent (no orchestrator call); typing `@` at the start lists the configured agents
   with their labels and roles (arrows, Enter or Tab to pick, Esc to close). Global shortcuts stay off

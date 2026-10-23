@@ -91,6 +91,29 @@ def chat_session_create(project_name: str):
     return jsonify(session=data), 201
 
 
+@studio_api.patch(_BASE + "/sessions/<session_id>")
+def chat_session_rename(project_name: str, session_id: str):
+    """``{title}``: rename a session. 200 ``{session}``; 400 empty title; 404 unknown session."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = chat.rename_session(_project_root(project_name), session_id, payload.get("title"))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    _poke(project_name)
+    return jsonify(session=data)
+
+
+@studio_api.delete(_BASE + "/sessions/<session_id>")
+def chat_session_delete(project_name: str, session_id: str):
+    """Delete a session and its plan folder. 409 while a request is active or its runner is alive."""
+    try:
+        out = chat.delete_session(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    _poke(project_name)
+    return jsonify(out)
+
+
 @studio_api.get(_BASE + "/sessions/<session_id>")
 def chat_session_state(project_name: str, session_id: str):
     """Messages, requests, tasks with statuses, graph (nodes, edges, Mermaid), blockers, decisions and usage."""

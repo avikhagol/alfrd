@@ -1509,6 +1509,27 @@ def chat_list(root: str = _ROOT_OPT):
         print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}")
 
 
+@chat_cli.command("rename")
+def chat_rename(session: str, title: str, root: str = _ROOT_OPT):
+    """Rename a chat session."""
+    from alfrd import chat
+
+    print(_chat_call(chat.rename_session, Path(root).resolve(), session, title)["title"])
+
+
+@chat_cli.command("delete")
+def chat_delete(session: str, yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation."),
+                root: str = _ROOT_OPT):
+    """Delete a chat session with its messages, tasks, logs and mailbox (refused while it still runs)."""
+    from alfrd import chat
+
+    data = _chat_call(chat.session, Path(root).resolve(), session).load()
+    if not yes and not typer.confirm(f"Delete chat {data.get('title') or session!r}? This can't be undone."):
+        raise typer.Exit(code=1)
+    _chat_call(chat.delete_session, Path(root).resolve(), session)
+    print(f"deleted {session}")
+
+
 @chat_cli.command("send")
 def chat_send(session: str, text: str, root: str = _ROOT_OPT):
     """Send a message ("@agent …" goes to that agent directly); the runner starts in the background."""

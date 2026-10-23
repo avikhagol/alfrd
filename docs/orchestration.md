@@ -290,7 +290,8 @@ Events (`task.created`, `task.started`, `task.finished`, `task.blocked`, `decisi
 `decision.resolved`, `request.finished`, `budget.exceeded`, `budget.warning`) go to the session plan's
 `events.jsonl`, so the live hub and `GET /api/v1/projects/<p>/plans/chat-<s>/events` stream them.
 
-CLI: `alfrd chat new|list|send|show|decide` (`-C <project>`).
+CLI: `alfrd chat new|list|rename|delete|send|show|decide` (`-C <project>`). `delete` asks first (`--yes` to skip)
+and is refused while a request is active. Studio API: `PATCH …/chat/sessions/<s>` `{title}`, `DELETE …/chat/sessions/<s>` (409 while active).
 
 A task's `result` also records `at` (when it was recorded), so a client can place results among the
 messages.
