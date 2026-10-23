@@ -244,8 +244,8 @@ unchanged. **YAML** previews what Save will write. Editing does not run commands
   Workflow settings shows the required concurrency and failure behavior read-only;
   Stages is hidden for loops.
 
-For an empty workflow, **Add first step**, **Agent loop template** and **AVICA
-template** start a draft. Template cards write nothing until Save; Discard returns
+For an empty workflow, **Add first step**, **Agent loop template** (only with
+`alfrd serve --experimental-features`) and **AVICA template** start a draft. Template cards write nothing until Save; Discard returns
 to the empty state with the original file intact.
 
 Save validates the draft and rewrites only changed top-level YAML sections.
@@ -297,8 +297,9 @@ fullscreen; Esc or **F** leaves it. Neither changes the selected target or affec
 ## Chat with the agents
 
 **Chat** in the sidebar (server mode; `#/chat/<session>?p=<project>`) is a conversation with the
-project's orchestrator and its specialist agents. It is off by default: turn on **Chat mode** in Studio
-settings → Preferences (per browser). Off, the Chat entry, the dock button, Alt+Shift+A, the palette
+project's orchestrator and its specialist agents. It is experimental: the **Chat mode** preference exists
+only when the server runs with `alfrd serve --experimental-features`. It is then off by default: turn on
+**Chat mode** in Studio settings → Preferences (per browser). Off, the Chat entry, the dock button, Alt+Shift+A, the palette
 entries and chat runs in Workflow are hidden. How requests run, the protocol and the bounds are
 in [orchestration.md](orchestration.md).
 
@@ -370,7 +371,7 @@ if the file changed since it was loaded you see the difference instead of overwr
 
 **New project → Design on canvas…** (or `#/new-project`) plans a project before creating it:
 
-1. **Folder**, **name**, **template** (every template ALFRD ships, e.g. basic, avica, agent-loop) and
+1. **Folder**, **name**, **template** (basic or avica; agent-loop too with `alfrd serve --experimental-features`) and
    **configuration file** (`.alfrd/alfrd.yaml` by default, or a root `alfrd.yaml`).
 2. **Start** with the template's workflow (its steps and dependencies, made explicit; skipped steps are
    left out) or an empty canvas.

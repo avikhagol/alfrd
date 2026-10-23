@@ -2,6 +2,8 @@
 
 ## [0.4.0.0]
 
+- `alfrd serve --experimental-features` (also `alfrd gui`, env `ALFRD_EXPERIMENTAL_FEATURES=1`): Chat mode and the agent-loop template are experimental. Without the flag the Studio has no Chat mode preference (a Chat mode saved earlier in the browser is ignored: no Chat section, dock, Alt+Shift+A or chat runs in Workflow), New project offers only the basic and avica templates, the empty-workflow **Agent loop** card is hidden and `POST /api/studio/projects/create` refuses `template: agent-loop`. `GET /api/studio/session` reports `experimental`. Existing agent-loop projects and the CLI are unchanged.
+
 - chat: permission blockers no longer loop. A blocker only access can fix (`kind: permission`, `requires`, or worded like a sandbox denial) goes to the user with options ALFRD applies itself: **Grant this task access and re-run** (folders/commands added to that task's next launch only, shown in its log and prompt; event `task.access_granted`), **Reassign this task to @agent** (event `task.reassigned`) and **Cancel this task**. The orchestrator may `reassign` or `cancel` in a decision but never grants. The same blocker with the same access is not replanned again (`task.stuck`), an unchanged re-run of a repeated permission blocker is refused, and `chat.bounds.max_replans` (default 3) caps replans per request. Chat rows always get `Bash(alfrd mailbox *)`; task prompts list the task's access and only the latest decision per blocker; the plan prompt says what each agent can reach.
 - `agent_access`: globs expanded, folders passed as written and resolved (symlinks), bare command patterns also allow `<command> *`, read-only helpers added for Claude (`default_readonly: false` to turn off).
 

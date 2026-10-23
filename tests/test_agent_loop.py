@@ -236,7 +236,8 @@ def test_studio_create_handoffs_and_status_api(service, tmp_path, project):
 
     app = create_app({"TESTING": True, "SECRET_KEY": "k", "RUNTIME_SERVICE": service,
                       "CATALOG_READER": RuntimeCatalogReader(service),
-                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'catalog.sqlite'}", "STUDIO_PROJECTS": []})
+                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'catalog.sqlite'}", "STUDIO_PROJECTS": [],
+                      "STUDIO_EXPERIMENTAL": True})
     client = app.test_client()
     headers = {"X-CSRF-Token": client.get("/api/studio/session").get_json()["csrf_token"]}
     payload = {"path": str(tmp_path / "new"), "template": "agent-loop", "task": "task", "iterations": 2}

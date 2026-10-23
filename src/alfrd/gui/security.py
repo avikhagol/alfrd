@@ -16,6 +16,15 @@ def runtime_enabled() -> bool:
     return current_app.config.get("RUNTIME_SERVICE") is not None
 
 
+# Studio features shown only under `alfrd serve --experimental-features`: the Chat mode
+# preference (Chat section, chat dock, chat runs in Workflow) and these project templates.
+EXPERIMENTAL_TEMPLATES = frozenset({"agent-loop"})
+
+
+def experimental_enabled() -> bool:
+    return bool(current_app.config.get("STUDIO_EXPERIMENTAL", False))
+
+
 def mutations_enabled() -> bool:
     configured = runtime_enabled() and bool(
         current_app.config.get("RUNTIME_MUTATIONS_ENABLED", True)

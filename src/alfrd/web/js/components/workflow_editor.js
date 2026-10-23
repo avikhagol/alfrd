@@ -247,7 +247,7 @@ export function emptyState(ctx, project) {
   return `<div class="empty setup-card wfe-start"><h2>Create your workflow</h2>
     <p>A workflow is a list of steps. Each step runs one command (a script, a tool, an agent) for every target.</p>
     <div class="wfe-start-grid">${card("first", "plus", "Add your first step", "Name it and give it a command. Add more later, in the graph or the list.")}
-      ${card("template", "sync", "Agent loop", "Claude and Codex take turns on a task, handing off between turns.", 'data-template="agent-loop"')}
+      ${ctx.experimental?.() ? card("template", "sync", "Agent loop", "Claude and Codex take turns on a task, handing off between turns.", 'data-template="agent-loop"') : ""}
       ${card("template", "pipeline", "AVICA pipeline", "The AVICA reduction steps; skip the ones you don't need.", 'data-template="avica"')}</div>
     <p class="muted small">${can ? "Open a project folder first (Projects, at the left of the header)." : 'Prefer the file? <a href="#/config">Settings · alfrd.yaml</a>'}</p></div>`;
 }

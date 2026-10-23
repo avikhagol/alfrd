@@ -1426,8 +1426,11 @@ function goTo(view) {
 ctx.openAliasRules = openAliasRules;
 
 ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) this.providers.push(fn); } };
-// Chat mode (Studio settings → Preferences, per browser, off by default): the Chat section, dock and chat runs.
-function chatOn() { return storage.get("ui:chat.enabled", false) === true; }
+// Experimental features exist only under `alfrd serve --experimental-features` (session.experimental).
+const experimentalOn = () => server.session?.experimental === true;
+ctx.experimental = experimentalOn;
+// Chat mode (Studio settings → Preferences, per browser, off by default; experimental): the Chat section, dock and chat runs.
+function chatOn() { return experimentalOn() && storage.get("ui:chat.enabled", false) === true; }
 ctx.chatOn = chatOn;
 ctx.setChat = (on) => { storage.set("ui:chat.enabled", Boolean(on)); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
 Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
@@ -2316,6 +2319,8 @@ async function boot() {
   state.demoEnabled = Boolean(session?.demo) || new URLSearchParams(location.search).has("demo");
   if (session) {
     state.mode = "server";
+    // The first route() ran before the session was known: a #/chat link opens once experimental Chat mode is on.
+    if (chatOn() && parseRoute(location.hash).view.split("/")[0] === "chat") route();
     startSystemPoll();
     ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();

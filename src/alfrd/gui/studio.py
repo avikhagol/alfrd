@@ -76,7 +76,7 @@ def studio_system():
 @studio_api.get("/studio/session")
 def studio_session():
     """Tell the Studio it is served by ALFRD and hand it a CSRF token."""
-    from alfrd.gui.security import csrf_token, mutations_enabled, runtime_enabled
+    from alfrd.gui.security import csrf_token, experimental_enabled, mutations_enabled, runtime_enabled
 
     return jsonify(
         app="alfrd",
@@ -85,6 +85,8 @@ def studio_session():
         mutations_enabled=mutations_enabled(),
         csrf_token=csrf_token(),
         demo=bool(current_app.config.get("STUDIO_DEMO")),
+        # --experimental-features: Chat mode can be turned on and the agent-loop template is offered.
+        experimental=experimental_enabled(),
         default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"),
         projects=current_app.config.get("STUDIO_PROJECTS"),
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
@@ -139,6 +141,8 @@ def create_project_api():
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
         return _json_error(ValueError("path is required"), 400)
+    if not _template_offered(payload.get("template", "basic")):
+        return _json_error(ValueError(f"the {payload.get('template')} template needs alfrd serve --experimental-features"), 400)
     try:
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
@@ -160,12 +164,20 @@ def create_project_api():
                    template=payload.get("template", "basic"), targets=draft.get("targets") or []), 201
 
 
+def _template_offered(name) -> bool:
+    """Experimental templates (agent-loop) are offered only under --experimental-features."""
+    from alfrd.gui.security import EXPERIMENTAL_TEMPLATES, experimental_enabled
+
+    return name not in EXPERIMENTAL_TEMPLATES or experimental_enabled()
+
+
 @studio_api.get("/studio/project-templates")
 def project_templates():
     import yaml
 
     return jsonify(templates=[{"name": path.stem, "description": (yaml.safe_load(path.read_text()) or {}).get("description", "")}
-                              for path in sorted((web_root() / "assets" / "templates").glob("*.yaml"))])
+                              for path in sorted((web_root() / "assets" / "templates").glob("*.yaml"))
+                              if _template_offered(path.stem)])
 
 
 # ---------------------------------------------------------------------------
