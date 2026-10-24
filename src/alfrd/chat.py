@@ -2534,6 +2534,19 @@ def read_artifact(root: str | Path, sid: str, ref: str, *, offset: int = 0, leng
     return proto.read_ref(root, ref, offset=offset, length=length)
 
 
+def overview(root: str | Path, sid: str) -> dict[str, Any]:
+    from alfrd import overview as _overview
+
+    return _overview.overview(session(root, sid))
+
+
+def raw_artifact(root: str | Path, sid: str, ref: str) -> tuple[bytes, str, str]:
+    from alfrd import overview as _overview
+
+    session(root, sid)
+    return _overview.raw_artifact(root, ref)
+
+
 TRANSCRIPT_PARTS = ("prompt", "response")
 MAX_TRANSCRIPT_READ = 256 * 1024
 

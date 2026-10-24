@@ -8,6 +8,8 @@ decisions and retries add plan rows and (re)start the session's detached runner.
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
+from urllib.parse import quote
 
 from flask import Response, jsonify, request
 
@@ -315,6 +317,28 @@ def chat_artifact(project_name: str, session_id: str):
                                           length=request.args.get("length", default=None, type=int)))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/overview")
+def chat_overview(project_name: str, session_id: str):
+    """``{rev, goal:{text, source}, criteria, files}``: one projection for the inspector."""
+    try:
+        return jsonify(chat.overview(_project_root(project_name), session_id))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/artifacts/raw")
+def chat_artifact_raw(project_name: str, session_id: str):
+    """The bytes of ``?ref=<path>@<sha256>``: 409 when the file changed, 403 for traversal and symlinks, 413 over 20 MB."""
+    try:
+        data, media_type, path = chat.raw_artifact(_project_root(project_name), session_id, request.args.get("ref", ""))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    return Response(data, mimetype=media_type,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable",
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'",
+                             "Content-Disposition": "attachment; filename*=UTF-8''" + quote(Path(path).name)})
 
 
 __all__: list[str] = []
