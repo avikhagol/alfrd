@@ -50,7 +50,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
@@ -704,14 +704,60 @@ def _ensure_columns(store: Session, conf: Mapping[str, Any]) -> None:
 # Messages → requests
 
 
+_CLIENT_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _MENTION = re.compile(r"^@([A-Za-z0-9][A-Za-z0-9_-]{0,39})(?:\s+|$)(.*)$", re.S)
 
 
-def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True) -> dict[str, Any]:
-    """Store a user message and start its request: ``@agent …`` → one task, else one orchestrator plan call."""
+class DuplicateMessageError(PermissionError):
+    """A ``client_message_id`` was reused with different content (HTTP 409)."""
+
+
+def _resolve_attachments(store: Session, refs: Any) -> list[dict[str, Any]]:
+    """Metadata for each ref of this session (de-duplicated, in order); other sessions' refs are unknown here."""
+    from alfrd import attachments as att
+
+    if refs is None:
+        return []
+    if not isinstance(refs, (list, tuple)) or not all(isinstance(r, str) for r in refs):
+        raise ValueError("attachments must be a list of refs")
+    found: list[dict[str, Any]] = []
+    for ref in dict.fromkeys(refs):
+        item = att.get_attachment(store.dir, ref)
+        if item is None or att.attachment_path(store.dir, ref) is None:
+            raise LookupError(f"unknown attachment {ref!r} in this session")
+        found.append(asdict(item))
+    att.check_message_limits([a["bytes"] for a in found])
+    return found
+
+
+def _replay(store: Session, message: dict[str, Any]) -> dict[str, Any]:
+    req = store.request(message["request"]) if message.get("request") else None
+    rows = (req or {}).get("rows") or []
+    return {"message": message, "request": req, "task": store.task(rows[0]) if rows else None, "replayed": True}
+
+
+def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
+                 attachments: list[str] | None = None, client_message_id: str | None = None) -> dict[str, Any]:
+    """Store a user message and start its request: ``@agent …`` → one task, else one orchestrator plan call.
+
+    ``attachments`` are refs of images uploaded to this session; the text may then be empty. A repeated
+    ``client_message_id`` with the same content returns the original message (no second request);
+    with different content it raises ``DuplicateMessageError``.
+    """
     store = session(root, sid)
     text = str(text or "").strip()
-    if not text:
+    cid = str(client_message_id).strip() if client_message_id not in (None, "") else None
+    if cid is not None and not _CLIENT_ID.match(cid):
+        raise ValueError("client_message_id must be 1-80 characters of letters, digits, '-', '_' or '.'")
+    images = _resolve_attachments(store, attachments)
+    if cid is not None:
+        with store.lock():
+            for old in store.messages():
+                if old.get("client_message_id") == cid:
+                    if old.get("text") == text and [a["ref"] for a in old.get("attachments") or []] == [a["ref"] for a in images]:
+                        return _replay(store, old)
+                    raise DuplicateMessageError(f"client_message_id {cid!r} was already used with different content")
+    if not text and not images:
         raise ValueError("message is empty")
     if len(text) > MAX_MESSAGE:
         raise ValueError(f"message is longer than {MAX_MESSAGE} characters")
@@ -731,7 +777,13 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True) -
     events: list[tuple[str, dict[str, Any]]] = []
     with store.lock():
         rid = f"r{len(list(store.requests_dir.glob('*.json'))) + 1:04d}"
-        message = store.add_message("user", text, request=rid)
+        if cid is not None:  # re-check under the same lock that appends, so racing retries cannot both pass
+            for old in store.messages():
+                if old.get("client_message_id") == cid:
+                    if old.get("text") == text and [a["ref"] for a in old.get("attachments") or []] == [a["ref"] for a in images]:
+                        return _replay(store, old)
+                    raise DuplicateMessageError(f"client_message_id {cid!r} was already used with different content")
+        message = store.add_message("user", text, request=rid, attachments=images or None, client_message_id=cid)
         req: dict[str, Any] = {"id": rid, "message": message["id"], "text": text, "created": now_iso(),
                                "created_ts": time.time(), "bounds": _bounds(conf), "status": "planning",
                                "mailbox_protocol": "alfrd.mailbox/2",

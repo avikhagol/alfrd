@@ -7,8 +7,11 @@ decisions and retries add plan rows and (re)start the session's detached runner.
 
 from __future__ import annotations
 
-from flask import jsonify, request
+from dataclasses import asdict
 
+from flask import Response, jsonify, request
+
+from alfrd import attachments as att
 from alfrd import chat, mailbox
 from alfrd import orchestration as proto
 from alfrd.execution import ExecutionError
@@ -18,7 +21,12 @@ from .studio import _json_error, _poke, _project_root, studio_api
 _BASE = "/studio/projects/<project_name>/chat"
 
 
+_ATTACHMENT_STATUS = {"unsupported_type": 415, "too_large": 413, "too_many": 413, "quota": 413, "invalid": 400}
+
+
 def _fail(error: Exception):
+    if isinstance(error, att.AttachmentError):
+        return _json_error(error, _ATTACHMENT_STATUS.get(error.code, 400), reason=error.code)
     if isinstance(error, mailbox.MailboxError):
         return jsonify(error={"code": error.status, "message": str(error)}, **error.details), error.status
     if isinstance(error, proto.RefError):
@@ -140,13 +148,52 @@ def chat_activity(project_name: str, session_id: str):
 
 @studio_api.post(_BASE + "/sessions/<session_id>/messages")
 def chat_message(project_name: str, session_id: str):
+    """``{text, attachments?: ref[], client_message_id?}``. Text may be empty with at least one image.
+    A repeated ``client_message_id`` with the same content returns the original (200); other content: 409."""
     payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return _json_error(ValueError("send a JSON object"), 400)
     try:
-        out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""))
+        out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""),
+                                attachments=payload.get("attachments"),
+                                client_message_id=payload.get("client_message_id"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
-    return jsonify(out), 201
+    return jsonify(out), 200 if out.get("replayed") else 201
+
+
+@studio_api.post(_BASE + "/sessions/<session_id>/attachments")
+def chat_attachment_upload(project_name: str, session_id: str):
+    """Multipart ``file``: store an image in the session. 201 ``{ref, sha256, media_type, bytes, width, height, name}``;
+    413 too large or over quota; 415 not PNG/JPEG/WebP; 400 unreadable image; 404 unknown session."""
+    upload = request.files.get("file")
+    if upload is None:
+        return _json_error(ValueError("send the image as multipart field 'file'"), 400)
+    try:
+        store = chat.session(_project_root(project_name), session_id)
+        data = upload.stream.read(att.MAX_IMAGE_BYTES + 1)
+        with store.lock():
+            item = att.store_image(store.dir, data, upload.mimetype, upload.filename or "")
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    return jsonify(asdict(item)), 201
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/attachments/<ref>/content")
+def chat_attachment_content(project_name: str, session_id: str, ref: str):
+    """The stored image bytes of a ref in this session (404 for unknown refs and other sessions' refs)."""
+    try:
+        store = chat.session(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    item = att.get_attachment(store.dir, ref)
+    path = att.attachment_path(store.dir, ref)
+    if item is None or path is None:
+        return _json_error(LookupError(f"unknown attachment {ref!r}"), 404)
+    return Response(path.read_bytes(), mimetype=item.media_type,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable",
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'"})
 
 
 @studio_api.post(_BASE + "/sessions/<session_id>/decisions/<decision_id>")
