@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
 from alfrd import orchestration as proto
+from alfrd import skills as saved_skills
 from alfrd.execution import ExecutionConfig, ExecutionError
 from alfrd.runtime import plan_csv as pc
 
@@ -84,6 +85,7 @@ DEFAULTS: dict[str, Any] = {
     # harder calls: a repair of an invalid plan and a replan for a blocker (null: the agent's own model).
     "orchestrator_model": "sonnet",
     "escalation_model": "opus",
+    "skill_selection": {"enabled": False, "selected_ids": []},
     "final_summary": False,       # the final answer is built in code from the task results
     "warn_task_cost_usd": None,   # a task costing more is flagged (budget.warning), not stopped
     "concurrency": 2,
@@ -178,7 +180,7 @@ AGENT_FIELDS = {"label", "entrypoint", "cmd", "model", "adapter", "roles", "pers
                 "fallback", "model_option"}
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SETTING_KEYS = ("orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd",
-                "concurrency", "history_messages")
+                "concurrency", "history_messages", "skill_selection")
 ESCALATED_KINDS = ("repair", "replan")
 
 
@@ -217,6 +219,10 @@ def merge_settings(raw: Any) -> dict[str, Any]:
     for key in SETTING_KEYS:
         if key in raw:
             out[key] = raw[key]
+    try:
+        out["skill_selection"] = saved_skills.validate_selection(out["skill_selection"])
+    except ValueError as exc:
+        raise ExecutionError(f"chat.{exc}") from exc
     bounds = raw.get("bounds") or {}
     if not isinstance(bounds, Mapping) or set(bounds) - set(DEFAULTS["bounds"]):
         raise ExecutionError(f"chat.bounds accepts {', '.join(DEFAULTS['bounds'])}")
@@ -773,6 +779,7 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
         raise PermissionError(f"the orchestrator {conf.get('orchestrator')!r} is not an allowed agent (superuser "
                               f"limits.chat_allowed_agents: {', '.join(conf.get('allowed_agents') or [])}); "
                               f"write to an allowed agent with @agent")
+    skill_snapshot = saved_skills.snapshot_selection(store.root, conf.get("skill_selection"))
     _ensure_columns(store, conf)
     events: list[tuple[str, dict[str, Any]]] = []
     with store.lock():
@@ -787,6 +794,7 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
         req: dict[str, Any] = {"id": rid, "message": message["id"], "text": text, "created": now_iso(),
                                "created_ts": time.time(), "bounds": _bounds(conf), "status": "planning",
                                "mailbox_protocol": "alfrd.mailbox/2",
+                               "skill_snapshot": skill_snapshot,
                                "rows": [], "tasks": [], "repair_used": False, "summaries": 0, "replans": 0,
                                "orchestrator_calls": 0, "finished": None, "error": None}
         if mention:
@@ -1215,6 +1223,14 @@ def prepare_launch(runner, spec, unit: Mapping[str, Any]) -> str | None:
         _write_prompt(store, row, task_prompt(store, conf, rec))
     elif "## Agent mailbox" not in (store.tasks_dir / row / "prompt.md").read_text(encoding="utf-8"):
         _write_prompt(store, row, (store.tasks_dir / row / "prompt.md").read_text(encoding="utf-8"))
+    # Freeze selection across retries, reassignments and settings/file edits. Legacy requests
+    # without a snapshot remain off; never resolve the current selection at launch.
+    section = saved_skills.snapshot_prompt(store.request(rec["request"]).get("skill_snapshot"))
+    if section:
+        prompt_path = store.tasks_dir / row / "prompt.md"
+        text = prompt_path.read_text(encoding="utf-8")
+        if not text.endswith(section):
+            pc.atomic_write(prompt_path, text + section)
     model = orchestrator_model(conf, rec["kind"]) if rec["owner"] == conf["orchestrator"] else None
     if model and rec.get("model") != model:
         with store.lock():

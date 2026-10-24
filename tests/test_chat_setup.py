@@ -383,3 +383,93 @@ def test_a_new_codex_agent_with_its_own_model_validates():
     out = chat.merge_settings({"agents": {"luna": agent}})
     assert out["agents"]["luna"]["entrypoint"] == "codex" and out["agents"]["luna"]["model"] == "gpt-5.6-luna"
     assert {"codex", "claude", "agy"} <= set(chat.PRESETS)
+
+
+# Saved skills are project settings, independent of adapter-native skill toggles.
+def test_skill_selection_settings_round_trip_and_validation(project):
+    assert chat.merge_settings({})["skill_selection"] == {"enabled": False, "selected_ids": []}
+    selection = {"enabled": True, "selected_ids": ["one"]}
+    chat.save_settings(project, {"skill_selection": selection})
+    assert chat.settings_view(project)["skill_selection"] == selection
+    for bad in (True, {"enabled": "yes"}, {"selected_ids": "one"},
+                {"selected_ids": [1]}, {"permissions": "all"}):
+        with pytest.raises(Exception, match="skill_selection"):
+            chat.merge_settings({"skill_selection": bad})
+
+
+@pytest.mark.parametrize("selected,match", [(["missing"], "unknown.*skill id"),
+                                          (["a", "b", "c"], "128 KiB")])
+def test_skill_selection_rejected_before_request_or_launch(project, monkeypatch, selected, match):
+    from test_skills import write_skill
+
+    for name in ("a", "b", "c"):
+        write_skill(project, "skills", name, "x" * (64 * 1024))
+    configure(project, skill_selection={"enabled": True, "selected_ids": selected})
+    sid = chat.create_session(project)["id"]
+    resumes = []
+    monkeypatch.setattr(chat, "resume", lambda *a, **kw: resumes.append(a))
+    with pytest.raises(ValueError, match=match):
+        say(project, sid, "@codex work")
+    store = chat.session(project, sid)
+    assert store.requests() == [] and store.messages() == [] and store.tasks() == []
+    assert resumes == [] and calls(project) == []
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude", "agy"])
+def test_skill_snapshot_survives_edits_and_retry(project, agent):
+    from test_skills import write_skill
+
+    path = write_skill(project, "skills", "one", "ORIGINAL-SKILL-CONTENT")
+    configure(project, skill_selection={"enabled": True, "selected_ids": ["one"]})
+    fake(project, t1={"exit": 2})
+    sid = chat.create_session(project)["id"]
+    posted = say(project, sid, f"@{agent} work")
+    snap = posted["request"]["skill_snapshot"]
+    path.write_text("EDITED-SKILL-CONTENT")
+    configure(project, skill_selection={"enabled": True, "selected_ids": ["missing"]})
+    run(project, sid)  # includes automatic retry
+    assert len(calls(project)) == 2
+    path.unlink()
+    configure(project, skill_selection={"enabled": False, "selected_ids": []})
+    fake(project, t1=result())
+    chat.retry_task(project, sid, "r0001.t1", spawn=False)
+    run(project, sid)
+    assert len(calls(project)) == 3
+    for call in calls(project):
+        assert call["prompt"].count("## Selected saved skills (request snapshot)") == 1
+        assert "ORIGINAL-SKILL-CONTENT" in call["prompt"]
+        assert "EDITED-SKILL-CONTENT" not in call["prompt"]
+    assert chat.session(project, sid).request("r0001")["skill_snapshot"] == snap
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_missing_skill_setting_and_legacy_request_stay_off(project, legacy):
+    from test_skills import write_skill
+
+    write_skill(project, "skills", "one", "UNSELECTED-SKILL-CONTENT")
+    fake(project, t1=result())
+    sid = chat.create_session(project)["id"]
+    say(project, sid, "@codex work")
+    store = chat.session(project, sid)
+    req = store.request("r0001")
+    assert req["skill_snapshot"]["enabled"] is False
+    if legacy:  # pre-snapshot session loaded with a new selection
+        del req["skill_snapshot"]
+        store.save_request(req)
+    configure(project, skill_selection={"enabled": True, "selected_ids": ["one"]})
+    run(project, sid)
+    assert "UNSELECTED-SKILL-CONTENT" not in calls(project)[0]["prompt"]
+    assert "## Selected saved skills" not in calls(project)[0]["prompt"]
+
+
+def test_saved_skills_injected_for_plan_repair_task_and_summary(project):
+    from test_skills import write_skill
+
+    write_skill(project, "skills", "one", "SHARED-SNAPSHOT-CONTENT")
+    configure(project, final_summary=True, skill_selection={"enabled": True, "selected_ids": ["one"]})
+    fake(project, plan={"text": "invalid plan"}, repair=plan(task("a")), a=result(), summary={"text": "done"})
+    sid = chat.create_session(project)["id"]
+    say(project, sid, "work")
+    run(project, sid)
+    assert [c["kind"] for c in calls(project)] == ["plan", "repair", "task", "summary"]
+    assert all(c["prompt"].count("SHARED-SNAPSHOT-CONTENT") == 1 for c in calls(project))

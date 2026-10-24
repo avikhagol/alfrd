@@ -116,3 +116,25 @@ def test_effective_args_codex_and_generic_unchanged():
 def test_effective_args_reports_invalid_settings():
     out = skills.effective_args({"bad": {"argv": ["claude"], "lean": "yes"}})
     assert out[0]["argv"] is None and "lean" in out[0]["error"]
+
+
+def test_selection_snapshot_is_bounded_ordered_and_frozen(tmp_path):
+    import pytest
+
+    a = write_skill(tmp_path, "skills", "a", "a" * skills.MAX_SKILL_BYTES)
+    write_skill(tmp_path, "skills", "b", "b" * skills.MAX_SKILL_BYTES)
+    write_skill(tmp_path, "skills", "c", "c")
+    selection = {"enabled": True, "selected_ids": ["b", "a", "b"]}
+    snap = skills.snapshot_selection(tmp_path, selection)
+    assert snap["bytes"] == skills.MAX_SELECTED_BYTES
+    assert [s["id"] for s in snap["skills"]] == ["b", "a"]
+    assert snap["skills"][1]["sha256"] == hashlib.sha256(a.read_bytes()).hexdigest()
+    a.unlink()
+    assert snap["skills"][1]["content"] == "a" * skills.MAX_SKILL_BYTES
+    assert skills.snapshot_selection(tmp_path)["skills"] == []
+    assert skills.snapshot_selection(tmp_path, {"selected_ids": ["missing"]})["skills"] == []
+    with pytest.raises(ValueError, match="unknown.*skill id"):
+        skills.snapshot_selection(tmp_path, {"enabled": True, "selected_ids": ["a"]})
+    write_skill(tmp_path, "skills", "a", "a" * skills.MAX_SKILL_BYTES)
+    with pytest.raises(ValueError, match="128 KiB"):
+        skills.snapshot_selection(tmp_path, {"enabled": True, "selected_ids": ["a", "b", "c"]})
