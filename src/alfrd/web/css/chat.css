@@ -1,7 +1,9 @@
 /* Chat section, the graph canvas (graph_view.js) and the New-project canvas; loaded on first use. */
-.chat { display: grid; grid-template-columns: 220px minmax(0, 1fr) 320px; gap: 16px; padding: 14px 18px; height: calc(100vh - 120px); min-height: 480px; position: relative; }
+.chat { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; padding: 14px 18px; height: calc(100vh - 120px); min-height: 480px; position: relative; }
 .chat-sessions, .chat-main, .chat-side { min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.chat-side { overflow: auto; }
+.chat-side { overflow: auto; display: none; } /* the inspector: hidden until .chat-inspect-open */
+.chat-inspect-open .chat-side { display: flex; }
+.chat-insp-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .chat-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; overflow: auto; }
 .chat-session { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--r-md, 8px); border: 1px solid transparent; color: inherit; text-decoration: none; }
 .chat-session span.small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -170,27 +172,33 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .chat-team { color: var(--text-2); font-size: 14px; }
 .chat :is(summary, button, select, textarea):focus-visible, .chat-dock :is(summary, button, select, textarea):focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3px; }
 .chat :is(summary), .chat-dock :is(summary) { cursor: pointer; }
-.chat-nav-toggle, .chat-inspect-toggle { display: none; }
+.chat-nav-toggle { display: none; }
+.chat-inspect-toggle { display: inline-flex; } /* the Inspect toggle shows at every width */
 .cd-log .chat-msg { padding: 10px 0; }
 .cd-log .chat-user { padding: 10px 12px; }
 .chat-dock .chat-composer { padding-bottom: env(safe-area-inset-bottom); }
 .chat-dock .chat-details { padding: 8px; }
 @media (min-width: 901px) {
-  .chat.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr) 320px; }
+  .chat.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr); }
   .chat-sessions-collapsed .chat-sessions { display: none; }
+}
+@media (min-width: 1281px) { /* docked: a third column only while the inspector is open */
+  .chat.chat-inspect-open { grid-template-columns: 220px minmax(0, 1fr) 320px; }
+  .chat.chat-inspect-open.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr) 320px; }
 }
 @media (min-width: 901px) and (max-width: 1280px) {
   .chat { grid-template-columns: 208px minmax(0, 1fr); }
   .chat.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr); }
-  .chat-inspect-toggle { display: inline-flex; }
 }
-@media (max-width: 1280px) {
-  .chat-side { display: none; position: absolute; right: 12px; top: 62px; bottom: 12px; width: min(320px, calc(100% - 24px)); z-index: 5; background: var(--surface-float); border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: 12px; box-shadow: var(--shadow-lg); }
-  .chat-inspect-open .chat-side { display: flex; }
+@media (max-width: 1280px) { /* overlay; 200 % zoom on a 1280 px window is 640 CSS px, so it lands here too */
+  .chat-side { position: absolute; right: 12px; top: 62px; bottom: 12px; width: min(320px, calc(100% - 24px)); z-index: 5; background: var(--surface-float); border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: 12px; box-shadow: var(--shadow-lg); }
+}
+@media (max-width: 640px) { /* 200 % zoom and narrow phones: the overlay fills the view and scrolls */
+  .chat-side { left: 8px; right: 8px; width: auto; top: 8px; bottom: 8px; overflow: auto; overscroll-behavior: contain; }
 }
 @media (max-width: 900px) {
   .chat { grid-template-columns: minmax(0, 1fr); padding: 12px 16px; height: calc(100dvh - 120px); min-height: 360px; }
-  .chat-nav-toggle, .chat-inspect-toggle { display: inline-flex; }
+  .chat-nav-toggle { display: inline-flex; }
   .chat-sessions { display: none; position: absolute; top: 62px; bottom: 12px; left: 12px; width: min(240px, calc(100% - 24px)); z-index: 5; background: var(--surface-float); border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: 12px; box-shadow: var(--shadow-lg); }
   .chat-sessions-open .chat-sessions { display: flex; }
   .chat-collapse { display: none; }

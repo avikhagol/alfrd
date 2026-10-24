@@ -4,12 +4,13 @@
 // Session snapshots follow the event stream; the shared transcript (transcript.js) and run components poll bounded
 // recorded output and durable mailbox messages. Slash commands
 // (/setup → chat_setup.js, /help, /new, /graph) run here. Full transcripts and artifacts load when opened.
-import { $, $$, esc, icon, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
+import { $, $$, esc, icon, keyLabel, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { mountGraph } from "./graph_view.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
+import { createInspector, tabsHtml } from "./inspector.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
   parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, presentMessage,
@@ -17,6 +18,7 @@ import {
 
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
   error: null, loading: false, task: null, open: new Map(), drafts: new Map(), sending: false, sendError: "", gen: 0, keys: {}, notes: [] };
+let insp = null; // the inspector shell (inspector.js): closed unless the user opened it
 let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, composer = null, act = null, full = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
@@ -91,7 +93,8 @@ function mount(el, ctx, p) {
       <section class="chat-activity" id="chat-activity" aria-label="Running now" hidden></section>
       ${composerHtml("chat")}
     </section>
-    <aside class="chat-side" aria-label="Request progress, decisions and tasks">
+    <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks">
+      <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals">${tabsHtml()}</section>
       <section class="card" id="chat-progress" aria-labelledby="chat-progress-h"></section>
       <section class="card" id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
       <section class="card chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
@@ -100,12 +103,16 @@ function mount(el, ctx, p) {
   graph = mountGraph($("#chat-graph", el), { label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
-    select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); $(".chat", host).classList.add("chat-inspect-open"); $("#chat-task", host)?.focus(); },
+    select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); insp?.open(); $("#chat-task", host)?.focus(); },
     openLog: (rel) => openLog(ctxRef, S.project, rel), cancel: (row, b) => taskAction("cancel", row, b) });
   $(".chat-graph-card", el).addEventListener("keydown", (e) => {
     if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.closest(".gv-canvas")) { e.preventDefault(); openGraphFull(); }
   });
   bind(el);
+  const toggle = () => $("[data-chat=inspect]", el);
+  insp = createInspector({ chat: $(".chat", el), panel: $("#chat-inspector", el), button: { setAttribute: (k, v) => toggle()?.setAttribute(k, v) },
+    focus: (target) => (target?.isConnected ? target : toggle())?.focus() });
+  insp.restore();
   loadSessions();
   loadSettings();
 }
@@ -253,7 +260,7 @@ function drawHead(ctx) {
   $("#chat-head", host).innerHTML = `<button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
     ${S.data?.plan ? `<span class="muted small" title="Session plan ${esc(S.data.plan.id)}">runner ${S.data.plan.runner_alive ? "active" : "idle"}</span>` : ""}
     <span class="badge tone-${flowing ? "ok" : "warn"}" role="status" title="${esc(ctx.state.liveStatus?.detail || "")}">${icon(flowing ? "sync" : "alert")}<span>${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}</span></span>
-    <button type="button" class="btn sm chat-inspect-toggle" data-chat="inspect" aria-expanded="false">Inspect</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>
+    <button type="button" class="btn sm chat-inspect-toggle" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">Inspect</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>
     ${S.settingsError ? `<p class="callout fail small chat-wide" role="alert">Chat settings: ${esc(S.settingsError)} — fix the <code>chat:</code> block in <a href="${esc(routeHash("config", S.project, ctx.state.selectedTarget))}">Settings</a>.</p>` : ""}`;
 }
 
@@ -468,13 +475,19 @@ function bind(el) {
     else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); }
     else if (a === "promote") promoteRequest(b.dataset.request);
     else if (a === "graph-full") openGraphFull();
-    else if (a === "inspect" || a === "sessions") {
-      const open = $(".chat", host).classList.toggle(a === "inspect" ? "chat-inspect-open" : "chat-sessions-open");
+    else if (a === "inspect") insp?.toggle();
+    else if (a === "sessions") {
+      const open = $(".chat", host).classList.toggle("chat-sessions-open");
       b.setAttribute("aria-expanded", String(open));
+    }
+    else if (b.dataset.inspTab) {
+      const box = $("#chat-insp", host);
+      box.innerHTML = tabsHtml(b.dataset.inspTab);
+      $(`[data-insp-tab="${b.dataset.inspTab}"]`, box)?.focus();
     }
     else if (b.dataset.mailJump) {
       const card = host.querySelector(`[data-mail-id="${CSS.escape(b.dataset.mailJump)}"]`);
-      if (card) { card.scrollIntoView({ block: "center" }); card.querySelector("button,textarea")?.focus(); $(".chat", host).classList.remove("chat-inspect-open"); }
+      if (card) { card.scrollIntoView({ block: "center" }); card.querySelector("button,textarea")?.focus(); insp?.close({ restoreFocus: false }); }
     }
     else if (b.dataset.openLog) openLog(ctxRef, S.project, b.dataset.openLog);
     else if (b.dataset.transcript) toggleTranscript(b.dataset.transcript);
@@ -498,14 +511,13 @@ function bind(el) {
     catch (error) { err.textContent = error.message; button.disabled = false; }
   });
   el.addEventListener("keydown", (e) => {
+    if (insp?.onKeydown(e)) return;
     if (e.key === "F2" && e.target.matches?.("a[data-sid]")) { e.preventDefault(); startRename(e.target.dataset.sid); return; }
     if (e.key === "Delete" && e.target.matches?.("a[data-sid]")) { e.preventDefault(); deleteSession(e.target.dataset.sid); return; }
     if (e.key !== "Escape" || e.defaultPrevented) return;
     if (e.target.closest("[data-rename]")) { e.preventDefault(); endRename(S.renaming); return; }
     const chat = $(".chat", host);
-    if (e.target.closest(".chat-side") && chat.classList.contains("chat-inspect-open")) {
-      chat.classList.remove("chat-inspect-open"); $("[data-chat=inspect]", host)?.setAttribute("aria-expanded", "false"); $("[data-chat=inspect]", host)?.focus(); e.preventDefault();
-    } else if (e.target.closest(".chat-sessions") && chat.classList.contains("chat-sessions-open")) {
+    if (e.target.closest(".chat-sessions") && chat.classList.contains("chat-sessions-open")) {
       chat.classList.remove("chat-sessions-open"); $("[data-chat=sessions]", host)?.setAttribute("aria-expanded", "false"); $("[data-chat=sessions]", host)?.focus(); e.preventDefault();
     }
   });
