@@ -72,7 +72,8 @@ export function openSettings(ctx, app) {
         <div><span>Data</span><b>${esc(state.source)}</b></div>
       </div>
       <div class="row gap wrap"><button class="btn sm" id="set-restart" ${sess.can_restart ? "" : "disabled"}>${icon("sync")} Restart</button><button class="btn sm danger" id="set-quit" ${sess.can_quit ? "" : "disabled"}>${icon("power")} Quit alfrd serve</button>
-        <span class="muted small">${sess.can_quit ? "Restart reloads code and plugins; runs continue. Quit is Ctrl+C in its terminal." : "Only from this machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>`
+        <span class="muted small">${sess.can_quit ? "Restart reloads code and plugins; runs continue. Quit is Ctrl+C in its terminal." : "Only from this machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>
+      ${sess.can_superuser ? `<p class="small"><a href="#/superuser" data-close>${icon("power")} Superuser settings…</a> <span class="muted">experimental features, sections, locked actions, limits, active runs of every project</span></p>` : ""}`
       : `<p class="muted">Browser-only mode. No ALFRD server is connected.</p><div class="set-facts"><div><span>Data</span><b>${esc(state.source)}</b></div></div>`,
   };
   ctx.modal(`

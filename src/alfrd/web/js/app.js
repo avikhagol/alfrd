@@ -49,6 +49,7 @@ const VIEWS = [
   { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js")) },
   { id: "config", label: "Settings", icon: "project", mod: config },
   { id: "new-project", label: "New project", icon: "plus", page: true, mod: lazyView(() => import("./components/project_canvas.js")) },
+  { id: "superuser", label: "Superuser", icon: "power", page: true, mod: lazyView(() => import("./components/superuser.js")) },
   // #/plugin/<id>: pages from api.registerPage (components/plugin_pages.js lists them under "Plugins" in the rail).
   { id: "plugin", label: "Plugin page", icon: "metadata", page: true, mod: { render: (el) => ctx.renderPluginPage ? ctx.renderPluginPage(el)
     : (el.innerHTML = `<div class="empty"><h2>Plugin page</h2><p>${state.mode === "server" ? "Loading plugins…" : "Plugin pages need alfrd serve."}</p></div>`) } },
@@ -1426,14 +1427,19 @@ function goTo(view) {
 ctx.openAliasRules = openAliasRules;
 
 ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) this.providers.push(fn); } };
-// Experimental features exist only under `alfrd serve --experimental-features` (session.experimental).
+// --experimental-features or alfrd su
 const experimentalOn = () => server.session?.experimental === true;
 ctx.experimental = experimentalOn;
-// Chat mode (Studio settings → Preferences, per browser, off by default; experimental): the Chat section, dock and chat runs.
-function chatOn() { return experimentalOn() && storage.get("ui:chat.enabled", false) === true; }
+// Chat mode (Preferences, per browser, off by default): Chat section, dock, chat runs
+function chatOn() { return experimentalOn() && shown("chat") && storage.get("ui:chat.enabled", false) === true; }
 ctx.chatOn = chatOn;
+// Superuser-hidden sections (Overview stays)
+const shown = (id) => id == "overview" || !server.session?.superuser?.hidden_sections?.includes(id);
+ctx.refreshSession = async (throttle) => (await import("./data/session_refresh.js")).refreshSession(ctx, { views: VIEWS, shown, chatOn, goTo, render: scheduleRender, throttle });
+const su = () => !document.hidden && ctx.refreshSession(true).catch(() => {});
+document.addEventListener("visibilitychange", su); addEventListener("alfrd-events", su);
 ctx.setChat = (on) => { storage.set("ui:chat.enabled", Boolean(on)); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
-Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
+Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && shown(v.id) && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
 ctx.goTo = goTo;
 ctx.rescan = () => rescan();
 ctx.reloadAll = () => reloadAll();
@@ -1945,14 +1951,14 @@ function renderShell() {
 }
 
 function renderHeader() {
-  VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) { a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); a.hidden = v.id === "chat" && !chatOn(); } });
+  VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) { a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); a.hidden = (v.id === "chat" && !chatOn()) || !shown(v.id); } });
   const badge = $("#mode-badge");
   const live = state.mode === "server";
   $("#btn-projects").title = live ? (server.session?.mutations_enabled ? "New project or open a project" : PROJECTS_LOCAL) : "Choose a project";
   badge.className = `mode-badge ${live ? "live" : ""}`;
   const quit = $("#btn-quit");
   if (quit) quit.hidden = !(live && server.session?.can_quit);
-  const modeText = `${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}`;
+  const modeText = `${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}${live && server.session?.superuser?.read_only ? " · read-only" : ""}`;
   badge.innerHTML = `<i></i><span>${modeText}</span>`;
   badge.title = `${modeText}: ${live ? "projects come from the runtime database; re-queue runs through the runtime API." : "everything runs in this browser; no pipeline code is executed."}`;
 
@@ -2279,7 +2285,7 @@ function route() {
     state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[url.project], state.selectedTarget);
     rememberTarget();
   }
-  const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) ? id : "overview";
+  const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) && shown(id) ? id : "overview";
   if (next !== state.view) {
     VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
     const watch = { config: ["settings"], workflow: ["workflow", "inspector"] }[state.view] || [];
@@ -2319,8 +2325,8 @@ async function boot() {
   state.demoEnabled = Boolean(session?.demo) || new URLSearchParams(location.search).has("demo");
   if (session) {
     state.mode = "server";
-    // The first route() ran before the session was known: a #/chat link opens once experimental Chat mode is on.
-    if (chatOn() && parseRoute(location.hash).view.split("/")[0] === "chat") route();
+    // route() ran before the session: #/chat and #/superuser need it
+    if (["chat", "superuser"].includes(parseRoute(location.hash).view.split("/")[0])) route();
     startSystemPoll();
     ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();

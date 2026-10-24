@@ -1480,6 +1480,114 @@ def plan_runner(plan_id: str, root: str = _ROOT_OPT):
     raise typer.Exit(code=scheduler.Runner(root, plan_id).run())
 
 
+su_cli = typer.Typer(help="Superuser settings for every alfrd serve / gui of this user (also the Studio page /superuser).",
+                     no_args_is_help=True)
+alfrd_cli.add_typer(su_cli, name="su")
+
+
+def _su_call(function, *args, **kwargs):
+    from alfrd import superuser
+
+    try:
+        return function(*args, **kwargs)
+    except (superuser.SuperuserError, OSError) as exc:
+        print(f"error: {exc}")
+        raise typer.Exit(code=1) from None
+
+
+@su_cli.command("show")
+def su_show(json_out: bool = typer.Option(False, "--json", help="Print the settings as JSON.")):
+    """Every setting with its value (`*` marks a value changed from the default)."""
+    import json as _json
+
+    from alfrd import superuser
+
+    data = _su_call(superuser.load, strict=True)
+    if json_out:
+        print(_json.dumps(data, indent=2))
+        return
+    defaults = superuser.flat(superuser.DEFAULTS)
+    print(f"# {superuser.path()}{'' if superuser.path().is_file() else ' (not created yet: all defaults)'}")
+    for key, value in superuser.flat(data).items():
+        shown = ", ".join(value) if isinstance(value, list) else ("null" if value is None else str(value).lower() if isinstance(value, bool) else value)
+        print(f"{'*' if value != defaults[key] else ' '} {key:<30} {shown or '-'}    # {superuser.LABELS.get(key, '')}")
+
+
+@su_cli.command("set")
+def su_set(assignments: list[str] = typer.Argument(..., help="key=value, e.g. features.experimental=true lockdown.runs=false "
+                                                          "studio.hidden_sections=results,logs limits.chat_max_cost_usd=2")):
+    """Change settings; every running Studio applies them on its next request."""
+    from alfrd import superuser
+
+    changes = {}
+    for item in assignments:
+        key, sep, value = item.partition("=")
+        if not sep:
+            print(f"error: {item!r} is not key=value")
+            raise typer.Exit(code=1)
+        changes[key.strip()] = _su_call(superuser.parse_value, key.strip(), value)
+    _su_call(superuser.merge, changes)
+    for key in changes:
+        print(f"{key} = {superuser.flat()[key]}")
+
+
+@su_cli.command("reset")
+def su_reset(yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation.")):
+    """Remove the superuser file: every setting back to its default."""
+    from alfrd import superuser
+
+    if not yes and not typer.confirm(f"Reset all superuser settings ({superuser.path()})?"):
+        raise typer.Exit(code=1)
+    _su_call(superuser.reset)
+    print("superuser settings reset")
+
+
+@su_cli.command("path")
+def su_path():
+    """Print where the superuser settings are stored."""
+    from alfrd import superuser
+
+    print(superuser.path())
+
+
+@su_cli.command("status")
+def su_status(runtime_db: Optional[str] = typer.Option(None, help="Runtime database (default: the one alfrd serve uses).")):
+    """Running alfrd servers, and the active runs (runners and running agents) of every known project."""
+    from alfrd.gui.auth import config_dir
+    from alfrd.runtime import scheduler
+
+    import json as _json
+
+    print("Servers:")
+    for file in sorted(config_dir().glob("server-*.json")):
+        try:
+            data = _json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pid = data.get("pid")
+        alive = bool(pid) and scheduler.pid_alive(int(pid))
+        print(f"  {'up  ' if alive else 'gone'}  {data.get('url')}  pid {pid}")
+    service = _runtime_service(runtime_db or str(_default_runtime_db()))
+    print("Active runs:")
+    found = False
+    for project in service.list_projects():
+        root = Path(project.root_path)
+        for plan in scheduler.list_plans(root, include_chat=True) if root.is_dir() else []:
+            folder = scheduler.PlanDir(root, plan.get("id") or "")
+            alive = bool(plan.get("id")) and folder.runner_alive()
+            if not (alive or plan.get("status") in scheduler.ACTIVE + ("interrupted",)):
+                continue
+            found = True
+            units = [u for u in folder.units() if u.get("status") == "running"]
+            kind = "chat" if plan.get("chat") else "run"
+            print(f"  {project.name}  {kind} {plan['id']}  {plan.get('status')}  runner {'alive' if alive else 'stopped'}"
+                  f"  {len(units)} running")
+            for unit in units:
+                print(f"      {unit.get('id')}  {','.join(unit.get('steps') or [])}  {unit.get('row') or ''}  pid {unit.get('pid')}")
+    if not found:
+        print("  none")
+
+
 chat_cli = typer.Typer(help="Project chat: an orchestrator and specialist agents on the plan runner (docs/orchestration.md).",
                        no_args_is_help=True)
 alfrd_cli.add_typer(chat_cli, name="chat")

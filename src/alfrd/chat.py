@@ -201,7 +201,10 @@ def settings(root: str | Path) -> dict[str, Any]:
         raw = merged_manifest(Path(root).resolve()).get("chat") or {}
     except ValueError as exc:
         raise ExecutionError(str(exc)) from exc
-    return merge_settings(raw)
+    from alfrd import superuser
+
+    # the user's superuser limits (cost / replan caps, allowed agents) apply to every project
+    return superuser.cap_chat_settings(merge_settings(raw))
 
 
 def merge_settings(raw: Any) -> dict[str, Any]:
@@ -690,6 +693,14 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True) -
     mention = _MENTION.match(text)
     if mention and mention.group(1).lower() not in conf["agents"]:
         raise ValueError(f"unknown agent @{mention.group(1)} (agents: {', '.join('@' + a for a in conf['agents'])})")
+    allow = usable(conf)
+    if mention and mention.group(1).lower() not in allow:
+        raise PermissionError(f"@{mention.group(1)} is not an allowed agent (superuser limits.chat_allowed_agents: "
+                              f"{', '.join(conf.get('allowed_agents') or [])})")
+    if not mention and conf.get("orchestrator") not in allow:
+        raise PermissionError(f"the orchestrator {conf.get('orchestrator')!r} is not an allowed agent (superuser "
+                              f"limits.chat_allowed_agents: {', '.join(conf.get('allowed_agents') or [])}); "
+                              f"write to an allowed agent with @agent")
     _ensure_columns(store, conf)
     events: list[tuple[str, dict[str, Any]]] = []
     with store.lock():
@@ -786,9 +797,18 @@ def mailbox_prompt(store: Session, rec: Mapping[str, Any]) -> str:
     return contract
 
 
+def usable(conf: Mapping[str, Any]) -> dict[str, Any]:
+    """The agents new work may go to: all configured ones, or the superuser's ``limits.chat_allowed_agents``.
+
+    Configured agents stay in ``conf["agents"]`` (running rows and the plan CSV keep their columns);
+    only planning, @mentions, fallbacks and reassignments are limited to these."""
+    allow = conf.get("allowed_agents")
+    return {k: a for k, a in conf["agents"].items() if not allow or k in allow}
+
+
 def _agents_block(conf: Mapping[str, Any]) -> str:
     return "\n".join(f"- `{key}` — {a.get('label') or key}: {', '.join(a.get('roles') or []) or 'general'}"
-                     for key, a in conf["agents"].items())
+                     for key, a in usable(conf).items())
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -865,7 +885,7 @@ def plan_prompt(store: Session, conf: Mapping[str, Any], req: Mapping[str, Any])
         _agents_block(conf),
         "",
         "## What each agent can reach",
-        *[f"- `{key}`: {_reach(conf, key, project_access(store.root))}" for key in conf["agents"]],
+        *[f"- `{key}`: {_reach(conf, key, project_access(store.root))}" for key in usable(conf)],
         "Give a task that touches folders outside these to an agent that reaches them; otherwise it will block.",
         "",
         "## Bounds for this request",
@@ -896,7 +916,7 @@ def repair_prompt(conf: Mapping[str, Any], errors: list[str], reply: str) -> str
         "# ALFRD chat: fix your plan", "",
         "Your previous reply could not be used:", *[f"- {e}" for e in errors[:20]], "",
         "Your reply was:", "", "````", _clip(reply, 8000), "````", "",
-        "Agents: " + ", ".join(f"`{a}`" for a in conf["agents"]), "",
+        "Agents: " + ", ".join(f"`{a}`" for a in usable(conf)), "",
         f"Reply with the corrected fenced ```json block only (\"protocol\": \"{proto.PROTOCOL}\", \"kind\": \"plan\").",
     ]) + "\n"
 
@@ -915,7 +935,7 @@ def replan_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any
     summary = (rec.get("result") or {}).get("summary")
     if summary:
         lines += ["", f"The task's own summary: {_clip(summary, 1500)}"]
-    lines += ["", "Agents: " + ", ".join(f"`{a}`" for a in conf["agents"]), "",
+    lines += ["", "Agents: " + ", ".join(f"`{a}`" for a in usable(conf)), "",
               "Decide with one fenced ```json block: "
               f"{{\"protocol\": \"{proto.PROTOCOL}\", \"kind\": \"plan\", \"decisions\": [{{\"id\": \"<blocker id>\", "
               "\"choice\": \"<one option>\" or \"answer\": \"<text>\" or \"reassign\": \"<agent>\" or \"cancel\": true}], "
@@ -1275,7 +1295,7 @@ def _fallback_target(conf: Mapping[str, Any], rec: Mapping[str, Any]) -> str | N
     """The owner's ``fallback`` agent, unless the row was already there (one hop each, no loops)."""
     target = (conf["agents"].get(rec["owner"]) or {}).get("fallback")
     seen = {rec["owner"], *(rec.get("fallback_from") or [])}
-    return target if target and target in conf["agents"] and target not in seen else None
+    return target if target and target in usable(conf) and target not in seen else None
 
 
 def _try_fallback(runner, store: Session, conf, req, rec, unit, reason: str | None) -> bool:
@@ -1356,7 +1376,7 @@ def _plan_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
         if env["kind"] != "plan":
             raise proto.ProtocolError([f"expected \"kind\": \"plan\", got {env['kind']!r}"])
         tasks = env.get("tasks") or []
-        errors = proto.check_graph(tasks, agents=conf["agents"], known=known_tasks if rec["kind"] == "replan" else ())
+        errors = proto.check_graph(tasks, agents=usable(conf), known=known_tasks if rec["kind"] == "replan" else ())
         if rec["kind"] == "replan":
             errors += [f"task id {t['id']!r} is already used in this request" for t in tasks if t["id"] in known_tasks]
         total = len(req["tasks"]) + len(tasks)
@@ -1449,7 +1469,7 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
             if env["kind"] != "result":
                 raise proto.ProtocolError([f"expected \"kind\": \"result\", got {env['kind']!r}"])
             sub = env["result"].get("tasks") or []
-            errors = proto.check_graph(sub, agents=conf["agents"]) if sub else []
+            errors = proto.check_graph(sub, agents=usable(conf)) if sub else []
             if errors:
                 raise proto.ProtocolError(errors)
             for blocker in env["result"].get("blockers", []):
@@ -1782,7 +1802,7 @@ def _decision_options(store: Session, conf: Mapping[str, Any], rec: Mapping[str,
             if action:
                 actions[label] = action
 
-    others = [k for k in conf["agents"] if k != rec["owner"]]
+    others = [k for k in usable(conf) if k != rec["owner"]]
     if permission:
         need = _needed_access(store, rec, blocker)
         head = "Grant this task access and re-run: "
@@ -1937,7 +1957,7 @@ def _resolve(runner, store: Session, req, did: str, choice: str | None, answer: 
     act.update({k: v for k, v in (action or {}).items() if k in ("reassign", "cancel") and v})
     if act.get("grant") and by != "user":
         return d  # stays pending: the caller escalates it to the user
-    if act.get("reassign") and (act["reassign"] not in conf["agents"] or act["reassign"] == rec["owner"]):
+    if act.get("reassign") and (act["reassign"] not in usable(conf) or act["reassign"] == rec["owner"]):
         raise ValueError(f"cannot reassign to {act['reassign']!r}: not another chat agent ({', '.join(conf['agents'])})")
     if d.get("kind") == "permission" and d.get("repeat") and not act and d.get("signature") \
             and launch_signature(store, conf, rec) == d["signature"]:

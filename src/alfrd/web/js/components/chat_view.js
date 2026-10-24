@@ -444,7 +444,13 @@ async function newSession() {
   } catch (error) { ctxRef.toast(`New session: ${error.message}`, "fail"); }
 }
 
+const bound = new WeakSet(); // the view element outlives mounts (project switches): delegate on it only once
+
 function bind(el) {
+  // The composer's own elements are new on every mount, so it is bound every time.
+  composer = bindComposer(el, "chat", { agents, orchestrator, send, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { S.drafts.set(S.sid, text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
+  if (bound.has(el)) return;
+  bound.add(el);
   el.addEventListener("click", (e) => {
     const b = e.target.closest("button, [data-agent], a[data-sid]");
     if (!b) return;
@@ -502,7 +508,6 @@ function bind(el) {
       chat.classList.remove("chat-sessions-open"); $("[data-chat=sessions]", host)?.setAttribute("aria-expanded", "false"); $("[data-chat=sessions]", host)?.focus(); e.preventDefault();
     }
   });
-  composer = bindComposer(el, "chat", { agents, orchestrator, send, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { S.drafts.set(S.sid, text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
 }
 
 async function taskAction(action, row, button) {

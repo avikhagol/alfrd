@@ -241,7 +241,10 @@ def test_lazy_payload_under_106kb_compressed():
     # Raised under the standing "raise JS caps as needed" decision: 264 -> 288 KiB (294,912 bytes).
     # Agent mailbox and live chat threads (chat_mailbox.js, chat_thread.js, data/chat_live.js and
     # chat.css, 1561cd7, 2026-10-19): 286,245 -> 297,373 B. Same standing decision: 288 -> 292 KiB (299,008 bytes).
-    assert total < 292 * 1024, f"{total} bytes gzip"
+    # Chat list rename/delete/fold (chat_view.js, chat.css, 2026-10-24): 297,373 -> 299,133 B, and the superuser page
+    # (components/superuser.js, css/superuser.css, data/session_refresh.js): -> 306,682 B. Same standing
+    # decision: 292 -> 300 KiB (307,200 bytes). Startup paid for its superuser hooks by trimming comments (195,58x B).
+    assert total < 300 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():

@@ -22,7 +22,85 @@ EXPERIMENTAL_TEMPLATES = frozenset({"agent-loop"})
 
 
 def experimental_enabled() -> bool:
-    return bool(current_app.config.get("STUDIO_EXPERIMENTAL", False))
+    """``alfrd serve --experimental-features`` or the superuser file's ``features.experimental``."""
+    from alfrd import superuser
+
+    return bool(current_app.config.get("STUDIO_EXPERIMENTAL", False)) or superuser.load()["features"]["experimental"]
+
+
+# Superuser lockdown: which mutating endpoint belongs to which ``lockdown`` switch (alfrd.superuser).
+# Stopping running work (pause, cancel, stop a unit, cancel a chat task) is never locked.
+LOCKED_ENDPOINTS = {
+    "plugins": {"studio_api.plugins_install", "studio_api.plugins_toggle", "studio_api.plugin_config_save",
+                "studio_api.plugin_project_types", "studio_api.plugin_service"},
+    "plugin_actions": {"studio_api.plugin_project_action"},
+    "project_create": {"studio_api.create_project_api", "studio_api.connect_project_api", "studio_api.project_rediscover",
+                       "studio_api.fs_mkdir"},
+    "project_delete": {"studio_api.project_delete", "studio_api.project_forget"},
+    "runs": {"studio_api.plan_start", "studio_api.plan_add_row", "studio_api.plan_turn_override", "studio_api.plan_review",
+             "studio_api.plan_response", "studio_api.plan_reject", "studio_api.plans_reconcile", "control.start_run",
+             "control.resume_run", "control.retry_run", "control.retry_step"},
+    "chat": {"studio_api.chat_session_create", "studio_api.chat_session_rename", "studio_api.chat_session_delete",
+             "studio_api.chat_message", "studio_api.chat_decision", "studio_api.chat_promote", "studio_api.mailbox_messages",
+             "studio_api.mailbox_action", "studio_api.chat_settings_save"},
+    "file_edits": {"studio_api.project_manifest_save", "studio_api.project_manifest_migrate", "studio_api.history_restore",
+                   "studio_api.edit_handoff", "studio_api.project_task", "studio_api.task_create", "studio_api.task_rename",
+                   "studio_api.targets_save", "studio_api.targets_add", "studio_api.targets_remove", "studio_api.notes_create",
+                   "studio_api.notes_change", "studio_api.project_quickstart_apply", "studio_api.avica_config_update",
+                   "studio_api.chat_settings_save", "studio_api.plan_cells", "api.datasets_import_api",
+                   "studio_api.chat_promote"},
+}
+# Allowed even in read-only mode: reads sent as POST, stopping work, the Studio's own housekeeping.
+ALWAYS_ALLOWED = {
+    "studio_api.presence_api", "studio_api.theme_set", "studio_api.studio_quit", "studio_api.studio_restart",
+    "studio_api.plugin_check", "studio_api.plugin_project_check", "studio_api.plugin_project_applicability",
+    "studio_api.targets_preview", "studio_api.plan_preview", "studio_api.avica_summary", "studio_api.notification_test",
+    "studio_api.plan_unit_stop", "control.cancel_run", "studio_api.project_visibility",
+    "studio_api.superuser_save", "studio_api.superuser_reset", "studio_api.superuser_ops_action",
+}
+# Endpoints whose action argument decides: these actions only stop or pause work.
+STOP_ACTIONS = {"studio_api.plan_action": {"pause", "cancel"}, "studio_api.chat_task_action": {"cancel"}}
+STOP_CATEGORY = {"studio_api.plan_action": "runs", "studio_api.chat_task_action": "chat"}
+
+
+def lockdown_categories() -> list[str]:
+    """The lockdown switches this request needs (``["read_only"]`` for any other change); [] when free."""
+    endpoint = request.endpoint or ""
+    if endpoint in ALWAYS_ALLOWED:
+        return []
+    if endpoint in STOP_ACTIONS:
+        action = (request.view_args or {}).get("action")
+        return [] if action in STOP_ACTIONS[endpoint] else [STOP_CATEGORY[endpoint]]
+    found = [category for category, endpoints in LOCKED_ENDPOINTS.items() if endpoint in endpoints]
+    return found or ["read_only"]
+
+
+def lockdown_refusal(categories: list[str], data=None) -> str | None:
+    """Why the superuser settings refuse these categories, or None."""
+    from alfrd import superuser
+
+    if not categories:
+        return None
+    lock = (data or superuser.load())["lockdown"]
+    if lock["read_only"]:
+        return "this Studio is read-only (superuser setting lockdown.read_only)"
+    for category in categories:
+        if category != "read_only" and not lock.get(category, True):
+            return f"turned off by the superuser ({superuser.LABELS.get('lockdown.' + category, category)}: lockdown.{category})"
+    return None
+
+
+def enforce_lockdown():
+    """``before_request`` after the CSRF gate: refuse what the superuser settings lock (403, reason superuser)."""
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"} or request.url_rule is None:
+        return None
+    from flask import jsonify
+
+    categories = lockdown_categories()
+    message = lockdown_refusal(categories)
+    if message is None:
+        return None
+    return jsonify(error={"code": 403, "message": message, "reason": "superuser", "lock": categories}), 403
 
 
 def mutations_enabled() -> bool:

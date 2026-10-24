@@ -78,7 +78,10 @@ def _themes() -> list[dict]:
 def gui_install(state: dict | None = None) -> bool:
     """Studio installs are on unless ``alfrd serve --no-gui-install`` or ``"gui_install": false``."""
     state = state or extensions.read_state()
-    return bool(current_app.config.get("PLUGINS_GUI_INSTALL", True) and state["gui_install"])
+    from alfrd import superuser
+
+    return bool(current_app.config.get("PLUGINS_GUI_INSTALL", True) and state["gui_install"]
+                and superuser.allowed("plugins"))
 
 
 def _scope(project_name: str | None) -> tuple[Path | None, dict]:
@@ -513,7 +516,10 @@ MAX_ACTION_RESULT = 2 * 1024 * 1024
 def plugin_actions(state: dict | None = None) -> bool:
     """Mutating project actions are on unless ``alfrd serve --no-plugin-actions`` or ``"plugin_actions": false``."""
     state = state or extensions.read_state()
-    return bool(current_app.config.get("PLUGINS_ACTIONS", True) and state["plugin_actions"])
+    from alfrd import superuser
+
+    return bool(current_app.config.get("PLUGINS_ACTIONS", True) and state["plugin_actions"]
+                and superuser.allowed("plugin_actions"))
 
 
 def _run_action(action: extensions.ProjectAction, root: Path, values: dict, payload: dict) -> tuple[bool, object]:

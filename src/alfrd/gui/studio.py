@@ -73,6 +73,24 @@ def studio_system():
                    mem_used=mem.total - mem.available, mem_total=mem.total)
 
 
+def live_interval() -> float:
+    """Seconds between checks of a busy project tree: the superuser's ``studio.live_interval``, else --live-interval."""
+    from alfrd import superuser
+
+    chosen = superuser.load()["studio"]["live_interval"]
+    return max(0.0, float(chosen if chosen is not None else current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0))
+
+
+def superuser_view() -> dict:
+    """What the Studio needs from the superuser settings: hidden sections and the lockdown switches."""
+    from alfrd import superuser
+
+    data = superuser.load()
+    lock = data["lockdown"]
+    return {"hidden_sections": data["studio"]["hidden_sections"], "read_only": lock["read_only"],
+            "allowed": {name: superuser.allowed(name, data) for name in superuser.LOCKS}, "error": superuser.error()}
+
+
 @studio_api.get("/studio/session")
 def studio_session():
     """Tell the Studio it is served by ALFRD and hand it a CSRF token."""
@@ -87,6 +105,9 @@ def studio_session():
         demo=bool(current_app.config.get("STUDIO_DEMO")),
         # --experimental-features: Chat mode can be turned on and the agent-loop template is offered.
         experimental=experimental_enabled(),
+        # Superuser settings (alfrd su, /superuser): hidden sections, read-only, locked actions.
+        superuser=superuser_view(),
+        can_superuser=mutations_enabled(),
         default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"),
         projects=current_app.config.get("STUDIO_PROJECTS"),
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
@@ -97,9 +118,9 @@ def studio_session():
         # Folders without alfrd.yaml can be connected with the default manifest.
         default_manifest=_default_manifest_available(),
         live={
-            "enabled": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0) > 0
+            "enabled": live_interval() > 0
             and current_app.config.get("RUNTIME_SERVICE") is not None,
-            "interval": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0),
+            "interval": live_interval(),
             "idle": float(current_app.config.get("STUDIO_LIVE_IDLE", 5.0)),
         },
     )
@@ -142,7 +163,11 @@ def create_project_api():
     if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
         return _json_error(ValueError("path is required"), 400)
     if not _template_offered(payload.get("template", "basic")):
-        return _json_error(ValueError(f"the {payload.get('template')} template needs alfrd serve --experimental-features"), 400)
+        from alfrd import superuser
+
+        why = ("is hidden by the superuser (studio.hidden_templates)" if payload.get("template") in superuser.load()["studio"]["hidden_templates"]
+               else "needs alfrd serve --experimental-features")
+        return _json_error(ValueError(f"the {payload.get('template')} template {why}"), 400)
     try:
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
@@ -166,8 +191,11 @@ def create_project_api():
 
 def _template_offered(name) -> bool:
     """Experimental templates (agent-loop) are offered only under --experimental-features."""
+    from alfrd import superuser
     from alfrd.gui.security import EXPERIMENTAL_TEMPLATES, experimental_enabled
 
+    if name in superuser.load()["studio"]["hidden_templates"]:
+        return False
     return name not in EXPERIMENTAL_TEMPLATES or experimental_enabled()
 
 
@@ -457,9 +485,12 @@ def project_file(project_name: str):
 def live_hub():
     """The server's LiveHub (created on first use); None when live updates are off."""
     hub = current_app.extensions.get("alfrd_live")
-    if hub is not None:
-        return hub or None
-    interval = float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0)
+    interval = live_interval()  # the superuser may change it while the server runs
+    if hub:
+        if interval <= 0:
+            return None  # off now: new streams are refused; open ones end with their lease
+        hub.interval = interval
+        return hub
     service = current_app.config.get("RUNTIME_SERVICE")
     if interval <= 0 or service is None:
         current_app.extensions["alfrd_live"] = False

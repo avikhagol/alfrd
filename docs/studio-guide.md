@@ -294,6 +294,13 @@ still opens when you configure a step). The choice is remembered in this browser
 **Fullscreen** (toolbar button or **F**) is separate: it shows the Workflow view with the browser
 fullscreen; Esc or **F** leaves it. Neither changes the selected target or affects a running plan.
 
+## Superuser settings
+
+`/superuser` (Studio settings → Server → *Superuser settings…*) sets what every `alfrd serve` of this
+user shows and allows: experimental features, hidden sections and templates, read-only mode and locked
+actions, chat limits. It also has statistics and an ops panel with every active run and running agent.
+Only from the server machine. Details: [superuser.md](superuser.md).
+
 ## Chat with the agents
 
 **Chat** in the sidebar (server mode; `#/chat/<session>?p=<project>`) is a conversation with the

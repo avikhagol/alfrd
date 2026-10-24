@@ -52,12 +52,19 @@ alfrd serve --live-interval 5
 
 # Experimental Studio features: the Chat mode preference and the agent-loop template
 alfrd serve --experimental-features      # or ALFRD_EXPERIMENTAL_FEATURES=1
+
+# Superuser settings for every alfrd serve of this user (also the page /superuser)
+alfrd su show
+alfrd su set features.experimental=true lockdown.read_only=true studio.hidden_sections=results
+alfrd su status                          # servers and active runs of every project
 ```
 
 Without `--experimental-features` the Studio offers only the **basic** and **avica** templates for a
 new project and has no Chat mode (Chat section, chat dock, chat runs in Workflow). Projects that
 already use the agent-loop template still open and run; `alfrd projects create --template agent-loop`
-on the command line is unchanged.
+on the command line is unchanged. The same switch, and many more (hidden sections and templates,
+read-only and locked actions, chat limits, an ops panel), live in the per-user superuser settings:
+see [superuser.md](superuser.md).
 
 The Studio updates by itself (**● Live** in the top bar): changed files are re-read, and open logs
 follow the file as it grows. Live polling pauses while the tab is hidden. See

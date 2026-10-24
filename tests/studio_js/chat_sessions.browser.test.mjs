@@ -49,17 +49,34 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
         const sid = url.split("/sessions/")[1];
         if (method === "PATCH") { const s = window.sessions.find((x) => x.id === sid); s.title = data.title; return { session: s }; }
         if (method === "DELETE") { window.sessions = window.sessions.filter((x) => x.id !== sid); return { id: sid, deleted: true }; }
+        if (url.endsWith("/sessions")) { const session = { id: `n${window.mutations.length}`, title: "New", messages: 0, active_requests: 0 }; window.sessions = [session, ...window.sessions]; return { session }; }
         return {};
       } });
       const host = document.getElementById("home"), mod = await import("/js/components/chat_view.js");
       const ctx = { state: { mode: "server", chatSession: "a", selectedProject: "p", selectedTarget: "", liveStatus: { state: "live" } },
-        activeProject: () => "p", toast(m) { window.lastToast = m; }, update() { mod.render(host, ctx); } };
+        activeProject: () => window.project || "p", toast(m) { window.lastToast = m; }, update() { mod.render(host, ctx); } };
       window.ctx = ctx;
       mod.render(host, ctx);
     });
     await page.locator('.chat-session[data-sid="a"].on').waitFor({ state: "attached" });
     return { page, errors };
   };
+
+  await t.test("one click = one request after the view is mounted again (project switches)", async () => {
+    const { page, errors } = await open(1440); t.after(() => page.close());
+    for (const p of ["q", "p", "q", "p"]) {
+      await page.evaluate((p) => { window.project = p; window.ctx.state.selectedProject = p; window.ctx.update(); }, p);
+      await page.locator('.chat-session[data-sid="a"]').waitFor({ state: "attached" });
+    }
+    await page.evaluate(() => { window.mutations = []; });
+    await page.locator("[data-chat=new]").click();
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.mutations.filter((m) => m.url.endsWith("/sessions")).length), 1);
+    await page.locator('[data-chat=delete][data-sid-act="b"]').click();
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.mutations.filter((m) => m.method === "DELETE").length), 1);
+    assert.deepEqual(errors, []);
+  });
 
   await t.test("rename: F2 / button, Enter saves, Esc keeps the old name", async () => {
     const { page, errors } = await open(1440); t.after(() => page.close());

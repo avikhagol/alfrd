@@ -74,6 +74,10 @@ export function hide() {
 
 const clamp = (w) => Math.max(MIN, Math.min(MAX, Math.round(Number(w) || 380)));
 
+function onKey(e) {
+  if (e.key === "Escape" && !e.defaultPrevented && matchMedia("(max-width: 900px)").matches) { e.preventDefault(); opts.onClose?.(); }
+}
+
 function mount(host, p) {
   act?.stop();
   el = host;
@@ -98,9 +102,7 @@ function mount(host, p) {
     onError: (m) => { D.sendError = m; draw(); },
     onDraft: (text) => { D.drafts.set(D.sid, text); if (D.sendError) { D.sendError = ""; $("#cd-send-error", el).textContent = ""; } } });
   host.addEventListener("click", onClick);
-  host.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !e.defaultPrevented && matchMedia("(max-width: 900px)").matches) { e.preventDefault(); opts.onClose?.(); }
-  });
+  host.addEventListener("keydown", onKey); // named handlers: a re-mount on the same host doesn't add a second copy
   $("#cd-session", host).addEventListener("change", (e) => openSession(e.target.value));
   grip($(".cd-grip", host));
 }

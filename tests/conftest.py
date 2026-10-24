@@ -19,6 +19,8 @@ os.environ["TERM"] = "dumb"
 def isolated_alfrd_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Keep project files and imports local to each test."""
     monkeypatch.setenv("ALFRD_HOME", str(tmp_path / "alfrd-home"))
+    # The user's real superuser.yaml (alfrd su) must not change what tests see.
+    monkeypatch.setenv("ALFRD_SUPERUSER_FILE", str(tmp_path / "alfrd-home" / "superuser.yaml"))
     # Runner ticks: in this process, and in runners started as processes.
     from alfrd.runtime import scheduler
 

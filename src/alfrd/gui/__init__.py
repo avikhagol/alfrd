@@ -101,6 +101,7 @@ def create_app(config=None):
     import alfrd.gui.studio_notes  # noqa: F401  (adds the annotation routes to studio_api)
     import alfrd.gui.studio_views  # noqa: F401  (adds the template-driven view route to studio_api)
     import alfrd.gui.studio_plugins  # noqa: F401  (adds the plugin list/toggle/theme/file routes)
+    import alfrd.gui.studio_superuser as studio_superuser  # superuser settings, statistics and ops (/superuser)
     import alfrd.gui.studio_chat  # noqa: F401  (project chat: sessions, messages, decisions, artifacts)
 
     from alfrd.gui.api_v1 import api_v1
@@ -119,6 +120,7 @@ def create_app(config=None):
     app.register_blueprint(api)
     app.register_blueprint(system)
     app.register_blueprint(control)
+    studio_superuser.register_page(app)
 
     from alfrd.gui.model import db
     # Register every model before create_all(), including in an installed wheel
@@ -144,6 +146,9 @@ def create_app(config=None):
     # Order matters: an unauthenticated POST gets 401 before the CSRF check's 403.
     app.before_request(require_access)
     app.before_request(protect_mutation)
+    from alfrd.gui.security import enforce_lockdown
+
+    app.before_request(enforce_lockdown)  # superuser lockdown (alfrd.superuser), after the CSRF gate
 
     @app.errorhandler(HTTPException)
     def api_http_error(error):
