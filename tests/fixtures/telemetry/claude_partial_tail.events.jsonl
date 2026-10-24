@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init"}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p1","name":"Bash","input":{"command":"alfrd mailbox read"}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p1","is_error":false,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p2","name":"Read","input":{"file_path":"/work/alfrd/README.md"}}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_p3","name":"Bash","input":{"command":"alfrd mailbox re

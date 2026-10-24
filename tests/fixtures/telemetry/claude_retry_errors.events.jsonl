@@ -1,0 +1,15 @@
+{"type":"system","subtype":"init"}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_retry_1","name":"Bash","input":{}}}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_retry_1","name":"Bash","input":{"command":"alfrd mailbox read"}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_retry_1","is_error":true,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_retry_1","name":"Bash","input":{"command":"alfrd mailbox read"}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_retry_1","is_error":true,"content":"sanitized output"}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_retry_2","name":"Bash","input":{}}}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_retry_2","name":"Bash","input":{"command":"alfrd mailbox read"}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_retry_2","is_error":true,"content":"sanitized output"}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_retry_3","name":"Bash","input":{}}}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_retry_3","name":"Bash","input":{"command":"alfrd mailbox read"}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_retry_3","is_error":false,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"text","text":"sanitized prose"}]}}
+{"type":"result","subtype":"success","uuid":"result-retry","is_error":false,"num_turns":3}
+{"type":"result","subtype":"success","uuid":"result-retry","is_error":false,"num_turns":3}
