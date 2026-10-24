@@ -1,7 +1,7 @@
 // Chat section (#/chat/<session>?p=<project>): sessions, transcript, composer with @agent
 // autocomplete, task graph (graph_view.js, read-only), task detail with Cancel/Retry, decisions,
 // progress and usage against the request's budget. Lazy: loaded on the first visit.
-// Session snapshots follow the event stream; shared thread/run components poll bounded
+// Session snapshots follow the event stream; the shared transcript (transcript.js) and run components poll bounded
 // recorded output and durable mailbox messages. Slash commands
 // (/setup → chat_setup.js, /help, /new, /graph) run here. Full transcripts and artifacts load when opened.
 import { $, $$, esc, icon, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
@@ -9,7 +9,7 @@ import { server } from "../data/server.js";
 import { mountGraph } from "./graph_view.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
-import { mountThread } from "./chat_thread.js";
+import { mountTranscript } from "./transcript.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
   parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, presentMessage,
@@ -99,7 +99,7 @@ function mount(el, ctx, p) {
     </aside></div>`;
   graph = mountGraph($("#chat-graph", el), { label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
-  act = mountThread($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
+  act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
     select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); $(".chat", host).classList.add("chat-inspect-open"); $("#chat-task", host)?.focus(); },
     openLog: (rel) => openLog(ctxRef, S.project, rel), cancel: (row, b) => taskAction("cancel", row, b) });
   $(".chat-graph-card", el).addEventListener("keydown", (e) => {
