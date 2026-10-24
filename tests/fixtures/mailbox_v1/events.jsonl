@@ -1,0 +1,2 @@
+{"protocol":"alfrd.mailbox/1","event_seq":1,"type":"resolved","message_id":"msg_legacy_1","actor":{"kind":"user"},"at":"2026-01-01T12:00:00Z","data":{"reply_id":"msg_legacy_2"}}
+{"protocol":"alfrd.mailbox/1","event_seq":2,"type":"ack","message_id":"msg_legacy_3","actor":{"kind":"user"},"at":"2026-01-01T12:00:00Z","data":{}}
