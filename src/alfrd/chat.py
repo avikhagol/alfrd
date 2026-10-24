@@ -1691,7 +1691,9 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
         rec.update(status="needs_decision", decisions=list(dict.fromkeys([*rec.get("decisions", []), *ids])))
         store.save_task(rec)
         runner.set_cells({(rec["row"], rec["owner"]): pc.WAITING}, only_if={(rec["row"], rec["owner"]): {pc.DONE}})
-        _event(runner, "task.blocked", unit=unit, task=rec["row"], request=req["id"], owner=rec["owner"], blockers=ids)
+        _event(runner, "task.blocked", unit=unit, task=rec["row"], request=req["id"], owner=rec["owner"], blockers=ids,
+               waiting_on=[d["mailbox_message_id"] for did in ids
+                           if (d := store.decision(did)).get("mailbox_message_id")])
         if repeat:
             store.add_message("system", f"@{rec['owner']} is blocked again on {rec['row']} with the same access "
                               f"({rec['last_block']['count']}× in a row). ALFRD will not re-run it unchanged: "
@@ -2906,7 +2908,11 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
                                 "usage": _usage(u)} for u in mine]})
     decisions = store.decisions()
     from alfrd.mailbox import Mailbox
+    from alfrd.events import EVENTS_FILE
+    from alfrd.steps import steps_state
+    steps = steps_state(folder.path / EVENTS_FILE)
     requests = [{**r, "usage": request_usage(store, r, units),
+                 "steps": [step for step in steps if step["request_id"] == r["id"]],
                  "mailbox": Mailbox(store.root, sid, r["id"]).summary()} for r in store.requests()]
     plan = _read(folder.plan_file) or {}
     return {

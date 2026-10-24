@@ -1337,6 +1337,10 @@ class Runner:
             from alfrd.events import EVENTS_FILE, EventLog
 
             unit = unit or {}
+            if kind in {"turn.started", "turn.finished", "turn.failed"} and unit.get("row"):
+                # Enough identity to replay attempts, including failed launches
+                # and re-adoption, without consulting mutable unit snapshots.
+                data = {"row": unit.get("row"), "attempt": unit.get("attempt_number") or 1, **data}
             record = {
                 "at": now_iso(), "kind": kind, "plan": self.folder.id, "project": str(self.folder.root),
                 "target": unit.get("target") or self.plan.get("target") or None, "unit": unit.get("id"),
