@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 PARSER_VERSION = "1"
 MAX_LINE_BYTES = 1024 * 1024
@@ -416,3 +417,55 @@ def advance(log: str | Path, adapter: str, *, budget: int = ADVANCE_BYTES, final
     if write:
         _write_sidecar(side, doc)
     return doc
+
+
+def running(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """A running attempt's document: it still grows, so each complete count is only a lower bound (partial)."""
+    def soften(coverage: object) -> object:
+        return "partial" if coverage == "complete" else coverage
+
+    counts = {key: {**count, "coverage": soften(count.get("coverage"))} for key, count in (doc.get("counts") or {}).items()}
+    return {**doc, "live": True, "coverage": soften(doc.get("coverage")), "counts": counts}
+
+
+def _count_of(doc: Mapping[str, Any] | None, key: str) -> tuple[int | None, str]:
+    """One attempt's (value, coverage) for a counter. A live attempt is never complete: it still grows."""
+    count = ((doc or {}).get("counts") or {}).get(key)
+    count = count if isinstance(count, dict) else {}
+    value = count.get("value")
+    if isinstance(value, bool) or not isinstance(value, int):
+        value = None
+    coverage = count.get("coverage")
+    if coverage not in ("complete", "partial", "unavailable"):
+        coverage = "unavailable"
+    if coverage == "complete" and (value is None or (doc or {}).get("live")):
+        coverage = "partial"
+    if coverage == "unavailable":
+        return None, "unavailable"
+    return value, coverage
+
+
+def totals(attempts: Iterable[Mapping[str, Any] | None]) -> dict[str, Any]:
+    """Sum attempt documents (``advance()`` results; None when an attempt has no sidecar) into one tally.
+
+    Each attempt must be passed once; the caller owns that. Per counter, ``coverage`` is ``complete`` only when
+    every attempt is complete, ``unavailable`` when no attempt reports it, and ``partial`` otherwise. A partial
+    sum is a lower bound ("At least N"). A partial zero says nothing, so it stays ``value: None``: 0 only with
+    complete coverage.
+    """
+    docs = list(attempts)
+    counts: dict[str, dict[str, Any]] = {}
+    for key in COUNTERS:
+        states = [_count_of(doc, key) for doc in docs]
+        coverages = [coverage for _, coverage in states]
+        values = [value for value, _ in states if value is not None]
+        total = sum(values) if values else None
+        if all(coverage == "unavailable" for coverage in coverages):
+            counts[key] = {"value": None, "coverage": "unavailable"}
+        elif all(coverage == "complete" for coverage in coverages):
+            counts[key] = {"value": total, "coverage": "complete"}
+        else:
+            counts[key] = {"value": total or None, "coverage": "partial"}
+    unknown = {name for doc in docs if doc for name in doc.get("unknown") or [] if isinstance(name, str)}
+    return {"attempts": len(docs), "counts": counts, "unknown": sorted(unknown),
+            "oversize_lines": sum(int(doc.get("oversize_lines") or 0) for doc in docs if doc)}

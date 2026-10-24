@@ -2920,8 +2920,11 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
     if since_rev is not None and since_rev == rev:
         return {"rev": rev, "unchanged": True}
     conf = settings(store.root)
+    from alfrd.telemetry import totals
+
     folder = _plan_folder(store)
     units = folder.units()
+    docs = _telemetry_docs(store.root, units, {})
     table = _table(store, conf)
     tasks = []
     for rec in store.tasks():
@@ -2930,6 +2933,7 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
         tasks.append({**{k: v for k, v in rec.items() if k not in ("processed",)},
                       "status": _cell_status(rec, row, table), "cell": row.cell(rec["owner"]) if row else None,
                       "attempts": len(mine), "usage": {**agent_totals(mine)} if mine else None,
+                      "telemetry": totals(docs[u["id"]] for u in mine),
                       "units": [u["id"] for u in mine],
                       # each attempt's unit log and handoff folder (project-relative), for "Open log"
                       "logs": [{"unit": u["id"], "log": u.get("log"), "status": u.get("status"), "model": u.get("model") or u.get("requested_model"),
@@ -2940,7 +2944,7 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
     from alfrd.events import EVENTS_FILE
     from alfrd.steps import steps_state
     steps = steps_state(folder.path / EVENTS_FILE)
-    requests = [{**r, "usage": request_usage(store, r, units),
+    requests = [{**r, "usage": request_usage(store, r, units), "telemetry": _request_telemetry(r, units, docs),
                  "steps": [step for step in steps if step["request_id"] == r["id"]],
                  "mailbox": Mailbox(store.root, sid, r["id"]).summary()} for r in store.requests()]
     plan = _read(folder.plan_file) or {}
@@ -2950,6 +2954,7 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
         "blockers": [d for d in decisions if d.get("status") == "pending"],
         "usage": {**agent_totals(units), "turns": len(units),
                   "orchestrator_calls": sum(int(r.get("orchestrator_calls") or 0) for r in requests)},
+        "telemetry": totals(docs[u["id"]] for u in units),
         "plan": {"id": store.plan_id, "status": plan.get("status"), "runner_alive": folder.runner_alive()},
         "settings": {"orchestrator": conf["orchestrator"], "final_summary": conf["final_summary"],
                      "orchestrator_model": conf["orchestrator_model"], "escalation_model": conf["escalation_model"],
@@ -3346,19 +3351,50 @@ def _display_log(text: str, depth: int = 0) -> list[str]:
     return [line for i, line in enumerate(out) if i == 0 or line != out[i - 1]]
 
 
-def _unit_telemetry(log: Path | None, unit: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The unit's counters, advanced by at most one bounded step of its telemetry sidecar."""
+_TELEMETRY_VIEW = ("schema", "parser_version", "adapter", "counts", "unknown", "oversize_lines",
+                   "coverage", "offset", "size", "behind")
+
+
+def _unit_doc(log: Path | None, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The unit's sidecar document, advanced by at most one bounded step; ``live`` while the unit runs."""
     if log is None:
         return None
     try:
         from alfrd.agent_io import unit_adapter
-        from alfrd.telemetry import advance
+        from alfrd.telemetry import advance, running
 
         doc = advance(log.with_suffix(".events.jsonl"), unit_adapter(dict(unit)).name)
-    except Exception:  # telemetry must never break the activity view
+    except Exception:  # telemetry must never break the activity or state views
         return None
-    return {k: doc.get(k) for k in ("schema", "parser_version", "adapter", "counts", "unknown", "oversize_lines",
-                                    "coverage", "offset", "size", "behind")}
+    return running(doc) if unit.get("status") == "running" else {**doc, "live": False}
+
+
+def _unit_telemetry(doc: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    return None if doc is None else {k: doc.get(k) for k in _TELEMETRY_VIEW}
+
+
+def _unit_log(root: Path, unit: Mapping[str, Any]) -> Path | None:
+    """The unit's log inside the project; None without one. Never raises: aggregation must not break a view."""
+    if not unit.get("log"):
+        return None
+    path = (root / str(unit["log"])).resolve()
+    return path if path.is_relative_to(root.resolve()) else None
+
+
+def _telemetry_docs(root: Path, units: list[Mapping[str, Any]], docs: dict[str, Any]) -> dict[str, Any]:
+    """Advance each unit's sidecar once per payload; ``docs`` memoizes the result by unit id."""
+    for unit in units:
+        if unit["id"] not in docs:
+            docs[unit["id"]] = _unit_doc(_unit_log(root, unit), unit)
+    return docs
+
+
+def _request_telemetry(req: Mapping[str, Any], units: list[Mapping[str, Any]], docs: dict[str, Any]) -> dict[str, Any]:
+    """Attempt → request rollup: every attempt of the request's rows (orchestrator rows included)."""
+    from alfrd.telemetry import totals
+
+    rows = set(req.get("rows") or [])
+    return totals(docs[u["id"]] for u in units if u.get("row") in rows)
 
 
 def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | None = None,
@@ -3366,10 +3402,13 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
     """Bounded tails; explicit attempt ids also retrieve final output after completion."""
     store = session(root, sid)
     lines = max(1, min(int(lines or 60), ACTIVITY_MAX_LINES))
+    scoped = None
     if request_id:
         from alfrd.mailbox import identifier
-        store.request(identifier(request_id))
+        scoped = identifier(request_id)
+        store.request(scoped)
     all_units = _plan_folder(store).units()
+    docs: dict[str, Any] = {}
     known = {u["id"]: u for u in all_units if store.task(str(u.get("row")))}
     if units is not None:
         if not 1 <= len(units) <= 32:
@@ -3410,7 +3449,8 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
         except OSError:
             state, revision = "unreadable", unit["id"] + ":unreadable"
         cost = unit.get("total_cost_usd")
-        out.append({"telemetry": _unit_telemetry(path, unit), "row": unit.get("row"), "request": rec.get("request"), "kind": kind,
+        docs[unit["id"]] = _unit_doc(path, unit)
+        out.append({"telemetry": _unit_telemetry(docs[unit["id"]]), "row": unit.get("row"), "request": rec.get("request"), "kind": kind,
                     "owner": rec.get("owner") or (unit.get("steps") or [None])[0], "title": title, "unit": unit["id"],
                     "attempt": unit.get("attempt_number"), "model": unit.get("requested_model") or unit.get("model"),
                     "started": unit.get("started"), "seconds": seconds, "log": log, "bytes": size, "tail": tail,
@@ -3419,7 +3459,22 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
                     "usage_updated_at": unit.get("usage_updated_at") or unit.get("finished"),
                     "tail_revision": revision, "tail_truncated": size > min(ACTIVITY_READ, max(16384, lines * 600)) or len(tail) >= lines,
                     "tail_state": state, "display_tail": display_tail})
-    return {"at": now_iso(), "items": out, "running": [item for item in out if item["status"] == "running"]}
+    # Rollups cover every attempt of the rows shown, not only the running ones listed above.
+    from alfrd.telemetry import totals
+
+    requests = {r["id"]: r for r in store.requests()}
+    wanted = {item["request"] for item in out if item["request"]} | ({scoped} if scoped else set())
+    rows = {item["row"] for item in out}
+    for rid in wanted & requests.keys():
+        rows |= set(requests[rid].get("rows") or [])
+    scope = [u for u in all_units if u.get("row") in rows]
+    _telemetry_docs(store.root, scope, docs)
+    telemetry = {
+        "tasks": {row: totals(docs[u["id"]] for u in scope if u.get("row") == row) for row in {item["row"] for item in out}},
+        "requests": {rid: _request_telemetry(requests[rid], scope, docs) for rid in wanted & requests.keys()},
+    }
+    return {"at": now_iso(), "items": out, "running": [item for item in out if item["status"] == "running"],
+            "telemetry": telemetry}
 
 
 __all__ = [
