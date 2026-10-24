@@ -2238,7 +2238,32 @@ def decide(root: str | Path, sid: str, did: str, *, choice: str | None = None, a
     return decision
 
 
-def cancel_task(root: str | Path, sid: str, row: str, *, spawn: bool = True) -> dict[str, Any]:
+class TaskConflict(Exception):
+    """A retry or cancel whose ``expected_status`` / ``expected_unit`` no longer matches the task (HTTP 409)."""
+
+    def __init__(self, row: str, current_status: str | None, current_unit: str | None):
+        super().__init__(f"task {row} changed: it is {current_status} (unit {current_unit or 'none'})")
+        self.current_status, self.current_unit = current_status, current_unit
+
+
+def _current_unit(store: Session, row: str) -> str | None:
+    """Id of the task's latest unit (attempt), or None before it has run."""
+    ids = [u.get("id") for u in _plan_folder(store).units() if u.get("row") == row]
+    return ids[-1] if ids else None
+
+
+def _check_expected(store: Session, rec: dict[str, Any], expected_status: str | None, expected_unit: str | None) -> None:
+    """Refuse when the caller's view of the task (its status, its latest unit) is stale. None means no precondition."""
+    if expected_status in (None, "") and expected_unit in (None, ""):
+        return
+    unit = _current_unit(store, rec["row"])
+    if (expected_status not in (None, "") and rec["status"] != expected_status) \
+            or (expected_unit not in (None, "") and unit != expected_unit):
+        raise TaskConflict(rec["row"], rec["status"], unit)
+
+
+def cancel_task(root: str | Path, sid: str, row: str, *, spawn: bool = True, expected_status: str | None = None,
+                expected_unit: str | None = None) -> dict[str, Any]:
     from alfrd.runtime import scheduler
 
     store = session(root, sid)
@@ -2246,6 +2271,7 @@ def cancel_task(root: str | Path, sid: str, row: str, *, spawn: bool = True) -> 
         rec = store.task(row)
         if rec is None:
             raise LookupError(f"unknown task {row!r}")
+        _check_expected(store, rec, expected_status, expected_unit)
         if rec["status"] in TERMINAL:
             raise ValueError(f"task {row} is already {rec['status']}")
         from alfrd.mailbox import Mailbox
@@ -2272,7 +2298,49 @@ def cancel_task(root: str | Path, sid: str, row: str, *, spawn: bool = True) -> 
     return {"task": row, "requested": requested}
 
 
-def retry_task(root: str | Path, sid: str, row: str, *, spawn: bool = True) -> dict[str, Any]:
+RETRYABLE = ("failed", "blocked", "cancelled", "stopped")
+
+
+def _retry_rows(store: Session, rec: dict[str, Any]) -> set[str]:
+    """The rows a retry of ``rec`` requeues: itself plus, transitively, its blocked or stopped dependents."""
+    again = {rec["row"]}
+    changed = True
+    while changed:
+        changed = False
+        for other in store.tasks():
+            if other["row"] not in again and other["request"] == rec["request"] and other["status"] in ("blocked", "stopped") \
+                    and set(other.get("depends_on") or []) & again:
+                again.add(other["row"])
+                changed = True
+    return again
+
+
+def _retry_eligibility(store: Session, rec: dict[str, Any]) -> tuple[bool, str | None]:
+    if rec["status"] not in RETRYABLE:
+        return False, f"task {rec['row']} is {rec['status']}; only failed, blocked, cancelled or stopped tasks are retried"
+    req = store.request(rec["request"])
+    if (request_usage(store, req).get("total_cost_usd") or 0) > float(req["bounds"]["max_cost_usd"]):
+        return False, f"request {req['id']} is over its cost budget (${req['bounds']['max_cost_usd']})"
+    return True, None
+
+
+def retry_preview(root: str | Path, sid: str, row: str) -> dict[str, Any]:
+    """What :func:`retry_task` would do now, from the same calculation: eligibility, reason and the rows requeued."""
+    store = session(root, sid)
+    with store.lock():
+        rec = store.task(row)
+        if rec is None:
+            raise LookupError(f"unknown task {row!r}")
+        eligible, reason = _retry_eligibility(store, rec)
+        table = _table(store, settings(store.root)) if eligible else None
+        rows = sorted(k for k in _retry_rows(store, rec) if table.row(k) is not None and store.task(k) is not None) \
+            if eligible else []
+        return {"eligible": eligible, "reason": reason, "affected_rows": rows, "current_status": rec["status"],
+                "current_unit": _current_unit(store, row)}
+
+
+def retry_task(root: str | Path, sid: str, row: str, *, spawn: bool = True, expected_status: str | None = None,
+               expected_unit: str | None = None) -> dict[str, Any]:
     """Run a failed, blocked, cancelled or stopped task again (and the tasks it blocked)."""
     store = session(root, sid)
     conf = settings(store.root)
@@ -2280,22 +2348,15 @@ def retry_task(root: str | Path, sid: str, row: str, *, spawn: bool = True) -> d
         rec = store.task(row)
         if rec is None:
             raise LookupError(f"unknown task {row!r}")
-        if rec["status"] not in ("failed", "blocked", "cancelled", "stopped"):
+        _check_expected(store, rec, expected_status, expected_unit)
+        if rec["status"] not in RETRYABLE:
             raise ValueError(f"task {row} is {rec['status']}; only failed, blocked, cancelled or stopped tasks are retried")
         req = store.request(rec["request"])
-        usage = request_usage(store, req)
-        if (usage.get("total_cost_usd") or 0) > float(req["bounds"]["max_cost_usd"]):
-            raise PermissionError(f"request {req['id']} is over its cost budget (${req['bounds']['max_cost_usd']})")
+        eligible, reason = _retry_eligibility(store, rec)
+        if not eligible:
+            raise PermissionError(reason)
         table = _table(store, conf)
-        again = {row}
-        changed = True
-        while changed:  # dependents blocked because of it
-            changed = False
-            for other in store.tasks():
-                if other["row"] not in again and other["request"] == req["id"] and other["status"] in ("blocked", "stopped") \
-                        and set(other.get("depends_on") or []) & again:
-                    again.add(other["row"])
-                    changed = True
+        again = _retry_rows(store, rec)
         cells = {}
         for key in again:
             r = table.row(key)
@@ -3126,7 +3187,7 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
 
 __all__ = [
     "DEFAULTS", "PRESETS", "Session", "activity", "cancel_task", "create_session", "decide", "execution_config", "graph", "list_sessions",
-    "merge_settings", "post_message", "probe", "promote", "promotion", "read_artifact", "retry_task", "save_settings", "session",
+    "merge_settings", "post_message", "probe", "promote", "promotion", "read_artifact", "retry_preview", "retry_task", "TaskConflict", "save_settings", "session",
     "session_state", "settings", "settings_view", "strip_ansi", "tail_log",
     "transcript", "transcript_part",
 ]

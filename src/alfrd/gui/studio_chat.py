@@ -161,13 +161,31 @@ def chat_decision(project_name: str, session_id: str, decision_id: str):
     return jsonify(decision=decision)
 
 
+@studio_api.get(_BASE + "/sessions/<session_id>/tasks/<task_id>/retry-preview")
+def chat_retry_preview(project_name: str, session_id: str, task_id: str):
+    """``{eligible, reason, affected_rows, current_status, current_unit}``: the rows a retry would requeue."""
+    try:
+        return jsonify(chat.retry_preview(_project_root(project_name), session_id, task_id))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
 @studio_api.post(_BASE + "/sessions/<session_id>/tasks/<task_id>/<action>")
 def chat_task_action(project_name: str, session_id: str, task_id: str, action: str):
+    """Cancel or retry a task. Optional ``{expected_status, expected_unit}``: 409 with the task's
+    ``current_status`` and ``current_unit`` when either no longer matches; none sent, none checked."""
     if action not in ("cancel", "retry"):
         return _json_error(ValueError(f"unknown action {action!r}"), 404)
+    payload = request.get_json(silent=True)
+    payload = payload if isinstance(payload, dict) else {}
     try:
         call = chat.cancel_task if action == "cancel" else chat.retry_task
-        out = call(_project_root(project_name), session_id, task_id)
+        out = call(_project_root(project_name), session_id, task_id,
+                   expected_status=payload.get("expected_status") or None,
+                   expected_unit=payload.get("expected_unit") or None)
+    except chat.TaskConflict as conflict:
+        return jsonify(error={"code": 409, "message": str(conflict)}, current_status=conflict.current_status,
+                       current_unit=conflict.current_unit), 409
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
