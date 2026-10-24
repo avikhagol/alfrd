@@ -19,7 +19,10 @@ from functools import lru_cache
 import fcntl
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
-PROTOCOL = "alfrd.mailbox/1"
+from alfrd.mailbox_codes import defaults
+
+PROTOCOL_V1 = "alfrd.mailbox/1"
+PROTOCOL = "alfrd.mailbox/2"
 USER = {"kind": "user"}
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}\Z")
 
@@ -49,15 +52,18 @@ def action_hash(payload):
                                                for k in ("action", "target", "arguments", "scope")}).encode()).hexdigest()
 
 
-@lru_cache(maxsize=2)
-def _validator(name):
-    schema = json.loads((Path(__file__).parent / "schemas" / f"{name}.v1.json").read_text())
+@lru_cache(maxsize=4)
+def _validator(name, version="v1"):
+    schema = json.loads((Path(__file__).parent / "schemas" / f"{name}.{version}.json").read_text())
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
 def validate(name, value):
+    protocol = value.get("protocol") if isinstance(value, dict) else None
+    if protocol not in (PROTOCOL_V1, PROTOCOL):
+        raise MailboxError("unsupported mailbox protocol")
     try:
-        _validator(name).validate(value)
+        _validator(name, "v2" if protocol == PROTOCOL else "v1").validate(value)
     except ValidationError as exc:
         field = ".".join(str(part) for part in exc.absolute_path) or "<root>"
         kind = value.get("kind", name) if isinstance(value, dict) else name
@@ -76,7 +82,10 @@ class Mailbox:
         from alfrd import chat
         self.session = chat.session(root, identifier(session_id))
         self.run_id = identifier(run_id)
-        self.session.request(self.run_id)
+        # Missing means a request created before v2, even if its mailbox is empty.
+        self.protocol = self.session.request(self.run_id).get("mailbox_protocol", PROTOCOL_V1)
+        if self.protocol not in (PROTOCOL_V1, PROTOCOL):
+            raise MailboxError("unsupported request mailbox protocol")
         self.dir = self.session.root / ".alfrd" / "plans" / self.session.plan_id / "mailbox" / self.run_id
 
     @contextlib.contextmanager
@@ -140,7 +149,7 @@ class Mailbox:
             os.close(directory)
 
     def _event(self, kind, message, actor, data):
-        event = {"protocol": PROTOCOL, "event_seq": len(self.events) + 1, "type": kind,
+        event = {"protocol": self.protocol, "event_seq": len(self.events) + 1, "type": kind,
                  "message_id": message["id"], "actor": actor, "at": now(), "data": data}
         self._append("events", event)
         return event
@@ -163,10 +172,16 @@ class Mailbox:
                 self._event("expired", message, {"kind": "orchestrator"}, {})
 
     def _state(self, message):
-        events = [e for e in self.events if e["message_id"] == message["id"] and e["type"] in ("resolved", "expired", "cancelled")]
+        events = [e for e in self.events if e["message_id"] == message["id"] and
+                  (e["type"] in ("resolved", "expired", "cancelled") or
+                   (e["type"] == "ack" and message["kind"] == "info"))]
         event = events[-1] if events else None
-        return {"state": event["type"] if event else "pending", "version": len(events) + 1,
+        return {"state": ("acked" if event["type"] == "ack" else event["type"]) if event else "pending", "version": len(events) + 1,
                 "resolution": event}
+
+    def _project(self, message):
+        original = self._find(message["reply_to"]) if message["kind"] == "reply" else None
+        return {**message, **defaults(message, original)}
 
     def _find(self, mid):
         return next((m for m in self.messages if m["id"] == mid), None) or self._missing()
@@ -208,12 +223,17 @@ class Mailbox:
         if not isinstance(payload, dict):
             raise MailboxError("message must be an object")
         fields = {"recipient", "kind", "subject", "body", "reply_to", "correlation_id", "idempotency_key", "expires_at", "payload"}
+        if self.protocol == PROTOCOL:
+            fields |= {"code", "category", "priority", "summary", "description", "step_id"}
         if set(payload) - fields:
             raise MailboxError("client supplied store-owned or unknown fields")
         message = {"reply_to": None, "correlation_id": None, "expires_at": None, **payload,
-                   "protocol": PROTOCOL, "id": "msg_" + uuid.uuid4().hex, "seq": len(self.messages) + 1,
+                   "protocol": self.protocol, "id": "msg_" + uuid.uuid4().hex, "seq": len(self.messages) + 1,
                    "run_id": self.run_id, "created_at": now(), "sender": actor}
         validate("agent_message", message)
+        if self.protocol == PROTOCOL:
+            message = self._project(message)
+            validate("agent_message", message)
         if message["kind"] == "permission_request" and message["payload"]["action_hash"] != action_hash(message["payload"]):
             raise MailboxError("action_hash does not match exact action inputs")
         if message["kind"] == "question":
@@ -253,7 +273,7 @@ class Mailbox:
             while m < len(self.messages) and len(messages) < limit:
                 item = self.messages[m]
                 if self._visible(item, actor):
-                    record = {**item, **self._state(item)}
+                    record = {**self._project(item), **self._state(item)}
                     size = len(canonical(record).encode())
                     if response_bytes + size > 256 * 1024:
                         break
@@ -274,7 +294,7 @@ class Mailbox:
                     "pending_user": len(self._pending(USER))}
 
     def _pending(self, actor):
-        return [{**m, **self._state(m), "delivery_mode": "cooperative"} for m in self.messages
+        return [{**self._project(m), **self._state(m), "delivery_mode": "cooperative"} for m in self.messages
                 if m["kind"] in ("question", "permission_request") and matches(m["recipient"], actor)
                 and self._state(m)["state"] == "pending"]
 
@@ -295,7 +315,8 @@ class Mailbox:
             if not self._visible(message, actor):
                 raise MailboxError("message is not addressed to this actor", 403)
             replies = [m for m in self.messages if m["reply_to"] == mid]
-            return {"message": message, **self._state(message), "reply": replies[0] if replies else None}
+            return {"message": self._project(message), **self._state(message),
+                    "reply": self._project(replies[0]) if replies else None}
 
     def ack(self, mid, actor):
         with self.locked():

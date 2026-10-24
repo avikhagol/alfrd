@@ -1,0 +1,918 @@
+{
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "const": "alfrd.mailbox/2"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "sender": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "agent",
+            "orchestrator",
+            "user"
+          ]
+        },
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "unit_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "agent"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "agent_id",
+              "task_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "user"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 1
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "orchestrator"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "agent_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "task_id"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "recipient": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "agent",
+            "orchestrator",
+            "user"
+          ]
+        },
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "unit_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "agent"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "agent_id",
+              "task_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "user"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 1
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "orchestrator"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "agent_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "task_id"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "kind": {
+      "enum": [
+        "permission_request",
+        "question",
+        "info",
+        "reply"
+      ]
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "reply_to": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "code": {
+      "enum": [
+        "PRG",
+        "STR",
+        "DON",
+        "ART",
+        "NTE",
+        "WRN",
+        "ERR",
+        "BLK",
+        "DEP",
+        "CLM",
+        "ASK",
+        "ASO",
+        "PRM",
+        "REP"
+      ]
+    },
+    "category": {
+      "enum": [
+        "progress",
+        "result",
+        "question",
+        "permission",
+        "error",
+        "blocker",
+        "coordination",
+        "note"
+      ]
+    },
+    "priority": {
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "urgent"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "step_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "protocol",
+    "id",
+    "seq",
+    "run_id",
+    "created_at",
+    "sender",
+    "recipient",
+    "kind",
+    "subject",
+    "body",
+    "reply_to",
+    "correlation_id",
+    "idempotency_key",
+    "expires_at",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "permission_request"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "scope": {
+                "const": "once"
+              },
+              "action_hash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "choices": {
+                "const": [
+                  "approve",
+                  "deny"
+                ]
+              },
+              "arguments": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "action",
+              "target",
+              "description",
+              "scope",
+              "action_hash",
+              "choices"
+            ],
+            "additionalProperties": false
+          },
+          "reply_to": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "question"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "options": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "allow_text": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "options",
+              "allow_text"
+            ],
+            "additionalProperties": false
+          },
+          "reply_to": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "reply_to": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "reply"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "outcome": {
+                "enum": [
+                  "approve",
+                  "deny",
+                  "answer"
+                ]
+              },
+              "choice_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "answer": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16384
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "action_hash": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "outcome",
+              "choice_id",
+              "answer",
+              "action_hash"
+            ],
+            "additionalProperties": false
+          },
+          "reply_to": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "sender": {
+            "properties": {
+              "kind": {
+                "const": "agent"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sender": {
+            "required": [
+              "unit_id"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "PRG"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "progress"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "STR"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "progress"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "DON"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "result"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "ART"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "result"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "NTE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "note"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "WRN"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "error"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "ERR"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "error"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "BLK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "blocker"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "DEP"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "coordination"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "CLM"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          },
+          "category": {
+            "const": "coordination"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "ASK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "question"
+          },
+          "category": {
+            "const": "question"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "ASO"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "question"
+          },
+          "category": {
+            "const": "question"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "PRM"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "permission_request"
+          },
+          "category": {
+            "const": "permission"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": "REP"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "reply"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "info"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "category": {
+            "enum": [
+              "progress",
+              "result",
+              "error",
+              "blocker",
+              "coordination",
+              "note"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "question"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "category": {
+            "enum": [
+              "question"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "permission_request"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "category": {
+            "enum": [
+              "permission"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

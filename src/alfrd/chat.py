@@ -734,6 +734,7 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True) -
         message = store.add_message("user", text, request=rid)
         req: dict[str, Any] = {"id": rid, "message": message["id"], "text": text, "created": now_iso(),
                                "created_ts": time.time(), "bounds": _bounds(conf), "status": "planning",
+                               "mailbox_protocol": "alfrd.mailbox/2",
                                "rows": [], "tasks": [], "repair_used": False, "summaries": 0, "replans": 0,
                                "orchestrator_calls": 0, "finished": None, "error": None}
         if mention:
