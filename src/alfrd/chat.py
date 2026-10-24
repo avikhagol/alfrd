@@ -3157,6 +3157,7 @@ def codex_models(home: str | Path | None = None) -> dict[str, Any]:
 
 ACTIVITY_MAX_LINES = 400
 ACTIVITY_READ = 256 * 1024
+RENDER_MAX_LINE = 1024 * 1024  # a longer raw line is clipped before ANSI stripping or JSON parsing (risk X9)
 
 
 def _stream_line(event: Mapping[str, Any]) -> tuple[str, str] | None:
@@ -3210,6 +3211,8 @@ def _render_log(text: str) -> list[str]:
             delta.clear()
 
     for raw in text.split("\n"):
+        if len(raw) > RENDER_MAX_LINE:
+            raw = raw[:2000] + "…"
         line = strip_ansi(raw).rsplit("\r", 1)[-1].rstrip()
         if line.startswith("{") and line.endswith("}"):
             try:
@@ -3314,6 +3317,21 @@ def _display_log(text: str, depth: int = 0) -> list[str]:
     return [line for i, line in enumerate(out) if i == 0 or line != out[i - 1]]
 
 
+def _unit_telemetry(log: Path | None, unit: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The unit's counters, advanced by at most one bounded step of its telemetry sidecar."""
+    if log is None:
+        return None
+    try:
+        from alfrd.agent_io import unit_adapter
+        from alfrd.telemetry import advance
+
+        doc = advance(log.with_suffix(".events.jsonl"), unit_adapter(dict(unit)).name)
+    except Exception:  # telemetry must never break the activity view
+        return None
+    return {k: doc.get(k) for k in ("schema", "parser_version", "adapter", "counts", "unknown", "oversize_lines",
+                                    "coverage", "offset", "size", "behind")}
+
+
 def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | None = None,
              units: list[str] | None = None) -> dict[str, Any]:
     """Bounded tails; explicit attempt ids also retrieve final output after completion."""
@@ -3363,7 +3381,7 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
         except OSError:
             state, revision = "unreadable", unit["id"] + ":unreadable"
         cost = unit.get("total_cost_usd")
-        out.append({"row": unit.get("row"), "request": rec.get("request"), "kind": kind,
+        out.append({"telemetry": _unit_telemetry(path, unit), "row": unit.get("row"), "request": rec.get("request"), "kind": kind,
                     "owner": rec.get("owner") or (unit.get("steps") or [None])[0], "title": title, "unit": unit["id"],
                     "attempt": unit.get("attempt_number"), "model": unit.get("requested_model") or unit.get("model"),
                     "started": unit.get("started"), "seconds": seconds, "log": log, "bytes": size, "tail": tail,

@@ -2075,6 +2075,18 @@ class Runner:
             del self.live[unit_id]
             self.finalize(live.unit, process=live.process, reason=live.reason)
 
+    def _finalize_telemetry(self, unit: dict[str, Any]) -> None:
+        """Close the unit's telemetry sidecar at exit; the raw events log is only read."""
+        if not unit.get("log"):
+            return
+        try:
+            from alfrd.agent_io import unit_adapter
+            from alfrd.telemetry import advance
+
+            advance((self.folder.root / unit["log"]).with_suffix(".events.jsonl"), unit_adapter(unit).name, finalize=True)
+        except Exception as exc:  # never stop the runner for counters
+            self.log(f"{unit.get('id')}: telemetry finalize failed: {exc}")
+
     def agent_metadata(self, unit: dict[str, Any]) -> None:
         if not unit.get("handoff") and not unit.get("agent_step"):
             return
@@ -2205,6 +2217,7 @@ class Runner:
     def finalize(self, unit: dict[str, Any], *, process: subprocess.Popen | None, reason: str | None,
                  adopted: bool = False) -> None:
         self.agent_metadata(unit)
+        self._finalize_telemetry(unit)
         exit_data = _read_json(self.folder.root / str(unit.get("exit_file") or "-"), None)
         exit_code: int | None = None
         note = None

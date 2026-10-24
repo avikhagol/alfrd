@@ -3,12 +3,14 @@
 ``parse_log(path, adapter)`` returns JSON-serializable counts. Categories are
 subsets of tool_calls, not additional calls. Shell contents are never interpreted
 as reads/edits/searches. Unknown tools still count as calls, but make category
-coverage partial. No cache/sidecar or provider calls are made here.
+coverage partial. No provider calls are made here. ``advance`` keeps an incremental
+``alfrd.telemetry/1`` sidecar next to the log; the raw log is only ever read.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -17,6 +19,8 @@ PARSER_VERSION = "1"
 MAX_LINE_BYTES = 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 SNIFF_BYTES = 4096
+ADVANCE_BYTES = 4 * 1024 * 1024
+SCHEMA = "alfrd.telemetry/1"
 
 
 class Count(TypedDict, total=False):
@@ -188,7 +192,34 @@ class TelemetryParser:
                 else:
                     self.category_reasons.add("file_change missing changes")
 
-    def result(self) -> dict:
+    _SETS = ("unknown", "seen_calls", "seen_errors", "seen_turns", "reasons", "category_reasons")
+
+    def state(self) -> dict:
+        """JSON-serializable dedupe/count state, restorable with ``restore``."""
+        out = {k: sorted(getattr(self, k)) for k in self._SETS}
+        out.update(values=dict(self.values), oversize_lines=self.oversize_lines,
+                   oversize_sniffs=list(self.oversize_sniffs), partial_tail=self.partial_tail)
+        return out
+
+    def restore(self, state: dict) -> None:
+        for key in self._SETS:
+            setattr(self, key, {x for x in state.get(key, []) if isinstance(x, str)})
+        values = state.get("values") or {}
+        self.values = {k: int(values.get(k) or 0) for k in COUNTERS}
+        self.oversize_lines = int(state.get("oversize_lines") or 0)
+        self.oversize_sniffs = [d for d in state.get("oversize_sniffs", []) if isinstance(d, dict)][:20]
+        self.partial_tail = bool(state.get("partial_tail"))
+
+    def result(self, extra_reason: str | None = None) -> dict:
+        if extra_reason:
+            self.reasons.add(extra_reason)
+        try:
+            return self._result()
+        finally:
+            if extra_reason:
+                self.reasons.discard(extra_reason)
+
+    def _result(self) -> dict:
         supported = self.adapter in CLASSIFY
         counts: dict[str, Count] = {}
         for key, value in self.values.items():
@@ -267,3 +298,121 @@ def parse_claude(path: str | Path) -> dict:
 
 def parse_codex(path: str | Path) -> dict:
     return parse_log(path, "codex")
+
+
+def sidecar_path(log: str | Path) -> Path:
+    return Path(log).with_suffix(".telemetry.json")
+
+
+def _load_sidecar(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != SCHEMA or not isinstance(data.get("parser_state"), dict):
+        return None
+    return data
+
+
+def _write_sidecar(path: Path, data: dict) -> None:
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def advance(log: str | Path, adapter: str, *, budget: int = ADVANCE_BYTES, finalize: bool = False,
+            write: bool = True) -> dict:
+    """Advance the sidecar of one ``.events.jsonl`` by at most ``budget`` bytes (64 KiB reads).
+
+    A changed inode, a shrunken file, a different parser version or adapter rebuilds from
+    offset 0. The offset only moves past complete lines (or discarded oversize bytes), so a
+    partial tail is re-read next time; ``finalize`` resolves it at unit exit and keeps
+    reading to EOF. The raw log is opened read-only. Returns the sidecar document."""
+    log = Path(log)
+    side = sidecar_path(log)
+    parser = TelemetryParser(adapter)
+    try:
+        stat = log.stat()
+    except OSError:
+        doc = parse_log(log, adapter)
+        return {"schema": SCHEMA, **doc, "inode": None, "size": 0, "offset": 0, "behind": False}
+    prior = _load_sidecar(side)
+    offset, skipping, rebuilt = 0, False, True
+    if (prior and prior.get("parser_version") == PARSER_VERSION and prior.get("adapter") == adapter
+            and prior.get("inode") == stat.st_ino and isinstance(prior.get("size"), int)
+            and prior["size"] <= stat.st_size and isinstance(prior.get("offset"), int)
+            and 0 <= prior["offset"] <= stat.st_size):
+        if prior.get("finalized"):
+            if prior["size"] == stat.st_size:
+                return prior
+        else:
+            rebuilt = False
+    if not rebuilt:
+        offset, skipping = prior["offset"], bool(prior.get("skipping"))
+        parser.restore(prior["parser_state"])
+    if not finalize and not rebuilt and prior and prior["size"] == stat.st_size and prior["offset"] == stat.st_size:
+        return prior
+    # A call must see a whole maximal line (plus one chunk) to either complete it or mark it
+    # oversize; a smaller budget would re-read the same unfinished line forever.
+    limit = None if finalize else max(MAX_LINE_BYTES + READ_CHUNK_BYTES, int(budget))
+    read_total, buffer = 0, b""
+    try:
+        with log.open("rb") as stream:
+            stream.seek(offset)
+            while limit is None or read_total < limit:
+                chunk = stream.read(READ_CHUNK_BYTES if limit is None else min(READ_CHUNK_BYTES, limit - read_total))
+                if not chunk:
+                    break
+                read_total += len(chunk)
+                buffer += chunk
+                pos = 0  # consumed prefix of buffer; sliced once per chunk, not per line
+                while True:
+                    nl = buffer.find(b"\n", pos)
+                    if skipping:
+                        if nl < 0:
+                            offset += len(buffer) - pos
+                            pos = len(buffer)
+                            break
+                        offset += nl + 1 - pos
+                        pos = nl + 1
+                        skipping = False
+                    elif nl >= 0 and nl - pos < MAX_LINE_BYTES:
+                        parser.feed_line(buffer[pos:nl + 1])
+                        offset += nl + 1 - pos
+                        pos = nl + 1
+                    elif len(buffer) - pos > MAX_LINE_BYTES:
+                        parser.oversize(buffer[pos:pos + SNIFF_BYTES])
+                        skipping = True
+                    else:
+                        break
+                buffer = buffer[pos:]
+            size_now = stream.seek(0, os.SEEK_END)
+    except OSError:
+        doc = parse_log(log, adapter)
+        return {"schema": SCHEMA, **doc, "inode": stat.st_ino, "size": stat.st_size, "offset": 0, "behind": False}
+    if finalize and buffer and not skipping and offset + len(buffer) >= size_now:
+        try:
+            json.loads(buffer)
+        except (ValueError, UnicodeError, RecursionError):
+            parser.partial_tail = True
+            parser.reasons.add("incomplete final line")
+        else:
+            parser.feed_line(buffer)
+        offset += len(buffer)
+    elif finalize and skipping:
+        parser.partial_tail = True
+    size = max(stat.st_size, size_now)
+    behind = offset < size and not finalize
+    doc = parser.result("log not fully scanned" if behind else None)
+    doc.update(schema=SCHEMA, inode=stat.st_ino, size=size, offset=offset, behind=behind,
+               skipping=skipping, finalized=bool(finalize), parser_state=parser.state(),
+               rebuilt=rebuilt)
+    if write:
+        _write_sidecar(side, doc)
+    return doc
