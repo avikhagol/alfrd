@@ -1,6 +1,7 @@
 """Studio superuser page (``/superuser``, ``#/superuser``): settings, statistics and an ops panel.
 
-Every endpoint here is for a browser on the server machine only: reads pass the same loopback +
+Every endpoint here is for a browser on the server machine only, except ``GET /studio/ui-flags``
+(read by every Studio, read-only away from the server): reads pass the same loopback +
 same-origin + CSRF check as the server folder browser (``require_local_csrf``), writes the usual
 mutation gate. The settings live in one file per user (alfrd.superuser) and apply to every
 `alfrd serve` of this user on the next request.
@@ -8,6 +9,8 @@ mutation gate. The settings live in one file per user (alfrd.superuser) and appl
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import platform
 import sys
@@ -98,6 +101,30 @@ def _poke_all() -> None:
             _poke(project.identifier)
         except Exception:  # noqa: BLE001 - a missing project folder must not fail the save
             pass
+
+
+@studio_api.get("/studio/ui-flags")
+def ui_flags_get():
+    """``{revision, flags}``: the Studio UI flag registry (alfrd.ui_flags) with the machine values of the superuser file.
+
+    Not local-only, unlike the rest of this module: any Studio browser may read it. Where changes are refused (a remote
+    request, or a browser-only Studio with no server), every flag comes back ``locked`` with the reason. Browser flags
+    carry their defaults here; the browser's own values (alfrd.data.prefs in the page) apply on top.
+    """
+    from alfrd import ui_flags
+    from alfrd.gui.security import mutations_enabled, runtime_enabled
+
+    values = superuser.flat()
+    # the same content hash for the same settings: the page can tell that a change happened
+    revision = int(hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:12], 16)
+    flags = ui_flags.resolve(machine=values)
+    if not mutations_enabled():
+        reason = ("Browser-only mode: this Studio has no server to save to." if not runtime_enabled()
+                  else "Changes are allowed only from a browser on the server machine.")
+        for flag in flags:
+            flag["locked"] = True
+            flag["reason"] = f"{reason} {flag['reason']}" if flag["reason"] else reason
+    return jsonify(revision=revision, flags=flags)
 
 
 # --- statistics and ops -----------------------------------------------------------------------

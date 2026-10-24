@@ -6,6 +6,7 @@ import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
 import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
+import { readPrefs, writePrefs } from "./data/prefs.js";
 let folderScan = null;
 const folderMod = () => (folderScan ||= import("./data/folder_scan.js"));
 const canPickDirectory = () => typeof window.showDirectoryPicker === "function";
@@ -82,7 +83,7 @@ const state = {
   consoleOpen: false,
   consoleTab: "studio", // "studio" or the key of a docked log (see logview.js dockLog)
   notes: storage.get("notes", {}),
-  prefs: { pageSize: 25, live: true, ...storage.get("prefs", {}) },
+  prefs: { pageSize: readPrefs()["ui.rows_per_page"], live: readPrefs()["ui.live_updates"] },
   scans: {}, // server mode: ALFRD project -> last /scan JSON (patched by live updates)
   targetOrigin: {}, // ALFRD project -> "tree" | "runtime" (where its target rows came from)
   liveStatus: { state: "off", detail: "", last: null, interval: null },
@@ -212,7 +213,7 @@ export const ctx = {
   },
   setPrefs(patch) {
     Object.assign(state.prefs, patch);
-    storage.set("prefs", state.prefs);
+    writePrefs({ ...("pageSize" in patch && { "ui.rows_per_page": patch.pageSize }), ...("live" in patch && { "ui.live_updates": patch.live }) });
   },
   openImport,
 
@@ -1431,14 +1432,14 @@ ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) 
 const experimentalOn = () => server.session?.experimental === true;
 ctx.experimental = experimentalOn;
 // Chat mode (Preferences, per browser, off by default): Chat section, dock, chat runs
-function chatOn() { return experimentalOn() && shown("chat") && storage.get("ui:chat.enabled", false) === true; }
+function chatOn() { return experimentalOn() && shown("chat") && readPrefs()["ui.experimental_chat"] === true; }
 ctx.chatOn = chatOn;
 // Superuser-hidden sections (Overview stays)
 const shown = (id) => id == "overview" || !server.session?.superuser?.hidden_sections?.includes(id);
 ctx.refreshSession = async (throttle) => (await import("./data/session_refresh.js")).refreshSession(ctx, { views: VIEWS, shown, chatOn, goTo, render: scheduleRender, throttle });
 const su = () => !document.hidden && ctx.refreshSession(true).catch(() => {});
 document.addEventListener("visibilitychange", su); addEventListener("alfrd-events", su);
-ctx.setChat = (on) => { storage.set("ui:chat.enabled", Boolean(on)); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
+ctx.setChat = (on) => { writePrefs({ "ui.experimental_chat": Boolean(on) }); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
 Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && shown(v.id) && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
 ctx.goTo = goTo;
 ctx.rescan = () => rescan();
@@ -1660,7 +1661,7 @@ function liveRuntime() {
 
 const live = createLive({
   mode: () => state.mode,
-  watchHidden: () => state.mode === "server" && loadUi("notifications", {}).browser === true, // saved by notifications.js
+  watchHidden: () => state.mode === "server" && readPrefs()["ui.browser_notifications"] === true, // saved by notifications.js
   available: () => server.session?.live?.enabled !== false,
   projects: projectsFollowed,
   folders: () => (state.mode === "server" ? [] : Object.entries(state.folders).filter(([p, h]) => h && state.trees?.[p]).map(([project, handle]) => ({ project, handle }))),

@@ -5,6 +5,7 @@ import { notificationPanel, mountNotifications } from "./notifications.js";
 
 import { $, esc, icon, bytes, storage, loadUi, saveUi, resetUi, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { readPrefs } from "../data/prefs.js";
 import { tabFrame, tabRail } from "./tab_frame.js";
 
 const TABS = [
@@ -60,7 +61,7 @@ export function openSettings(ctx, app) {
     prefs: `<div class="set-prefs">
         <label class="check"><input type="checkbox" id="set-live" ${app.live.enabled ? "checked" : ""}> <span><b>Live updates</b><small>Follow the folder and open logs without Re-scan. ${liveNote} Paused while the tab is hidden.</small></span></label>
         ${ctx.experimental?.() ? `<label class="check"><input type="checkbox" id="set-chat" ${ctx.chatOn?.() ? "checked" : ""}> <span><b>Chat mode</b> <span class="muted small">experimental</span><small>Chat with the project's agents: the Chat section, the chat dock (Alt+Shift+A) and chat sessions' runs in Workflow. Off by default; remembered in this browser.</small></span></label>` : ""}
-        <label class="field"><span>Rows per page</span><select id="set-page" class="input sm">${[10, 25, 50, 100].map((n) => `<option ${state.prefs.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+        <label class="field"><span>Rows per page</span><select id="set-page" class="input sm">${[10, 25, 50, 100].map((n) => `<option ${readPrefs()["ui.rows_per_page"] === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
       </div>`,
     notify: notificationPanel(ctx),
     plugins: '<p class="muted small">Loading plugins…</p>',
