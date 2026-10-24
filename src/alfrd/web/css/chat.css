@@ -148,18 +148,20 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .chat-flow-start:not(:first-child) { margin-top: 16px; }
 .chat-flow-status { margin: 0; } .chat-flow-status:empty { display: none; }
 .chat-new-activity { position: sticky; bottom: 0; align-self: center; z-index: 2; box-shadow: var(--shadow-lg); }
-.chat-run { border: 1px solid var(--border-strong); border-radius: var(--r-lg); background: var(--surface-2); padding: 10px 12px; }
-.chat-run > summary { font-size: 14px; font-weight: 600; }
-.chat-run > p:empty { display: none; }
+.chat-request-line { display: flex; flex-direction: column; gap: 6px; }
+.chat-run-head { margin: 0; font-size: 14px; font-weight: 600; }
+.chat-run-head:empty, .chat-decisions:empty, .chat-decisions > section:empty { display: none; }
+.chat-details { border: 1px solid var(--border-strong); border-radius: var(--r-lg); background: var(--surface-2); padding: 10px 12px; }
+.chat-details > summary { font-size: 14px; font-weight: 600; }
+.chat-details > p:empty { display: none; }
 .chat-run-rows { display: flex; flex-direction: column; }
 .chat-run-row { padding-block: 10px; border-top: 1px solid var(--border); }
 .chat-task-select { text-align: left; white-space: normal; overflow-wrap: anywhere; min-width: 0; }
 .chat-output { margin-top: 6px; font-size: 14px; }
-.chat-output > summary { color: var(--accent-text); }
 .chat-output > .row { margin-top: 8px; }
 .chat-output select { width: auto; }
-.chat-run pre, .chat-flow pre { max-width: 100%; box-sizing: border-box; }
-.chat-mailbox:has(> p:empty):has([data-mail-cards]:empty):has(.chat-team[hidden]) { display: none; }
+.chat-details pre, .chat-flow pre { max-width: 100%; box-sizing: border-box; }
+.chat-mailbox:has(> p:empty):has([data-mail-cards]:empty) { display: none; }
 .chat-mail-card { padding: 14px; border: 1px solid var(--warn-border, var(--border-strong)); background: var(--surface-2); border-radius: var(--r-lg); margin-block: 8px; overflow-wrap: anywhere; }
 .chat-mail-card header { font-size: 14px; }
 .chat-mail-card fieldset { border: 0; padding: 0; min-width: 0; }
@@ -172,7 +174,7 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .cd-log .chat-msg { padding: 10px 0; }
 .cd-log .chat-user { padding: 10px 12px; }
 .chat-dock .chat-composer { padding-bottom: env(safe-area-inset-bottom); }
-.chat-dock .chat-run { padding: 8px; }
+.chat-dock .chat-details { padding: 8px; }
 @media (min-width: 901px) {
   .chat.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr) 320px; }
   .chat-sessions-collapsed .chat-sessions { display: none; }

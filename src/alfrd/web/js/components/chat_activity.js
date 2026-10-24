@@ -2,21 +2,33 @@ import { $, esc, icon, storage } from "../utils/dom.js";
 import { subscribeActivity } from "../data/chat_live.js";
 import { activityKey, activityLabel, activityRows, duration, money, requestProgress, statusInfo } from "../data/chat.js";
 
-// A request card with stable attempt rows. Output is recorded public activity.
+const PURIFY = { USE_PROFILES: { html: true }, FORBID_TAGS: ["style"], FORBID_ATTR: ["style", "id", "name"] };
+const purify = await import("../vendor/purify.es.mjs").then((m) => m.default, () => null);
+
+/** DOMPurify-clean HTML for text-bearing fragments. Without a usable DOMPurify the markup is shown as text. */
+export function sanitizeHtml(html, p = purify) {
+  if (p?.isSupported) return p.sanitize(String(html), PURIFY);
+  return esc(String(html));
+}
+
+// One request's activity line and its single Details disclosure: the line says where the run is;
+// Details holds the attempt rows with their recorded output, team messages and raw protocol.
+// Pending decisions sit above Details (see decisionsHost), so they never need it opened.
+// Output is recorded public activity.
 export function mountActivity(box, o) {
   let subscription, context = "", snapshot = { items: [] }, run, header, body, notice, paused = false;
   const rows = new Map();
   const state = () => o.state?.() || {};
   const rid = () => o.request?.();
   const pref = (kind, id) => `ui:chat.${kind}:${JSON.stringify([o.project(), o.sid(), id])}`;
-  const visible = () => box.isConnected && !box.closest("[hidden]") && !box.closest("details:not([open])");
+  const visible = () => box.isConnected && !box.closest("[hidden]") && Boolean(run?.open);
   function draw() {
     const req = state().requests?.find((r) => r.id === rid()), p = requestProgress(state(), req);
     const active = ["planning", "running", "summarizing", "needs_decision"].includes(req?.status);
     if (!run) {
       box.hidden = false;
-      box.innerHTML = `<details class="chat-run"><summary></summary><p class="muted small" role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
-      run = $("details", box); header = $("summary", run); body = $("div", run); notice = $("p", run);
+      box.innerHTML = `<p class="chat-run-head" role="status"></p><section class="chat-decisions" data-decisions></section><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
+      run = $("details", box); header = $(".chat-run-head", box); body = $(".chat-run-rows", run); notice = $("[data-notice]", run);
       $("[data-run-graph]", run).onclick = () => o.viewGraph?.(rid());
       run.open = storage.get(pref("run", rid()), active); if (run.open) run.dataset.auto = "1";
       run.addEventListener("toggle", () => { if (!run.dataset.auto) storage.set(pref("run", rid()), run.open); delete run.dataset.auto; subscription?.kick(); });
@@ -35,17 +47,11 @@ export function mountActivity(box, o) {
       let row = rows.get(key);
       if (!row) {
         const el = document.createElement("article"); el.className = "chat-run-row";
-        el.innerHTML = `<div class="row gap wrap"><button type="button" class="btn sm link grow chat-task-select"></button><span class="small" data-status></span><span class="small tabular" data-cost></span></div>
-          <details class="chat-output"><summary>Show output</summary><div class="row gap wrap small"><label>Tail <select class="input sm" aria-label="Output lines"><option>40</option><option>100</option><option>200</option><option>400</option></select> lines</label><button type="button" class="btn sm link" data-jump hidden>Jump to latest</button><button type="button" class="btn sm link" data-log>Open log</button><button type="button" class="btn sm link danger" data-cancel>Cancel</button></div><pre class="log chat-act-tail" tabindex="0"></pre><p class="muted small" data-tail-note></p><details><summary class="small">Technical details</summary><pre class="log chat-pre" data-raw></pre></details></details>`;
+        el.innerHTML = sanitizeHtml(`<div class="row gap wrap"><button type="button" class="btn sm link grow chat-task-select"></button><span class="small" data-status></span><span class="small tabular" data-cost></span></div>
+          <div class="chat-output"><div class="row gap wrap small"><label>Tail <select class="input sm" aria-label="Output lines"><option>40</option><option>100</option><option>200</option><option>400</option></select> lines</label><button type="button" class="btn sm link" data-jump hidden>Jump to latest</button><button type="button" class="btn sm link" data-log>Open log</button><button type="button" class="btn sm link danger" data-cancel>Cancel</button></div><pre class="log chat-act-tail" tabindex="0"></pre><p class="muted small" data-tail-note></p><p class="small muted">Raw protocol</p><pre class="log chat-pre" data-raw></pre></div>`);
         body.append(el);
-        row = { el, details: $(".chat-output", el), pre: $(".chat-act-tail", el), data: r, lines: 40, follow: true };
+        row = { el, pre: $(".chat-act-tail", el), data: r, lines: 40, follow: true };
         rows.set(key, row);
-        row.details.open = storage.get(pref("tail", key), false);
-        row.details.addEventListener("toggle", () => {
-          storage.set(pref("tail", key), row.details.open);
-          if (row.details.open) { row.follow = true; row.pre.scrollTop = row.pre.scrollHeight; }
-          subscription?.kick();
-        });
         row.pre.addEventListener("scroll", () => { row.follow = row.pre.scrollHeight - row.pre.scrollTop - row.pre.clientHeight < 24; $("[data-jump]", el).hidden = row.follow; }, { passive: true });
         $("[data-jump]", el).onclick = () => { row.follow = true; row.pre.scrollTop = row.pre.scrollHeight; $("[data-jump]", el).hidden = true; };
         $("select", el).onchange = (e) => { row.lines = Number(e.target.value); subscription?.kick(); };
@@ -56,7 +62,7 @@ export function mountActivity(box, o) {
       row.data = r;
       $(".chat-task-select", row.el).textContent = `${activityLabel(r)} · ${o.agentName(r.owner)}${r.attempt > 1 ? ` · attempt ${r.attempt}` : ""}`;
       const info = statusInfo(r.status), status = `${icon(info.icon)} ${esc(info.label)}${r.seconds != null ? ` · ${duration(Math.round(r.seconds))}` : ""}`;
-      const statusEl = $("[data-status]", row.el); if (statusEl.innerHTML !== status) statusEl.innerHTML = status;
+      const statusEl = $("[data-status]", row.el); if (statusEl.dataset.html !== status) { statusEl.dataset.html = status; statusEl.innerHTML = sanitizeHtml(status); }
       $("[data-cost]", row.el).textContent = money(r.cost_usd);
       $("[data-log]", row.el).hidden = !r.log;
       $("[data-cancel]", row.el).hidden = !["running", "retrying", "waiting", "queued"].includes(r.status);
@@ -79,16 +85,17 @@ export function mountActivity(box, o) {
       draw();
       if (paused) {
         run.open = storage.get(pref("run", rid()), run.open);
-        for (const [key, row] of rows) row.details.open = storage.get(pref("tail", key), row.details.open);
         paused = false;
       }
       if (!subscription) subscription = subscribeActivity(o.project(), o.sid(), (s) => { if (s.at || s.stale || s.unsupported || !snapshot.at) snapshot = s; draw(); }, {
         visible, busy: o.busy,
-        units: () => [...rows.values()].filter((r) => run.open && r.details.open && r.data.unit).map((r) => [r.data.unit, r.lines]),
+        units: () => [...rows.values()].filter((r) => run.open && r.data.unit).map((r) => [r.data.unit, r.lines]),
       });
       else subscription.kick();
     },
-    teamMailboxHost() { return $("[data-team-mailbox]", run); },
+    teamMailboxHost() { return $("[data-team-mailbox]", box); },
+    rawHost() { return $("[data-raw-protocol]", box); },
+    decisionsHost() { return $("[data-decisions]", box); },
     reset() { api.stop(); context = ""; api.kick(); },
     stop() { subscription?.stop(); subscription = null; paused = true; },
   };
