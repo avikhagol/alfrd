@@ -155,10 +155,9 @@ def test_continuation_outbox_replay_and_mailbox_prompt(project):
     attempts = [u for u in folder.units() if u["row"] == "r0001.a"]
     assert len(attempts) == 2
     prompt = (store.tasks_dir / "r0001.a" / "prompt.md").read_text()
-    assert "<mailbox-data>" in prompt and mid in prompt
-    assert "[--payload-file <path>]" in prompt
-    assert "optional for info (defaults to {})" in prompt
-    assert "permission_request payload needs action, target, description, scope (once), action_hash" in prompt
+    seq = box.status(mid, USER)["message"]["seq"]
+    assert "<mailbox>" in prompt and f"#{seq} ASK high you→user resolved:answer" in prompt
+    assert chat.MAILBOX_RULES in prompt
     context = folder.path / "mailbox" / "contexts" if hasattr(folder, "path") else project / ".alfrd" / "plans" / store.plan_id / "mailbox" / "contexts"
     assert list(context.glob("*.json"))
     state = chat.session_state(project, sid)
