@@ -12,7 +12,7 @@ import { openLog } from "./plans.js";
 import { mountThread } from "./chat_thread.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
-  parseMention, promotable, requestProgress, statusInfo, tokenLine, presentMessage,
+  parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, presentMessage,
 } from "../data/chat.js";
 
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
@@ -136,6 +136,7 @@ async function loadSession() {
   try {
     const data = await get(`${base(p)}/sessions/${encodeURIComponent(sid)}`);
     if (gen !== S.gen || p !== S.project || sid !== S.sid) return; // a newer request or another session won
+    if (staleState(S.data, data)) { S.loading = false; return; }
     const was = hasActivity(S.data);
     S.data = data; S.error = null;
     if (hasActivity(data) && !was) act?.kick();

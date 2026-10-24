@@ -384,6 +384,10 @@ class Session:
         return self.dir / "decisions"
 
     @property
+    def rev_file(self) -> Path:
+        return self.dir / "rev.json"
+
+    @property
     def graph_file(self) -> Path:
         return self.dir / "graph.json"
 
@@ -425,6 +429,20 @@ class Session:
             handle.close()
 
     # records ------------------------------------------------------------
+    @property
+    def rev(self) -> int:
+        """Monotonic change counter of the session (0 before the first change); see ``bump_rev``."""
+        data = _read(self.rev_file)
+        rev = data.get("rev") if isinstance(data, dict) else None
+        return rev if isinstance(rev, int) and rev > 0 else 0
+
+    def bump_rev(self) -> int:
+        """Advance ``rev`` by one. Only ever done under ``lock()``; the file is replaced atomically."""
+        with self.lock():
+            rev = self.rev + 1
+            _write(self.rev_file, {"rev": rev})
+            return rev
+
     def load(self) -> dict[str, Any]:
         data = _read(self.session_file)
         if not isinstance(data, dict):
@@ -438,7 +456,9 @@ class Session:
         return data
 
     def save_request(self, req: Mapping[str, Any]) -> None:
-        _write(self.requests_dir / f"{req['id']}.json", req)
+        with self.lock():
+            _write(self.requests_dir / f"{req['id']}.json", req)
+            self.bump_rev()
 
     def requests(self) -> list[dict[str, Any]]:
         return [r for r in (_read(p) for p in sorted(self.requests_dir.glob("*.json"))) if isinstance(r, dict)]
@@ -448,7 +468,9 @@ class Session:
         return data if isinstance(data, dict) else None
 
     def save_task(self, rec: Mapping[str, Any]) -> None:
-        _write(self.tasks_dir / rec["row"] / "task.json", rec)
+        with self.lock():
+            _write(self.tasks_dir / rec["row"] / "task.json", rec)
+            self.bump_rev()
 
     def tasks(self) -> list[dict[str, Any]]:
         out = [_read(p / "task.json") for p in sorted(self.tasks_dir.iterdir())] if self.tasks_dir.is_dir() else []
@@ -461,7 +483,9 @@ class Session:
         return data
 
     def save_decision(self, rec: Mapping[str, Any]) -> None:
-        _write(self.decisions_dir / f"{rec['id']}.json", rec)
+        with self.lock():
+            _write(self.decisions_dir / f"{rec['id']}.json", rec)
+            self.bump_rev()
 
     def decisions(self) -> list[dict[str, Any]]:
         return [d for d in (_read(p) for p in sorted(self.decisions_dir.glob("*.json"))) if isinstance(d, dict)]
@@ -490,6 +514,7 @@ class Session:
             with open(self.messages_file, "a", encoding="utf-8") as stream:
                 stream.write(json.dumps(item, ensure_ascii=False) + "\n")
                 stream.flush()
+            self.bump_rev()
         return item
 
 
@@ -585,6 +610,7 @@ def rename_session(root: str | Path, sid: str, title: Any) -> dict[str, Any]:
         data = store.load()
         data["title"] = text
         _write(store.session_file, data)
+        store.bump_rev()
     return data
 
 
@@ -2607,10 +2633,15 @@ def _write_graph(store: Session, conf: Mapping[str, Any] | None = None) -> None:
         _write(store.graph_file, graph(store, conf))
 
 
-def session_state(root: str | Path, sid: str, *, messages: int = 500) -> dict[str, Any]:
+def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev: int | None = None) -> dict[str, Any]:
+    """The whole session state. ``rev`` is read before the rest, so a change landing mid-build only makes the next
+    poll redundant. With ``since_rev`` equal to it the answer is just ``{rev, unchanged: True}``."""
     from alfrd.agent_io import agent_totals
 
     store = session(root, sid)
+    rev = store.rev
+    if since_rev is not None and since_rev == rev:
+        return {"rev": rev, "unchanged": True}
     conf = settings(store.root)
     folder = _plan_folder(store)
     units = folder.units()
@@ -2644,7 +2675,7 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500) -> dict[st
                      "warn_task_cost_usd": conf["warn_task_cost_usd"],
                      "bounds": conf["bounds"], "agents": {k: {f: v for f, v in a.items() if f != "cmd"}
                                                           for k, a in conf["agents"].items()}},
-        "protocol": proto.PROTOCOL, "mailbox_version": 1,
+        "protocol": proto.PROTOCOL, "mailbox_version": 1, "rev": rev,
     }
 
 

@@ -120,7 +120,8 @@ def chat_session_state(project_name: str, session_id: str):
     try:
         _recover_mailbox_delivery(chat.session(_project_root(project_name), session_id))
         return jsonify(chat.session_state(_project_root(project_name), session_id,
-                                          messages=request.args.get("messages", default=500, type=int)))
+                                          messages=request.args.get("messages", default=500, type=int),
+                                          since_rev=request.args.get("since_rev", default=None, type=int)))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 

@@ -9,7 +9,7 @@ import { server } from "../data/server.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountThread } from "./chat_thread.js";
-import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, statusInfo, tokenLine, presentMessage } from "../data/chat.js";
+import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, staleState, statusInfo, tokenLine, presentMessage } from "../data/chat.js";
 
 const SESSION_KEY = "ui:chat.session"; // shared with the Chat page: the dock follows the session you last opened
 const MIN = 300, MAX = 720;
@@ -156,6 +156,7 @@ async function loadSession() {
   try {
     const data = await get(`${base(p)}/sessions/${encodeURIComponent(sid)}?messages=200`);
     if (gen !== D.gen || p !== D.project || sid !== D.sid) return;
+    if (staleState(D.data, data)) return;
     const was = hasActivity(D.data);
     D.data = data; D.error = "";
     if (hasActivity(data) && !was) act?.kick();
