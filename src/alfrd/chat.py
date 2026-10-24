@@ -2646,30 +2646,79 @@ def _planner_row(recs: Mapping[str, Mapping[str, Any]], rec: Mapping[str, Any]) 
         return rec["planned_by"] if rec["planned_by"] in recs else None
     if rec.get("parent") or int(rec.get("depth") or 1) != 1:
         return None
-    rid = rec["request"]
-    rows = [r for r in recs.values() if r["request"] == rid and r["kind"] in ("plan", "repair")]
+    rid = rec.get("request")
+    rows = [r for r in recs.values() if r.get("request") == rid and r["kind"] in ("plan", "repair")]
     done = [r for r in rows if r.get("status") == "done"]
     pick = (done or rows)[-1:] if rows else []
     return pick[0]["row"] if pick else None
 
 
+UNSCOPED_GROUP = "unscoped"
+
+
+def _status_text(rec: Mapping[str, Any], status: str, recs: Mapping[str, Mapping[str, Any]]) -> str:
+    """One short human line for a node's status (the UI shows it next to the colour, never instead of it)."""
+    if status == "waiting":
+        pending = [d for d in rec.get("depends_on") or [] if (recs.get(d) or {}).get("status") != "done"]
+        if not pending:
+            return "Waiting"
+        return f"Waiting on {', '.join(pending[:3])}" + (f" +{len(pending) - 3}" if len(pending) > 3 else "")
+    if status == "retrying":
+        return f"Retrying (attempt {len(rec.get('units') or []) + 1})"
+    if status == "running" and len(rec.get("units") or []) > 1:
+        return f"Running (attempt {len(rec['units'])})"
+    if status in ("failed", "blocked") and rec.get("error"):
+        return f"{status.capitalize()}: {_clip(rec['error'], 80)}"
+    return status.replace("_", " ").capitalize()
+
+
+def _counts(nodes: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for n in nodes:
+        out[n["status"]] = out.get(n["status"], 0) + 1
+    return {"total": sum(out.values()), **dict(sorted(out.items()))}
+
+
+def _graph_groups(store: Session, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One group per request (in request order) holding its node ids, counts and orchestrator rows. Nodes whose
+    request is missing (legacy sessions) fall into a trailing "Unscoped" group."""
+    reqs = store.requests()
+    known = {r["id"] for r in reqs}
+    groups = []
+    for req in reqs:
+        mine = [n for n in nodes if n["request"] == req["id"]]
+        groups.append({"id": req["id"], "title": _clip(req.get("text") or req["id"], 60), "nodes": [n["id"] for n in mine],
+                       "orchestrator": [n["id"] for n in mine if n["kind"] in ORCHESTRATOR_KINDS],
+                       "counts": _counts(mine)})
+    loose = [n for n in nodes if n["request"] not in known]
+    if loose:
+        groups.append({"id": UNSCOPED_GROUP, "title": "Unscoped", "nodes": [n["id"] for n in loose],
+                       "orchestrator": [n["id"] for n in loose if n["kind"] in ORCHESTRATOR_KINDS],
+                       "counts": _counts(loose)})
+    return groups
+
+
 def graph(store: Session, conf: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Task graph: task nodes and orchestrator calls (``kind`` plan/repair/replan/summary); edges
-    ``depends_on``, ``delegated`` (task → sub-task) and ``planned`` (orchestrator row → each task it created)."""
+    ``depends_on``, ``delegated`` (task → sub-task) and ``planned`` (orchestrator row → each task it created).
+    Nodes carry ``status_text``; ``groups`` has one entry per request (plus "Unscoped" for legacy nodes) and ``rev``
+    is the session revision. Nodes are ordered by ``(created_ns, row)`` so the layout is stable."""
     conf = conf or settings(store.root)
     table = _table(store, conf)
     nodes, edges = [], []
-    recs = {r["row"]: r for r in store.tasks()}
+    rev = store.rev
+    recs = {r["row"]: r for r in sorted(store.tasks(), key=lambda r: (r.get("created_ns") or 0, r["row"]))}
     for rec in recs.values():
         status = _cell_status(rec, table.row(rec["row"]), table)
+        text = _status_text(rec, status, recs)
         if rec["kind"] in ORCHESTRATOR_KINDS:
-            title = f"{ORCHESTRATOR_TITLES[rec['kind']]} {rec['request']}"
-            nodes.append({"id": rec["row"], "kind": rec["kind"], "request": rec["request"], "title": title,
-                          "owner": rec["owner"], "status": status, "depth": rec.get("depth") or 0})
+            title = f"{ORCHESTRATOR_TITLES[rec['kind']]} {rec.get('request')}"
+            nodes.append({"id": rec["row"], "kind": rec["kind"], "request": rec.get("request"), "title": title,
+                          "owner": rec["owner"], "status": status, "status_text": text, "depth": rec.get("depth") or 0})
             continue
         task = rec.get("task") or {}
-        nodes.append({"id": rec["row"], "kind": "task", "request": rec["request"], "title": task.get("title"),
-                      "owner": rec["owner"], "status": status, "depth": rec.get("depth")})
+        nodes.append({"id": rec["row"], "kind": "task", "request": rec.get("request"), "title": task.get("title"),
+                      "owner": rec["owner"], "status": status, "status_text": text, "depth": rec.get("depth")})
         edges += [{"from": d, "to": rec["row"], "kind": "depends_on"} for d in rec.get("depends_on") or []]
         if rec.get("parent"):
             edges.append({"from": rec["parent"], "to": rec["row"], "kind": "delegated"})
@@ -2687,7 +2736,8 @@ def graph(store: Session, conf: Mapping[str, Any] | None = None) -> dict[str, An
         lines.append(f"  {_node_id(n['id'])}{shape}")
     for e in edges:
         lines.append(f"  {_node_id(e['from'])} {arrows.get(e['kind'], '-->')} {_node_id(e['to'])}")
-    return {"nodes": nodes, "edges": edges, "mermaid": "\n".join(lines)}
+    return {"nodes": nodes, "edges": edges, "mermaid": "\n".join(lines), "rev": rev,
+            "groups": _graph_groups(store, nodes)}
 
 
 def _write_graph(store: Session, conf: Mapping[str, Any] | None = None) -> None:
