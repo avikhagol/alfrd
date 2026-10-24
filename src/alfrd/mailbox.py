@@ -24,6 +24,7 @@ from alfrd.mailbox_codes import defaults
 PROTOCOL_V1 = "alfrd.mailbox/1"
 PROTOCOL = "alfrd.mailbox/2"
 USER = {"kind": "user"}
+_REPLAY = {}  # path -> (inode, validated offset, last validated line, records)
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}\Z")
 
 
@@ -96,6 +97,7 @@ class Mailbox:
             try:
                 self.messages = self._read("messages")
                 self.events = self._read("events")
+                self._reindex()
                 self._repair_resolutions()
                 self._expire()
                 yield
@@ -106,8 +108,20 @@ class Mailbox:
         path = self.dir / f"{name}.jsonl"
         if not path.exists():
             return []
-        records = []
+        records, last = [], b""
         with open(path, "r+b") as stream:
+            # Validated prefix cached per process: replay only what was appended since. The
+            # cache is dropped if the file was replaced, shrank, or its last known line changed.
+            cached = _REPLAY.get(str(path))
+            if cached:
+                inode, offset, last, known = cached
+                st = os.fstat(stream.fileno())
+                stream.seek(offset - len(last))
+                if inode == st.st_ino and offset <= st.st_size and stream.read(len(last)) == last:
+                    records = list(known)
+                else:
+                    stream.seek(0)
+                    last = b""
             while True:
                 start = stream.tell()
                 raw = stream.readline()
@@ -125,8 +139,10 @@ class Mailbox:
                     if value[position] != len(records) + 1:
                         raise ValueError("non-monotonic sequence")
                     records.append(value)
+                    last = raw
                 except (ValueError, UnicodeError, KeyError) as exc:
                     raise MailboxError(f"corrupt complete mailbox record in {path.name}", 500) from exc
+            _REPLAY[str(path)] = (os.fstat(stream.fileno()).st_ino, start, last, list(records))
         return records
 
     def _append(self, name, value):
@@ -136,6 +152,10 @@ class Mailbox:
             stream.flush()
             os.fsync(stream.fileno())
         getattr(self, name).append(value)
+        if name == "events":
+            self._by_message.setdefault(value["message_id"], []).append(value)
+        else:
+            self._by_id[value["id"]] = value
         checkpoint = self.dir / "state.tmp"
         with checkpoint.open("w", encoding="utf-8") as stream:
             stream.write(canonical({"messages": len(self.messages), "events": len(self.events)}))
@@ -171,8 +191,15 @@ class Mailbox:
                     datetime.fromisoformat(message["expires_at"].replace("Z", "+00:00")) <= datetime.now(timezone.utc):
                 self._event("expired", message, {"kind": "orchestrator"}, {})
 
+    def _reindex(self):
+        # Derived from the JSONL on every lock and never persisted, so it cannot go stale.
+        self._by_id = {m["id"]: m for m in self.messages}
+        self._by_message = {}
+        for event in self.events:
+            self._by_message.setdefault(event["message_id"], []).append(event)
+
     def _state(self, message):
-        events = [e for e in self.events if e["message_id"] == message["id"] and
+        events = [e for e in self._by_message.get(message["id"], ()) if
                   (e["type"] in ("resolved", "expired", "cancelled") or
                    (e["type"] == "ack" and message["kind"] == "info"))]
         event = events[-1] if events else None
@@ -184,7 +211,7 @@ class Mailbox:
         return {**message, **defaults(message, original)}
 
     def _find(self, mid):
-        return next((m for m in self.messages if m["id"] == mid), None) or self._missing()
+        return self._by_id.get(mid) or self._missing()
 
     def _missing(self):
         raise MailboxError("unknown scoped mailbox message", 404)
@@ -302,12 +329,33 @@ class Mailbox:
         with self.locked():
             return {"messages": self._pending(actor), "cursor": self._cursor()}
 
+    def _stamp(self):
+        stamp = []
+        for name in ("messages", "events"):
+            try:
+                st = (self.dir / f"{name}.jsonl").stat()
+                stamp.append((st.st_ino, st.st_size, st.st_mtime_ns))
+            except FileNotFoundError:
+                stamp.append(None)
+        return tuple(stamp)
+
     def summary(self):
+        # Keyed by file stat: any append, torn-tail truncation or replacement misses.
+        # A pending expiry changes the answer without touching the files, so it bounds the entry.
+        stamp = self._stamp()
+        cached = getattr(self, "_summary", None)
+        if cached and cached[0] == stamp and datetime.now(timezone.utc) < cached[1]:
+            return dict(cached[2])
         with self.locked():
-            return {"pending_user": len(self._pending(USER)),
-                    "pending_orchestrator": sum(m["kind"] in ("question", "permission_request") and
-                                                m["recipient"]["kind"] == "orchestrator" and
-                                                self._state(m)["state"] == "pending" for m in self.messages), "last_cursor": self._cursor()}
+            stamp = self._stamp()
+            result = {"pending_user": len(self._pending(USER)),
+                      "pending_orchestrator": sum(m["kind"] in ("question", "permission_request") and
+                                                  m["recipient"]["kind"] == "orchestrator" and
+                                                  self._state(m)["state"] == "pending" for m in self.messages), "last_cursor": self._cursor()}
+            expiries = [datetime.fromisoformat(m["expires_at"].replace("Z", "+00:00")) for m in self.messages
+                        if m["kind"] in ("question", "permission_request") and m["expires_at"]]
+            self._summary = (stamp, min(expiries, default=datetime.max.replace(tzinfo=timezone.utc)), result)
+            return dict(result)
 
     def status(self, mid, actor):
         with self.locked():
