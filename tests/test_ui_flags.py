@@ -35,6 +35,32 @@ def test_revision_increment_and_stale_conflict():
     assert registry.revision == 1
 
 
+SKILL_FLAGS = ("chat.native_skills", "chat.native_plugins", "chat.native_mcp", "chat.saved_skills")
+
+
+def test_skill_flags_are_registered_as_project_booleans():
+    from alfrd.ui_flags import BY_KEY, DEFAULTS
+
+    for key in SKILL_FLAGS:
+        assert BY_KEY[key].scope == "project" and BY_KEY[key].type == "bool"
+        assert DEFAULTS["ui"][key] == BY_KEY[key].default
+    rows = {row["key"]: row for row in resolve(project={"chat.saved_skills": True})}
+    assert rows["chat.saved_skills"]["effective"] is True and rows["chat.saved_skills"]["source"] == "project"
+    assert rows["chat.native_skills"]["effective"] is True and rows["chat.native_skills"]["source"] == "default"
+    assert rows["chat.native_skills"]["scope"] == "project" and rows["chat.native_skills"]["dangerous"] is False
+    with pytest.raises(UIFlagError):
+        validate_ui({"chat.saved_skills": "yes"})
+
+
+def test_skill_flags_save_only_in_project_scope():
+    registry = UIFlagRegistry()
+    assert registry.save("project", {"chat.saved_skills": True, "chat.native_mcp": False}, expected_revision=0) == 1
+    saved = registry.values()["project"]
+    assert saved["chat.saved_skills"] is True and saved["chat.native_mcp"] is False
+    with pytest.raises(UIFlagError, match="browser cannot save"):
+        registry.save("browser", {"chat.saved_skills": False})
+
+
 def test_machine_lock_reports_reason():
     rows = {row["key"]: row for row in resolve(
         browser={"ui.live_updates": False},

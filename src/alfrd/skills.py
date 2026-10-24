@@ -182,3 +182,24 @@ def effective_args(agents):
         entry["notes"] = list(NATIVE_NOTES.get(adapter.name, NATIVE_NOTES["generic"]).values())
         result.append(entry)
     return result
+
+
+def agent_view(agents):
+    """Per agent: adapter, native skill/plugin/MCP switches as this startup sets them, effective args, notes.
+
+    Only Claude has native switches (see ``agent_io.startup_args``); other adapters report them as off.
+    """
+    view = {}
+    for entry in effective_args(agents):
+        startup = entry.get("startup") or {}
+        claude = entry["adapter"] == "claude"
+        native = {
+            "skills": claude and startup.get("skills") is not False,
+            "plugins": claude and startup.get("plugins") is not False,
+            "mcp": claude and startup.get("mcp", "default") != "none",
+        }
+        view[entry["id"]] = {"adapter": entry["adapter"], "native": native,
+                             "effective_args": entry["argv"] or [], "notes": entry["notes"]}
+        if entry["error"]:
+            view[entry["id"]]["error"] = entry["error"]
+    return view

@@ -14,6 +14,7 @@ from flask import Response, jsonify, request
 from alfrd import attachments as att
 from alfrd import chat, mailbox
 from alfrd import orchestration as proto
+from alfrd import skills as saved_skills
 from alfrd.execution import ExecutionError
 
 from .studio import _json_error, _poke, _project_root, studio_api
@@ -79,6 +80,24 @@ def chat_probe(project_name: str):
     """Which agent programs are installed, whether a local Ollama answers (and its models), whether HF_TOKEN is set."""
     try:
         return jsonify(chat.probe(_project_root(project_name)))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/skills")
+def chat_skills(project_name: str):
+    """Saved skills in the project and, per chat agent, what its native skill, plugin and MCP switches do at
+    startup (a dry run of the adapter's args; nothing is launched). Errors: 400 invalid manifest or settings."""
+    from alfrd.execution import merged_manifest
+
+    try:
+        root = _project_root(project_name)
+        entries = {str(e["name"]): e for e in merged_manifest(root).get("entrypoint") or [] if isinstance(e, dict) and e.get("name")}
+        specs = {key: {"argv": chat._agent_argv(agent, key, entries), "adapter": agent.get("adapter"),
+                       "model": agent.get("model"), "model_option": agent.get("model_option"),
+                       "lean": agent.get("lean", False)}
+                 for key, agent in chat.settings(root)["agents"].items()}
+        return jsonify(skills=saved_skills.discover_skills(root), agents=saved_skills.agent_view(specs))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 from alfrd import skills
+from alfrd.gui import create_app
+from alfrd.gui.services import RuntimeCatalogReader
+from alfrd.runtime import RuntimeService, RuntimeStore
+from tests.test_chat_orchestration import project  # noqa: F401  (the project fixture)
 
 
 def write_skill(project, root, name, text):
@@ -138,3 +144,56 @@ def test_selection_snapshot_is_bounded_ordered_and_frozen(tmp_path):
     write_skill(tmp_path, "skills", "a", "a" * skills.MAX_SKILL_BYTES)
     with pytest.raises(ValueError, match="128 KiB"):
         skills.snapshot_selection(tmp_path, {"enabled": True, "selected_ids": ["a", "b", "c"]})
+
+
+def test_agent_view_native_flags_and_notes():
+    view = skills.agent_view({
+        "claude": {"argv": ["claude", "-p", "-"], "lean": True, "model": "opus"},
+        "plain": {"argv": ["claude", "-p", "-"]},
+        "codex": {"argv": ["codex", "exec", "-"], "lean": True},
+        "bad": {"argv": ["claude"], "lean": "yes"},
+    })
+    assert view["claude"]["adapter"] == "claude"
+    assert view["claude"]["native"] == {"skills": False, "plugins": False, "mcp": False}
+    assert "--disable-slash-commands" in view["claude"]["effective_args"]
+    assert view["plain"]["native"] == {"skills": True, "plugins": True, "mcp": True}
+    assert view["codex"]["adapter"] == "codex"
+    assert view["codex"]["native"] == {"skills": False, "plugins": False, "mcp": False}
+    assert view["codex"]["effective_args"] == ["codex", "exec", "-"]
+    assert "Codex: no effect" in view["codex"]["notes"][0]
+    assert view["bad"]["native"] == {"skills": False, "plugins": False, "mcp": False}
+    assert view["bad"]["effective_args"] == [] and "lean" in view["bad"]["error"]
+
+
+@pytest.fixture
+def skills_web(project, tmp_path):
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    service = RuntimeService(store)
+    service.register_manifest(project / ".alfrd" / "alfrd.yaml")
+    ident = service.list_projects()[0].identifier
+    app = create_app({"TESTING": True, "SECRET_KEY": "k", "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'c.sqlite'}",
+                      "RUNTIME_SERVICE": service, "CATALOG_READER": RuntimeCatalogReader(service),
+                      "STUDIO_DEMO": False, "STUDIO_LIVE_INTERVAL": 0})
+    return app.test_client(), f"/api/studio/projects/{ident}/chat", project
+
+
+def test_skills_route_lists_skills_and_per_agent_native_flags(skills_web):
+    client, base, project = skills_web
+    write_skill(project, ".alfrd/skills", "review", "---\nname: Review\ndescription: check diffs\n---\nbody\n")
+    resp = client.get(f"{base}/skills")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert set(body) == {"skills", "agents"}
+    assert [{k: s[k] for k in ("id", "name", "description", "source")} for s in body["skills"]] == [
+        {"id": "review", "name": "Review", "description": "check diffs", "source": ".alfrd/skills/review/SKILL.md"}]
+    assert set(body["skills"][0]) == {"id", "name", "description", "source", "sha256", "bytes"}
+    agents = body["agents"]
+    assert {"claude", "codex"} <= set(agents)
+    for view in agents.values():
+        assert set(view) >= {"adapter", "native", "effective_args", "notes"}
+        assert set(view["native"]) == {"skills", "plugins", "mcp"}
+    assert agents["codex"]["adapter"] == "codex"
+    assert agents["codex"]["native"] == {"skills": False, "plugins": False, "mcp": False}
+    assert any("Codex: no effect" in note for note in agents["codex"]["notes"])
+    assert agents["claude"]["adapter"] == "claude" and "--disable-slash-commands" in agents["claude"]["effective_args"]
