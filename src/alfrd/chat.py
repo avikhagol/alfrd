@@ -177,7 +177,7 @@ PRESETS: dict[str, dict[str, Any]] = {
 ROLE_WORDS = ["orchestration", "research", "image generation", "design", "development", "test planning",
               "verification", "failure analysis", "writing"]
 AGENT_FIELDS = {"label", "entrypoint", "cmd", "model", "adapter", "roles", "persona", "timeout", "lean", "env",
-                "fallback", "model_option"}
+                "fallback", "model_option", "skills", "plugins", "mcp"}
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SETTING_KEYS = ("orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd",
                 "concurrency", "history_messages", "skill_selection")
@@ -252,6 +252,11 @@ def merge_settings(raw: Any) -> dict[str, Any]:
                 raise ExecutionError(f"chat.agents.{key}.{name} must be a nonempty string")
         if agent.get("lean") is not None and not isinstance(agent["lean"], bool):
             raise ExecutionError(f"chat.agents.{key}.lean must be true or false")
+        try:
+            from alfrd.agent_io import startup_options
+            startup_options(agent)
+        except ValueError as exc:
+            raise ExecutionError(f"chat.agents.{key}: {exc}") from exc
         env = agent.get("env")
         if env is not None:
             if not isinstance(env, Mapping):
@@ -335,7 +340,7 @@ def execution_config(root: str | Path, session: str) -> ExecutionConfig:
             "output_capture": entry.get("output_capture", "file") if entry.get("output_file") else "stdout",
             "human_review": False,
         }
-        for field in ("model", "adapter", "timeout", "lean", "model_option"):
+        for field in ("model", "adapter", "timeout", "lean", "model_option", "skills", "plugins", "mcp"):
             if agent.get(field) is not None:
                 spec[field] = agent[field]
         if agent.get("env"):

@@ -95,11 +95,23 @@ def chat_skills(project_name: str):
     try:
         root = _project_root(project_name)
         entries = {str(e["name"]): e for e in merged_manifest(root).get("entrypoint") or [] if isinstance(e, dict) and e.get("name")}
-        specs = {key: {"argv": chat._agent_argv(agent, key, entries), "adapter": agent.get("adapter"),
-                       "model": agent.get("model"), "model_option": agent.get("model_option"),
-                       "lean": agent.get("lean", False)}
-                 for key, agent in chat.settings(root)["agents"].items()}
+        specs = {}
+        for key, agent in chat.settings(root)["agents"].items():
+            name = agent.get("entrypoint") or key
+            entry = {} if agent.get("cmd") else (entries.get(name) or chat.BUILTIN_ENTRYPOINTS.get(name) or {})
+            specs[key] = {**entry, "argv": chat._agent_argv(agent, key, entries),
+                          **{k: agent[k] for k in ("model", "adapter", "model_option", "lean", "skills", "plugins", "mcp")
+                             if agent.get(k) is not None}}
         return jsonify(skills=saved_skills.discover_skills(root), agents=saved_skills.agent_view(specs))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/skills/preview")
+def chat_skill_preview(project_name: str):
+    """Bounded plain text from the same safe discovery roots; never accepts a file path."""
+    try:
+        return jsonify(saved_skills.preview(_project_root(project_name), request.args.get("id")))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 

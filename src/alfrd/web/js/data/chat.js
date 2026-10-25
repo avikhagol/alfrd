@@ -306,8 +306,8 @@ export function duration(s) {
 
 // --- chat: settings (Settings → Agent chat) --------------------------------------------
 
-const AGENT_FIELDS = ["label", "entrypoint", "cmd", "model", "adapter", "roles", "persona", "timeout", "lean", "env", "fallback"];
-const SETTING_KEYS = ["orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd", "concurrency", "history_messages"];
+const AGENT_FIELDS = ["label", "entrypoint", "cmd", "model", "adapter", "roles", "persona", "timeout", "lean", "env", "fallback", "model_option", "skills", "plugins", "mcp"];
+const SETTING_KEYS = ["orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd", "concurrency", "history_messages", "skill_selection"];
 
 /** The effective chat settings of a `chat:` block (presets merged under it, `agent: null` removes one). */
 export function mergeChat(raw = {}) {
@@ -342,7 +342,7 @@ export function chatBlock(s) {
   const warn = Number(s.warn_task_cost_usd) > 0 ? Number(s.warn_task_cost_usd) : null;
   return { orchestrator: s.orchestrator, orchestrator_model: model(s.orchestrator_model), escalation_model: model(s.escalation_model),
     final_summary: Boolean(s.final_summary), warn_task_cost_usd: warn, concurrency: Number(s.concurrency),
-    history_messages: Number(s.history_messages), bounds: { ...s.bounds }, agents };
+    history_messages: Number(s.history_messages), ...(s.skill_selection ? { skill_selection: s.skill_selection } : {}), bounds: { ...s.bounds }, agents };
 }
 
 /** Problems with effective settings (mirrors chat.merge_settings); `personas` are the project's persona keys. */

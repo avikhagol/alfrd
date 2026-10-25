@@ -203,3 +203,11 @@ def agent_view(agents):
         if entry["error"]:
             view[entry["id"]]["error"] = entry["error"]
     return view
+
+
+def preview(project, skill_id):
+    """Read only a discovered, bounded skill; IDs cannot escape the allowed roots."""
+    for skill in _discover_skills(project, SKILL_ROOTS, content=True):
+        if skill["id"] == skill_id:
+            return skill
+    raise LookupError("Skill is unavailable")
