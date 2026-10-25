@@ -111,7 +111,9 @@ def test_lazy_payload_under_106kb_compressed():
     startup = _startup_files()
     total = sum(_gz(p) for p in _web_files()
                 if p.resolve() not in startup and p.suffix not in {".png", ".ico"})
-    assert total < 300 * 1024, f"{total} bytes gzip"
+    # @avikhagol: v0.4.0.0 wave3 (S2 prefs, T1-T4 transcript/viewers, S3 settings form, G2/G3 graph,
+    # T4 lazy viewers moved out of startup) grew lazy 306,682 -> 323,192 B. Cap 300 -> 320 KiB (327,680).
+    assert total < 320 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
