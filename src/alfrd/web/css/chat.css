@@ -221,3 +221,16 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
   .chat .spin, .chat-dock .spin { animation: none !important; }
   .chat *, .chat-dock * { scroll-behavior: auto !important; }
 }
+
+/* Status icons (components/status_icons.js): colour tokens per state; the text label carries the meaning. */
+.status-icon { --status-done: var(--ok); --status-running: var(--run, var(--accent)); --status-failed: var(--fail); --status-blocked: var(--warn); --status-queued: var(--muted); --status-cancelled: var(--muted); --status-unknown: var(--muted); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.status-icon .ic { color: var(--status-unknown); }
+.status-icon[data-status="done"] .ic { color: var(--status-done); }
+.status-icon[data-status="running"] .ic { color: var(--status-running); }
+.status-icon[data-status="failed"] .ic { color: var(--status-failed); }
+.status-icon[data-status="blocked"] .ic { color: var(--status-blocked); }
+.status-icon[data-status="queued"] .ic { color: var(--status-queued); }
+.status-icon[data-status="cancelled"] .ic { color: var(--status-cancelled); }
+.status-icon[data-status="running"] .ic { animation: status-spin 1.2s linear infinite; }
+@keyframes status-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .status-icon[data-status="running"] .ic { animation: none; } }
