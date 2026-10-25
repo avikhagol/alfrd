@@ -198,7 +198,8 @@ command permissions.
 answered question or approved permission, 2 while still pending at the timeout,
 and 3 on denial, expiry or cancellation. Mailbox operation errors exit 1 with
 JSON `error` and `status`; argument/usage errors use Typer diagnostics. `codes`
-prints a Markdown table instead of JSON. The first
+prints a Markdown table instead of JSON; the documentation test checks every
+code, kind, category, default priority and meaning against that shared table. The first
 valid resolution wins; stale versions and changed idempotent retries conflict.
 
 For a stopped task, include `mailbox_message_id` on its orchestration blocker.

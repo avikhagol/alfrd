@@ -81,4 +81,5 @@ def test_documented_code_table_matches_cli_source():
     for code, row in CODES.items():
         category = row["category"] or "(inherited)"
         priority = row["priority"] or "(inherited)"
-        assert f"| {code} | {row['kind']} | {category} | {priority} |" in doc
+        meaning = row["meaning"]
+        assert f"| {code} | {row['kind']} | {category} | {priority} | {meaning} |" in doc.replace("`", "")
