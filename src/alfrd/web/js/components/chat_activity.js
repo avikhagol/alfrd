@@ -56,7 +56,10 @@ export function mountActivity(box, o) {
         $("[data-jump]", el).onclick = () => { row.follow = true; row.pre.scrollTop = row.pre.scrollHeight; $("[data-jump]", el).hidden = true; };
         $("select", el).onchange = (e) => { row.lines = Number(e.target.value); subscription?.kick(); };
         $(".chat-task-select", el).onclick = () => o.select?.(row.data.row);
-        $("[data-log]", el).onclick = () => o.openLog(row.data.log);
+        $("[data-log]", el).onclick = () => {
+          const { unit, attempt } = row.data, rows = activityRows(state(), snapshot.items, rid());
+          o.openLog(row.data.log, { unit, attempt, latest: !rows.some((x) => x.unit === unit && (x.attempt || 0) > (attempt || 0)) });
+        };
         $("[data-cancel]", el).onclick = (e) => o.cancel(row.data.row, e.currentTarget);
       }
       row.data = r;
