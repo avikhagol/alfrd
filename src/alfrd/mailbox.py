@@ -19,7 +19,7 @@ from functools import lru_cache
 import fcntl
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
-from alfrd.mailbox_codes import defaults
+from alfrd.mailbox_codes import defaults, PRIORITIES
 
 PROTOCOL_V1 = "alfrd.mailbox/1"
 PROTOCOL = "alfrd.mailbox/2"
@@ -327,7 +327,9 @@ class Mailbox:
 
     def pending(self, actor=USER):
         with self.locked():
-            return {"messages": self._pending(actor), "cursor": self._cursor()}
+            return {"messages": sorted(self._pending(actor), key=lambda m: (
+                m["kind"] != "permission_request", -PRIORITIES.index(m["priority"]), m["seq"])),
+                "cursor": self._cursor()}
 
     def _stamp(self):
         stamp = []
@@ -400,7 +402,8 @@ class Mailbox:
             if state["state"] == "resolved" and existing and existing["sender"] == actor and existing["idempotency_key"] == payload.get("idempotency_key") and existing["payload"] == body:
                 return {"message": existing, "resolution": state, "delivery": "recorded"}
             if state["state"] != "pending" or payload.get("expected_version", 1) != state["version"]:
-                raise MailboxError("request is no longer pending or version is stale", 409, **state)
+                raise MailboxError("Answered elsewhere" if state["state"] == "resolved" else
+                                   "request is no longer pending or version is stale", 409, **state)
             message, _ = self._put(actor, {"recipient": original["sender"], "kind": "reply", "subject": original["subject"],
                                           "body": body["answer"] or body["choice_id"] or body["outcome"], "reply_to": mid,
                                           "correlation_id": original["correlation_id"], "idempotency_key": payload.get("idempotency_key"),

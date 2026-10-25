@@ -7,6 +7,7 @@ import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
 import { readPrefs, writePrefs } from "./data/prefs.js";
+import { createInbox, countText } from "./data/inbox.js";
 let folderScan = null;
 const folderMod = () => (folderScan ||= import("./data/folder_scan.js"));
 const canPickDirectory = () => typeof window.showDirectoryPicker === "function";
@@ -1433,6 +1434,20 @@ const experimentalOn = () => server.session?.experimental === true;
 ctx.experimental = experimentalOn;
 // Chat mode (Preferences, per browser, off by default): Chat section, dock, chat runs
 function chatOn() { return experimentalOn() && shown("chat") && readPrefs()["ui.experimental_chat"] === true; }
+let inboxCount = null;
+const inbox = createInbox({ request: (url) => server.request(url), publish(project, sessions, count) {
+  inboxCount = count; paintInbox();
+  window.dispatchEvent(new CustomEvent("alfrd-inbox", { detail: { project, sessions } }));
+} });
+function paintInbox() {
+  const p = activeProject(), enabled = chatOn() && state.mode === "server" && Boolean(p);
+  const link = $("#chat-inbox"), badge = $("[data-inbox-count]");
+  if (link) { link.hidden = !enabled; link.href = routeHash("chat", p, state.selectedTarget); link.textContent = `Chat · ${countText(inboxCount)}`; }
+  if (badge) { badge.hidden = !enabled; badge.textContent = inboxCount ?? "?"; badge.setAttribute("aria-label", countText(inboxCount)); badge.parentElement.title = `Chat · ${countText(inboxCount)}`; }
+}
+window.addEventListener("alfrd-events", () => inbox.kick());
+window.addEventListener("alfrd-mail-replied", () => inbox.kick());
+document.addEventListener("visibilitychange", () => { if (!document.hidden) inbox.kick(); });
 ctx.chatOn = chatOn;
 // Superuser-hidden sections (Overview stays)
 const shown = (id) => id == "overview" || !server.session?.superuser?.hidden_sections?.includes(id);
@@ -1878,6 +1893,7 @@ function renderShell() {
       <div class="picker"><button class="picker-btn" id="pick-target">${icon("target")}<span class="picker-l">Target</span><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button></div>
       <button class="btn sm jobs-btn" id="btn-jobs" aria-haspopup="dialog" hidden>${icon("play")} <span id="jobs-label">Jobs</span></button><span class="sr-only" id="jobs-live" aria-live="polite"></span>
       <span class="grow"></span>
+      <a class="btn sm" id="chat-inbox" hidden aria-live="polite"></a>
       <button class="icon-btn" id="btn-chat-dock" aria-label="Chat dock" aria-controls="chat-dock" aria-expanded="false" aria-keyshortcuts="Alt+Shift+A" title="Chat with the agents beside this view (Alt+Shift+A)" hidden>${icon("chat")}</button>
       <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (${keyLabel("Ctrl+K")})">${icon("search")}</button>
       <button class="live-badge live-off" id="btn-live" aria-pressed="false"><i></i><span>Live off</span></button>
@@ -1888,7 +1904,7 @@ function renderShell() {
     </header>
     <nav class="rail" aria-label="Workspace">
       <div class="rail-head"><span class="rail-label">Workspace</span></div>
-      <div class="rail-links" id="rail-links">${VIEWS.filter((v) => !v.page).map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
+      <div class="rail-links" id="rail-links">${VIEWS.filter((v) => !v.page).map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span>${v.id === "chat" ? '<b class="badge" data-inbox-count hidden></b>' : ""}</a>`).join("")}</div>
       <div id="rail-plugins" class="rail-plugins" hidden></div>
       <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-label="Toggle sidebar" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
@@ -1952,6 +1968,8 @@ function renderShell() {
 }
 
 function renderHeader() {
+  inbox.select(chatOn() && state.mode === "server" ? activeProject() : null);
+  paintInbox();
   VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) { a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); a.hidden = (v.id === "chat" && !chatOn()) || !shown(v.id); } });
   const badge = $("#mode-badge");
   const live = state.mode === "server";

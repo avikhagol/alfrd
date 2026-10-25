@@ -6,6 +6,7 @@
 // (/setup → chat_setup.js, /help, /new, /graph) run here. Full transcripts and artifacts load when opened.
 import { $, $$, esc, icon, keyLabel, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { needsMe, countText } from "../data/inbox.js";
 import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
@@ -27,6 +28,12 @@ const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
 const COLLAPSE_KEY = "ui:chat.sessionsCollapsed"; // the chat list folded to a rail (wide screens; per browser)
 const wide = () => !window.matchMedia || window.matchMedia("(min-width: 901px)").matches;
+let needsOnly = false;
+window.addEventListener("alfrd-inbox", ({ detail }) => {
+  if (host?.isConnected && detail.project === S.project && detail.sessions) {
+    S.sessions = detail.sessions; S.sessionsError = null; ctxRef?.update();
+  }
+});
 
 async function get(url) {
   const res = await server.request(url, { headers: { Accept: "application/json" } });
@@ -98,6 +105,7 @@ function mount(el, ctx, p) {
     <nav class="chat-sessions" id="chat-sessions" aria-label="Chat sessions"><div class="row gap"><h2 class="grow" tabindex="-1">Chat</h2>
       <button type="button" class="btn sm" data-chat="new" title="Start a new chat session">${icon("plus")} New</button>
       <button type="button" class="icon-btn sm chat-collapse" data-chat="collapse" aria-controls="chat-sessions" aria-expanded="true" aria-label="Hide the chat list" title="Hide the chat list">${icon("sidebar")}</button></div>
+      <button type="button" class="btn sm" data-chat="needs-me" aria-pressed="${needsOnly}">Needs me</button>
       <ul class="chat-list" id="chat-list" role="list"></ul></nav>
     <section class="chat-main" aria-label="Conversation">
       <header class="chat-head" id="chat-head"></header>
@@ -211,17 +219,18 @@ function drawSessions() {
   const box = $("#chat-list", host);
   // a refresh while a name is being edited keeps the input (and what was typed) as it is
   if (S.renaming && box.querySelector(`[data-rename="${CSS.escape(S.renaming)}"]`) && S.sessions?.some((x) => x.id === S.renaming)) return;
-  if (!changed("sessions", [S.sessions, S.sessionsError, S.sid, S.renaming])) return;
+  if (!changed("sessions", [S.sessions, S.sessionsError, S.sid, S.renaming, needsOnly])) return;
   if (S.sessionsError) { box.innerHTML = `<li class="callout fail small" role="alert">${esc(S.sessionsError)} <button type="button" class="btn sm" data-chat="reload">Retry</button></li>`; return; }
   if (!S.sessions) { box.innerHTML = `<li class="muted small" role="status">Loading sessions…</li>`; return; }
   if (!S.sessions.length) { box.innerHTML = `<li class="muted small">No sessions yet. <b>New</b> starts one.</li>`; return; }
-  box.innerHTML = S.sessions.map((s) => s.id === S.renaming ? `<li class="chat-session-item"><form class="chat-rename" data-rename="${esc(s.id)}">
+  const sessions = needsOnly ? needsMe(S.sessions) : S.sessions;
+  box.innerHTML = sessions.map((s) => s.id === S.renaming ? `<li class="chat-session-item"><form class="chat-rename" data-rename="${esc(s.id)}">
       <label class="sr-only" for="chat-rename-input">Chat name</label><input class="input sm" id="chat-rename-input" name="title" maxlength="120" value="${esc(s.title)}" required>
       <button type="submit" class="icon-btn sm" aria-label="Save the name" title="Save (Enter)">${icon("check")}</button><button type="button" class="icon-btn sm" data-chat="rename-cancel" aria-label="Keep the old name" title="Cancel (Esc)">${icon("close")}</button></form></li>`
     : `<li class="chat-session-item"><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
-    <b>${esc(s.title)}</b>${s.active_requests ? `<span class="badge tone-run">${icon("sync")}<span>${s.active_requests} active</span></span>` : ""}
+    <b>${esc(s.title)}</b><span class="badge">${countText(s.pending_user)}</span>${s.active_requests ? `<span class="badge tone-run">${icon("sync")}<span>${s.active_requests} active</span></span>` : ""}
     <span class="muted small">${esc(s.last_message ? `${s.last_message.role === "user" ? "You" : agentName(s.last_message.agent || "alfrd")}: ${s.last_message.text}` : "No messages")}</span></a>
-    <span class="chat-session-acts"><button type="button" class="icon-btn sm" data-chat="rename" data-sid-act="${esc(s.id)}" aria-label="Rename ${esc(s.title)}" title="Rename">${icon("edit")}</button><button type="button" class="icon-btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" aria-label="Delete ${esc(s.title)}" title="${s.active_requests ? "Cancel its running tasks before deleting" : "Delete"}" ${s.active_requests ? "disabled" : ""}>${icon("trash")}</button></span></li>`).join("");
+    <span class="chat-session-acts"><button type="button" class="icon-btn sm" data-chat="rename" data-sid-act="${esc(s.id)}" aria-label="Rename ${esc(s.title)}" title="Rename">${icon("edit")}</button><button type="button" class="icon-btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" aria-label="Delete ${esc(s.title)}" title="${s.active_requests ? "Cancel its running tasks before deleting" : "Delete"}" ${s.active_requests ? "disabled" : ""}>${icon("trash")}</button></span></li>`).join("") || '<li class="muted small" role="status">No sessions need you.</li>';
   if (S.renaming) { const input = $("#chat-rename-input", box); if (input && document.activeElement !== input) { input.focus(); input.select(); } }
 }
 
@@ -497,6 +506,7 @@ function bind(el) {
     if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { openSession(b.dataset.sid); ctxRef.update(); } return; }
     const a = b.dataset.chat;
     if (a === "new") newSession();
+    else if (a === "needs-me") { needsOnly = !needsOnly; b.setAttribute("aria-pressed", String(needsOnly)); drawSessions(); }
     else if (a === "rename") startRename(b.dataset.sidAct);
     else if (a === "rename-cancel") endRename(S.renaming);
     else if (a === "delete") deleteSession(b.dataset.sidAct);

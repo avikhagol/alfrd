@@ -588,6 +588,8 @@ def create_session(root: str | Path, title: str | None = None) -> dict[str, Any]
 
 
 def list_sessions(root: str | Path) -> list[dict[str, Any]]:
+    from alfrd.mailbox import Mailbox
+
     base = Path(root).resolve() / CHAT_DIR
     out = []
     for folder in sorted(base.iterdir(), reverse=True) if base.is_dir() else []:
@@ -597,7 +599,12 @@ def list_sessions(root: str | Path) -> list[dict[str, Any]]:
         store = Session(Path(root).resolve(), data["id"])
         last = store.messages(1)
         requests = store.requests()
+        pending_user = sum(Mailbox(store.root, store.id, r["id"]).summary()["pending_user"] for r in requests)
+        # Linked decisions are the same question, not a second pending item.
+        pending_user += sum(d.get("status") == "pending" and d.get("needs") == "user"
+                            and not d.get("mailbox_message_id") for d in store.decisions())
         out.append({**data, "messages": len(store.messages()), "last_message": last[0] if last else None,
+                    "pending_user": pending_user,
                     "active_requests": sum(r.get("status") in REQUEST_ACTIVE for r in requests),
                     "plan_status": (_read(_plan_folder(store).plan_file) or {}).get("status")})
     return out

@@ -1059,6 +1059,8 @@ summary:focus-visible, pre:focus-visible, [role=tab]:focus-visible { outline: 2p
 .rail-foot { margin-top: auto; display: flex; justify-content: flex-start; padding: 4px 4px 0; }
 .rail-toggle { width: 44px; height: 44px; }
 .rail a span, .rail-label { min-width: 0; }
+.rail a[data-view="chat"] { position: relative; }
+.rail [data-inbox-count] { position: absolute; top: 1px; right: 1px; font-size: 10px; padding: 1px 4px; max-width: 42px; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 1279px) { .rail-head, .rail-foot { display: none; } }
 @media (min-width: 1280px) {
   .app[data-sidebar="collapsed"] { --rail: 64px; }
