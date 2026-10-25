@@ -36,6 +36,15 @@
 .chat-composer { display: flex; flex-direction: column; gap: 4px; }
 .chat-input-wrap { position: relative; }
 .chat-input-wrap textarea { width: 100%; resize: vertical; min-height: 64px; }
+.chat-input-wrap textarea { max-height: 40vh; overflow-y: auto; }
+.attach-tray { display: flex; flex-direction: column; gap: 5px; }
+.attach-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.attach-actions [data-attach-hint] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attach-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.attach-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--subtle); max-width: 100%; }
+.attach-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-error { border-color: var(--fail-text); }
+.attach-chip .icon-btn { padding: 0 2px; min-height: 20px; }
 .chat-mentions { position: absolute; left: 0; bottom: 100%; margin: 0 0 4px; padding: 4px; list-style: none; min-width: 280px; max-height: 240px; overflow: auto;
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); z-index: 5; }
 .chat-mentions li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
