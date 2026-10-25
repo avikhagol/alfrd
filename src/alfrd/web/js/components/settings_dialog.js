@@ -74,7 +74,7 @@ export function openSettings(ctx, app) {
       </div>
       <div class="row gap wrap"><button class="btn sm" id="set-restart" ${sess.can_restart ? "" : "disabled"}>${icon("sync")} Restart</button><button class="btn sm danger" id="set-quit" ${sess.can_quit ? "" : "disabled"}>${icon("power")} Quit alfrd serve</button>
         <span class="muted small">${sess.can_quit ? "Restart reloads code and plugins; runs continue. Quit is Ctrl+C in its terminal." : "Only from this machine, for a server started by <code>alfrd serve</code> (not <code>--debug</code>)."}</span></div>
-      ${sess.can_superuser ? `<p class="small"><a href="#/superuser" data-close>${icon("power")} Superuser page…</a> <span class="muted">active runs of every project, statistics, limits. Its settings are the Machine section of Preferences.</span></p>` : ""}`
+      ${sess.can_superuser ? `<p class="small"><a href="#/superuser" data-close>${icon("power")} Superuser page…</a> <span class="muted">active runs of every project, statistics, limits. Its settings are the User section of Preferences.</span></p>` : ""}`
       : `<p class="muted">Browser-only mode. No ALFRD server is connected.</p><div class="set-facts"><div><span>Data</span><b>${esc(state.source)}</b></div></div>`,
   };
   ctx.modal(`
@@ -254,8 +254,13 @@ async function drawProjects(ctx, app, root) {
 export const SECTIONS = Object.freeze([
   { scope: "browser", title: "Browser", note: "Remembered in this browser only." },
   { scope: "project", title: "Project", note: "Saved in the selected project's alfrd.yaml." },
-  { scope: "machine", title: "Machine", note: "Saved once per user; every Studio on this machine follows." },
+  { scope: "machine", title: "User", note: "Saved once per user." },
 ]);
+
+// Chat switches: hidden (not greyed out) until the superuser turns Experimental features on.
+const CHAT_FLAGS = new Set(["ui.experimental_chat", "lockdown.chat"]);
+/** Whether a settings row is drawn: chat switches only with experimental features on. */
+export const rowShown = (flag, experimental) => experimental || !CHAT_FLAGS.has(flag?.key);
 
 /** The sections drawn: Project holds only chat settings, so it shows only while Chat mode is on. */
 export const visibleSections = (chatOn) => SECTIONS.filter((s) => s.scope !== "project" || chatOn);
@@ -302,7 +307,7 @@ export async function saveSection(scope, { changes, expected, project, post }) {
   throw new TypeError(`unknown settings section ${scope}`);
 }
 
-// --- Preferences: one form, three sections (Browser, Project, Machine), each saved alone -------------------------
+// --- Preferences: one form, three sections (Browser, Project, User), each saved alone -------------------------
 
 const SET_BROWSER = ["ui.live_updates", "ui.experimental_chat", "ui.browser_notifications", "ui.rows_per_page"];
 const SET_PROJECT = (f) => f.key === "chat.final_summary" || f.key === "chat.saved_skills" || /^chat\.agents\.\w+\.lean$/.test(f.key);
@@ -328,11 +333,13 @@ async function mountForm(ctx, app, root) {
     const readOnly = flags.find((f) => f.key === "lockdown.read_only")?.value === true;
     const prefs = readPrefs();
     const revs = { browser: prefsRevision(), project: body.revisions?.project, machine: body.revisions?.machine };
+    const experimental = Boolean(ctx.experimental?.()) || flags.find((f) => f.key === "features.experimental")?.value === true;
     const rows = {
       browser: SET_BROWSER.map((k) => flags.find((f) => f.key === k)).filter(Boolean).map((f) => ({ ...f, value: prefs[f.key] })),
       project: flags.filter((f) => f.scope === "project" && SET_PROJECT(f)),
       machine: flags.filter((f) => f.scope === "machine" && f.type === "bool"),
     };
+    for (const scope of Object.keys(rows)) rows[scope] = rows[scope].filter((f) => rowShown(f, experimental));
     const field = (f) => {
       const { disabled, reason } = fieldState(f, { readOnly });
       const note = reason ? `<small class="set-why">${esc(reason)}</small>` : f.help ? `<small>${esc(f.help)}</small>` : "";
@@ -340,7 +347,7 @@ async function mountForm(ctx, app, root) {
       return `<label class="check"><input type="checkbox" data-flag="${f.key}" ${f.value ? "checked" : ""} ${disabled ? "disabled" : ""}> <span><b>${esc(f.key === "ui.experimental_chat" ? "Allow Chat mode" : f.label)}</b>${note}</span></label>`;
     };
     const unavailable = { project: project ? "" : "Select a project to change its settings.",
-      machine: server.session?.can_superuser ? "" : "Machine settings open only in a browser on the server machine." };
+      machine: server.session?.can_superuser ? "" : "User settings open only in a browser on the server machine." };
     host.innerHTML = visibleSections(Boolean(ctx.chatOn?.())).map(({ scope, title, note }) => `<fieldset class="card" data-sec="${scope}"><legend>${title}</legend><p class="muted small">${note}</p>
       ${unavailable[scope] ? `<p class="muted small">${esc(unavailable[scope])}</p>` : `<div class="set-prefs">${rows[scope].map(field).join("")}</div>
       <div class="row gap"><span class="grow muted small" role="status" data-state></span><button type="button" class="btn sm primary" data-save="${scope}" disabled>${icon("save")} Save ${title.toLowerCase()}</button></div>`}</fieldset>`).join("");
