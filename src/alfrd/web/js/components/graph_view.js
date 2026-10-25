@@ -5,14 +5,17 @@
 import { $, $$, esc, icon } from "../utils/dom.js";
 import { edgePath, NODE_H } from "./canvas.js";
 import { layoutGraph } from "../data/chat.js";
+import { createGraphGroups, renderGraphGroups } from "./graph_groups.js";
 
 const TONES = ["ok", "fail", "run", "idle", "ready"];
 let seq = 0;
 
 /** Mount on `host`. opts: {label, editable, empty, onSelect(id), onOpen(id), onConnect(from, to) → problem|null,
- *  onDisconnect(from, to), onDelete(id), onAdd()}. Returns {update(model, selected), select(id), fit(), focus()}. */
+ *  onDisconnect(from, to), onDelete(id), onAdd(), groups: true|group[]}. With groups:true, use
+ *  model.groups (or node.request for legacy models). Returns {update(model, selected), select(id), fit(), focus()}. */
 export function mountGraph(host, opts = {}) {
   const id = `gv${++seq}`;
+  const groups = opts.groups ? createGraphGroups() : null;
   const view = { zoom: 1, x: 0, y: 0, fitted: false, model: { nodes: [], edges: [] }, selected: null, L: null, link: null };
   host.innerHTML = `<div class="gv">
     <div class="gv-tools" role="toolbar" aria-label="${esc(opts.label || "Graph")} controls">
@@ -48,7 +51,9 @@ export function mountGraph(host, opts = {}) {
 
   function draw() {
     const { nodes, edges } = view.model;
-    const L = (view.L = layoutGraph(nodes, edges, { h: NODE_H }));
+    const L = (view.L = groups
+      ? groups.layout(nodes, edges, Array.isArray(opts.groups) ? opts.groups : view.model.groups, { h: NODE_H })
+      : layoutGraph(nodes, edges, { h: NODE_H }));
     $(".gv-empty", host).hidden = Boolean(nodes.length);
     $(".gv-empty", host).textContent = opts.empty || "Nothing to show yet.";
     world.style.width = `${L.width}px`; world.style.height = `${L.height}px`;
@@ -58,7 +63,7 @@ export function mountGraph(host, opts = {}) {
       return `<path d="${d}" class="edge e-${tone}${hl}${e.kind === "delegated" ? " e-deleg" : e.kind === "planned" ? " e-planned" : ""}" marker-end="url(#${id}-ar-${tone})"><title>${esc(e.from)} → ${esc(e.to)}</title></path>${opts.editable
         ? `<path d="${d}" class="edge-hit" data-from="${esc(e.from)}" data-to="${esc(e.to)}"><title>${esc(e.to)} waits for ${esc(e.from)} (click to disconnect)</title></path>` : ""}`;
     }).join("");
-    world.innerHTML = `<svg class="edges" width="${L.width}" height="${L.height}" aria-hidden="true"><defs>${TONES.map((k) => `<marker id="${id}-ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ar ar-${k}"/></marker>`).join("")}</defs>${paths}<path class="edge e-link" data-gv-link d=""/></svg>`
+    world.innerHTML = `<svg class="edges" width="${L.width}" height="${L.height}" aria-hidden="true"><defs>${TONES.map((k) => `<marker id="${id}-ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ar ar-${k}"/></marker>`).join("")}</defs>${groups ? renderGraphGroups(L.lanes) : ""}${paths}<path class="edge e-link" data-gv-link d=""/></svg>`
       + nodes.map((n) => {
         const p = L.pos[n.id], sel = view.selected === n.id;
         return `<div class="node st-${esc(n.st)}${sel ? " sel" : ""}${n.orch ? " gv-orch" : ""}" data-key="${esc(n.id)}" role="button" tabindex="${sel || (!view.selected && n.id === order()[0]) ? 0 : -1}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px"
