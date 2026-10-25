@@ -107,7 +107,7 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     built_wheel: Path, tmp_path: Path
 ):
     environment = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=not UV).create(environment)
+    venv.EnvBuilder(with_pip=not UV, symlinks=(os.name != "nt")).create(environment)
     bin_dir = environment / ("Scripts" if os.name == "nt" else "bin")
     python = bin_dir / ("python.exe" if os.name == "nt" else "python")
     alfrd_command = bin_dir / ("alfrd.exe" if os.name == "nt" else "alfrd")
