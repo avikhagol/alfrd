@@ -544,9 +544,9 @@ export function cellMenu(ctx, project, anchor) {
 }
 
 
-export async function openLog(ctx, project, rel) {
+export async function openLog(ctx, project, rel, meta = null) {
   try {
-    await openFileFull(ctx, project, rel);
+    await openFileFull(ctx, project, rel, meta);
   } catch (error) {
     ctx.toast(`${rel}: ${error.message}`, "warn");
   }

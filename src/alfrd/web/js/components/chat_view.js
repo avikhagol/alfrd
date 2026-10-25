@@ -107,7 +107,7 @@ function mount(el, ctx, p) {
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
     select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
     inspect: openInspector,
-    openLog: (rel) => openLog(ctxRef, S.project, rel), cancel: (row, b) => taskAction("cancel", row, b) });
+    openLog: (rel, meta) => openLog(ctxRef, S.project, rel, meta), cancel: (row, b) => taskAction("cancel", row, b) });
   $(".chat-graph-card", el).addEventListener("keydown", (e) => {
     if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.closest(".gv-canvas")) { e.preventDefault(); openGraphFull(); }
   });
@@ -292,8 +292,8 @@ function transcriptHtml(row) {
   if (!t.attempts) return `<p class="muted small" role="status">Loading attempts…</p>`;
   if (!t.attempts.length) return `<p class="muted small">No attempt has started yet.</p>`;
   return `<div class="chat-transcript">${t.attempts.map((a) => `<div class="chat-attempt"><div class="row gap wrap"><b class="small">Attempt ${a.attempt}</b><span class="badge tone-${a.status === "done" ? "ok" : a.status === "failed" ? "fail" : "muted"}"><span>${esc(a.status || "")}</span></span><span class="muted small mono">${esc(a.unit)}</span>
-      ${["prompt", "response"].map((part) => `<button type="button" class="btn sm" data-part="${esc(row)}|${esc(a.unit)}|${part}" ${a[`${part}_bytes`] ? "" : "disabled"} aria-expanded="${Boolean(t.parts[`${a.unit}|${part}`])}">${part === "prompt" ? "Prompt" : "Reply"} (${Math.ceil((a[`${part}_bytes`] || 0) / 1024)} KiB)</button>`).join("")}</div>
-      ${["prompt", "response"].map((part) => { const c = t.parts[`${a.unit}|${part}`]; return c ? `<pre class="log chat-pre" aria-label="${part} of attempt ${a.attempt}">${esc(c.content)}</pre>${c.eof ? "" : `<button type="button" class="btn sm" data-more="${esc(row)}|${esc(a.unit)}|${part}">Load more</button>`}` : ""; }).join("")}</div>`).join("")}</div>`;
+      ${["prompt", "response"].map((part) => `<button type="button" class="btn sm" data-part="${esc(row)}|${esc(a.unit)}|${part}" ${a[`${part}_bytes`] ? "" : "disabled"} title="Open with Copy and Find">${part === "prompt" ? "Prompt" : "Reply"} (${Math.ceil((a[`${part}_bytes`] || 0) / 1024)} KiB)</button>`).join("")}</div>
+      ${["prompt", "response"].map((part) => { const c = t.parts[`${a.unit}|${part}`]; return c && !c.eof ? `<button type="button" class="btn sm" data-more="${esc(row)}|${esc(a.unit)}|${part}">Load more ${part === "prompt" ? "Prompt" : "Reply"}</button>` : ""; }).join("")}</div>`).join("")}</div>`;
 }
 
 function drawLog() {
@@ -398,15 +398,27 @@ async function toggleTranscript(row) {
   S.keys.log = S.keys.task = null; ctxRef.update();
 }
 
+async function viewPart(row, unit, part) {
+  const t = S.open.get(row), a = t?.attempts?.find((x) => x.unit === unit), c = t?.parts[`${unit}|${part}`];
+  if (!a || !c) return;
+  try {
+    const { openFull } = await import("./logview.js");
+    await openFull(ctxRef, part === "prompt" ? "Prompt" : "Reply", c.content,
+      c.eof ? row : `${row} · Partial text; Load more in the transcript`, null,
+      { unit, attempt: a.attempt, latest: !t.attempts.some((x) => x.attempt > a.attempt) });
+  } catch (error) { ctxRef.toast(error.message, "warn"); }
+}
+
 async function loadPart(row, unit, part, more = false) {
   const t = S.open.get(row);
   if (!t) return;
   const key = `${unit}|${part}`;
-  if (!more && t.parts[key]) { delete t.parts[key]; S.keys.log = S.keys.task = null; ctxRef.update(); return; }
+  if (!more && t.parts[key]) return viewPart(row, unit, part);
   const prev = more ? t.parts[key] : null;
   try {
     const page = await get(`${base(S.project)}/sessions/${encodeURIComponent(S.sid)}/tasks/${encodeURIComponent(row)}/transcript/${encodeURIComponent(unit)}/${part}?offset=${prev ? prev.offset : 0}`);
     t.parts[key] = { content: (prev?.content || "") + page.content, offset: page.offset + page.length, eof: page.eof };
+    if (S.open.get(row) === t) await viewPart(row, unit, part);
   } catch (error) { t.error = error.message; }
   S.keys.log = S.keys.task = null; ctxRef.update();
 }
