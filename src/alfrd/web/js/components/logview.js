@@ -16,7 +16,6 @@
 import { esc, icon, bytes, when, loadUi, saveUi } from "../utils/dom.js";
 import { groupLabel } from "../data/defs.js";
 import { notesAt } from "../data/notes.js";
-import { attemptLabel, bindTextTools, textFindHtml, textToolsHtml } from "./viewers.js";
 
 const MAX_INLINE = 400000;
 const MAX_TAILS = 3;
@@ -203,7 +202,8 @@ async function fill(ctx, d) {
 }
 
 /** Full-screen text. `meta` = {unit, attempt, latest} labels which attempt the text is (see attemptLabel). */
-export function openFull(ctx, title, text, sub = "", live = null, meta = null) {
+export async function openFull(ctx, title, text, sub = "", live = null, meta = null) {
+  const { attemptLabel, bindTextTools, textFindHtml, textToolsHtml } = await import("./viewers.js");
   const key = live ? keyOf(live.project, live.rel) : "";
   ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(title)}</h2>${sub ? `<span class="muted small mono trunc">${esc(sub)}</span>` : ""}<span class="grow"></span>
       ${textToolsHtml(attemptLabel(meta || {}))}
@@ -233,7 +233,7 @@ export async function openFileFull(ctx, project, rel, meta = null) {
   const c = await load(ctx, project, rel);
   if (v.converterFor(rel, viewer)) return v.openViewer(ctx, project, rel, viewer, { text: c.text });
   c.nextAt = 0;
-  openFull(ctx, rel.split("/").pop(), c.text, rel, { project, rel, c }, meta);
+  await openFull(ctx, rel.split("/").pop(), c.text, rel, { project, rel, c }, meta);
   const n = notesAt(ctx, project, { file: rel });
   if (n.length) {
     const h = document.querySelector("#modal-host .modal-h .grow");
@@ -426,7 +426,11 @@ export function bindLogs(ctx, root = document) {
     if (p) {
       e.preventDefault();
       const pre = p.parentElement.querySelector("pre");
-      openFull(ctx, p.dataset.title || "Log", pre ? pre.textContent : "");
+      try {
+        await openFull(ctx, p.dataset.title || "Log", pre ? pre.textContent : "");
+      } catch (error) {
+        ctx.toast(error.message, "warn");
+      }
     }
   });
   // Details rendered already open (remembered, or the first step log) need their body too.

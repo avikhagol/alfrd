@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 globalThis.document ||= { hidden: false, addEventListener() {}, querySelectorAll: () => [], getElementById: () => null };
 const { findSpans, attemptLabel, textToolsHtml, textFindHtml } = await import("../../src/alfrd/web/js/components/viewers.js");
-const { logItem, openFileFull } = await import("../../src/alfrd/web/js/components/logview.js");
+const { logItem, openFull, openFileFull } = await import("../../src/alfrd/web/js/components/logview.js");
 
 /** A ctx whose modal() keeps the HTML it is given; the setup callback needs a DOM, so it is not run. */
 function ctxWithModal(text = "alpha\nBeta beta\n") {
@@ -81,4 +81,18 @@ test("without attempt information the header still has Copy and Find, and no lab
   assert.match(html, /data-text-copy/);
   assert.match(html, /data-text-find-open/);
   assert.doesNotMatch(html, /data-viewer-label/);
+});
+
+test("an inline snippet awaits the lazy text tools before opening its full-screen modal", async () => {
+  const ctx = ctxWithModal();
+  const opening = openFull(ctx, "Snippet", "<inline>\nBeta beta");
+  assert.equal(ctx.modals.length, 0, "the modal waits for the dynamic import");
+  await opening;
+  assert.equal(ctx.modals.length, 1);
+  const { html, size } = ctx.modals[0];
+  assert.equal(size, "full");
+  assert.match(html, /data-text-copy/);
+  assert.match(html, /data-text-find-open/);
+  assert.match(html, /<div[^>]*data-text-find hidden>/);
+  assert.match(html, /&lt;inline&gt;\nBeta beta/);
 });
