@@ -55,7 +55,7 @@ export function mountTranscript(box, o) {
   function reset() {
     stopAll(); messages = new Map(); lines = new Map(); box.replaceChildren(); stick = true;
     status = document.createElement("p"); status.className = "muted small chat-flow-status"; status.setAttribute("role", "status");
-    phase = document.createElement("span"); phase.className = "sr-only"; phase.setAttribute("aria-live", "polite");
+    phase = document.createElement("span"); phase.className = "sr-only"; phase.setAttribute("aria-live", "polite"); phase.setAttribute("aria-atomic", "true");
     empty = document.createElement("p"); empty.className = "muted small"; empty.textContent = "No messages yet. Ask the team, or start with @agent.";
     flow = document.createElement("div"); flow.className = "chat-flow";
     newer = document.createElement("button"); newer.type = "button"; newer.className = "btn sm chat-new-activity"; newer.textContent = "New activity"; newer.hidden = true;

@@ -213,8 +213,8 @@ body.console-open .view { padding-bottom: calc(var(--console-h, 280px) + 10px); 
 .icon-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: var(--r); border: 1px solid transparent; background: transparent; color: var(--text-2); cursor: pointer; flex: none; }
 .icon-btn:hover { background: var(--subtle); color: var(--text); }
 .icon-btn.on { background: var(--accent-bg); color: var(--accent-text); border-color: var(--accent-border); }
-.icon-btn.sm { width: 26px; height: 26px; }
-.icon-btn.xs { width: 22px; height: 22px; }
+.icon-btn.sm { width: 30px; height: 30px; }
+.icon-btn.xs { width: 30px; height: 30px; }
 .icon-btn.xs .ic { width: 13px; height: 13px; }
 .icon-btn.open .ic { transform: rotate(90deg); }
 .icon-btn .ic { transition: transform .15s; }
@@ -368,8 +368,7 @@ span.count { cursor: default; }
 .mini-bar i { display: block; height: 100%; background: var(--ok); border-radius: 3px; }
 .path { max-width: 280px; }
 .path .trunc { max-width: 240px; color: var(--text-2); }
-.path .icon-btn { visibility: hidden; margin-left: 2px; vertical-align: middle; }
-tr:hover .path .icon-btn { visibility: visible; }
+.path .icon-btn { margin-left: 2px; vertical-align: middle; }
 .prog { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 70px; }
 .prog b { font-size: 12px; font-variant-numeric: tabular-nums; }
 .bar { display: block; width: 70px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
@@ -1140,3 +1139,8 @@ body.wf-compact #view-workflow .wf-main:not(.insp-cfg) { grid-template-columns: 
 body.wf-compact #view-workflow .wf-main:not(.insp-cfg) .inspector { display: none; }
 body.wf-compact:has(#view-workflow:not([hidden])) :is(.footbar, .dock-strip, .console) { display: none; }
 #conn-notice { margin: 8px 12px 0; }
+
+/* Touch controls stay usable even when their visual variant is compact. */
+@media (pointer: coarse) {
+  button, .btn, .icon-btn { min-width: 44px !important; min-height: 44px !important; }
+}

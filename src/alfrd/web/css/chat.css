@@ -44,7 +44,7 @@
 .attach-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--subtle); max-width: 100%; }
 .attach-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach-error { border-color: var(--fail-text); }
-.attach-chip .icon-btn { padding: 0 2px; min-height: 20px; }
+.attach-chip .icon-btn { padding: 0 2px; }
 .chat-mentions { position: absolute; left: 0; bottom: 100%; margin: 0 0 4px; padding: 4px; list-style: none; min-width: 280px; max-height: 240px; overflow: auto;
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); z-index: 5; }
 .chat-mentions li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
@@ -234,3 +234,6 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .status-icon[data-status="running"] .ic { animation: status-spin 1.2s linear infinite; }
 @keyframes status-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .status-icon[data-status="running"] .ic { animation: none; } }
+
+.chat, .chat-dock { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+@media (pointer: coarse) { .chat-session-item .chat-session { padding-right: 104px; } }

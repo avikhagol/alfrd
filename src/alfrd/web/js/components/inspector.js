@@ -12,14 +12,14 @@ const FALLBACK_KEY = "alfrd-studio:chat.inspector";
 
 export const TABS = Object.freeze([
   { id: "graph", label: "Graph", title: "No task graph yet", next: "Tasks appear here when the orchestrator plans a request." },
-  { id: "files", label: "Files", title: "No files yet", next: "Files an agent reads or writes for this request are listed here." },
-  { id: "goals", label: "Goals", title: "No goals yet", next: "The goals of a request show here once it has been planned." },
+  { id: "files", label: "Files", title: "File browsing is unavailable", next: "Use artifact links in messages." },
+  { id: "goals", label: "Goals", title: "Goal browsing is unavailable", next: "Review the recorded request in messages." },
 ]);
 
 /** "docked" above 1280 px, otherwise "overlay". */
 export const layout = (width) => (width >= DOCK_MIN ? "docked" : "overlay");
 
-/** A tab's F2 empty state (shared state_view markup); placeholders until the tabs get their data. */
+/** A tab's F2 state; deferred tabs explain the available alternative. */
 export function placeholderHtml(id) {
   const tab = TABS.find((t) => t.id === id) || TABS[0];
   return empty(tab.title, tab.next);

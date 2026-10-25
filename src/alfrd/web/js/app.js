@@ -1890,7 +1890,7 @@ function renderShell() {
       <div class="rail-head"><span class="rail-label">Workspace</span></div>
       <div class="rail-links" id="rail-links">${VIEWS.filter((v) => !v.page).map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
       <div id="rail-plugins" class="rail-plugins" hidden></div>
-      <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
+      <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-label="Toggle sidebar" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
     <span id="project-load-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
     <main id="main" tabindex="-1"><div id="conn-notice" class="callout warn small" role="status" hidden></div><div id="project-load-notice" hidden></div>${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
@@ -1899,7 +1899,7 @@ function renderShell() {
       <span class="vsep"></span>
       <span id="foot-mode"></span>
       <span class="vsep"></span>
-      <button class="link-btn" id="foot-logs">${icon("log")} <span id="foot-logcount"></span></button>
+      <button class="link-btn" id="foot-logs" aria-label="Studio logs">${icon("log")} <span id="foot-logcount"></span></button>
       <span class="vsep"></span>
       <button class="link-btn" id="foot-keys" aria-keyshortcuts="?" title="Keyboard shortcuts (?)">${icon("info")} Shortcuts</button>
       <span class="grow"></span>

@@ -91,7 +91,7 @@ function mount(host, p) {
       <span class="grow"></span>
       <a class="btn sm" id="cd-full" href="#/chat" title="Open the full Chat page: task graph, decisions, sessions">Open full</a>
       <button type="button" class="icon-btn sm" data-cd="close" aria-label="Close the chat dock" aria-keyshortcuts="Alt+Shift+A" title="Close (Alt+Shift+A)">${icon("close")}</button></header>
-    <p class="cd-progress small" id="cd-progress" role="status" aria-live="polite"></p>
+    <p class="cd-progress small" id="cd-progress" aria-live="off"></p>
     <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
     ${composerHtml("cd", { rows: 2, hint: false })}`;

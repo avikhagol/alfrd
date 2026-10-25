@@ -58,7 +58,7 @@ export function leave() {
 export function render(el, ctx) {
   loadCss("css/chat.css");
   ctxRef = ctx;
-  if (ctx.state.mode !== "server") { host = null; el.innerHTML = `<div class="empty chat-empty"><h2>Chat</h2><p>Project chat needs <code>alfrd serve</code>: agents run on the server.</p></div>`; delete el.dataset.chat; return; }
+  if (ctx.state.mode !== "server") { host = null; el.innerHTML = `<div class="empty chat-empty"><h2>Chat</h2><p role="status">Chat needs <code>alfrd serve</code>: agents run on the server.</p></div>`; delete el.dataset.chat; return; }
   const p = ctx.activeProject();
   if (!p) return; // app.js asks for a project
   if (el.dataset.chat !== p) mount(el, ctx, p);
