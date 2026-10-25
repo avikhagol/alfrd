@@ -75,6 +75,8 @@ export function render(el, ctx) {
   }, 15000);
 }
 
+function openInspector() { insp?.open(); }
+
 function mount(el, ctx, p) {
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
     task: null, sendError: "", keys: {}, renaming: null });
@@ -103,7 +105,8 @@ function mount(el, ctx, p) {
   graph = mountGraph($("#chat-graph", el), { label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
-    select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); insp?.open(); $("#chat-task", host)?.focus(); },
+    select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
+    inspect: openInspector,
     openLog: (rel) => openLog(ctxRef, S.project, rel), cancel: (row, b) => taskAction("cancel", row, b) });
   $(".chat-graph-card", el).addEventListener("keydown", (e) => {
     if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.closest(".gv-canvas")) { e.preventDefault(); openGraphFull(); }

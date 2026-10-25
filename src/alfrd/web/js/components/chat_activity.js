@@ -27,8 +27,9 @@ export function mountActivity(box, o) {
     const active = ["planning", "running", "summarizing", "needs_decision"].includes(req?.status);
     if (!run) {
       box.hidden = false;
-      box.innerHTML = `<p class="chat-run-head" role="status"></p><section class="chat-decisions" data-decisions></section><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
+      box.innerHTML = `<button type="button" class="btn sm link chat-run-head" aria-controls="chat-inspector" title="Open run inspector"></button><section class="chat-decisions" data-decisions></section><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
       run = $("details", box); header = $(".chat-run-head", box); body = $(".chat-run-rows", run); notice = $("[data-notice]", run);
+      header.onclick = () => o.inspect ? o.inspect(rid()) : o.viewGraph?.(rid());
       $("[data-run-graph]", run).onclick = () => o.viewGraph?.(rid());
       run.open = storage.get(pref("run", rid()), active); if (run.open) run.dataset.auto = "1";
       run.addEventListener("toggle", () => { if (!run.dataset.auto) storage.set(pref("run", rid()), run.open); delete run.dataset.auto; subscription?.kick(); });
@@ -38,7 +39,11 @@ export function mountActivity(box, o) {
     if (run.dataset.active === "1" && !active && !protectedContent) { run.dataset.auto = "1"; run.open = false; }
     run.dataset.active = active ? "1" : "0";
     const label = active ? req.status === "planning" ? "Planning the tasks" : req.status === "needs_decision" ? "Needs your answer" : "Working" : req?.status === "done" ? "Run completed" : statusInfo(req?.status).label;
-    header.textContent = [label, p ? `${p.done}/${p.total} tasks complete` : "", p ? duration(p.seconds) : "", money(req?.usage?.total_cost_usd)].filter(Boolean).join(" · ");
+    const started = Number(req?.created_ts) ? req.created_ts * 1000 : Date.parse(req?.created);
+    const ended = req?.finished ? Date.parse(req.finished) : Date.now();
+    header.textContent = [req?.status ? label : "", p && Array.isArray(state().tasks) ? `${p.done}/${p.total} tasks complete` : "",
+      Number.isFinite(started) && Number.isFinite(ended) ? duration(Math.max(0, Math.round((ended - started) / 1000))) : "",
+      req?.usage?.total_cost_usd != null ? money(req.usage.total_cost_usd) : ""].filter(Boolean).join(" · ");
     notice.textContent = snapshot.unsupported ? "Live output unavailable on this server. Open the full transcript for details." : snapshot.stale ? "Updates paused — reconnecting" : "";
     const data = activityRows(state(), snapshot.items, rid()), keys = new Set(data.map(activityKey));
     for (const [key, row] of rows) if (!keys.has(key)) { row.el.remove(); rows.delete(key); }
