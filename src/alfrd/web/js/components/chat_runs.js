@@ -5,6 +5,7 @@ import { $, esc, icon, loadCss, routeHash, short } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { CELL, RUN_STATUS, loadPlan, logButtons, planOf, releasePlanPin, runPicker, usageButton } from "./plans.js";
 import { dockLog } from "./logview.js";
+import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { graphModel, money, statusInfo } from "../data/chat.js";
 
@@ -98,7 +99,12 @@ export function renderPane(box, ctx, project, mode) {
   if (mode === "graph") {
     if (!graph || graphHost !== body) {
       graphHost = body;
-      graph = mountGraph(body, { label: "Chat task graph", empty: "No tasks yet: they appear when the chat plans a request.",
+      graph = mountGraph(body, { taskMenu: taskMenuApi({ project: () => project, sid: () => sid, state: () => e.data,
+        refresh: async () => {
+          const res = await server.request(`/api/studio/projects/${encodeURIComponent(project)}/chat/sessions/${encodeURIComponent(sid)}`);
+          if (!res.ok) throw new Error(`Refresh: ${res.status}`);
+          e.data = await res.json(); ctx.update();
+        }, openLog: (rel) => dockLog(ctx, project, rel), files: () => { location.hash = chatHref(ctx, project, sid); } }), label: "Chat task graph", empty: "No tasks yet: they appear when the chat plans a request.",
         onOpen: () => { location.hash = chatHref(ctx, project, sid); } });
     }
     graph.update(graphModel(e.data.graph, agents));

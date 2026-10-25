@@ -6,6 +6,7 @@
 // (/setup → chat_setup.js, /help, /new, /graph) run here. Full transcripts and artifacts load when opened.
 import { $, $$, esc, icon, keyLabel, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
@@ -77,6 +78,12 @@ export function render(el, ctx) {
   }, 15000);
 }
 
+function graphTaskMenu() {
+  return taskMenuApi({ project: () => S.project, sid: () => S.sid, state: () => S.data,
+    refresh: () => loadSession(), openLog: (rel) => openLog(ctxRef, S.project, rel),
+    files: (row) => { S.task = row; inspTab = "files"; S.keys.task = null; draw(ctxRef); openInspector(); } });
+}
+
 function openInspector() { insp?.open(); }
 
 function mount(el, ctx, p) {
@@ -105,7 +112,7 @@ function mount(el, ctx, p) {
       <section class="card chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
       <section class="card" id="chat-task" aria-live="polite" hidden></section>
     </aside></div>`;
-  graph = mountGraph($("#chat-graph", el), { groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
+  graph = mountGraph($("#chat-graph", el), { taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
     select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
@@ -633,7 +640,7 @@ function openGraphFull({ fromComposer = false, request = null } = {}) {
   ctxRef.modal(`<header class="modal-h"><h2 id="chat-gfull-h">${icon("graph")} Task graph</h2><span class="muted small">Arrows pick a task, Enter opens it · 0 fits</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close full screen">${icon("close")}</button></header>
     <div class="modal-b chat-gfull"><div id="chat-gfull"></div></div>`, (root, close) => {
     root.setAttribute("aria-labelledby", "chat-gfull-h");
-    const g = mountGraph($("#chat-gfull", root), { groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
+    const g = mountGraph($("#chat-gfull", root), { taskMenu: graphTaskMenu(), groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
       onSelect: (row) => { S.task = row; drawTask(ctxRef); },
       onOpen: (row) => { close(); S.task = row; S.keys.task = null; draw(ctxRef); $("#chat-task", host)?.focus(); } });
     full = { host: root, g };

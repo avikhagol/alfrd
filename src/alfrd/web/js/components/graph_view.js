@@ -6,6 +6,7 @@ import { $, $$, esc, icon } from "../utils/dom.js";
 import { edgePath, NODE_H } from "./canvas.js";
 import { layoutGraph } from "../data/chat.js";
 import { createGraphGroups, renderGraphGroups, createGraphUpdates } from "./graph_groups.js";
+import { createTaskMenu } from "./task_menu.js";
 import { statusIcon, STATUS_ICON_STATES } from "./status_icons.js";
 
 const TONES = ["ok", "fail", "run", "idle", "ready"];
@@ -27,10 +28,10 @@ export function mountGraph(host, opts = {}) {
       <button type="button" class="icon-btn sm" data-gv="in" aria-label="Zoom in">${icon("plus")}</button>
       <button type="button" class="icon-btn sm" data-gv="fit" aria-label="Fit to view" aria-keyshortcuts="0">${icon("fit")}</button>
     </div>
-    ${opts.editable ? "" : `<details><summary>Status legend and keyboard help</summary><div style="display:flex;flex-wrap:wrap;gap:12px">${STATUS_ICON_STATES.map((s) => statusIcon(s)).join("")}</div><p>Tab to a node; arrows move between nodes. Enter opens it. Escape clears selection; arrows then pan. 0 fits.</p></details>`}
+    ${opts.editable ? "" : `<details><summary>Status legend and keyboard help</summary><div style="display:flex;flex-wrap:wrap;gap:12px">${STATUS_ICON_STATES.map((s) => statusIcon(s)).join("")}</div><p>Tab to a node; arrows move between nodes. Enter opens it. Shift+F10 opens task actions. Escape clears selection; arrows then pan. 0 fits.</p></details>`}
     <div class="canvas gv-canvas" tabindex="0" role="group" aria-roledescription="graph" aria-label="${esc(opts.label || "Graph")}. Tab to a node; arrows pan without a selection or move between selected nodes. Enter opens it; Escape clears selection${opts.editable ? "; N adds a step, C connects, Delete removes" : ""}." >
       <div class="world"></div><p class="gv-empty muted" hidden></p>
-    </div><p class="sr-only" aria-live="polite" data-gv-live></p></div>`;
+    </div><div data-gv-menu role="menu" aria-label="Task actions" hidden></div><p class="sr-only" aria-live="polite" data-gv-live></p></div>`;
   const canvas = $(".gv-canvas", host), world = $(".world", host), live = $("[data-gv-live]", host);
   const say = (text) => { live.textContent = text; };
   let drag = null, hovering = false;
@@ -53,6 +54,21 @@ export function mountGraph(host, opts = {}) {
   const worldAt = (cx, cy) => { const r = canvas.getBoundingClientRect(); return { x: (cx - r.left - view.x) / view.zoom, y: (cy - r.top - view.y) / view.zoom }; };
   const order = () => view.L?.order || [];
   const nodeEl = (key) => key && world.querySelector(`.node[data-key="${CSS.escape(key)}"]`);
+
+  const menu = opts.editable ? null : createTaskMenu($("[data-gv-menu]", host), {
+    target: (row) => opts.taskMenu ? opts.taskMenu.target(row) : view.model.nodes.find((n) => n.id === row),
+    revision: () => view.model.rev,
+    preview: (row) => opts.taskMenu?.preview(row),
+    refresh: () => opts.taskMenu?.refresh(),
+    run: (action, target) => opts.taskMenu?.run(action, target),
+    focus: (row) => (nodeEl(row) || canvas).focus({ preventScroll: true }),
+    error: say,
+  });
+  const openMenu = (key) => { if (!menu || !key) return; select(key); menu.open(key); };
+  canvas.addEventListener("contextmenu", (e) => {
+    const key = e.target.closest(".node")?.dataset.key;
+    if (menu && key) { e.preventDefault(); e.stopPropagation(); openMenu(key); }
+  });
 
   function draw() {
     const { nodes, edges } = view.model;
@@ -77,7 +93,7 @@ export function mountGraph(host, opts = {}) {
           ${n.st === "running" ? '<div class="node-prog"><i style="width:60%"></i></div>' : ""}
           <div class="node-h"><span class="node-ic">${icon(n.nodeIcon || "pipeline")}</span><div class="node-t"><b class="mono">${esc(n.id)}</b><span>${esc(n.title)}</span></div>${n.badge ? `<span class="badge tone-muted gv-badge"><span>${esc(n.badge)}</span></span>` : ""}</div>
           <div class="node-b"><span class="small muted grow gv-sub">${esc(n.sub || "")}</span><span class="badge tone-${esc(n.tone)}">${n.status ? statusIcon(n.status, n.label) : `${icon(n.icon || "info")}<span>${esc(n.label)}</span>`}</span></div>
-        </div>`;
+        </div>${opts.editable ? "" : `<button type="button" class="icon-btn sm gv-overflow" data-gv-menu-for="${esc(n.id)}" aria-label="Actions for ${esc(n.title)}" aria-haspopup="menu" style="left:${p.x + p.w - 32}px;top:${p.y + 4}px">⋯</button>`}`;
       }).join("");
     if (!view.fitted) requestAnimationFrame(() => { if (!view.fitted) fit(); });
     apply();
@@ -101,6 +117,9 @@ export function mountGraph(host, opts = {}) {
   }
 
   host.addEventListener("click", (e) => {
+    const overflow = e.target.closest("[data-gv-menu-for]");
+    if (overflow) { e.stopPropagation(); openMenu(overflow.dataset.gvMenuFor); return; }
+    if (!e.target.closest("[data-gv-menu]")) menu?.close(false);
     const b = e.target.closest("[data-gv]");
     if (!b) return;
     const a = b.dataset.gv;
@@ -119,7 +138,7 @@ export function mountGraph(host, opts = {}) {
   canvas.addEventListener("pointerenter", (e) => { if (e.pointerType !== "touch") hovering = true; });
   canvas.addEventListener("pointerleave", () => { hovering = false; updates.flush(); });
   canvas.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || e.target.closest("[data-gv-menu-for]")) return;
     const node = e.target.closest(".node");
     if (opts.editable && node && e.target.closest("[data-port]")) drag = { kind: "link", from: node.dataset.key, over: null };
     else if (node) drag = { kind: "node", key: node.dataset.key, sx: e.clientX, sy: e.clientY, moved: false };
@@ -170,6 +189,9 @@ export function mountGraph(host, opts = {}) {
   });
   canvas.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (menu && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
+      e.preventDefault(); e.stopPropagation(); openMenu(e.target.closest(".node")?.dataset.key || e.target.closest("[data-gv-menu-for]")?.dataset.gvMenuFor || view.selected); return;
+    }
     const list = order(), i = list.indexOf(view.selected);
     const move = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
     if (move) {
@@ -218,6 +240,7 @@ export function mountGraph(host, opts = {}) {
     view.model = model;
     view.selected = model.nodes.some((n) => n.id === selected) ? selected : null;
     draw();
+    menu?.validate();
     if (hadFocus) (nodeEl(view.selected) || canvas).focus({ preventScroll: true });
   }, () => hovering || Boolean(drag) || Boolean(view.link));
 

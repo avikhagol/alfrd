@@ -21,10 +21,13 @@ function mounted(opts = {}) {
       getBoundingClientRect: () => ({ width: 1000, height: 600, left: 0, top: 0 }),
       querySelector: () => null, querySelectorAll: () => [], contains: () => false, focus() {} };
   };
-  const elements = new Map([".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom"].map((s) => [s, element()]));
+  const elements = new Map([".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom", "[data-gv-menu]"].map((s) => [s, element()]));
   const host = element(); host.querySelector = (s) => elements.get(s);
+  let focused = null;
+  elements.get(".world").querySelector = (s) => ({ focus() { focused = s; } });
   const graph = mountGraph(host, opts);
   return { graph, host, canvas: elements.get(".gv-canvas"), world: elements.get(".world"), live: elements.get("[data-gv-live]"),
+    menu: elements.get("[data-gv-menu]"), focused: () => focused,
     tick: () => { const f = frames; frames = []; f.forEach((fn) => fn()); } };
 }
 const focusNode = (canvas, key) => canvas.fire("focusin", { target: { closest: () => ({ dataset: { key } }) } });
@@ -111,8 +114,30 @@ test("G7 inverse-coordinate math round-trips at 20%, 100% and 200% zoom (existin
   }
 });
 
-// Deferred at the lazy payload cap (g4/g5/g7 reports): documented, not passing.
-test("G5 Shift+F10 opens the task context menu on the focused node", { skip: "G5 deferred at lazy payload cap" }, () => {});
+test("G5 Shift+F10 opens the task context menu on the focused node", async () => {
+  const r = mounted(); r.graph.update(model(["a", "b"])); r.tick();
+  focusNode(r.canvas, "a");
+  r.canvas.fire("keydown", { key: "F10", shiftKey: true });
+  await Promise.resolve();
+  assert.equal(r.menu.hidden, false); assert.match(r.menu.innerHTML, /a<\/p>/);
+  r.menu.fire("keydown", { key: "Escape" });
+  assert.equal(r.menu.hidden, true); assert.match(r.focused(), /data-key="a"/);
+});
+
+test("G5 right-click targets the clicked node; ContextMenu and overflow share the menu", async () => {
+  const r = mounted(); r.graph.update(model(["a", "b"])); r.tick(); focusNode(r.canvas, "a");
+  r.canvas.fire("contextmenu", { target: { closest: () => ({ dataset: { key: "b" } }) } });
+  await Promise.resolve(); assert.match(r.menu.innerHTML, /b<\/p>/);
+  r.menu.fire("keydown", { key: "Escape" }); assert.match(r.focused(), /data-key="b"/);
+  r.canvas.fire("keydown", { key: "ContextMenu" });
+  await Promise.resolve(); assert.equal(r.menu.hidden, false);
+  r.menu.fire("keydown", { key: "Escape" });
+  r.host.fire("click", { target: { closest: (s) => s === "[data-gv-menu-for]" ? { dataset: { gvMenuFor: "a" } } : null } });
+  await Promise.resolve(); assert.match(r.menu.innerHTML, /a<\/p>/);
+  assert.match(r.world.innerHTML, /aria-haspopup="menu"/);
+  r.menu.fire("keydown", { key: "Escape" }); assert.match(r.focused(), /data-key="a"/);
+});
+// G7 remains deferred.
 test("G7 rectangle selection selects nodes at 20%, 100% and 200% zoom", { skip: "G7 deferred at lazy payload cap" }, () => {});
 test("G4 request scope selector is shared by Graph, Files and Goals", async () => {
   const { createRequestScope, tabsHtml } = await import("../../src/alfrd/web/js/components/inspector.js");
