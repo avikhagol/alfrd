@@ -25,7 +25,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def _web_files():
     root = web_root()
-    return [p for p in root.rglob("*") if p.is_file() and p.suffix not in {".py", ".pyc", ".orig", ".rej"} and "__pycache__" not in p.parts]
+    # This git-ignored directory contains local runtime state, not web assets.
+    runtime = root / "assets" / "defaults" / ".alfrd"
+    return [
+        p for p in root.rglob("*")
+        if p.is_file() and not p.is_relative_to(runtime)
+        and p.suffix not in {".py", ".pyc", ".orig", ".rej"}
+        and "__pycache__" not in p.parts
+    ]
+
+
+def test_web_files_exclude_default_runtime_state(tmp_path, monkeypatch):
+    asset = tmp_path / "assets" / "defaults" / "alfrd.yaml"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("name: demo\n", encoding="utf-8")
+    for name in ("history/run.json", "locks/run.lock", "future/state.json"):
+        state = asset.parent / ".alfrd" / name
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("runtime state", encoding="utf-8")
+    monkeypatch.setattr("test_studio.web_root", lambda: tmp_path)
+    assert _web_files() == [asset]
 
 
 def test_studio_assets_are_packaged():
@@ -100,20 +119,19 @@ def _gz(path: Path) -> int:
     return len(gzip.compress(path.read_bytes(), 9))
 
 
-def test_startup_payload_under_178kb_compressed():
+def test_startup_payload_under_200kib_compressed():
     # What the Studio loads when it opens. 150 KB until 0.2.1 (~149 KB then);
     # @avikhagol: increased since, startup reached ~197 KB (0.4.0.0)
     total = sum(_gz(p) for p in _startup_files())
     assert total < 200 * 1024, f"{total} bytes gzip"
 
 
-def test_lazy_payload_under_106kb_compressed():
+def test_lazy_payload_under_336kib_compressed():
     startup = _startup_files()
     total = sum(_gz(p) for p in _web_files()
                 if p.resolve() not in startup and p.suffix not in {".png", ".ico"})
-    # @avikhagol: v0.4.0.0 wave3 (S2 prefs, T1-T4 transcript/viewers, S3 settings form, G2/G3 graph,
-    # T4 lazy viewers moved out of startup) grew lazy 306,682 -> 323,192 B. Cap 300 -> 320 KiB (327,680).
-    assert total < 320 * 1024, f"{total} bytes gzip"
+    # v0.4.0.0 wave5 decision 1A: 336 KiB (344,064 B), excluding local runtime state.
+    assert total < 336 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
