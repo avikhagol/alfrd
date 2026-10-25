@@ -43,6 +43,7 @@
   --accent-glow: rgba(79, 70, 229, .22);
   --focus-ring: rgba(79, 70, 229, .28);
   --focus-ring-soft: rgba(79, 70, 229, .22);
+  --focus: #4338CA;
   --accent-wash: rgba(79, 70, 229, .06);
   --fail-ring: rgba(220, 38, 38, .16);
   --shadow-knob: 0 1px 2px rgba(15, 23, 42, .25);

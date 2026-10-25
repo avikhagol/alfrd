@@ -54,6 +54,7 @@
   --accent-glow: rgba(99, 102, 241, .25);
   --focus-ring: rgba(99, 102, 241, .15);
   --focus-ring-soft: rgba(99, 102, 241, .12);
+  --focus: #A5B4FC;
   --accent-wash: rgba(99, 102, 241, .06);
   --fail-ring: rgba(239, 68, 68, .12);
   --shadow-knob: 0 1px 2px rgba(0, 0, 0, .2);
@@ -688,7 +689,7 @@ td.codes { white-space: nowrap; }
 .dr-codes { margin-bottom: 6px; }
 .att-list { list-style: none; margin: 12px 0 0; padding: 0; max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
 .att-list button { width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); cursor: pointer; text-align: left; }
-.att-list button:hover, .att-list button:focus-visible { border-color: var(--accent); background: var(--accent-bg); outline: none; }
+.att-list button:hover, .att-list button:focus-visible { border-color: var(--accent); background: var(--accent-bg); outline: 2px solid var(--focus); outline-offset: 2px; }
 .att-list button > .muted { flex-basis: 100%; }
 .modal.wide { width: min(1100px, calc(100vw - 32px)); }
 .crash { margin-top: 6px; }
@@ -924,7 +925,7 @@ select { text-overflow: ellipsis; }
 .setup-list { list-style: none; padding: 0; display: grid; gap: var(--s-3); }
 .setup-list li { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
 .tab-error { margin: var(--s-3); gap: var(--s-2); }
-:where(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+:where(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .callout[hidden] { display: none; }
 
 
@@ -958,7 +959,7 @@ select { text-overflow: ellipsis; }
 #review-approve { background: var(--ok-control); border-color: var(--ok-control); color: var(--on-ok); font-weight: 700; }
 #review-approve:not(:disabled):hover { background: var(--ok-text); }
 .input, .yaml-editor { background: var(--surface); }
-.input:focus, .yaml-editor:focus, .picker:focus-within, .search:focus-within, .select-wrap:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); box-shadow: none; }
+.input:focus, .yaml-editor:focus, .picker:focus-within, .search:focus-within, .select-wrap:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; border-color: var(--accent); box-shadow: none; }
 .search input::placeholder, .input::placeholder, .yaml-editor::placeholder { color: var(--text-3); opacity: 1; }
 .card, .wf-info, .sched-h, .sched-b section { background: var(--surface-2); box-shadow: none; }
 .chip { border-radius: 999px; }
