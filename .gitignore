@@ -153,3 +153,4 @@ docs/plans/
 examples/proposed_0_2_1/
 .ruff_cache/
 src/alfrd/web/assets/defaults/.alfrd/
+wave3_status.md
