@@ -188,7 +188,7 @@ export function mountGraph(host, opts = {}) {
       const from = view.link.from; view.link = null; canvas.classList.remove("gv-linking");
       $$(".node.link-cand", world).forEach((n) => n.classList.remove("link-cand"));
       select(from, { focus: true }); say("Connecting cancelled."); updates.flush();
-    } else if (e.key === "Escape" && !opts.editable) {
+    } else if (e.key === "Escape" && !opts.editable && view.selected) {
       e.preventDefault(); e.stopPropagation();
       view.selected = null;
       $$(".node", world).forEach((n) => { n.classList.remove("sel"); n.tabIndex = n.dataset.key === order()[0] ? 0 : -1; n.setAttribute("aria-pressed", "false"); });
