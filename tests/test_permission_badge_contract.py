@@ -28,6 +28,17 @@ def test_turning_a_permission_off_makes_it_non_default_in_the_payload(make_clien
     assert flags(client)["lockdown.project_delete"]["effective"] is True
 
 
+def test_read_only_is_a_dangerous_non_default_row_the_lockdown_badge_reads(make_client):
+    client = make_client()
+    row = flags(client)["lockdown.read_only"]
+    assert row["dangerous"] is True and row["default"] is False and row["effective"] is False
+    rev = revisions(client)["machine"]
+    assert client.post("/api/studio/superuser", headers=client.h,
+                       json={"settings": {"lockdown.read_only": True}, "expected_revision": rev}).status_code == 200
+    row = flags(client)["lockdown.read_only"]
+    assert row["dangerous"] and row["effective"] is True and row["effective"] != row["default"]
+
+
 def test_a_stale_risky_change_is_409_and_changes_nothing(make_client):
     client = make_client()
     rev = revisions(client)["machine"]

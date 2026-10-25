@@ -61,11 +61,18 @@ test("defaults and presentation-only changes show no badge", async () => {
 
 test("a non-default dangerous permission shows the badge with its value and where to change it", async () => {
   const { host } = await badge(ok([flag({ effective: false }), flag({ key: "lockdown.read_only", label: "Read-only Studio", default: false, effective: true }), flag({ key: "lockdown.chat", label: "Allow chat" })]));
-  assert.match(host.innerHTML, /class="badge">Non-default permissions/);
+  assert.match(host.innerHTML, /class="badge">Locked down \(read-only\)/);
+  assert.doesNotMatch(host.innerHTML, /Non-default permissions/);
   assert.match(host.innerHTML, /Allow workflow runs: off; Read-only Studio: on/);
   assert.doesNotMatch(host.innerHTML, /Allow chat/);
   assert.match(host.innerHTML, /across projects/);
   assert.match(host.innerHTML, /Preferences → Machine/);
+});
+
+test("without read-only the badge stays labelled Non-default permissions", async () => {
+  const { host } = await badge(ok([flag({ effective: false }), flag({ key: "lockdown.read_only", label: "Read-only Studio", default: false, effective: false })]));
+  assert.match(host.innerHTML, /class="badge">Non-default permissions/);
+  assert.doesNotMatch(host.innerHTML, /Locked down/);
 });
 
 test("registry labels are escaped in the badge", async () => {

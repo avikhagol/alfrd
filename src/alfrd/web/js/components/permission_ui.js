@@ -14,7 +14,8 @@ export async function permissionBadge(host, project) {
     if (!res.ok) throw new Error();
     const body = await res.json();
     const changed = body.flags.filter((f) => f.dangerous && f.effective !== f.default);
-    if (host.isConnected) host.innerHTML = changed.length ? `<span class="badge">Non-default permissions</span> ${changed.map((f) => `${esc(f.label)}: ${f.effective ? "on" : "off"}`).join("; ")}<small class="muted"> Machine permissions apply across projects; server guards remain authoritative. Change them in Preferences → Machine.</small>` : "";
+    const locked = body.flags.some((f) => f.key === "lockdown.read_only" && f.effective === true);
+    if (host.isConnected) host.innerHTML = changed.length ? `<span class="badge">${locked ? "Locked down (read-only)" : "Non-default permissions"}</span> ${changed.map((f) => `${esc(f.label)}: ${f.effective ? "on" : "off"}`).join("; ")}<small class="muted"> Machine permissions apply across projects; server guards remain authoritative. Change them in Preferences → Machine.</small>` : "";
   } catch {
     if (host.isConnected) host.textContent = "Permission status unavailable. Server guards remain authoritative.";
   }
