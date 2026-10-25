@@ -103,9 +103,19 @@ class FakePlans:
         return self.handoffs.get(plan)
 
 
+PLUGIN_DIR = Path(__file__).resolve().parents[1] / "examples/plugins/alfrd-telegram"
+
+
+@pytest.fixture
+def view(monkeypatch):
+    """alfrd_telegram.view without relying on a `bot` test having run first in this xdist worker."""
+    monkeypatch.syspath_prepend(str(PLUGIN_DIR))
+    return importlib.import_module("alfrd_telegram.view")
+
+
 @pytest.fixture
 def bot(monkeypatch):
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples/plugins/alfrd-telegram"))
+    monkeypatch.syspath_prepend(str(PLUGIN_DIR))
     module = importlib.import_module("alfrd_telegram")
     api = FakeAPI()
     monkeypatch.setattr(notifiers.urllib.request, "build_opener", api)
@@ -615,9 +625,7 @@ def test_real_agent_loop_handoff(bot, tmp_path, monkeypatch):
     assert "🔷 Goal\nChecked." in text and "🔷 Blockers" in text
 
 
-def test_long_handoff_is_split_into_parts():
-    from alfrd_telegram import view
-
+def test_long_handoff_is_split_into_parts(view):
     text = "\n\n".join(f"## Section {i}\n" + "word " * 300 for i in range(12))
     parts = view.chunks(text)
     assert len(parts) > 1 and all(len(p) <= view.BODY * 1.5 for p in parts)
@@ -637,9 +645,7 @@ def test_whoareyou_names_the_machine(bot):
     assert texts(api)[-1].startswith("🤖 ALFRD bot")
 
 
-def test_elapsed_format():
-    from alfrd_telegram import view
-
+def test_elapsed_format(view):
     assert [view.elapsed(s) for s in (None, 0, 59.9, 60, 3599, 3600, 90061)] == [
         "?", "0s", "59s", "1m 00s", "59m 59s", "1h 00m", "25h 01m"]
 
