@@ -83,3 +83,10 @@ def test_documented_code_table_matches_cli_source():
         priority = row["priority"] or "(inherited)"
         meaning = row["meaning"]
         assert f"| {code} | {row['kind']} | {category} | {priority} | {meaning} |" in doc.replace("`", "")
+
+
+def test_documentation_keeps_five_examples_and_only_known_codes():
+    # a doc edit that drops or retypes an example must not leave the parametrized run silently shorter
+    assert len(BLOCKS) == 5
+    used = set(re.findall(r"--code\s+([A-Z_]+)", "\n".join(BLOCKS)))
+    assert used and used <= set(CODES)
