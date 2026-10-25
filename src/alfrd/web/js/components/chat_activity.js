@@ -63,7 +63,7 @@ export function mountActivity(box, o) {
         $(".chat-task-select", el).onclick = () => o.select?.(row.data.row);
         $("[data-log]", el).onclick = () => {
           const { unit, attempt } = row.data, rows = activityRows(state(), snapshot.items, rid());
-          o.openLog(row.data.log, { unit, attempt, latest: !rows.some((x) => x.unit === unit && (x.attempt || 0) > (attempt || 0)) });
+          o.openLog(row.data.log, { unit, attempt, latest: !rows.some((x) => x.row === row.data.row && x.request === row.data.request && (x.attempt || 0) > (attempt || 0)) });
         };
         $("[data-cancel]", el).onclick = (e) => o.cancel(row.data.row, e.currentTarget);
       }
