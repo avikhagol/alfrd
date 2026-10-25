@@ -64,6 +64,41 @@ def isolated_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def stop_leaked_live_threads(monkeypatch: pytest.MonkeyPatch):
+    """Stop every LiveHub / Watcher a test created, so no poller thread outlives it."""
+    try:
+        from alfrd import studio_live
+    except ImportError:  # the gui extra is optional
+        yield
+        return
+
+    hubs: list = []
+    watchers: list = []
+    hub_init = studio_live.LiveHub.__init__
+    watcher_init = studio_live.Watcher.__init__
+
+    def tracked_hub_init(self, *args, **kwargs):
+        hub_init(self, *args, **kwargs)
+        hubs.append(self)
+
+    def tracked_watcher_init(self, *args, **kwargs):
+        watcher_init(self, *args, **kwargs)
+        watchers.append(self)
+
+    monkeypatch.setattr(studio_live.LiveHub, "__init__", tracked_hub_init)
+    monkeypatch.setattr(studio_live.Watcher, "__init__", tracked_watcher_init)
+    yield
+    for hub in hubs:
+        hub.stop_all()
+    for watcher in watchers:
+        watcher.stop()
+    for watcher in watchers:
+        thread = getattr(watcher, "_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
+
+
+@pytest.fixture(autouse=True)
 def authenticated_test_client(monkeypatch: pytest.MonkeyPatch):
     """`app.test_client()` sends the app's access token as a Bearer header.
 

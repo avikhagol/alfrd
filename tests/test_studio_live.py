@@ -124,7 +124,9 @@ def test_hub_initial_scan_discovers_once_and_retains_start_cursor(tree, monkeypa
     collect = avica_layout.collect_studio_files
 
     def counting(*args, **kwargs):
-        calls.append(kwargs)
+        # A leaked hub's snapshot probe passes read=False; only this test's calls count.
+        if kwargs.get("read") is not False:
+            calls.append(kwargs)
         return collect(*args, **kwargs)
 
     monkeypatch.setattr(avica_layout, "collect_studio_files", counting)
