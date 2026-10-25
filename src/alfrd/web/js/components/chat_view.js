@@ -78,10 +78,10 @@ export function render(el, ctx) {
   }, 15000);
 }
 
-function graphTaskMenu() {
+function graphTaskMenu(close = () => {}) {
   return taskMenuApi({ project: () => S.project, sid: () => S.sid, state: () => S.data,
     refresh: () => loadSession(), openLog: (rel) => openLog(ctxRef, S.project, rel),
-    files: (row) => { S.task = row; inspTab = "files"; S.keys.task = null; draw(ctxRef); openInspector(); } });
+    files: (row) => { close(); S.task = row; inspTab = "files"; S.keys.task = null; draw(ctxRef); openInspector(); } });
 }
 
 function openInspector() { insp?.open(); }
@@ -640,7 +640,7 @@ function openGraphFull({ fromComposer = false, request = null } = {}) {
   ctxRef.modal(`<header class="modal-h"><h2 id="chat-gfull-h">${icon("graph")} Task graph</h2><span class="muted small">Arrows pick a task, Enter opens it · 0 fits</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close full screen">${icon("close")}</button></header>
     <div class="modal-b chat-gfull"><div id="chat-gfull"></div></div>`, (root, close) => {
     root.setAttribute("aria-labelledby", "chat-gfull-h");
-    const g = mountGraph($("#chat-gfull", root), { taskMenu: graphTaskMenu(), groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
+    const g = mountGraph($("#chat-gfull", root), { taskMenu: graphTaskMenu(close), groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
       onSelect: (row) => { S.task = row; drawTask(ctxRef); },
       onOpen: (row) => { close(); S.task = row; S.keys.task = null; draw(ctxRef); $("#chat-task", host)?.focus(); } });
     full = { host: root, g };

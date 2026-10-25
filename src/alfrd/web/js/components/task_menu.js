@@ -7,16 +7,21 @@ const stamp = (t) => JSON.stringify([t?.context, t?.status, t && unit(t)]);
 // The snapshot belongs to one opening. Async work from an older opening is ignored.
 export function createTaskMenu(el, opts) {
   if (!el) return null;
-  let current = null, generation = 0, busy = false;
+  let current = null, generation = 0, busy = false, drawing = false;
   const close = (focus = true) => {
     const row = current?.row;
     current = null; generation++; busy = false; el.hidden = true;
+    if (row) opts.closed?.();
     if (focus && row) opts.focus(row);
   };
   const list = () => actions(current).filter((a) => !current.orch && (!current.kind || current.kind === "task") || !["retry", "cancel"].includes(a.id));
   const draw = (message = "") => {
+    const active = el.contains(document.activeElement) ? document.activeElement?.dataset?.action : null;
+    drawing = true;
     el.hidden = false;
     el.innerHTML = `<p role="status">${esc(message || current.row)}</p>` + list().map((a) => `<button type="button" role="menuitem" data-action="${a.id}" aria-disabled="${busy || !a.enabled}" title="${esc(a.reason || "")}">${esc(a.label)}${a.reason ? ` — ${esc(a.reason)}` : ""}</button>`).join("");
+    if (active) el.querySelector(`[data-action="${active}"]`)?.focus();
+    drawing = false;
   };
   async function open(row, message = "") {
     const t = opts.target(row);
@@ -42,6 +47,8 @@ export function createTaskMenu(el, opts) {
     const action = list().find((a) => a.id === id);
     if (!action?.enabled) return;
     const target = current, token = generation;
+    const latest = opts.target(target.row);
+    if (!latest || latest.context !== target.context) { close(); return; }
     if (stamp(opts.target(target.row)) !== stamp(target) || opts.revision() !== target.rev) {
       await opts.refresh();
       if (token === generation) await open(target.row, "Task changed. Review the refreshed actions.");
@@ -69,6 +76,6 @@ export function createTaskMenu(el, opts) {
       e.preventDefault(); buttons[e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (i + (e.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length]?.focus();
     }
   });
-  el.addEventListener("focusout", (e) => { if (!el.contains(e.relatedTarget)) close(false); });
-  return { open, close, activate, validate() { if (current && !opts.target(current.row)) close(); } };
+  el.addEventListener("focusout", (e) => { if (!drawing && !el.contains(e.relatedTarget)) close(false); });
+  return { open, close, activate, isOpen: () => Boolean(current), validate() { if (current && (!opts.target(current.row) || opts.target(current.row).context !== current.context)) close(); } };
 }

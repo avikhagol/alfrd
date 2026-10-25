@@ -56,13 +56,14 @@ export function mountGraph(host, opts = {}) {
   const nodeEl = (key) => key && world.querySelector(`.node[data-key="${CSS.escape(key)}"]`);
 
   const menu = opts.editable ? null : createTaskMenu($("[data-gv-menu]", host), {
-    target: (row) => opts.taskMenu ? opts.taskMenu.target(row) : view.model.nodes.find((n) => n.id === row),
+    target: (row) => view.model.nodes.some((n) => n.id === row) ? (opts.taskMenu ? opts.taskMenu.target(row) : view.model.nodes.find((n) => n.id === row)) : null,
     revision: () => view.model.rev,
     preview: (row) => opts.taskMenu?.preview(row),
     refresh: () => opts.taskMenu?.refresh(),
     run: (action, target) => opts.taskMenu?.run(action, target),
     focus: (row) => (nodeEl(row) || canvas).focus({ preventScroll: true }),
     error: say,
+    closed: () => updates.flush(),
   });
   const openMenu = (key) => { if (!menu || !key) return; select(key); menu.open(key); };
   canvas.addEventListener("contextmenu", (e) => {
@@ -192,6 +193,7 @@ export function mountGraph(host, opts = {}) {
     if (menu && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
       e.preventDefault(); e.stopPropagation(); openMenu(e.target.closest(".node")?.dataset.key || e.target.closest("[data-gv-menu-for]")?.dataset.gvMenuFor || view.selected); return;
     }
+    if (e.target.closest("[data-gv-menu-for]")) return;
     const list = order(), i = list.indexOf(view.selected);
     const move = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
     if (move) {
@@ -242,7 +244,7 @@ export function mountGraph(host, opts = {}) {
     draw();
     menu?.validate();
     if (hadFocus) (nodeEl(view.selected) || canvas).focus({ preventScroll: true });
-  }, () => hovering || Boolean(drag) || Boolean(view.link));
+  }, () => hovering || Boolean(drag) || Boolean(view.link) || Boolean(menu?.isOpen()));
 
   return {
     update: (model, selected = view.selected) => updates.update(model, selected),

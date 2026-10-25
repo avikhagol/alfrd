@@ -137,6 +137,37 @@ test("G5 right-click targets the clicked node; ContextMenu and overflow share th
   assert.match(r.world.innerHTML, /aria-haspopup="menu"/);
   r.menu.fire("keydown", { key: "Escape" }); assert.match(r.focused(), /data-key="a"/);
 });
+test("G5 open menu defers graph updates and Escape flushes only the newest revision", async () => {
+  const r = mounted(); r.graph.update(model(["a"])); r.tick(); focusNode(r.canvas, "a");
+  r.canvas.fire("keydown", { key: "F10", shiftKey: true });
+  await Promise.resolve();
+  const before = r.world.innerHTML, transform = r.world.style.transform;
+  r.graph.update({ ...model(["a", "discarded"]), rev: 2 });
+  r.graph.update({ ...model(["a", "latest"]), rev: 4 });
+  r.graph.update({ ...model(["a", "stale"]), rev: 3 });
+  r.canvas.fire("pointerleave");
+  assert.equal(r.world.innerHTML, before);
+  assert.equal(r.menu.hidden, false);
+  let stopped = false;
+  r.menu.fire("keydown", { key: "Escape", stopPropagation() { stopped = true; } });
+  assert.equal(stopped, true, "Escape must not dismiss the containing modal");
+  assert.equal(r.menu.hidden, true);
+  assert.match(r.world.innerHTML, /data-key="latest"/);
+  assert.doesNotMatch(r.world.innerHTML, /discarded|stale/);
+  assert.equal(r.world.style.transform, transform);
+  assert.match(r.focused(), /data-key="a"/);
+});
+
+test("G5 overflow Enter and Space preserve native button activation", () => {
+  const opened = [], r = mounted({ onOpen: (row) => opened.push(row) });
+  r.graph.update(model(["a"])); r.tick(); focusNode(r.canvas, "a");
+  for (const key of ["Enter", " "]) {
+    r.canvas.fire("keydown", { key, target: { closest: (s) => s === "[data-gv-menu-for]" ? { dataset: { gvMenuFor: "a" } } : null },
+      preventDefault() { assert.fail("overflow native activation must be preserved"); } });
+  }
+  assert.deepEqual(opened, []);
+});
+
 // G7 remains deferred.
 test("G7 rectangle selection selects nodes at 20%, 100% and 200% zoom", { skip: "G7 deferred at lazy payload cap" }, () => {});
 test("G4 request scope selector is shared by Graph, Files and Goals", async () => {

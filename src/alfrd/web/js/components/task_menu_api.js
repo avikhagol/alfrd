@@ -10,7 +10,7 @@ export function taskMenuApi(opts) {
       const last = t.logs?.at(-1);
       return { ...t, project: opts.project(), sid: opts.sid(), context: `${opts.project()}/${opts.sid()}`,
         prompt: Boolean(last?.handoff), reply: Boolean(last?.handoff),
-        logs: t.logs, files: t.result?.artifacts };
+        log: t.logs?.findLast((l) => l.log)?.log, logs: (t.logs || []).filter((l) => l.log), handoff: last?.handoff, files: t.result?.artifacts };
     },
     async preview(row) {
       const res = await server.request(`/api${path(opts.project(), opts.sid(), row)}/retry-preview`);
@@ -26,8 +26,8 @@ export function taskMenuApi(opts) {
         });
         await opts.refresh();
       } else if (action === "copy_id") await navigator.clipboard.writeText(target.row);
-      else if (action === "log") await opts.openLog(target.logs.at(-1).log);
-      else if (action === "prompt" || action === "reply") await opts.openLog(`${target.logs.at(-1).handoff}/${action === "prompt" ? "prompt" : "response"}.md`);
+      else if (action === "log") await opts.openLog(target.log);
+      else if (action === "prompt" || action === "reply") await opts.openLog(`${target.handoff}/${action === "prompt" ? "prompt" : "response"}.md`);
       else await opts.files(target.row);
     },
   };
