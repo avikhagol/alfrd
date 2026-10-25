@@ -1,8 +1,9 @@
+import { quietCounts, usageUnits, usageCountsHtml } from "./usage_counts.js";
 import { currentSteps } from "../data/chat_steps.js";
 import { stepsHtml } from "./chat_steps.js";
 import { $, esc, icon, storage } from "../utils/dom.js";
 import { subscribeActivity } from "../data/chat_live.js";
-import { activityKey, activityLabel, activityRows, duration, money, requestProgress, statusInfo } from "../data/chat.js";
+import { activityKey, activityLabel, activityRows, costWarnings, duration, money, requestProgress, statusInfo } from "../data/chat.js";
 
 const PURIFY = { USE_PROFILES: { html: true }, FORBID_TAGS: ["style"], FORBID_ATTR: ["style", "id", "name"] };
 const purify = await import("../vendor/purify.es.mjs").then((m) => m.default, () => null);
@@ -18,19 +19,22 @@ export function sanitizeHtml(html, p = purify) {
 // Pending decisions sit above Details (see decisionsHost), so they never need it opened.
 // Output is recorded public activity.
 export function mountActivity(box, o) {
-  let subscription, context = "", snapshot = { items: [] }, run, header, body, notice, paused = false;
+  let subscription, context = "", snapshot = { items: [] }, run, header, body, notice, usage, paused = false;
   const rows = new Map();
   const state = () => o.state?.() || {};
   const rid = () => o.request?.();
   const pref = (kind, id) => `ui:chat.${kind}:${JSON.stringify([o.project(), o.sid(), id])}`;
-  const visible = () => box.isConnected && !box.closest("[hidden]") && Boolean(run?.open);
+  const visible = () => box.isConnected && !box.closest("[hidden]") && Boolean(run?.open || usage?.open);
   function draw() {
     const req = state().requests?.find((r) => r.id === rid()), p = requestProgress(state(), req);
     const active = ["planning", "running", "summarizing", "needs_decision"].includes(req?.status);
     if (!run) {
       box.hidden = false;
-      box.innerHTML = `<button type="button" class="btn sm link chat-run-head" aria-controls="chat-inspector" title="Open run inspector"></button><span class="small" data-current-steps></span><section class="chat-decisions" data-decisions></section><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
-      run = $("details", box); header = $(".chat-run-head", box); body = $(".chat-run-rows", run); notice = $("[data-notice]", run);
+      box.innerHTML = `<button type="button" class="btn sm link chat-run-head" aria-controls="chat-inspector" title="Open run inspector"></button><span class="small warn-t" role="status" data-run-warning></span><span class="small" data-current-steps></span><section class="chat-decisions" data-decisions></section><details data-usage><summary>Usage</summary><button type="button" class="btn sm link" data-usage-refresh>Refresh usage</button><div data-usage-counts></div></details><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
+      run = $(".chat-details", box); usage = $("[data-usage]", box);
+      usage.addEventListener("toggle", () => { draw(); subscription?.kick(); });
+      $("[data-usage-refresh]", box).onclick = () => subscription?.kick();
+      header = $(".chat-run-head", box); body = $(".chat-run-rows", run); notice = $("[data-notice]", run);
       header.onclick = () => o.inspect ? o.inspect(rid()) : o.viewGraph?.(rid());
       $("[data-run-graph]", run).onclick = () => o.viewGraph?.(rid());
       run.open = storage.get(pref("run", rid()), active); if (run.open) run.dataset.auto = "1";
@@ -45,7 +49,14 @@ export function mountActivity(box, o) {
     const ended = req?.finished ? Date.parse(req.finished) : Date.now();
     header.textContent = [req?.status ? label : "", p && Array.isArray(state().tasks) ? `${p.done}/${p.total} tasks complete` : "",
       Number.isFinite(started) && Number.isFinite(ended) ? duration(Math.max(0, Math.round((ended - started) / 1000))) : "",
-      money(req?.usage?.total_cost_usd)].filter((s) => s && s !== "—").join(" · ");
+      money(req?.usage?.total_cost_usd), quietCounts(snapshot.telemetry?.requests?.[rid()] || req?.telemetry)].filter((s) => s && s !== "—").join(" · ");
+    const warned = costWarnings(state(), rid());
+    $("[data-run-warning]", box).textContent = [p?.costRatio >= 0.8 ? `${p.costRatio >= 1 ? "Cost cap reached" : "Approaching cost cap"}: ${money(req?.usage?.total_cost_usd)} / ${money(p.maxCost)}` : "",
+      warned.length ? `${warned.length} task${warned.length === 1 ? "" : "s"} over cost warning` : ""].filter(Boolean).join(" · ");
+    if (usage.open) {
+      const host = $("[data-usage-counts]", box), html = usageCountsHtml(req, snapshot.telemetry?.requests?.[rid()], snapshot.items, usageUnits(state(), rid()), snapshot);
+      if (host.innerHTML !== html) host.innerHTML = html;
+    }
     const stepBox = $("[data-current-steps]", box), stepHtml = stepsHtml(active ? currentSteps(req) : [], rid());
     if (stepBox.innerHTML !== stepHtml) stepBox.innerHTML = stepHtml;
     notice.textContent = snapshot.unsupported ? "Live output unavailable on this server. Open the full transcript for details." : snapshot.stale ? "Updates paused — reconnecting" : "";
@@ -101,7 +112,8 @@ export function mountActivity(box, o) {
       }
       if (!subscription) subscription = subscribeActivity(o.project(), o.sid(), (s) => { if (s.at || s.stale || s.unsupported || !snapshot.at) snapshot = s; draw(); }, {
         visible, busy: o.busy,
-        units: () => [...rows.values()].filter((r) => run.open && r.data.unit).map((r) => [r.data.unit, r.lines]),
+        units: () => [...[...rows.values()].filter((r) => run.open && r.data.unit).map((r) => [r.data.unit, r.lines]),
+          ...(usage.open ? usageUnits(state(), rid()).map((unit) => [unit, 40]) : [])],
       });
       else subscription.kick();
     },

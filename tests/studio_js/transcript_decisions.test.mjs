@@ -59,8 +59,8 @@ test("older requests read mail only once Details is opened", () => {
 test("exactly one Details disclosure per request; the permission hash and CSRF path are untouched", async () => {
   const dir = new URL("../../src/alfrd/web/js/components/", import.meta.url);
   const src = Object.fromEntries(await Promise.all(["chat_activity", "chat_mailbox", "chat_thread"].map(async (f) => [f, await readFile(new URL(`${f}.js`, dir), "utf8")])));
-  const opens = Object.values(src).join("\n").match(/<details[\s>]/g) || [];
-  assert.equal(opens.length, 1, "one <details> template across activity, mailbox and thread");
+  const opens = Object.values(src).join("\n").replace(/<details data-usage>/g, "").match(/<details[\s>]/g) || [];
+  assert.equal(opens.length, 1, "one activity Details template, besides the separate Usage disclosure");
   assert.match(src.chat_activity, /<details class="chat-details"><summary>Details<\/summary>[^`]*data-team-mailbox[^`]*data-raw-protocol/, "log, outputs, team messages and raw protocol live inside it");
   assert.match(src.chat_activity, /chat-run-rows/);
   assert.match(src.chat_mailbox, /action_hash: approval \? original\.payload\.action_hash : null/);

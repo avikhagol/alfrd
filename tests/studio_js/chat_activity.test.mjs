@@ -27,7 +27,7 @@ function fixture(tasks) {
     agentName: (name) => name, openLog: (...args) => calls.push(args) });
   api.kick();
   return { api, calls, box, setState(next) { state = next; },
-    click(index) { box.querySelector("details").querySelector(".chat-run-rows").children[index].querySelector("[data-log]").onclick(); } };
+    click(index) { box.querySelector(".chat-details").querySelector(".chat-run-rows").children[index].querySelector("[data-log]").onclick(); } };
 }
 const task = (row, units, request = "r") => ({ row, request, status: "done", owner: "codex",
   logs: units.map((unit, i) => ({ unit, log: `${unit}-${i + 1}.log`, status: "done" })) });
@@ -81,4 +81,37 @@ test("M7 run line shows M5 steps alongside the inspector button and preserves co
     f.setState({ requests: [{ id: "r", status: "running" }], tasks: [] }); f.api.kick();
     assert.equal(steps.innerHTML, "", "legacy requests have no invented current step");
   } finally { f.api.stop(); }
+});
+
+
+test("U5 run line uses request totals; Usage refresh retains its controls and disclosure", () => {
+  const f = fixture([task("a", ["a1", "a2"])]);
+  const counts = { tool_calls: {value: 12, coverage: "complete"}, web_search: {value: 3, coverage: "complete"}, file_edit: {value: 5, coverage: "complete"} };
+  try {
+    f.setState({ requests: [{ id: "r", status: "running", telemetry: {attempts: 2, counts} }], tasks: [task("a", ["a1", "a2"])] });
+    const usage = f.box.querySelector("[data-usage]"); usage.open = true;
+    f.api.kick();
+    assert.match(f.box.querySelector(".chat-run-head").textContent, /12 tool calls · 3 web searches · 5 edits/);
+    assert.doesNotMatch(f.box.querySelector(".chat-run-head").textContent, /tokens/i);
+    const host = f.box.querySelector("[data-usage-counts]"), refresh = f.box.querySelector("[data-usage-refresh]");
+    assert.match(host.innerHTML, /0\/2 known attempts loaded; 2 attempts in request total/);
+    assert.match(host.innerHTML, /Request total/);
+    assert.equal(typeof refresh.onclick, "function");
+    const html = host.innerHTML; refresh.onclick(); f.api.kick();
+    assert.equal(host.innerHTML, html); assert.equal(usage.open, true);
+    assert.equal(f.box.querySelector("[data-usage-refresh]"), refresh);
+    f.setState({ requests: [{ id: "r", status: "done" }], tasks: [] }); f.api.kick();
+    assert.doesNotMatch(f.box.querySelector(".chat-run-head").textContent, /tool calls/);
+  } finally { f.api.stop(); }
+});
+
+
+test("U5 cost-cap and task warnings remain outside closed Usage and Details", () => {
+  const f = fixture([]);
+  try {
+    f.setState({requests: [{id: "r", status: "running", usage: {total_cost_usd: 9}, bounds: {max_cost_usd: 10}}], tasks: [{request: "r", cost_warning: {bound: 1}}]}); f.api.kick();
+    assert.match(f.box.querySelector("[data-run-warning]").textContent, /Approaching cost cap:.*1 task over cost warning/);
+    f.setState({requests: [{id: "r", status: "done", usage: {total_cost_usd: 10}, bounds: {max_cost_usd: 10}}], tasks: []}); f.api.kick();
+    assert.match(f.box.querySelector("[data-run-warning]").textContent, /Cost cap reached/);
+  } finally {f.api.stop();}
 });
