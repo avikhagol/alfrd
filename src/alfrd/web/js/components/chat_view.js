@@ -62,6 +62,7 @@ function scheduleRefresh(session = true) {
 const liveFlowing = (ctx) => ["live", "polling"].includes(ctx.state.liveStatus?.state);
 
 export function leave() {
+  filesModule?.leaveFiles(); filesEpoch++;
   clearInterval(slowTimer); clearInterval(clock); slowTimer = clock = 0;
   act?.stop();
 }
@@ -195,6 +196,24 @@ const agents = () => S.data?.settings?.agents || S.settings?.agents || {};
 const orchestrator = () => S.data?.settings?.orchestrator || S.settings?.orchestrator;
 const agentName = (key) => (key === "alfrd" ? "ALFRD" : `${agents()[key]?.label || key}`);
 
+let filesModule = null, filesEpoch = 0;
+function drawFilesTab(ctx, request) {
+  const panel = $("#chat-insp-panel", host), project = S.project, sid = S.sid;
+  const key = JSON.stringify([project, sid, request, S.data?.rev]);
+  const epoch = ++filesEpoch;
+  if (inspTab !== "files") { filesModule?.leaveFiles(); return; }
+  const current = () => panel.isConnected && inspTab === "files" && S.project === project && S.sid === sid && scope.request(S.data) === request;
+  import("./files_tab.js").then((m) => {
+    if (epoch !== filesEpoch || !current()) return;
+    filesModule = m;
+    const url = `${base(project)}/sessions/${encodeURIComponent(sid)}`;
+    m.drawFiles(panel, { key, isCurrent: current,
+      rows: request ? (S.data?.graph?.nodes || []).filter((n) => n.request === request).map((n) => n.id) : null,
+      getOverview: () => sid ? get(`${url}/overview`) : Promise.resolve({ files: [] }),
+      raw: (ref) => m.rawBlob(url, ref), view: (path, blob, guard) => m.openBlob(ctx, path, blob, guard), reveal: (path, guard) => m.revealFile(ctx, project, path, guard) });
+  }).catch((err) => { if (current()) panel.textContent = err.message; });
+}
+
 function draw(ctx) {
   drawSessions();
   drawHead(ctx);
@@ -210,6 +229,7 @@ function draw(ctx) {
   const model = { ...graphModel(S.data?.graph, agents(), request, S.data?.requests), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
   graph?.update(model, S.data ? S.task : null);
   if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
+  drawFilesTab(ctx, request);
   drawTask(ctx);
   draft?.select(S.project, S.sid);
   $("#chat-send-error", host).textContent = S.sendError || "";

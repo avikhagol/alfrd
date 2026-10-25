@@ -81,6 +81,7 @@ def _files(root: Path, tasks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 entry["ref"] = proto.format_ref(rel, actual)
             with_stat = proto.confined(root, rel).stat()
             entry["bytes"] = with_stat.st_size
+            entry["current_ref"] = proto.format_ref(rel, actual)
         media = mimetypes.guess_type(rel)[0]
         if media:
             entry["media_type"] = media
