@@ -47,3 +47,26 @@ export function renderGraphGroups(lanes) {
     <text x="${lane.x + 16}" y="43" fill="var(--muted, currentColor)" font-size="11" font-family="inherit">${lane.count} node${lane.count === 1 ? "" : "s"}</text>
   </g>`).join("");
 }
+
+/** Per-mount delivery gate. Advance the revision on receipt, including queued updates,
+ * so a late response cannot replace a newer pending graph. Rev-less drafts remain supported
+ * until a versioned stream starts; equal revisions may carry a new selection/filter. */
+export function createGraphUpdates(apply, interacting) {
+  let revision = null, pending = null;
+  const flush = () => {
+    if (!pending || interacting()) return;
+    const next = pending;
+    pending = null;
+    apply(...next);
+  };
+  return {
+    update(model, selected) {
+      const rev = Number.isFinite(model.rev) ? model.rev : null;
+      if (model.unchanged || (revision !== null && (rev === null || rev < revision))) return;
+      if (rev !== null) revision = rev;
+      pending = [model, selected];
+      flush();
+    },
+    flush,
+  };
+}

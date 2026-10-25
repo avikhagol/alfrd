@@ -5,14 +5,15 @@
 import { $, $$, esc, icon } from "../utils/dom.js";
 import { edgePath, NODE_H } from "./canvas.js";
 import { layoutGraph } from "../data/chat.js";
-import { createGraphGroups, renderGraphGroups } from "./graph_groups.js";
+import { createGraphGroups, renderGraphGroups, createGraphUpdates } from "./graph_groups.js";
 
 const TONES = ["ok", "fail", "run", "idle", "ready"];
 let seq = 0;
 
 /** Mount on `host`. opts: {label, editable, empty, onSelect(id), onOpen(id), onConnect(from, to) → problem|null,
  *  onDisconnect(from, to), onDelete(id), onAdd(), groups: true|group[]}. With groups:true, use
- *  model.groups (or node.request for legacy models). Returns {update(model, selected), select(id), fit(), focus()}. */
+ *  model.groups (or node.request for legacy models). Models may carry a monotonic numeric rev.
+ *  Returns {update(model, selected), select(id), fit(), focus()}. */
 export function mountGraph(host, opts = {}) {
   const id = `gv${++seq}`;
   const groups = opts.groups ? createGraphGroups() : null;
@@ -30,18 +31,20 @@ export function mountGraph(host, opts = {}) {
     </div><p class="sr-only" aria-live="polite" data-gv-live></p></div>`;
   const canvas = $(".gv-canvas", host), world = $(".world", host), live = $("[data-gv-live]", host);
   const say = (text) => { live.textContent = text; };
+  let drag = null, hovering = false;
   const apply = () => {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
     $(".gv-zoom", host).textContent = `${Math.round(view.zoom * 100)}%`;
   };
   const zoomAt = (z, cx, cy) => {
+    view.fitted = true; // User navigation also cancels a pending initial fit.
     const nz = Math.min(2, Math.max(0.2, z));
     view.x = cx - ((cx - view.x) * nz) / view.zoom; view.y = cy - ((cy - view.y) * nz) / view.zoom; view.zoom = nz; apply();
   };
   const zoomBy = (f) => { const r = canvas.getBoundingClientRect(); zoomAt(view.zoom * f, r.width / 2, r.height / 2); };
   const fit = () => {
     const r = canvas.getBoundingClientRect();
-    if (!r.width || !view.L) return;
+    if (!r.width || !view.L || !view.model.nodes.length) return;
     const z = Math.min(1, Math.max(0.2, Math.min((r.width - 32) / view.L.width, (r.height - 32) / view.L.height)));
     view.zoom = z; view.x = (r.width - view.L.width * z) / 2; view.y = 16; apply(); view.fitted = true;
   };
@@ -74,7 +77,8 @@ export function mountGraph(host, opts = {}) {
           <div class="node-b"><span class="small muted grow gv-sub">${esc(n.sub || "")}</span><span class="badge tone-${esc(n.tone)}">${icon(n.icon || "info")}<span>${esc(n.label)}</span></span></div>
         </div>`;
       }).join("");
-    if (!view.fitted) requestAnimationFrame(fit); else apply();
+    if (!view.fitted) requestAnimationFrame(() => { if (!view.fitted) fit(); });
+    apply();
   }
 
   function select(key, { focus = false, announce = false } = {}) {
@@ -91,6 +95,7 @@ export function mountGraph(host, opts = {}) {
     view.link = null; canvas.classList.remove("gv-linking");
     const problem = opts.onConnect?.(from, to);
     say(problem ? `Not connected: ${problem}` : `${to} now waits for ${from}.`);
+    updates.flush();
   }
 
   host.addEventListener("click", (e) => {
@@ -109,7 +114,8 @@ export function mountGraph(host, opts = {}) {
     nodeEl(view.selected)?.focus();
   }
 
-  let drag = null;
+  canvas.addEventListener("pointerenter", (e) => { if (e.pointerType !== "touch") hovering = true; });
+  canvas.addEventListener("pointerleave", () => { hovering = false; updates.flush(); });
   canvas.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     const node = e.target.closest(".node");
@@ -124,6 +130,7 @@ export function mountGraph(host, opts = {}) {
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (drag.kind === "pan") {
       if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+      view.fitted = true;
       view.x = drag.ox + dx; view.y = drag.oy + dy; apply();
     } else if (drag.kind === "link") {
       const a = view.L.pos[drag.from], p = worldAt(e.clientX, e.clientY);
@@ -145,13 +152,15 @@ export function mountGraph(host, opts = {}) {
       if (view.link) connectTo(view.link.from, d.key);
       else { select(d.key); opts.onOpen?.(d.key); }
     } else if (d.kind === "pan" && !d.moved && d.edge && opts.editable) opts.onDisconnect?.(d.edge.dataset.from, d.edge.dataset.to);
+    updates.flush();
   };
   canvas.addEventListener("pointerup", end);
   canvas.addEventListener("pointercancel", end);
+  canvas.addEventListener("lostpointercapture", end);
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) { const r = canvas.getBoundingClientRect(); zoomAt(view.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX - r.left, e.clientY - r.top); }
-    else { view.x -= e.deltaX; view.y -= e.deltaY; apply(); }
+    else { view.fitted = true; view.x -= e.deltaX; view.y -= e.deltaY; apply(); }
   }, { passive: false });
   canvas.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -166,7 +175,7 @@ export function mountGraph(host, opts = {}) {
       e.preventDefault(); e.stopPropagation();
       const from = view.link.from; view.link = null; canvas.classList.remove("gv-linking");
       $$(".node.link-cand", world).forEach((n) => n.classList.remove("link-cand"));
-      select(from, { focus: true }); say("Connecting cancelled.");
+      select(from, { focus: true }); say("Connecting cancelled."); updates.flush();
     } else if ((e.key === "Enter" || e.key === " ") && view.selected) {
       e.preventDefault();
       if (view.link) { const { from } = view.link; $$(".node.link-cand", world).forEach((n) => n.classList.remove("link-cand")); connectTo(from, view.selected); }
@@ -179,19 +188,19 @@ export function mountGraph(host, opts = {}) {
     else if (opts.editable && (e.key === "Delete" || e.key === "Backspace") && view.selected) { e.preventDefault(); opts.onDelete?.(view.selected); }
   });
 
+  const updates = createGraphUpdates((model, selected) => {
+    const key = JSON.stringify([model, selected]);
+    if (key === view.key) return;
+    view.key = key;
+    const hadFocus = host.contains(document.activeElement) && document.activeElement.closest?.(".node");
+    view.model = model;
+    view.selected = model.nodes.some((n) => n.id === selected) ? selected : null;
+    draw();
+    if (hadFocus) (nodeEl(view.selected) || canvas).focus({ preventScroll: true });
+  }, () => hovering || Boolean(drag) || Boolean(view.link));
+
   return {
-    update(model, selected = view.selected) {
-      const key = JSON.stringify([model, selected]);
-      if (key === view.key) return;
-      const shape = JSON.stringify(model.nodes.map((n) => n.id));
-      if (shape !== view.shape) view.fitted = false; // a new set of nodes: fit once
-      view.key = key; view.shape = shape;
-      const hadFocus = host.contains(document.activeElement) && document.activeElement.closest?.(".node");
-      view.model = model;
-      view.selected = model.nodes.some((n) => n.id === selected) ? selected : null;
-      draw();
-      if (hadFocus) (nodeEl(view.selected) || canvas).focus({ preventScroll: true });
-    },
+    update: (model, selected = view.selected) => updates.update(model, selected),
     select: (key) => select(key, { focus: true }),
     fit,
     focus: () => canvas.focus(),
