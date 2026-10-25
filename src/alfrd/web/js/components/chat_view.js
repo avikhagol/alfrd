@@ -11,6 +11,7 @@ import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { mountComposerDraft } from "./composer_draft.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
+import { createGoalsTab } from "./goals_tab.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
 import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
@@ -24,6 +25,7 @@ const S = { renaming: null, project: null, sessions: null, sessionsError: null, 
 let scope = createRequestScope();
 let inspTab = "graph";
 let insp = null; // the inspector shell (inspector.js): closed unless the user opened it
+const goals = createGoalsTab({ get, refresh: () => loadSession() });
 let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, composer = null, draft = null, act = null, full = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
@@ -63,6 +65,7 @@ const liveFlowing = (ctx) => ["live", "polling"].includes(ctx.state.liveStatus?.
 
 export function leave() {
   filesModule?.leaveFiles(); filesEpoch++;
+  goals.stop();
   clearInterval(slowTimer); clearInterval(clock); slowTimer = clock = 0;
   act?.stop();
 }
@@ -96,6 +99,7 @@ function graphTaskMenu(close = () => {}) {
 function openInspector() { insp?.open(); }
 
 function mount(el, ctx, p) {
+  goals.stop();
   draft?.destroy();
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
     task: null, sendError: "", keys: {}, renaming: null });
@@ -230,6 +234,7 @@ function draw(ctx) {
   graph?.update(model, S.data ? S.task : null);
   if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
   drawFilesTab(ctx, request);
+  goals.update({ host: inspTab === "goals" ? $("#chat-insp-panel", host) : null, state: S.data, project: S.project, sid: S.sid, request });
   drawTask(ctx);
   draft?.select(S.project, S.sid);
   $("#chat-send-error", host).textContent = S.sendError || "";
