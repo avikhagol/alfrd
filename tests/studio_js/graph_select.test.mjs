@@ -409,3 +409,21 @@ test("M7 message controls navigate without node selection, opening, capture or k
   assert.deepEqual(mail, [["a", "peer"]]); assert.deepEqual(opened, []); assert.deepEqual(selected, []);
   assert.equal(captures, 0); assert.equal(prevented, 0);
 });
+
+
+test("request scope lists newest creation first without changing selection or source order", async () => {
+  const { createRequestScope } = await import("../../src/alfrd/web/js/components/inspector.js");
+  const scope = createRequestScope();
+  const requests = Object.freeze(["r0009", "r10", "r0011", "r0012"].map((id, i) => Object.freeze({ id, status: i === 1 ? "running" : "done" })));
+  const state = { requests };
+  const options = () => [...scope.html(state).matchAll(/<option value="([^"]+)"( selected)?/g)].map((m) => [m[1], Boolean(m[2])]);
+  assert.deepEqual(options(), [["all", false], ["current", true], ["r0012", false], ["r0011", false], ["r10", false], ["r0009", false]]);
+  assert.equal(scope.request(state), "r10", "current still follows newest active request");
+  scope.select("r0009");
+  assert.deepEqual(options().filter(([, selected]) => selected), [["r0009", true]]);
+  assert.equal(scope.request(state), "r0009");
+  scope.select("all");
+  assert.equal(scope.request(state), null);
+  assert.deepEqual(options().filter(([, selected]) => selected), [["all", true]]);
+  assert.deepEqual(requests.map((r) => r.id), ["r0009", "r10", "r0011", "r0012"]);
+});

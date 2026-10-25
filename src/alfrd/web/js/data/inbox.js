@@ -1,10 +1,10 @@
 // Session summaries only: never load every conversation to count mail.
 export function pendingCount(sessions) {
-  if (!Array.isArray(sessions) || sessions.some((s) => !Number.isInteger(s.pending_user) || s.pending_user < 0)) return null;
-  return sessions.reduce((n, s) => n + s.pending_user, 0);
+  if (!Array.isArray(sessions)) return null;
+  return sessions.reduce((n, s) => n + (Number.isInteger(s?.pending_user) && s.pending_user >= 0 ? s.pending_user : 0), 0);
 }
 export const needsMe = (sessions) => sessions.filter((s) => s.pending_user == null || s.pending_user > 0);
-export const countText = (n) => n == null ? "Pending count unavailable" : `${n} pending`;
+export const countText = (n) => !Number.isInteger(n) || n < 0 ? "" : `${n} pending`;
 
 /** A project-scoped shell poll; old requests cannot overwrite a newly selected project. */
 export function createInbox({ request, publish, visible = () => !document.hidden }) {

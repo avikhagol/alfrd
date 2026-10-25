@@ -1066,6 +1066,9 @@ def plan_prompt(store: Session, conf: Mapping[str, Any], req: Mapping[str, Any])
         "## What each agent can reach",
         *[f"- `{key}`: {_reach(conf, key, project_access(store.root))}" for key in usable(conf)],
         "Give a task that touches folders outside these to an agent that reaches them; otherwise it will block.",
+        f"Expected outputs are checked relative to the project root: {store.root.resolve()}. "
+        "Whenever a task works in a repo other than the project, put the absolute path ALFRD checks "
+        "in each expected output's description, even when the code changes belong in the other repo.",
         "",
         "## Bounds for this request",
         f"- at most {b['max_tasks']} tasks; delegation depth {b['max_depth']} (your tasks are depth 1)",
@@ -1158,6 +1161,9 @@ def task_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any])
         if persona.get("instructions"):
             lines += ["", f"## Persona: {persona.get('label')}", persona["instructions"]]
     lines += ["", "## Your task", "```json", json.dumps(task, indent=2, ensure_ascii=False), "```"]
+    lines += expected_output_lines(store.root, task.get("expected_outputs"))
+    if str(rec.get("error") or "").startswith("expected output(s) missing:"):
+        lines += ["", "## Previous attempt: missing expected outputs", rec["error"]]
     if task.get("inputs"):
         lines += ["", "## Inputs (artifact references: <path>@<sha256>)",
                   "Read a referenced file at its path (relative to the project root) and check its sha256, or fetch "
@@ -1737,7 +1743,7 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
     missing = missing_outputs(store.root, (rec.get("task") or {}).get("expected_outputs"))
     if missing:
         _invalid_result(runner, store, conf, req, rec, unit,
-                        "expected output(s) missing: " + ", ".join(missing[:10]) + (" …" if len(missing) > 10 else ""))
+                        missing_output_error(store.root, missing, effective_access(store, rec).get("folders") or []))
         return
     rec.update(status="done", error=None)
     store.save_task(rec)
@@ -1763,6 +1769,49 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
                           agent=rec["owner"], request=req["id"], task=rec["row"], artifacts=record["artifacts"])
 
 
+def _expected_outputs(root: str | Path, expected):
+    """Share path parsing and resolution between prompts and validation."""
+    base = Path(root).resolve()
+    for item in expected or []:
+        rel = str((item or {}).get("path") or "").strip() if isinstance(item, Mapping) else str(item or "").strip()
+        if rel:
+            description = item.get("description") if isinstance(item, Mapping) else None
+            yield rel, (base / rel).resolve(), description
+
+
+def expected_output_lines(root: str | Path, expected) -> list[str]:
+    outputs = [f"- `{target}{'/' if rel.endswith('/') else ''}`" + (f" — {desc}" if desc else "")
+               for rel, target, desc in _expected_outputs(root, expected)]
+    if not outputs:
+        return []
+    return ["", "## Expected outputs (absolute paths)",
+            "ALFRD checks these exact absolute paths; write them there even if you also edit another repo.",
+            *outputs]
+
+
+def missing_output_error(root: str | Path, missing: list[str], folders: list[str]) -> str:
+    """Probe only the matching relative location in each extra writable root; never search recursively."""
+    lines = ["expected output(s) missing:"]
+    for rel, target, _ in _expected_outputs(root, missing):
+        lines.append(f"- {target}{'/' if rel.endswith('/') else ''}")
+        if Path(rel).is_absolute():
+            continue
+        found = set()
+        for folder in folders:
+            base = Path(folder).resolve()
+            candidate = (base / rel).resolve()
+            if candidate == target or not candidate.is_relative_to(base):
+                continue
+            try:
+                exists = candidate.is_dir() if rel.endswith("/") else candidate.exists()
+            except OSError:
+                continue
+            if exists and candidate not in found:
+                lines.append(f"  Same relative path exists under another writable root: {candidate}")
+                found.add(candidate)
+    return "\n".join(lines)
+
+
 def missing_outputs(root: str | Path, expected) -> list[str]:
     """Expected output paths (project-relative; a trailing "/" means a folder) that do not exist.
 
@@ -1770,11 +1819,7 @@ def missing_outputs(root: str | Path, expected) -> list[str]:
     producing its files becomes a failed attempt (retried within the task's bound)."""
     base = Path(root).resolve()
     missing = []
-    for item in expected or []:
-        rel = str((item or {}).get("path") or "").strip() if isinstance(item, Mapping) else str(item or "").strip()
-        if not rel:
-            continue
-        target = (base / rel).resolve()
+    for rel, target, _ in _expected_outputs(base, expected):
         inside = target == base or base in target.parents
         ok = inside and (target.is_dir() if rel.endswith("/") else target.exists())
         if not ok:
@@ -2636,17 +2681,14 @@ def _topological(tasks: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return out
 
 
-def _promoted_prompt(rec: Mapping[str, Any], deps: list[str]) -> str:
+def _promoted_prompt(root: Path, rec: Mapping[str, Any], deps: list[str]) -> str:
     task = rec.get("task") or {}
     lines = [f"# {task.get('title') or rec['row']}", ""]
     if task.get("description"):
         lines += [str(task["description"]).strip(), ""]
     if task.get("acceptance_criteria"):
         lines += ["## Acceptance criteria", *[f"- {c}" for c in task["acceptance_criteria"]], ""]
-    outputs = [o if isinstance(o, str) else f"{o.get('path')}" + (f" — {o['description']}" if o.get("description") else "")
-               for o in task.get("expected_outputs") or []]
-    if outputs:
-        lines += ["## Expected outputs (project-relative)", *[f"- {o}" for o in outputs], ""]
+    lines += expected_output_lines(root, task.get("expected_outputs")) + [""]
     inputs = [i if isinstance(i, str) else i.get("ref") for i in task.get("inputs") or []]
     if inputs:
         lines += ["## Inputs", *[f"- {str(i).split('@')[0]}" for i in inputs if i], ""]
@@ -2764,7 +2806,7 @@ def promotion(root: str | Path, sid: str, rid: str) -> dict[str, Any]:
             items[step_id] = {}
         steps.append({"id": step_id, "task": rec["row"], "label": spec["label"], "owner": rec["owner"],
                       "entrypoint": spec.get("entrypoint"), "model": spec.get("model"), "depends_on": deps,
-                      "prompt_file": prompt, "prompt": _promoted_prompt(rec, deps), "status": rec.get("status")})
+                      "prompt_file": prompt, "prompt": _promoted_prompt(store.root, rec, deps), "status": rec.get("status")})
     errors = workflow_dependency_errors(new)
     if errors:
         raise ValueError("the promoted steps do not fit the workflow: " + "; ".join(errors))

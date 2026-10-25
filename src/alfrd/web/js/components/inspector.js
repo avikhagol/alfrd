@@ -98,7 +98,7 @@ export function createInspector({ chat, button, panel, store = prefsStore(), wid
   return api;
 }
 
-/** Shared across tabs. Current follows activity; explicit choices stay put. */
+/** Current follows activity; explicit choices persist. */
 export function createRequestScope() {
   let choice = "current";
   return {
@@ -106,8 +106,8 @@ export function createRequestScope() {
     request(state) { return choice === "all" ? null : choice === "current" ? activeRequest(state)?.id || null : choice; },
     html(state) {
       const current = activeRequest(state);
-      const options = [["current", `Current request: ${current?.text || current?.id || "None"}`], ["all", "All requests"],
-        ...(state?.requests || []).map((r) => [r.id, `${r.id}: ${r.text || "Request"}`])];
+      const options = [["all", "All requests"], ["current", `Current request: ${current?.text || current?.id || "None"}`],
+        ...(state?.requests || []).slice().reverse().map((r) => [r.id, `${r.id}: ${r.text || "Request"}`])];
       if (!options.some(([id]) => id === choice)) options.push([choice, `${choice} (unavailable)`]);
       return `<label>Request scope <select data-request-scope aria-label="Request scope" style="max-width:100%">${options.map(([id, text]) =>
         `<option value="${esc(id)}"${choice === id ? " selected" : ""}>${esc(String(text).replace(/\s+/g, " ").slice(0, 100))}</option>`).join("")}</select></label>`;

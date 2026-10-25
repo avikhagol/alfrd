@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createInbox, pendingCount, needsMe, countText } from "../../src/alfrd/web/js/data/inbox.js";
 import { mergeMailbox } from "../../src/alfrd/web/js/data/chat_live.js";
 import { server } from "../../src/alfrd/web/js/data/server.js";
@@ -28,13 +29,19 @@ const { mailCardHtml, mountMailbox, decisionsFor, pendingMail } = await import("
 const sleep = (ms = 160) => new Promise((r) => setTimeout(r, ms));
 const q = (id, seq, extra = {}) => ({ id, seq, state: "pending", version: 1, kind: "question", priority: "normal", subject: "Choose", summary: "Short", description: "Human context", body: "Full body", sender: { kind: "agent", agent_id: "codex" }, recipient: { kind: "user" }, payload: { allow_text: true }, ...extra });
 
-test("authoritative session totals and Needs me retain unknowns, zero only for recorded zero", () => {
+test("session totals ignore malformed counts while Needs me retains unknown sessions", () => {
   const rows = [{ id: "a", pending_user: 2 }, { id: "b", pending_user: 0 }, { id: "c", pending_user: 3 }];
   assert.equal(pendingCount(rows), 5);
   assert.equal(pendingCount([]), 0);
-  assert.equal(pendingCount([...rows, { id: "old" }]), null);
+  assert.equal(pendingCount([...rows, { id: "old" }]), 5);
+  const invalid = [null, {}, { pending_user: null }, ...[-1, 1.5, "2", NaN, Infinity].map((pending_user) => ({ pending_user }))];
+  assert.equal(pendingCount([...rows, ...invalid]), 5);
+  assert.equal(pendingCount(invalid), 0);
+  for (const value of [undefined, {}, "sessions"]) assert.equal(pendingCount(value), null);
   assert.equal(pendingCount(null), null);
-  assert.match(countText(null), /unavailable/);
+  for (const value of [null, undefined, -1, 1.5, "2", NaN]) assert.equal(countText(value), "");
+  assert.equal(countText(0), "0 pending");
+  assert.equal(countText(3), "3 pending");
   assert.deepEqual(needsMe([...rows, { id: "old" }]).map((s) => s.id), ["a", "c", "old"]);
 });
 
@@ -122,4 +129,35 @@ test("two mounted forms preserve drafts while polling and show answered elsewher
     assert.equal(untouched.querySelector("fieldset").disabled, true);
     assert.notEqual(ac.innerHTML.match(/aria-controls="([^"]+)/)[1], bc.innerHTML.match(/aria-controls="([^"]+)/)[1]);
   } finally { one.stop(); two.stop(); three.stop(); server.request = originalRequest; server.mutate = originalMutate; document.activeElement = null; }
+});
+
+
+test("Chat navigation hides unknown and zero badges and labels positive counts", async () => {
+  const src = await readFile(new URL("../../src/alfrd/web/js/app.js", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("function paintInbox() {"), src.indexOf('\nwindow.addEventListener("alfrd-events"'));
+  const link = {}, badge = { parentElement: {}, setAttribute(k, v) { this[k] = v; } };
+  const paint = new Function("inboxCount", "countText", "$", "activeProject", "chatOn", "state", "routeHash", `${body}; paintInbox();`);
+  for (const count of [null, 0, 3, null]) {
+    paint(count, countText, (selector) => selector === "#chat-inbox" ? link : badge, () => "p", () => true, { mode: "server" }, () => "#chat");
+    const label = count > 0 ? "Chat · 3 pending" : "Chat";
+    assert.equal(link.textContent, label);
+    assert.equal(link.hidden, false);
+    assert.equal(badge.hidden, !(count > 0));
+    assert.equal(badge.textContent, count > 0 ? count : "");
+    assert.equal(badge["aria-label"], label);
+    assert.equal(badge.parentElement.title, label);
+  }
+});
+
+
+test("session list omits malformed count badges and retains known counts", async () => {
+  const src = await readFile(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("function drawSessions() {"), src.indexOf("\n// --- session list:"));
+  const box = {};
+  const draw = new Function("S", "countText", "$", "host", "changed", "needsOnly", "needsMe", "esc", "routeHash", "ctxRef", "icon", `${body}; drawSessions();`);
+  for (const pending_user of [null, undefined, "2", 1.5, -1, 0, 2]) {
+    draw({ sessions: [{ id: "s", title: "Session", pending_user }] }, countText, () => box, {}, () => true, false, needsMe, (x) => x, () => "#chat/s", { state: {} }, () => "");
+    if (Number.isInteger(pending_user) && pending_user >= 0) assert.ok(box.innerHTML.includes(`<span class="badge">${pending_user} pending</span>`));
+    else assert.doesNotMatch(box.innerHTML, /class="badge"|unavailable/);
+  }
 });

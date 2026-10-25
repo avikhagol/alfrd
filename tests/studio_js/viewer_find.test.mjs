@@ -83,10 +83,10 @@ test("without attempt information the header still has Copy and Find, and no lab
   assert.doesNotMatch(html, /data-viewer-label/);
 });
 
-test("an inline snippet awaits the lazy text tools before opening its full-screen modal", async () => {
+test("an inline snippet opens its full-screen modal with the shared text tools", async () => {
   const ctx = ctxWithModal();
   const opening = openFull(ctx, "Snippet", "<inline>\nBeta beta");
-  assert.equal(ctx.modals.length, 0, "the modal waits for the dynamic import");
+  assert.equal(ctx.modals.length, 1, "shared text tools are in the startup bundle");
   await opening;
   assert.equal(ctx.modals.length, 1);
   const { html, size } = ctx.modals[0];

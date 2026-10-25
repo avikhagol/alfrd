@@ -1441,9 +1441,9 @@ const inbox = createInbox({ request: (url) => server.request(url), publish(proje
 } });
 function paintInbox() {
   const p = activeProject(), enabled = chatOn() && state.mode === "server" && Boolean(p);
-  const link = $("#chat-inbox"), badge = $("[data-inbox-count]");
-  if (link) { link.hidden = !enabled; link.href = routeHash("chat", p, state.selectedTarget); link.textContent = `Chat · ${countText(inboxCount)}`; }
-  if (badge) { badge.hidden = !enabled; badge.textContent = inboxCount ?? "?"; badge.setAttribute("aria-label", countText(inboxCount)); badge.parentElement.title = `Chat · ${countText(inboxCount)}`; }
+  const link = $("#chat-inbox"), badge = $("[data-inbox-count]"), label = inboxCount > 0 ? `Chat · ${countText(inboxCount)}` : "Chat";
+  if (link) { link.hidden = !enabled; link.href = routeHash("chat", p, state.selectedTarget); link.textContent = label; }
+  if (badge) { badge.hidden = !enabled || !(inboxCount > 0); badge.textContent = inboxCount > 0 ? inboxCount : ""; badge.setAttribute("aria-label", label); badge.parentElement.title = label; }
 }
 window.addEventListener("alfrd-events", () => inbox.kick());
 window.addEventListener("alfrd-mail-replied", () => inbox.kick());

@@ -1,5 +1,5 @@
 /* Chat section, the graph canvas (graph_view.js) and the New-project canvas; loaded on first use. */
-.chat { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; padding: 14px 18px; height: calc(100vh - 120px); min-height: 480px; position: relative; }
+.chat { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; padding: 14px 18px; height: 100%; min-height: 0; position: relative; }
 .chat-sessions, .chat-main, .chat-side { min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .chat-side { overflow: auto; display: none; } /* the inspector: hidden until .chat-inspect-open */
 .chat-inspect-open .chat-side { display: flex; }
@@ -206,7 +206,7 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
   .chat-side { left: 8px; right: 8px; width: auto; top: 8px; bottom: 8px; overflow: auto; overscroll-behavior: contain; }
 }
 @media (max-width: 900px) {
-  .chat { grid-template-columns: minmax(0, 1fr); padding: 12px 16px; height: calc(100dvh - 120px); min-height: 360px; }
+  .chat { grid-template-columns: minmax(0, 1fr); padding: 12px 16px; }
   .chat-nav-toggle { display: inline-flex; }
   .chat-sessions { display: none; position: absolute; top: 62px; bottom: 12px; left: 12px; width: min(240px, calc(100% - 24px)); z-index: 5; background: var(--surface-float); border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: 12px; box-shadow: var(--shadow-lg); }
   .chat-sessions-open .chat-sessions { display: flex; }
