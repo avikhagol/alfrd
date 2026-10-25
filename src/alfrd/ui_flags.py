@@ -7,6 +7,8 @@ where its scope is authoritative.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from copy import deepcopy
 from typing import Any, Mapping
@@ -51,13 +53,13 @@ FLAGS: tuple[Flag, ...] = (
     # These names are part of the existing superuser contract and must not be renamed.
     *tuple(_f(f"lockdown.{key}", "machine", "bool", True, label, help_, True)
            for key, label, help_ in (
-               ("plugins", "Plugin management", "Allow plugin install, update, removal and configuration."),
-               ("plugin_actions", "Plugin actions", "Allow plugin actions that change files or external data."),
-               ("project_create", "Create and connect projects", "Allow project creation and connection."),
-               ("project_delete", "Forget and delete projects", "Allow projects to be forgotten or deleted."),
-               ("runs", "Workflow runs", "Allow starting, resuming and reviewing runs."),
-               ("chat", "Chat", "Allow chat sessions, messages, decisions and replies."),
-               ("file_edits", "Project file edits", "Allow edits to project files and task records."),
+               ("plugins", "Allow plugin management", "Allow plugin install, update, removal and configuration."),
+               ("plugin_actions", "Allow plugin actions", "Allow plugin actions that change files or external data."),
+               ("project_create", "Allow creating and connecting projects", "Allow project creation and connection."),
+               ("project_delete", "Allow forgetting and deleting projects", "Allow projects to be forgotten or deleted."),
+               ("runs", "Allow workflow runs", "Allow starting, resuming and reviewing runs."),
+               ("chat", "Allow chat", "Allow chat sessions, messages, decisions and replies."),
+               ("file_edits", "Allow project file edits", "Allow edits to project files and task records."),
            )),
     _f("limits.chat_max_cost_usd", "machine", "number|null", None, "Chat cost cap", "Maximum cost per chat request."),
     _f("limits.chat_max_replans", "machine", "int|null", None, "Chat replan cap", "Maximum blocker replans per request."),
@@ -139,6 +141,32 @@ def validate_ui(values: Mapping[str, Any] | None) -> dict[str, Any]:
             raise UIFlagError(f"{key} must be non-negative")
         result[key] = deepcopy(value)
     return result
+
+
+def revision(values: Mapping[str, Any]) -> int:
+    """A content revision of one scope's values: the same values give the same number."""
+    return int(hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:12], 16)
+
+
+def check_revision(current: int, expected: Any) -> None:
+    """A form built from an older revision is stale: RevisionConflict (409). ``expected`` must be an int."""
+    if isinstance(expected, bool) or not isinstance(expected, int):
+        raise UIFlagError("expected_revision must be an integer")
+    if expected != current:
+        raise RevisionConflict(f"stale expected_revision {expected}; current revision is {current}: reload the settings")
+
+
+def validate_changes(scope: Scope, changes: Any) -> dict[str, Any]:
+    """The changes of one section: every key belongs to ``scope`` and every value has its flag's type."""
+    if scope not in SCOPES:
+        raise UIFlagError(f"unknown scope {scope!r}")
+    if not isinstance(changes, Mapping) or not changes:
+        raise UIFlagError("changes must be a non-empty mapping")
+    wrong = [key for key in changes if key not in BY_KEY or BY_KEY[key].scope != scope]
+    if wrong:
+        raise UIFlagError(f"{scope} cannot save: {', '.join(sorted(map(str, wrong)))}")
+    validate_ui(changes)
+    return deepcopy(dict(changes))
 
 
 def _mapping(scope_values: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -225,4 +253,4 @@ class UIFlagRegistry:
 
 
 __all__ = ["BY_KEY", "DEFAULTS", "FLAGS", "REGISTRY", "RevisionConflict", "UIFlagError",
-           "UIFlagRegistry", "validate_ui", "resolve"]
+           "UIFlagRegistry", "check_revision", "resolve", "revision", "validate_changes", "validate_ui"]

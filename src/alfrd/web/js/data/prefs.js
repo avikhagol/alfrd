@@ -97,5 +97,13 @@ export function writePrefs(patch) {
     next[key] = value;
   }
   write(STORAGE_KEY, { version: 2, values: next });
+  write(REVISION_KEY, prefsRevision() + 1);
   return readPrefs();
+}
+
+const REVISION_KEY = `${STORAGE_KEY}.rev`;
+/** This browser's preferences revision: a counter that every save raises (another tab's save makes a settings form stale). */
+export function prefsRevision() {
+  const rev = read(REVISION_KEY);
+  return Number.isInteger(rev) && rev >= 0 ? rev : 0;
 }

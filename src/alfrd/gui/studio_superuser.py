@@ -9,8 +9,6 @@ mutation gate. The settings live in one file per user (alfrd.superuser) and appl
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import platform
 import sys
@@ -19,10 +17,10 @@ from pathlib import Path
 
 from flask import current_app, jsonify, redirect, request
 
-from alfrd import __version__, superuser
+from alfrd import __version__, superuser, ui_flags
 
 from .security import require_local_csrf
-from .studio import _json_error, _poke, studio_api
+from .studio import _json_error, _poke, _project_root, studio_api
 
 _STARTED = time.time()
 
@@ -54,7 +52,7 @@ def _effective(data: dict) -> dict:
 
 def _view() -> dict:
     data = superuser.load()
-    return {"settings": data, "defaults": superuser.DEFAULTS, "labels": superuser.LABELS, "file": str(superuser.path()),
+    return {"revision": ui_flags.revision(superuser.flat(data)), "settings": data, "defaults": superuser.DEFAULTS, "labels": superuser.LABELS, "file": str(superuser.path()),
             "exists": superuser.path().is_file(), "error": superuser.error(), "flags": _flags(), "effective": _effective(data),
             "choices": {"sections": list(superuser.SECTIONS), "templates": list(superuser.TEMPLATES), "locks": list(superuser.LOCKS)}}
 
@@ -72,6 +70,11 @@ def superuser_save():
     changes = payload.get("settings")
     if not isinstance(changes, dict):
         return _json_error(ValueError("send {settings: {...}}"), 400)
+    if "expected_revision" in payload:  # the Machine section of the settings form: refuse a stale form
+        try:
+            ui_flags.check_revision(ui_flags.revision(superuser.flat()), payload["expected_revision"])
+        except ui_flags.UIFlagError as error:
+            return _json_error(error, getattr(error, "status_code", 400))
     try:
         # replace: the whole set (the page offers it when the file is broken); else only the keys sent
         superuser.save(changes) if payload.get("replace") else superuser.merge(changes)
@@ -111,20 +114,97 @@ def ui_flags_get():
     request, or a browser-only Studio with no server), every flag comes back ``locked`` with the reason. Browser flags
     carry their defaults here; the browser's own values (alfrd.data.prefs in the page) apply on top.
     """
-    from alfrd import ui_flags
+    return jsonify(_flags_payload(request.args.get("project")))
+
+
+def _project_flag_values(view: dict) -> dict:
+    """The project flags live in the project's alfrd.yaml ``chat:`` block (``chat.settings_view``)."""
+    values = {"chat.final_summary": view["final_summary"], "chat.saved_skills": bool(view["skill_selection"]["enabled"])}
+    for name, agent in view["agents"].items():
+        if f"chat.agents.{name}.lean" in ui_flags.BY_KEY and agent.get("lean") is not None:
+            values[f"chat.agents.{name}.lean"] = bool(agent["lean"])
+    return values
+
+
+def _flags_payload(project: str | None = None) -> dict:
+    """``{revision, revisions: {machine, project?}, flags}``. ``revision`` is the machine one; a project's values (and
+    revision) are read only for a request that may change settings, so a remote reader sees the defaults."""
+    from alfrd import chat
     from alfrd.gui.security import mutations_enabled, runtime_enabled
 
     values = superuser.flat()
     # the same content hash for the same settings: the page can tell that a change happened
-    revision = int(hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:12], 16)
-    flags = ui_flags.resolve(machine=values)
+    revisions = {"machine": ui_flags.revision(values)}
+    project_values = {}
+    if project and mutations_enabled():
+        try:
+            view = chat.settings_view(_project_root(project))
+            project_values, revisions["project"] = _project_flag_values(view), int(view["hash"][:12], 16)
+        except Exception:  # noqa: BLE001 - an unreadable project shows the defaults
+            pass
+    flags = ui_flags.resolve(project=project_values, machine=values)
     if not mutations_enabled():
         reason = ("Browser-only mode: this Studio has no server to save to." if not runtime_enabled()
                   else "Changes are allowed only from a browser on the server machine.")
         for flag in flags:
             flag["locked"] = True
             flag["reason"] = f"{reason} {flag['reason']}" if flag["reason"] else reason
-    return jsonify(revision=revision, flags=flags)
+    return {"revision": revisions["machine"], "revisions": revisions, "flags": flags}
+
+
+@studio_api.post("/studio/ui-flags")
+def ui_flags_save():
+    """``{scope: 'browser'|'project', changes: {key: value}, expected_revision, current_revision?, project?}``: the Browser
+    and Project sections of the settings form (Machine saves go to ``POST /studio/superuser`` with ``expected_revision``).
+
+    Local requests only (the app-wide mutation gate: remote and browser-only requests get 403), refused while read-only.
+    409 when ``expected_revision`` is not the current one. Browser values live in the page's own storage, so the page sends
+    the revision it holds now as ``current_revision`` and gets the validated values back to store.
+    """
+    from alfrd import chat, history
+    from alfrd.execution import ExecutionError
+    from alfrd.gui.security import lockdown_refusal
+
+    payload = request.get_json(silent=True) or {}
+    scope = payload.get("scope")
+    try:
+        if scope not in ("browser", "project"):
+            raise ui_flags.UIFlagError("scope must be 'browser' or 'project' (machine settings save through /studio/superuser)")
+        changes = ui_flags.validate_changes(scope, payload.get("changes"))
+        if scope == "browser":
+            current = payload.get("current_revision")
+            ui_flags.check_revision(current if isinstance(current, int) and not isinstance(current, bool) else -1, payload.get("expected_revision"))
+            return jsonify(scope=scope, values=changes)
+        refusal = lockdown_refusal(["file_edits"])
+        if refusal:
+            return jsonify(error={"code": 403, "message": refusal, "reason": "superuser", "lock": ["file_edits"]}), 403
+        root = _project_root(str(payload.get("project") or ""))
+        view = chat.settings_view(root)
+        ui_flags.check_revision(int(view["hash"][:12], 16), payload.get("expected_revision"))
+        block = {**view["block"]}
+        for key, value in changes.items():
+            if key == "chat.final_summary":
+                block["final_summary"] = value
+            elif key == "chat.saved_skills":
+                block["skill_selection"] = {**(block.get("skill_selection") or {}), "enabled": value}
+            elif not (key.startswith("chat.agents.") and key.endswith(".lean")):
+                raise ui_flags.UIFlagError(f"{key} is not stored per project yet")
+            else:
+                name = key.split(".")[2]
+                if name not in view["agents"]:
+                    raise ui_flags.UIFlagError(f"{key}: agent {name!r} is not configured in this project")
+                block["agents"] = {**(block.get("agents") or {}), name: {**((block.get("agents") or {}).get(name) or {}), "lean": value}}
+        chat.save_settings(root, block, base_hash=view["hash"])
+    except ui_flags.RevisionConflict as error:
+        return _json_error(error, 409)
+    except history.Conflict as error:
+        return _json_error(error, 409)
+    except (ui_flags.UIFlagError, ExecutionError, ValueError) as error:
+        return _json_error(error, 400)
+    except LookupError as error:
+        return _json_error(error, 404)
+    _poke(payload["project"])
+    return jsonify(scope=scope, **_flags_payload(payload["project"]))
 
 
 # --- statistics and ops -----------------------------------------------------------------------

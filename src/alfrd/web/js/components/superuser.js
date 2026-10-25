@@ -52,7 +52,7 @@ function mount(el) {
       <span class="muted small" id="su-file"></span>
       <button type="button" class="btn sm" data-su="reload">${icon("sync")} Reload</button>
       <button type="button" class="btn sm danger" data-su="reset">${icon("reset")} Reset to defaults</button></header>
-    <p class="muted small">These settings apply to every <code>alfrd serve</code> / <code>alfrd gui</code> of this user on this machine, on their next request. Command-line flags stay stronger: <code>--experimental-features</code> turns experimental features on; <code>--no-gui-install</code> and <code>--no-plugin-actions</code> turn those off.</p>
+    <p class="muted small">The same settings are the Machine section of Studio settings → Preferences. They apply to every <code>alfrd serve</code> / <code>alfrd gui</code> of this user on this machine, on their next request. Command-line flags stay stronger: <code>--experimental-features</code> turns experimental features on; <code>--no-gui-install</code> and <code>--no-plugin-actions</code> turn those off.</p>
     <div id="su-alert" role="alert"></div>
     <form id="su-form" class="su-grid" novalidate></form>
     <div class="su-bar" id="su-bar"><span class="grow muted small" id="su-state" role="status" aria-live="polite"></span>
@@ -167,11 +167,14 @@ async function save() {
   }
   S.saving = true; drawBar();
   try {
-    S.view = await server.mutate("/studio/superuser", broken ? { settings: S.draft, replace: true } : { settings: changes });
+    S.view = await server.mutate("/studio/superuser", { ...(broken ? { settings: S.draft, replace: true } : { settings: changes }), expected_revision: S.view.revision });
     S.draft = clone(S.view.settings); S.error = "";
     S.ctx.toast("Superuser settings saved; every running Studio applies them now", "ok");
     await refreshSession();
-  } catch (error) { S.error = error.message; S.ctx.toast(`Superuser: ${error.message}`, "fail"); }
+  } catch (error) {
+    S.error = error.status === 409 ? "These settings changed elsewhere (the command line or another tab). Reload to see them, then save again." : error.message;
+    S.ctx.toast(`Superuser: ${S.error}`, "fail");
+  }
   S.saving = false; drawForm(); drawSystem();
 }
 
