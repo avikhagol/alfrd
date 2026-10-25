@@ -1,0 +1,61 @@
+{
+  "adapter": "claude",
+  "counts": {
+    "file_edit": {
+      "coverage": "complete",
+      "value": 0
+    },
+    "file_read": {
+      "coverage": "complete",
+      "value": 0
+    },
+    "files_changed": {
+      "coverage": "unavailable",
+      "reason": "adapter does not report this counter",
+      "value": null
+    },
+    "mailbox": {
+      "coverage": "complete",
+      "value": 3
+    },
+    "mcp": {
+      "coverage": "complete",
+      "value": 0
+    },
+    "shell": {
+      "coverage": "complete",
+      "value": 3
+    },
+    "subagent": {
+      "coverage": "complete",
+      "value": 0
+    },
+    "tool_calls": {
+      "coverage": "complete",
+      "value": 3
+    },
+    "tool_errors": {
+      "coverage": "complete",
+      "value": 2
+    },
+    "turns": {
+      "coverage": "complete",
+      "value": 1
+    },
+    "web_fetch": {
+      "coverage": "complete",
+      "value": 0
+    },
+    "web_search": {
+      "coverage": "complete",
+      "value": 0
+    }
+  },
+  "coverage": "complete",
+  "oversize_lines": 0,
+  "oversize_sniffs": [],
+  "parser_version": "1",
+  "partial_tail": false,
+  "source": "parsed",
+  "unknown": []
+}

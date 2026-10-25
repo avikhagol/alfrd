@@ -1,0 +1,9 @@
+{"type":"system","subtype":"init"}
+{"type":"future_progress","uuid":"uuid","detail":"sanitized"}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_unk_1","name":"FutureSearchTool","input":{"query":"sanitized"}}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"alfrd mailbox read"}}]}}
+[1,2,3]
+not json at all
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":"sanitized prose"}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_unk_2","name":"mcp__alfrd__mailbox_read","input":{}}]}}
+{"type":"result","subtype":"success","uuid":"result-unk","is_error":false,"num_turns":1}

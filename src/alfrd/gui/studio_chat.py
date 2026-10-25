@@ -7,10 +7,16 @@ decisions and retries add plan rows and (re)start the session's detached runner.
 
 from __future__ import annotations
 
-from flask import jsonify, request
+from dataclasses import asdict
+from pathlib import Path
+from urllib.parse import quote
 
+from flask import Response, jsonify, request
+
+from alfrd import attachments as att
 from alfrd import chat, mailbox
 from alfrd import orchestration as proto
+from alfrd import skills as saved_skills
 from alfrd.execution import ExecutionError
 
 from .studio import _json_error, _poke, _project_root, studio_api
@@ -18,7 +24,12 @@ from .studio import _json_error, _poke, _project_root, studio_api
 _BASE = "/studio/projects/<project_name>/chat"
 
 
+_ATTACHMENT_STATUS = {"unsupported_type": 415, "too_large": 413, "too_many": 413, "quota": 413, "invalid": 400}
+
+
 def _fail(error: Exception):
+    if isinstance(error, att.AttachmentError):
+        return _json_error(error, _ATTACHMENT_STATUS.get(error.code, 400), reason=error.code)
     if isinstance(error, mailbox.MailboxError):
         return jsonify(error={"code": error.status, "message": str(error)}, **error.details), error.status
     if isinstance(error, proto.RefError):
@@ -75,6 +86,24 @@ def chat_probe(project_name: str):
         return _fail(error)
 
 
+@studio_api.get(_BASE + "/skills")
+def chat_skills(project_name: str):
+    """Saved skills in the project and, per chat agent, what its native skill, plugin and MCP switches do at
+    startup (a dry run of the adapter's args; nothing is launched). Errors: 400 invalid manifest or settings."""
+    from alfrd.execution import merged_manifest
+
+    try:
+        root = _project_root(project_name)
+        entries = {str(e["name"]): e for e in merged_manifest(root).get("entrypoint") or [] if isinstance(e, dict) and e.get("name")}
+        specs = {key: {"argv": chat._agent_argv(agent, key, entries), "adapter": agent.get("adapter"),
+                       "model": agent.get("model"), "model_option": agent.get("model_option"),
+                       "lean": agent.get("lean", False)}
+                 for key, agent in chat.settings(root)["agents"].items()}
+        return jsonify(skills=saved_skills.discover_skills(root), agents=saved_skills.agent_view(specs))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
 @studio_api.get(_BASE + "/sessions")
 def chat_sessions(project_name: str):
     return jsonify(sessions=chat.list_sessions(_project_root(project_name)))
@@ -120,7 +149,8 @@ def chat_session_state(project_name: str, session_id: str):
     try:
         _recover_mailbox_delivery(chat.session(_project_root(project_name), session_id))
         return jsonify(chat.session_state(_project_root(project_name), session_id,
-                                          messages=request.args.get("messages", default=500, type=int)))
+                                          messages=request.args.get("messages", default=500, type=int),
+                                          since_rev=request.args.get("since_rev", default=None, type=int)))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 
@@ -139,13 +169,52 @@ def chat_activity(project_name: str, session_id: str):
 
 @studio_api.post(_BASE + "/sessions/<session_id>/messages")
 def chat_message(project_name: str, session_id: str):
+    """``{text, attachments?: ref[], client_message_id?}``. Text may be empty with at least one image.
+    A repeated ``client_message_id`` with the same content returns the original (200); other content: 409."""
     payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return _json_error(ValueError("send a JSON object"), 400)
     try:
-        out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""))
+        out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""),
+                                attachments=payload.get("attachments"),
+                                client_message_id=payload.get("client_message_id"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
-    return jsonify(out), 201
+    return jsonify(out), 200 if out.get("replayed") else 201
+
+
+@studio_api.post(_BASE + "/sessions/<session_id>/attachments")
+def chat_attachment_upload(project_name: str, session_id: str):
+    """Multipart ``file``: store an image in the session. 201 ``{ref, sha256, media_type, bytes, width, height, name}``;
+    413 too large or over quota; 415 not PNG/JPEG/WebP; 400 unreadable image; 404 unknown session."""
+    upload = request.files.get("file")
+    if upload is None:
+        return _json_error(ValueError("send the image as multipart field 'file'"), 400)
+    try:
+        store = chat.session(_project_root(project_name), session_id)
+        data = upload.stream.read(att.MAX_IMAGE_BYTES + 1)
+        with store.lock():
+            item = att.store_image(store.dir, data, upload.mimetype, upload.filename or "")
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    return jsonify(asdict(item)), 201
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/attachments/<ref>/content")
+def chat_attachment_content(project_name: str, session_id: str, ref: str):
+    """The stored image bytes of a ref in this session (404 for unknown refs and other sessions' refs)."""
+    try:
+        store = chat.session(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    item = att.get_attachment(store.dir, ref)
+    path = att.attachment_path(store.dir, ref)
+    if item is None or path is None:
+        return _json_error(LookupError(f"unknown attachment {ref!r}"), 404)
+    return Response(path.read_bytes(), mimetype=item.media_type,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable",
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'"})
 
 
 @studio_api.post(_BASE + "/sessions/<session_id>/decisions/<decision_id>")
@@ -160,13 +229,31 @@ def chat_decision(project_name: str, session_id: str, decision_id: str):
     return jsonify(decision=decision)
 
 
+@studio_api.get(_BASE + "/sessions/<session_id>/tasks/<task_id>/retry-preview")
+def chat_retry_preview(project_name: str, session_id: str, task_id: str):
+    """``{eligible, reason, affected_rows, current_status, current_unit}``: the rows a retry would requeue."""
+    try:
+        return jsonify(chat.retry_preview(_project_root(project_name), session_id, task_id))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
 @studio_api.post(_BASE + "/sessions/<session_id>/tasks/<task_id>/<action>")
 def chat_task_action(project_name: str, session_id: str, task_id: str, action: str):
+    """Cancel or retry a task. Optional ``{expected_status, expected_unit}``: 409 with the task's
+    ``current_status`` and ``current_unit`` when either no longer matches; none sent, none checked."""
     if action not in ("cancel", "retry"):
         return _json_error(ValueError(f"unknown action {action!r}"), 404)
+    payload = request.get_json(silent=True)
+    payload = payload if isinstance(payload, dict) else {}
     try:
         call = chat.cancel_task if action == "cancel" else chat.retry_task
-        out = call(_project_root(project_name), session_id, task_id)
+        out = call(_project_root(project_name), session_id, task_id,
+                   expected_status=payload.get("expected_status") or None,
+                   expected_unit=payload.get("expected_unit") or None)
+    except chat.TaskConflict as conflict:
+        return jsonify(error={"code": 409, "message": str(conflict)}, current_status=conflict.current_status,
+                       current_unit=conflict.current_unit), 409
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
@@ -230,6 +317,28 @@ def chat_artifact(project_name: str, session_id: str):
                                           length=request.args.get("length", default=None, type=int)))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/overview")
+def chat_overview(project_name: str, session_id: str):
+    """``{rev, goal:{text, source}, criteria, files}``: one projection for the inspector."""
+    try:
+        return jsonify(chat.overview(_project_root(project_name), session_id))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/artifacts/raw")
+def chat_artifact_raw(project_name: str, session_id: str):
+    """The bytes of ``?ref=<path>@<sha256>``: 409 when the file changed, 403 for traversal and symlinks, 413 over 20 MB."""
+    try:
+        data, media_type, path = chat.raw_artifact(_project_root(project_name), session_id, request.args.get("ref", ""))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    return Response(data, mimetype=media_type,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable",
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'",
+                             "Content-Disposition": "attachment; filename*=UTF-8''" + quote(Path(path).name)})
 
 
 __all__: list[str] = []

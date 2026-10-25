@@ -1,5 +1,5 @@
 // Chat dock: the active chat session beside any project view (Workflow, Results, Overview, plugin
-// pages…). Transcript, composer (@-mentions, Enter / Shift+Enter) and one progress line for the active
+// pages…). Transcript (transcript.js, shared with the Chat page), composer (@-mentions, Enter / Shift+Enter) and one progress line for the active
 // request; "Open full" goes to the Chat page (graph, decisions, sessions). Loaded on the first open
 // (app.js keeps only the toggle, Alt+Shift+A, and the open/width preference). Live: the session plan's
 // events re-read the session; a compact Activity strip (chat_activity.js) polls only while something
@@ -8,8 +8,8 @@ import { $, esc, icon, storage, routeHash } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
-import { mountThread } from "./chat_thread.js";
-import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, statusInfo, tokenLine, presentMessage } from "../data/chat.js";
+import { mountTranscript } from "./transcript.js";
+import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, staleState, statusInfo, tokenLine, presentMessage } from "../data/chat.js";
 
 const SESSION_KEY = "ui:chat.session"; // shared with the Chat page: the dock follows the session you last opened
 const MIN = 300, MAX = 720;
@@ -95,7 +95,7 @@ function mount(host, p) {
     <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
     ${composerHtml("cd", { rows: 2, hint: false })}`;
-  act = mountThread($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid),
+  act = mountTranscript($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid),
     select: () => { $("#cd-full", el)?.click(); },
     openLog: (rel) => openLog(ctxRef, D.project, rel), cancel: cancelRow });
   composer = bindComposer(host, "cd", { agents, orchestrator: () => D.data?.settings?.orchestrator, send, where: "dock", onCommand: command,
@@ -156,6 +156,7 @@ async function loadSession() {
   try {
     const data = await get(`${base(p)}/sessions/${encodeURIComponent(sid)}?messages=200`);
     if (gen !== D.gen || p !== D.project || sid !== D.sid) return;
+    if (staleState(D.data, data)) return;
     const was = hasActivity(D.data);
     D.data = data; D.error = "";
     if (hasActivity(data) && !was) act?.kick();

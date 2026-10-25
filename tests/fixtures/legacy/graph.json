@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "id": "r0001.a",
+      "kind": "task",
+      "title": "Inspect old output",
+      "owner": "codex",
+      "status": "done"
+    }
+  ],
+  "edges": [],
+  "mermaid": "graph TD\n  n_r0001_a[\"Inspect old output\"]"
+}

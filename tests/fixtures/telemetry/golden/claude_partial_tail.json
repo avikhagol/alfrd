@@ -1,0 +1,72 @@
+{
+  "adapter": "claude",
+  "counts": {
+    "file_edit": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": null
+    },
+    "file_read": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": 1
+    },
+    "files_changed": {
+      "coverage": "unavailable",
+      "reason": "adapter does not report this counter",
+      "value": null
+    },
+    "mailbox": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": 1
+    },
+    "mcp": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": null
+    },
+    "shell": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": 1
+    },
+    "subagent": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": null
+    },
+    "tool_calls": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": 2
+    },
+    "tool_errors": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": null
+    },
+    "turns": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": null
+    },
+    "web_fetch": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": null
+    },
+    "web_search": {
+      "coverage": "partial",
+      "reason": "incomplete final line",
+      "value": null
+    }
+  },
+  "coverage": "partial",
+  "oversize_lines": 0,
+  "oversize_sniffs": [],
+  "parser_version": "1",
+  "partial_tail": true,
+  "source": "parsed",
+  "unknown": []
+}

@@ -3,9 +3,10 @@
 // Enter/Tab picks, Esc closes). Commands (/setup, /help, /new, /graph) run here and are never sent.
 import { $, esc, icon } from "../utils/dom.js";
 import { agentOptions, applyMention, mentionAt, parseSlash, slashAt, slashOptions } from "../data/chat.js";
+import { attachmentTrayHtml, mountAttachmentTray, bindAttachmentPaste } from "./attach_tray.js";
 
 /** The form's HTML; ids start with `id` (e.g. "chat" → #chat-input, #chat-mentions, #chat-send …). */
-export function composerHtml(id, { rows = 3, hint = true } = {}) {
+export function composerHtml(id, { rows = 3, hint = true, attachments = false } = {}) {
   return `<form class="chat-composer" id="${id}-form" autocomplete="off">
     <div class="chat-input-wrap">
       <label class="sr-only" for="${id}-input">Message</label>
@@ -13,6 +14,7 @@ export function composerHtml(id, { rows = 3, hint = true } = {}) {
         aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-mentions" aria-describedby="${id}-hint ${id}-send-error"></textarea>
       <ul id="${id}-mentions" class="chat-mentions" role="listbox" aria-label="Agents and commands" hidden></ul>
     </div>
+    ${attachments ? attachmentTrayHtml(id) : ""}
     <div class="row gap"><p id="${id}-hint" class="muted small grow">${hint ? "Enter sends · Shift+Enter adds a line · <code>@agent</code> at the start goes straight to that agent (no orchestrator call) · <code>/</code> commands: <code>/setup</code>, <code>/help</code>." : "Enter sends · <code>@agent</code> → one agent · <code>/</code> commands"}</p>
       <button type="submit" class="btn primary sm" id="${id}-send">${icon("play")} Send</button></div>
     <p id="${id}-send-error" class="fail-t small" role="alert"></p>
@@ -66,4 +68,15 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   });
   input.addEventListener("keyup", (e) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) update(); });
   return { input, close };
+}
+
+/** Optional A4 mount point; callers opt in by rendering composerHtml(..., {attachments:true}). */
+export function mountComposerAttachments(root, id, options = {}) {
+  const input = $(`#${id}-input`, root);
+  const tray = mountAttachmentTray(root, { id, sendButton: $(`#${id}-send`, root), ...options });
+  const unbind = input ? bindAttachmentPaste(input, tray) : () => {};
+  const textarea = input;
+  const resize = () => { if (!textarea) return; textarea.style.height = "auto"; textarea.style.height = `${Math.min(textarea.scrollHeight, Math.round((globalThis.innerHeight || 800) * 0.4))}px`; };
+  textarea?.addEventListener("input", resize); resize();
+  return { ...tray, destroy: () => { unbind(); tray.destroy(); textarea?.removeEventListener("input", resize); } };
 }

@@ -8,6 +8,9 @@ export const TERMINAL = ["done", "failed", "cancelled", "blocked", "stopped"];
 export const RETRYABLE = ["failed", "blocked", "cancelled", "stopped"];
 export const REQUEST_ACTIVE = ["planning", "running", "needs_decision", "summarizing"];
 
+/** A state response to drop: an `unchanged` short-circuit, or a rev lower than the one already applied. */
+export const staleState = (applied, incoming) => !!incoming?.unchanged || incoming?.rev < applied?.rev;
+
 /** Mirrors chat.DEFAULTS (the presets the chat: block edits). */
 export const DEFAULTS = {
   orchestrator: "claude", orchestrator_model: "sonnet", escalation_model: "opus", final_summary: false, warn_task_cost_usd: null,

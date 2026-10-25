@@ -1,9 +1,9 @@
-import { $, esc, icon, loadUi, saveUi } from "../utils/dom.js";
+import { $, esc, icon } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { readPrefs, writePrefs } from "../data/prefs.js";
 
 const DEFAULT_KINDS = ["review.pending", "plan.failed", "plan.finished", "turn.idle"];
-const browserPrefs = loadUi("notifications", { browser: false });
-export const browserEnabled = () => browserPrefs.browser;
+export const browserEnabled = () => readPrefs()["ui.browser_notifications"] === true;
 export function browserState() {
   if (typeof Notification !== "function" || globalThis.isSecureContext === false) return "unsupported";
   return Notification.permission;
@@ -12,8 +12,7 @@ export async function setBrowserNotifications(on) {
   let permission = browserState();
   if (on && permission === "default") permission = await Notification.requestPermission();
   const enabled = Boolean(on && permission === "granted");
-  browserPrefs.browser = enabled;
-  saveUi("notifications", browserPrefs, ["browser"]);
+  writePrefs({ "ui.browser_notifications": enabled });
   return enabled;
 }
 export function matchesKind(pattern, kind) {
@@ -46,9 +45,7 @@ export function mountNotifications(ctx, root) {
   const toggle = $("[data-notify-browser]", root), hint = $("[data-notify-hint]", root);
   const drawToggle = () => {
     const permission = browserState();
-    if (permission === "denied" && browserPrefs.browser) {
-      browserPrefs.browser = false; saveUi("notifications", browserPrefs, ["browser"]);
-    }
+    if (permission === "denied" && browserEnabled()) writePrefs({ "ui.browser_notifications": false });
     toggle.disabled = permission === "unsupported";
     toggle.checked = permission === "granted" && browserEnabled();
     hint.className = permission === "denied" ? "callout warn small notify-blocked" : "muted small";
@@ -67,7 +64,7 @@ export function mountNotifications(ctx, root) {
     drawToggle();
   });
   // Allowed in the browser's site settings while this dialog is open: follow it without a reload.
-  const following = browserPrefs.browser || browserState() === "denied";
+  const following = browserEnabled() || browserState() === "denied";
   navigator.permissions?.query({ name: "notifications" }).then((status) => {
     status.onchange = async () => {
       if (!root.isConnected) { status.onchange = null; return; }

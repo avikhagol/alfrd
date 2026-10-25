@@ -80,21 +80,21 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       window.refresh = () => ctx.update();
       await mod.render(host, ctx, dock ? { width: Math.min(innerWidth, 500), isOpen: () => true } : undefined);
     }, dock);
-    await page.locator('.chat-turn-current .chat-run-row').first().waitFor();
+    await page.locator('[data-key="run:r2"] .chat-run-row').first().waitFor();
     return page;
   };
   for (const theme of ["obsidian-orbit", "daylight-orbit"]) for (const width of [1440, 1024, 390]) {
     await t.test(`${theme} ${width}px`, async () => {
       const page = await open(theme, width); t.after(() => page.close());
       const errors = []; page.on("pageerror", (e) => errors.push(e.message));
-      const old = page.locator('.chat-turn').filter({ has: page.locator(':scope > summary', { hasText: "Earlier request" }) });
-      assert.equal(await old.getAttribute("open"), null);
-      await old.locator(':scope > summary').click();
+      assert.equal(await page.locator('#chat-log details.chat-turn, #chat-log [data-collapse], #chat-log [data-expand]').count(), 0, 'no accordion, no Collapse/Expand');
+      assert.deepEqual(await page.locator('#chat-log [data-request="r1"]').evaluateAll((els) => els.map((e) => e.dataset.key)), ["m:m1", "run:r1", "m:m2"], 'user message, one activity line, answer');
+      const old = page.locator('.chat-message-slot[data-request="r1"]');
       await old.getByText("The earlier work is ready.", { exact: true }).waitFor();
       assert.equal(await old.locator('.chat-text').last().innerText(), "The earlier work is ready.");
-      await old.locator(".chat-message-slot details > summary").click();
-      assert.ok((await old.locator('.chat-message-slot pre').last().innerText()).includes("alfrd.orchestration/1"));
-      const active = page.locator('.chat-turn-current');
+      await old.locator("details > summary").click();
+      assert.ok((await old.locator('pre').last().innerText()).includes("alfrd.orchestration/1"));
+      const active = page.locator('#chat-log [data-key="run:r2"]');
       assert.equal(await active.locator('.chat-run-row').count(), 3);
       const row = active.locator('.chat-run-row').filter({ hasText: "Implement chat" });
       await row.locator('.chat-output > summary').click();
@@ -108,8 +108,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       await row.getByRole('button', { name: 'Jump to latest' }).click();
       assert.ok(await pre.evaluate((el) => el.scrollTop > 0));
       assert.equal(await active.locator('.chat-mail-card').count(), 1);
-      await active.locator(':scope > summary').click();
-      assert.equal(await active.getAttribute('open'), '', 'pending cards cannot be hidden by collapsing history');
+      assert.equal(await active.locator('.chat-mail-card').isVisible(), true, 'pending cards are visible without opening anything');
       assert.equal(await page.locator('.chat-mail-card input:checked').count(), 0);
       if (width <= 1280) await page.getByRole('button', { name: 'Inspect', exact: true }).click();
       assert.equal(await page.locator('#chat-progress').isVisible(), true);
@@ -137,9 +136,9 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
           for (const task of window.fixture.tasks.filter((t) => t.request === 'r2')) { task.status = 'done'; for (const log of task.logs) log.status = 'done'; }
           window.dispatchEvent(new CustomEvent('alfrd-events', { detail: { project: 'p', events: [{ plan: 'chat-s' }] } }));
         });
-        await page.waitForFunction(() => document.querySelector('.chat-turn-current .chat-run').open === false);
+        await page.waitForFunction(() => document.querySelector('[data-key="run:r2"] .chat-run').open === false);
         await page.waitForFunction(() => document.querySelector('.chat-output[open] pre')?.textContent.includes('Public output 3'));
-        assert.equal(await old.getAttribute('open'), '', 'explicit history disclosure survives updates');
+        assert.equal(await old.locator('details').last().getAttribute('open'), '', 'an opened disclosure survives updates');
       }
       if (width === 1440) await page.screenshot({ path: `/tmp/chat-redesign-${theme}.png` });
       assert.deepEqual(errors, []);
@@ -147,11 +146,11 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
   }
   for (const outcome of ["approve", "deny"]) await t.test(`mailbox ${outcome}: run placement, request and durable outcome`, async () => {
     const page = await open("daylight-orbit", 1024); t.after(() => page.close());
-    const run = page.locator('.chat-turn-current .chat-run');
+    const run = page.locator('[data-key="run:r2"] .chat-run');
     const team = run.locator('.chat-team');
     await team.waitFor();
     assert.equal(await team.getAttribute('open'), null, 'team mail starts collapsed inside its run');
-    assert.equal(await page.locator('.chat-turn:not(.chat-turn-current) .chat-team:not([hidden])').count(), 0);
+    assert.equal(await page.locator('[data-key="run:r1"] .chat-team:not([hidden])').count(), 0);
     await team.locator('summary').click();
     assert.match(await team.innerText(), /API ready/);
     assert.match(await team.innerText(), /codex → orchestrator/);
@@ -191,7 +190,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
   });
   await t.test("dock shares history, readable messages and expandable live output", async () => {
     const page = await open("daylight-orbit", 1024, true); t.after(() => page.close());
-    assert.equal(await page.locator('#cd-log .chat-turn-current .chat-run-row').count(), 3);
+    assert.equal(await page.locator('#cd-log [data-key="run:r2"] .chat-run-row').count(), 3);
     await page.locator('#cd-log .chat-output > summary').nth(1).click();
     await page.waitForFunction(() => document.querySelector('#cd-log .chat-output[open] pre').textContent.includes('Public output'));
     await page.locator('.chat-mail-card').getByRole('button', { name: 'Deny', exact: true }).click();

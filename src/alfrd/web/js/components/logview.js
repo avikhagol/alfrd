@@ -201,16 +201,20 @@ async function fill(ctx, d) {
   }
 }
 
-export function openFull(ctx, title, text, sub = "", live = null) {
+/** Full-screen text. `meta` = {unit, attempt, latest} labels which attempt the text is (see attemptLabel). */
+export async function openFull(ctx, title, text, sub = "", live = null, meta = null) {
+  const { attemptLabel, bindTextTools, textFindHtml, textToolsHtml } = await import("./viewers.js");
   const key = live ? keyOf(live.project, live.rel) : "";
   ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(title)}</h2>${sub ? `<span class="muted small mono trunc">${esc(sub)}</span>` : ""}<span class="grow"></span>
+      ${textToolsHtml(attemptLabel(meta || {}))}
       ${live ? `<label class="follow-toggle" title="Keep the newest lines in view"><input type="checkbox" data-follow checked> Follow</label><span class="live-dot" data-log-live ${live.c?.live && tailsOn ? "" : "hidden"}></span>
       <button class="btn sm" data-log-dock="${esc(live.rel)}" data-log-project="${esc(live.project)}" title="Minimize to a Log Stream tab: keep following it while you use the other views">${icon("minus")} Minimize to Log Stream</button>` : ""}
       <button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b"><div class="log-wrap full"><pre class="log log-full" ${live ? `data-live-log data-log-key="${esc(key)}"` : ""}>${esc(text)}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></div>`, (root) => {
+    <div class="modal-b">${textFindHtml()}<div class="log-wrap full"><pre class="log log-full" ${live ? `data-live-log data-log-key="${esc(key)}"` : ""}>${esc(text)}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></div>`, (root) => {
     const pre = root.querySelector("pre");
     pre.dataset.follow = "1";
     pre.scrollTop = pre.scrollHeight;
+    bindTextTools(root, { getText: () => pre.textContent, pre, toast: (m, t) => ctx.toast?.(m, t) });
     if (!live) return;
     bindScroll(pre, live.c);
     const box = root.querySelector("[data-follow]");
@@ -222,14 +226,14 @@ export function openFull(ctx, title, text, sub = "", live = null) {
   }, "full");
 }
 
-/** Full-screen view of a file, following it as it grows. */
-export async function openFileFull(ctx, project, rel) {
+/** Full-screen view of a file, following it as it grows. `meta` labels the unit and attempt (see openFull). */
+export async function openFileFull(ctx, project, rel, meta = null) {
   const v = await import("./viewers.js"), viewer = v.viewerFor(rel);
   if (viewer.id !== "text") return v.openViewer(ctx, project, rel, viewer);
   const c = await load(ctx, project, rel);
   if (v.converterFor(rel, viewer)) return v.openViewer(ctx, project, rel, viewer, { text: c.text });
   c.nextAt = 0;
-  openFull(ctx, rel.split("/").pop(), c.text, rel, { project, rel, c });
+  await openFull(ctx, rel.split("/").pop(), c.text, rel, { project, rel, c }, meta);
   const n = notesAt(ctx, project, { file: rel });
   if (n.length) {
     const h = document.querySelector("#modal-host .modal-h .grow");
@@ -422,7 +426,11 @@ export function bindLogs(ctx, root = document) {
     if (p) {
       e.preventDefault();
       const pre = p.parentElement.querySelector("pre");
-      openFull(ctx, p.dataset.title || "Log", pre ? pre.textContent : "");
+      try {
+        await openFull(ctx, p.dataset.title || "Log", pre ? pre.textContent : "");
+      } catch (error) {
+        ctx.toast(error.message, "warn");
+      }
     }
   });
   // Details rendered already open (remembered, or the first step log) need their body too.
