@@ -257,6 +257,9 @@ export const SECTIONS = Object.freeze([
   { scope: "machine", title: "Machine", note: "Saved once per user; every Studio on this machine follows." },
 ]);
 
+/** The sections drawn: Project holds only chat settings, so it shows only while Chat mode is on. */
+export const visibleSections = (chatOn) => SECTIONS.filter((s) => s.scope !== "project" || chatOn);
+
 const REQUIRES = Object.freeze({ "features.experimental": "Experimental features" });
 
 /** The note under a flag: "Requires features.experimental" reads "Requires Experimental features". */
@@ -338,7 +341,7 @@ async function mountForm(ctx, app, root) {
     };
     const unavailable = { project: project ? "" : "Select a project to change its settings.",
       machine: server.session?.can_superuser ? "" : "Machine settings open only in a browser on the server machine." };
-    host.innerHTML = SECTIONS.map(({ scope, title, note }) => `<fieldset class="card" data-sec="${scope}"><legend>${title}</legend><p class="muted small">${note}</p>
+    host.innerHTML = visibleSections(Boolean(ctx.chatOn?.())).map(({ scope, title, note }) => `<fieldset class="card" data-sec="${scope}"><legend>${title}</legend><p class="muted small">${note}</p>
       ${unavailable[scope] ? `<p class="muted small">${esc(unavailable[scope])}</p>` : `<div class="set-prefs">${rows[scope].map(field).join("")}</div>
       <div class="row gap"><span class="grow muted small" role="status" data-state></span><button type="button" class="btn sm primary" data-save="${scope}" disabled>${icon("save")} Save ${title.toLowerCase()}</button></div>`}</fieldset>`).join("");
     const changed = (scope) => {

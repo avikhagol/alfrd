@@ -10,12 +10,14 @@ globalThis.localStorage = {
   removeItem: (k) => items.delete(k),
 };
 const { prefsRevision, readPrefs } = await import("../../src/alfrd/web/js/data/prefs.js");
-const { fieldState, reasonText, saveSection, SECTIONS } = await import("../../src/alfrd/web/js/components/settings_dialog.js");
+const { fieldState, reasonText, saveSection, SECTIONS, visibleSections } = await import("../../src/alfrd/web/js/components/settings_dialog.js");
 
 const flag = (over) => ({ key: "ui.live_updates", scope: "browser", locked: false, disabled: false, reason: null, ...over });
 
 test("the form has Browser, Project and Machine sections", () => {
   assert.deepEqual(SECTIONS.map((s) => s.scope), ["browser", "project", "machine"]);
+  assert.deepEqual(visibleSections(false).map((s) => s.scope), ["browser", "machine"], "Project (chat settings) only with Chat mode on");
+  assert.deepEqual(visibleSections(true).map((s) => s.scope), ["browser", "project", "machine"]);
 });
 
 test("Read-only greys a browser or project toggle out and says why", () => {
