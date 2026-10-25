@@ -11,10 +11,10 @@ import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { mountComposerDraft } from "./composer_draft.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
-import { createGoalsTab } from "./goals_tab.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
 import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
+import { createGoalsTab } from "./goals_tab.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
   parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, presentMessage,
