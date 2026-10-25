@@ -1,4 +1,4 @@
-// data/prefs.js, the settings form model: Browser, Project and Machine sections, each saved alone with its own
+// data/prefs.js, the settings form model: Browser, Project and User sections, each saved alone with its own
 // expected_revision. A Read-only override greys a toggle out with a reason; a missing Chat mode says what it needs.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -10,14 +10,20 @@ globalThis.localStorage = {
   removeItem: (k) => items.delete(k),
 };
 const { prefsRevision, readPrefs } = await import("../../src/alfrd/web/js/data/prefs.js");
-const { fieldState, reasonText, saveSection, SECTIONS, visibleSections } = await import("../../src/alfrd/web/js/components/settings_dialog.js");
+const { fieldState, reasonText, saveSection, SECTIONS, visibleSections, rowShown } = await import("../../src/alfrd/web/js/components/settings_dialog.js");
 
 const flag = (over) => ({ key: "ui.live_updates", scope: "browser", locked: false, disabled: false, reason: null, ...over });
 
-test("the form has Browser, Project and Machine sections", () => {
+test("the form has Browser, Project and User sections", () => {
   assert.deepEqual(SECTIONS.map((s) => s.scope), ["browser", "project", "machine"]);
   assert.deepEqual(visibleSections(false).map((s) => s.scope), ["browser", "machine"], "Project (chat settings) only with Chat mode on");
   assert.deepEqual(visibleSections(true).map((s) => s.scope), ["browser", "project", "machine"]);
+  assert.equal(SECTIONS.at(-1).title, "User");
+  for (const key of ["ui.experimental_chat", "lockdown.chat"]) {
+    assert.equal(rowShown({ key }, false), false, `${key} hidden without experimental features`);
+    assert.equal(rowShown({ key }, true), true);
+  }
+  assert.equal(rowShown({ key: "lockdown.runs" }, false), true);
 });
 
 test("Read-only greys a browser or project toggle out and says why", () => {
