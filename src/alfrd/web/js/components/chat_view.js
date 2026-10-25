@@ -9,6 +9,7 @@ import { server } from "../data/server.js";
 import { needsMe, countText } from "../data/inbox.js";
 import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
+import { mountComposerDraft } from "./composer_draft.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
@@ -19,11 +20,11 @@ import {
 } from "../data/chat.js";
 
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
-  error: null, loading: false, task: null, open: new Map(), drafts: new Map(), sending: false, sendError: "", gen: 0, keys: {}, notes: [] };
+  error: null, loading: false, task: null, open: new Map(), sendError: "", gen: 0, keys: {}, notes: [] };
 let scope = createRequestScope();
 let inspTab = "graph";
 let insp = null; // the inspector shell (inspector.js): closed unless the user opened it
-let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, composer = null, act = null, full = null;
+let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, composer = null, draft = null, act = null, full = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
 const COLLAPSE_KEY = "ui:chat.sessionsCollapsed"; // the chat list folded to a rail (wide screens; per browser)
@@ -94,6 +95,7 @@ function graphTaskMenu(close = () => {}) {
 function openInspector() { insp?.open(); }
 
 function mount(el, ctx, p) {
+  draft?.destroy();
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
     task: null, sendError: "", keys: {}, renaming: null });
   act?.stop();
@@ -111,7 +113,7 @@ function mount(el, ctx, p) {
       <header class="chat-head" id="chat-head"></header>
       <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
       <section class="chat-activity" id="chat-activity" aria-label="Running now" hidden></section>
-      ${composerHtml("chat")}
+      ${composerHtml("chat", { attachments: true })}
     </section>
     <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks">
       <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-request-scope"></div><div id="chat-insp-tabs">${tabsHtml()}</div></section>
@@ -181,8 +183,7 @@ function openSession(sid, { replace = false } = {}) {
   const st = ctxRef.state;
   st.chatSession = sid || "";
   setRoute(routeHash(sid ? `chat/${sid}` : "chat", st.selectedProject, st.selectedTarget), { replace });
-  const input = host && $("#chat-input", host);
-  if (input) input.value = S.drafts.get(sid) || "";
+  draft?.select(S.project, sid);
   act?.reset();
   if (sid) loadSession();
 }
@@ -210,8 +211,7 @@ function draw(ctx) {
   graph?.update(model, S.data ? S.task : null);
   if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
   drawTask(ctx);
-  const send = $("#chat-send", host);
-  if (send) { send.disabled = S.sending || !S.sid || Boolean(S.settingsError); send.setAttribute("aria-busy", String(S.sending)); }
+  draft?.select(S.project, S.sid);
   $("#chat-send-error", host).textContent = S.sendError || "";
 }
 
@@ -263,7 +263,7 @@ async function deleteSession(sid) {
     await post(S.project, `/sessions/${encodeURIComponent(sid)}`, {}, "DELETE");
   } catch (error) { ctxRef.toast(`Delete: ${error.message}`, "fail"); return; }
   const i = S.sessions.findIndex((x) => x.id === sid);
-  S.sessions = S.sessions.filter((x) => x.id !== sid); S.keys.sessions = null; S.drafts.delete(sid);
+  S.sessions = S.sessions.filter((x) => x.id !== sid); S.keys.sessions = null;
   const remembered = storage.get(SESSION_KEY, {}) || {};
   if (remembered[S.project] === sid) { delete remembered[S.project]; storage.set(SESSION_KEY, remembered); }
   if (sid === S.sid) { const next = S.sessions[Math.min(i, S.sessions.length - 1)]?.id || null; openSession(next, { replace: true }); if (!next) S.data = null; }
@@ -467,19 +467,13 @@ async function viewArtifact(ref) {
 
 async function send() {
   const input = $("#chat-input", host);
-  const text = input.value.trim();
-  if (!text || S.sending || !S.sid) return;
-  const mention = parseMention(text, agents());
+  const mention = parseMention(input.value.trim(), agents());
   if (mention?.error) { S.sendError = mention.error; draw(ctxRef); return; }
-  S.sending = true; S.sendError = ""; draw(ctxRef);
-  const sid = S.sid;
+  S.sendError = "";
   try {
-    await post(S.project, `/sessions/${encodeURIComponent(sid)}/messages`, { text });
-    if (S.sid === sid) { input.value = ""; S.drafts.delete(sid); composer?.close(); }
-    loadSession(); loadSessions();
+    if (await draft.send()) { composer?.close(); loadSession(); loadSessions(); }
   } catch (error) { S.sendError = `Not sent: ${error.message}`; }
-  S.sending = false; draw(ctxRef);
-  input.focus();
+  draw(ctxRef); input.focus();
 }
 
 async function newSession() {
@@ -497,7 +491,8 @@ const bound = new WeakSet(); // the view element outlives mounts (project switch
 
 function bind(el) {
   // The composer's own elements are new on every mount, so it is bound every time.
-  composer = bindComposer(el, "chat", { agents, orchestrator, send, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { S.drafts.set(S.sid, text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
+  draft = mountComposerDraft(el, "chat", { settings: () => S.data?.settings || S.settings, blocked: () => !!S.settingsError, onError: (m) => { S.sendError = m; $("#chat-send-error", el).textContent = m; } });
+  composer = bindComposer(el, "chat", { agents, orchestrator, send, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { draft.edit(text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
   if (bound.has(el)) return;
   bound.add(el);
   el.addEventListener("click", (e) => {

@@ -11,10 +11,10 @@ export function composerHtml(id, { rows = 3, hint = true, attachments = false } 
     <div class="chat-input-wrap">
       <label class="sr-only" for="${id}-input">Message</label>
       <textarea id="${id}-input" class="input" rows="${rows}" placeholder="Ask the orchestrator, @agent for one agent, /help for commands" role="combobox"
-        aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-mentions" aria-describedby="${id}-hint ${id}-send-error"></textarea>
+        aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-mentions" aria-describedby="${id}-hint ${id}-send-error${attachments ? ` ${id}-image-warning` : ""}"></textarea>
       <ul id="${id}-mentions" class="chat-mentions" role="listbox" aria-label="Agents and commands" hidden></ul>
     </div>
-    ${attachments ? attachmentTrayHtml(id) : ""}
+    ${attachments ? attachmentTrayHtml(id) + `<p id="${id}-image-warning" class="warn-t small" role="status"></p>` : ""}
     <div class="row gap"><p id="${id}-hint" class="muted small grow">${hint ? "Enter sends · Shift+Enter adds a line · <code>@agent</code> at the start goes straight to that agent (no orchestrator call) · <code>/</code> commands: <code>/setup</code>, <code>/help</code>." : "Enter sends · <code>@agent</code> → one agent · <code>/</code> commands"}</p>
       <button type="submit" class="btn primary sm" id="${id}-send">${icon("play")} Send</button></div>
     <p id="${id}-send-error" class="fail-t small" role="alert"></p>

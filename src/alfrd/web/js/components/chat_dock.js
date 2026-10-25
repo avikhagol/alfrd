@@ -6,6 +6,7 @@
 // runs. Slash commands: /setup, /help, /new. Narrow windows get an overlay.
 import { $, esc, icon, storage, routeHash } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { mountComposerDraft } from "./composer_draft.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
@@ -13,8 +14,8 @@ import { activeRequest, costWarnings, duration, hasActivity, helpText, money, pa
 
 const SESSION_KEY = "ui:chat.session"; // shared with the Chat page: the dock follows the session you last opened
 const MIN = 300, MAX = 720;
-const D = { project: null, sessions: null, sid: null, data: null, error: "", sending: false, sendError: "", gen: 0, drafts: new Map(), key: "", notes: [] };
-let el = null, ctxRef = null, opts = {}, timer = 0, clock = 0, slow = 0, composer = null, cssReady = null, act = null;
+const D = { project: null, sessions: null, sid: null, data: null, error: "", sendError: "", gen: 0, key: "", notes: [] };
+let el = null, ctxRef = null, opts = {}, timer = 0, clock = 0, slow = 0, composer = null, draft = null, cssReady = null, act = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 
 async function get(url) {
@@ -79,6 +80,7 @@ function onKey(e) {
 }
 
 function mount(host, p) {
+  draft?.destroy();
   act?.stop();
   el = host;
   Object.assign(D, { project: p, sessions: null, sid: null, data: null, error: "", sendError: "", key: "" });
@@ -94,13 +96,14 @@ function mount(host, p) {
     <p class="cd-progress small" id="cd-progress" aria-live="off"></p>
     <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
-    ${composerHtml("cd", { rows: 2, hint: false })}`;
+    ${composerHtml("cd", { rows: 2, hint: false, attachments: true })}`;
   act = mountTranscript($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid),
     select: () => { $("#cd-full", el)?.click(); },
     openLog: (rel) => openLog(ctxRef, D.project, rel), cancel: cancelRow });
+  draft = mountComposerDraft(host, "cd", { settings: () => D.data?.settings, onError: (m) => { D.sendError = m; $("#cd-send-error", host).textContent = m; } });
   composer = bindComposer(host, "cd", { agents, orchestrator: () => D.data?.settings?.orchestrator, send, where: "dock", onCommand: command,
     onError: (m) => { D.sendError = m; draw(); },
-    onDraft: (text) => { D.drafts.set(D.sid, text); if (D.sendError) { D.sendError = ""; $("#cd-send-error", el).textContent = ""; } } });
+    onDraft: (text) => { draft.edit(text); if (D.sendError) { D.sendError = ""; $("#cd-send-error", el).textContent = ""; } } });
   host.addEventListener("click", onClick);
   host.addEventListener("keydown", onKey); // named handlers: a re-mount on the same host doesn't add a second copy
   $("#cd-session", host).addEventListener("change", (e) => openSession(e.target.value));
@@ -167,8 +170,7 @@ async function loadSession() {
 function openSession(sid, { remember = true } = {}) {
   D.sid = sid || null; D.data = null; D.gen++; D.key = "";
   if (sid && remember) storage.set(SESSION_KEY, { ...(storage.get(SESSION_KEY, {}) || {}), [D.project]: sid });
-  const input = el && $("#cd-input", el);
-  if (input) input.value = D.drafts.get(D.sid) || "";
+  draft?.select(D.project, D.sid);
   act?.reset();
   if (sid) loadSession();
   draw();
@@ -190,9 +192,7 @@ function draw() {
   $("#cd-full", el).setAttribute("href", routeHash(D.sid ? `chat/${D.sid}` : "chat", st.selectedProject, st.selectedTarget));
   drawLog();
   drawProgress();
-  const send_ = $("#cd-send", el);
-  send_.disabled = D.sending || !D.sid;
-  send_.setAttribute("aria-busy", String(D.sending));
+  draft?.select(D.project, D.sid);
   $("#cd-send-error", el).textContent = D.sendError || "";
 }
 
@@ -239,26 +239,13 @@ function drawProgress() {
 
 async function send() {
   const input = $("#cd-input", el);
-  const text = input.value.trim();
-  if (!text || D.sending) return;
-  if (!D.sid) {  // nothing to send into yet: the first message starts a session
-    try {
-      const { session } = await server.mutate(`/studio/projects/${encodeURIComponent(D.project)}/chat/sessions`, {});
-      D.sessions = [session, ...(D.sessions || [])];
-      openSession(session.id);
-    } catch (error) { D.sendError = `Not sent: ${error.message}`; draw(); return; }
-  }
-  const mention = parseMention(text, agents());
+  const mention = parseMention(input.value.trim(), agents());
   if (mention?.error) { D.sendError = mention.error; draw(); return; }
-  D.sending = true; D.sendError = ""; draw();
-  const sid = D.sid;
+  D.sendError = "";
   try {
-    await server.mutate(`/studio/projects/${encodeURIComponent(D.project)}/chat/sessions/${encodeURIComponent(sid)}/messages`, { text });
-    if (D.sid === sid) { input.value = ""; D.drafts.delete(sid); composer?.close(); }
-    loadSession(); loadSessions();
+    if (await draft.send()) { composer?.close(); loadSession(); loadSessions(); }
   } catch (error) { D.sendError = `Not sent: ${error.message}`; }
-  D.sending = false; draw();
-  input.focus();
+  draw(); input.focus();
 }
 
 async function onClick(e) {
