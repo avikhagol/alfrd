@@ -10,7 +10,7 @@ import { mountGraph } from "./graph_view.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
-import { createInspector, tabsHtml } from "./inspector.js";
+import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
   parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, presentMessage,
@@ -18,6 +18,8 @@ import {
 
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
   error: null, loading: false, task: null, open: new Map(), drafts: new Map(), sending: false, sendError: "", gen: 0, keys: {}, notes: [] };
+let scope = createRequestScope();
+let inspTab = "graph";
 let insp = null; // the inspector shell (inspector.js): closed unless the user opened it
 let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, composer = null, act = null, full = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
@@ -81,6 +83,7 @@ function mount(el, ctx, p) {
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
     task: null, sendError: "", keys: {}, renaming: null });
   act?.stop();
+  scope = createRequestScope(); inspTab = "graph";
   S.open.clear();
   el.dataset.chat = p;
   const folded = storage.get(COLLAPSE_KEY, false) === true;
@@ -96,13 +99,13 @@ function mount(el, ctx, p) {
       ${composerHtml("chat")}
     </section>
     <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks">
-      <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals">${tabsHtml()}</section>
+      <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-request-scope"></div><div id="chat-insp-tabs">${tabsHtml()}</div></section>
       <section class="card" id="chat-progress" aria-labelledby="chat-progress-h"></section>
       <section class="card" id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
       <section class="card chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
       <section class="card" id="chat-task" aria-live="polite" hidden></section>
     </aside></div>`;
-  graph = mountGraph($("#chat-graph", el), { label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
+  graph = mountGraph($("#chat-graph", el), { groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
     select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
@@ -156,6 +159,7 @@ async function loadSession() {
 }
 
 function openSession(sid, { replace = false } = {}) {
+  scope = createRequestScope();
   S.sid = sid; S.data = null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
   const remembered = storage.get(SESSION_KEY, {}) || {};
   if (sid) storage.set(SESSION_KEY, { ...remembered, [S.project]: sid });
@@ -181,9 +185,15 @@ function draw(ctx) {
   drawLog();
   drawProgress(ctx);
   drawDecisions();
-  const model = S.data ? graphModel(S.data.graph, agents()) : { nodes: [], edges: [] };
+  const scopeHtml = scope.html(S.data);
+  if (changed("scope", scopeHtml)) $("#chat-request-scope", host).innerHTML = scopeHtml;
+  const request = scope.request(S.data);
+  $("#chat-insp-panel", host).dataset.request = request || "all";
+  $("#chat-insp-panel", host).hidden = inspTab === "graph";
+  $(".chat-graph-card", host).hidden = inspTab !== "graph";
+  const model = { ...graphModel(S.data?.graph, agents(), request), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
   graph?.update(model, S.data ? S.task : null);
-  if (full?.host.isConnected) full.g.update(full.request ? graphModel(S.data?.graph, agents(), full.request) : model, S.task); else full = null;
+  if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
   drawTask(ctx);
   const send = $("#chat-send", host);
   if (send) { send.disabled = S.sending || !S.sid || Boolean(S.settingsError); send.setAttribute("aria-busy", String(S.sending)); }
@@ -496,8 +506,10 @@ function bind(el) {
       b.setAttribute("aria-expanded", String(open));
     }
     else if (b.dataset.inspTab) {
-      const box = $("#chat-insp", host);
-      box.innerHTML = tabsHtml(b.dataset.inspTab);
+      inspTab = b.dataset.inspTab;
+      const box = $("#chat-insp-tabs", host);
+      box.innerHTML = tabsHtml(inspTab);
+      draw(ctxRef);
       $(`[data-insp-tab="${b.dataset.inspTab}"]`, box)?.focus();
     }
     else if (b.dataset.mailJump) {
@@ -510,6 +522,10 @@ function bind(el) {
     else if (b.dataset.more) loadPart(...b.dataset.more.split("|"), true);
     else if (b.dataset.artifact) viewArtifact(b.dataset.artifact);
     else if (b.dataset.taskAct) taskAction(b.dataset.taskAct, b.dataset.row, b);
+  });
+  el.addEventListener("change", (e) => {
+    if (!e.target.matches("[data-request-scope]")) return;
+    scope.select(e.target.value); S.task = null; draw(ctxRef);
   });
   el.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -612,15 +628,16 @@ async function openSetup() {
 }
 
 function openGraphFull({ fromComposer = false, request = null } = {}) {
+  if (request) { scope.select(request); draw(ctxRef); }
   if (!fromComposer) $("#chat-graph-full", host)?.focus(); // Esc returns here
   ctxRef.modal(`<header class="modal-h"><h2 id="chat-gfull-h">${icon("graph")} Task graph</h2><span class="muted small">Arrows pick a task, Enter opens it · 0 fits</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close full screen">${icon("close")}</button></header>
     <div class="modal-b chat-gfull"><div id="chat-gfull"></div></div>`, (root, close) => {
     root.setAttribute("aria-labelledby", "chat-gfull-h");
-    const g = mountGraph($("#chat-gfull", root), { label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
+    const g = mountGraph($("#chat-gfull", root), { groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
       onSelect: (row) => { S.task = row; drawTask(ctxRef); },
       onOpen: (row) => { close(); S.task = row; S.keys.task = null; draw(ctxRef); $("#chat-task", host)?.focus(); } });
-    full = { host: root, g, request };
-    g.update(S.data ? graphModel(S.data.graph, agents(), request) : { nodes: [], edges: [] }, S.task);
+    full = { host: root, g };
+    g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data)), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
     requestAnimationFrame(() => { g.fit(); g.focus(); });
   }, "full");
 }

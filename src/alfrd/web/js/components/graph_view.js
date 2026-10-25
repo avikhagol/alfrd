@@ -17,7 +17,7 @@ let seq = 0;
  *  Returns {update(model, selected), select(id), fit(), focus()}. */
 export function mountGraph(host, opts = {}) {
   const id = `gv${++seq}`;
-  const groups = opts.groups ? createGraphGroups() : null;
+  let groups = opts.groups ? createGraphGroups() : null;
   const view = { zoom: 1, x: 0, y: 0, fitted: false, model: { nodes: [], edges: [] }, selected: null, L: null, link: null };
   host.innerHTML = `<div class="gv">
     <div class="gv-tools" role="toolbar" aria-label="${esc(opts.label || "Graph")} controls">
@@ -211,6 +211,10 @@ export function mountGraph(host, opts = {}) {
     if (key === view.key) return;
     view.key = key;
     const hadFocus = host.contains(document.activeElement) && document.activeElement.closest?.(".node");
+    if (view.model.scope !== model.scope) {
+      if (groups) groups = createGraphGroups();
+      view.fitted = false;
+    }
     view.model = model;
     view.selected = model.nodes.some((n) => n.id === selected) ? selected : null;
     draw();

@@ -114,4 +114,62 @@ test("G7 inverse-coordinate math round-trips at 20%, 100% and 200% zoom (existin
 // Deferred at the lazy payload cap (g4/g5/g7 reports): documented, not passing.
 test("G5 Shift+F10 opens the task context menu on the focused node", { skip: "G5 deferred at lazy payload cap" }, () => {});
 test("G7 rectangle selection selects nodes at 20%, 100% and 200% zoom", { skip: "G7 deferred at lazy payload cap" }, () => {});
-test("G4 request scope selector is shared by Graph, Files and Goals", { skip: "G4 deferred at lazy payload cap" }, () => {});
+test("G4 request scope selector is shared by Graph, Files and Goals", async () => {
+  const { createRequestScope, tabsHtml } = await import("../../src/alfrd/web/js/components/inspector.js");
+  const { graphModel } = await import("../../src/alfrd/web/js/data/chat.js");
+  const scope = createRequestScope();
+  const state = { requests: [{ id: "a", text: "First", status: "running" }, { id: "b", text: "Second", status: "done" }] };
+  assert.equal(scope.request(state), "a", "newest active is current");
+  state.requests[0].status = "done";
+  assert.equal(scope.request(state), "b", "otherwise newest");
+  scope.select("a");
+  const before = scope.html(state);
+  for (const tab of ["graph", "files", "goals"]) {
+    assert.match(tabsHtml(tab), new RegExp(`data-insp-tab="${tab}"[^>]*aria-selected="true"`));
+    assert.equal(scope.html(state), before);
+    assert.equal(scope.request(state), "a");
+  }
+  state.requests.push({ id: "c", text: "<script>long title</script>", status: "running" });
+  assert.equal(scope.request(state), "a", "background refresh keeps individual selection");
+  assert.match(scope.html(state), /&lt;script&gt;/);
+  const raw = { rev: 4, nodes: [{ id: "a1", request: "a" }, { id: "b1", request: "b" }, { id: "old" }],
+    edges: [{ from: "a1", to: "b1" }], groups: [{ id: "a", title: "First" }, { id: "b", title: "Second" }, { id: "unscoped", title: "Unscoped" }] };
+  const filtered = graphModel(raw, {}, scope.request(state));
+  assert.deepEqual(filtered.nodes.map((n) => n.id), ["a1"]);
+  assert.deepEqual(filtered.edges, []);
+  assert.equal(filtered.rev, 4);
+  assert.deepEqual(filtered.groups.map((g) => g.id), ["a"]);
+  scope.select("all");
+  const all = graphModel(raw, {}, scope.request(state));
+  const r = mounted({ groups: true });
+  r.graph.update({ ...all, scope: "all" }); r.tick();
+  for (const title of ["First", "Second", "Unscoped"]) assert.ok(r.world.innerHTML.includes(title));
+  r.graph.update({ ...filtered, scope: "a" }); r.tick();
+  assert.doesNotMatch(r.world.innerHTML, /data-graph-group="b"|data-graph-group="unscoped"/);
+  const viewport = r.world.style.transform;
+  r.canvas.fire("wheel", { deltaX: 77, deltaY: 22 });
+  const moved = r.world.style.transform;
+  assert.notEqual(moved, viewport);
+  r.graph.update({ ...filtered, rev: 5, scope: "a" }); r.tick();
+  assert.equal(r.world.style.transform, moved, "ordinary updates preserve navigation");
+  r.graph.update({ ...all, rev: 6, scope: "all" }); r.tick();
+  assert.notEqual(r.world.style.transform, moved, "scope changes fit");
+  scope.select("current");
+  assert.equal(scope.request({}), null, "legacy and empty sessions remain usable");
+  assert.match(scope.html({}), /Current request: None/);
+  const src = readFileSync(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
+  assert.match(src, /id="chat-request-scope"/);
+  assert.match(src, /scope\.select\(e.target.value\)/);
+  assert.match(src, /full.g.update\(model, S.task\)/);
+});
+
+
+test("G4 session changes reset revision delivery without accepting stale scope updates", async () => {
+  const { createGraphUpdates } = await import("../../src/alfrd/web/js/components/graph_groups.js");
+  const seen = [];
+  const gate = createGraphUpdates((m) => seen.push(m), () => false);
+  gate.update({ stream: "first", rev: 90 });
+  gate.update({ stream: "second", rev: 1, scope: "all" });
+  gate.update({ stream: "second", rev: 0, scope: "a" });
+  assert.deepEqual(seen.map((m) => m.rev), [90, 1]);
+});

@@ -52,7 +52,7 @@ export function renderGraphGroups(lanes) {
  * so a late response cannot replace a newer pending graph. Rev-less drafts remain supported
  * until a versioned stream starts; equal revisions may carry a new selection/filter. */
 export function createGraphUpdates(apply, interacting) {
-  let revision = null, pending = null;
+  let revision = null, pending = null, stream;
   const flush = () => {
     if (!pending || interacting()) return;
     const next = pending;
@@ -61,6 +61,7 @@ export function createGraphUpdates(apply, interacting) {
   };
   return {
     update(model, selected) {
+      if (model.stream !== stream) { stream = model.stream; revision = null; pending = null; }
       const rev = Number.isFinite(model.rev) ? model.rev : null;
       if (model.unchanged || (revision !== null && (rev === null || rev < revision))) return;
       if (rev !== null) revision = rev;

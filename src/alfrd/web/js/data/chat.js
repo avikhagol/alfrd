@@ -100,6 +100,7 @@ export function graphModel(graph, agents = {}, request = null) {
   const edges = (graph?.edges || []).filter((e) => ids.has(e.from) && ids.has(e.to))
     .map((e) => ({ ...e, tone: ["delegated", "planned"].includes(e.kind) ? "idle" : edgeTone(status[e.from], status[e.to]) }));
   return {
+    rev: graph?.rev, groups: (graph?.groups || []).filter((g) => !request || g.id === request),
     nodes: nodes.map((n) => {
       const info = statusInfo(n.status), orch = Boolean(n.kind && n.kind !== "task");
       const deps = edges.filter((e) => e.to === n.id && e.kind === "depends_on").map((e) => e.from);
