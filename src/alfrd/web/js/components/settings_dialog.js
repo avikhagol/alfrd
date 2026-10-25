@@ -6,6 +6,7 @@ import { notificationPanel, mountNotifications } from "./notifications.js";
 import { $, esc, icon, bytes, storage, loadUi, saveUi, resetUi, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { readPrefs, writePrefs, prefsRevision } from "../data/prefs.js";
+import { confirmPermissions } from "./permission_ui.js";
 import { tabFrame, tabRail } from "./tab_frame.js";
 
 const TABS = [
@@ -361,6 +362,7 @@ async function mountForm(ctx, app, root) {
       b.disabled = true;
       try {
         const changes = changed(scope);
+        if (!confirmPermissions(changes)) { b.disabled = false; return; }
         const res = await saveSection(scope, { changes, expected: revs[scope], project, post: (path, payload) => server.mutate(path, payload) });
         if (scope === "browser") {
           if ("ui.live_updates" in changes) app.setLive(changes["ui.live_updates"]);

@@ -4,6 +4,8 @@
 import { esc, icon, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
 
+import { confirmPermissions } from "./permission_ui.js";
+
 const API = "/api/studio/superuser";
 const S = { left: false, view: null, ops: null, error: "", opsError: "", draft: null, saving: false, timer: 0, ctx: null, host: null, busy: new Set() };
 const SECTION_LABELS = { workflow: "Workflow", metadata: "Metadata", results: "Results", logs: "Logs", chat: "Chat", config: "Settings" };
@@ -165,6 +167,7 @@ async function save() {
     if (section === "version") continue;
     for (const [key, value] of Object.entries(values)) if (JSON.stringify(value) !== JSON.stringify(S.view.settings[section][key])) changes[`${section}.${key}`] = value;
   }
+  if (!confirmPermissions(changes)) return;
   S.saving = true; drawBar();
   try {
     S.view = await server.mutate("/studio/superuser", { ...(broken ? { settings: S.draft, replace: true } : { settings: changes }), expected_revision: S.view.revision });

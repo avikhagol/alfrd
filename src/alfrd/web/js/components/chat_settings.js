@@ -8,6 +8,8 @@ import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { replaceSection } from "../data/agent_settings.js";
 import { DEFAULTS, chatBlock, chatProblems, mergeChat, freeKey, AGENT_KEY } from "../data/chat.js";
 
+import { permissionBadge } from "./permission_ui.js";
+
 const ADAPTERS = ["", "claude", "codex", "generic"];
 
 /** Open the editor for draft `text`; `apply(text, save)` writes the new text into the Settings draft (and saves). */
@@ -32,6 +34,7 @@ export function openChatSettings(ctx, project, text, apply) {
     <td><button type="button" class="icon-btn xs" data-rm="${esc(key)}" aria-label="Remove @${esc(key)}">${icon("trash")}</button></td></tr>`;
   ctx.modal(`<header class="modal-h"><h2>Agent chat</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b cs">
+      <p class="small" data-permissions role="status"></p>
       <p class="muted small">Who does what in the project chat: roles are words the orchestrator reads when it assigns tasks, not capabilities. Writes the <code>chat:</code> block of this project's alfrd.yaml.</p>
       <datalist id="cs-entrypoints">${[...new Set([...entrypoints, "claude", "codex", "agy"])].map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
       <div class="row gap wrap">
@@ -53,6 +56,7 @@ export function openChatSettings(ctx, project, text, apply) {
       <div id="cs-errors" role="alert" class="fail-t small"></div>
     </div>
     <footer class="modal-f row gap"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn" data-cs="apply">Apply to draft</button><button type="button" class="btn primary" data-cs="save">${icon("save")} Apply and save</button></footer>`, (root, close) => {
+    permissionBadge($("[data-permissions]", root), project);
     const draw = () => {
       $("#cs-agents", root).innerHTML = Object.entries(s.agents).map(([k, a]) => row(k, a)).join("");
       $("#cs-orch", root).innerHTML = Object.keys(s.agents).map((k) => `<option ${k === s.orchestrator ? "selected" : ""}>${esc(k)}</option>`).join("");
