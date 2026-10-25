@@ -43,7 +43,7 @@ export function mountActivity(box, o) {
     const ended = req?.finished ? Date.parse(req.finished) : Date.now();
     header.textContent = [req?.status ? label : "", p && Array.isArray(state().tasks) ? `${p.done}/${p.total} tasks complete` : "",
       Number.isFinite(started) && Number.isFinite(ended) ? duration(Math.max(0, Math.round((ended - started) / 1000))) : "",
-      req?.usage?.total_cost_usd != null ? money(req.usage.total_cost_usd) : ""].filter(Boolean).join(" · ");
+      money(req?.usage?.total_cost_usd)].filter((s) => s && s !== "—").join(" · ");
     notice.textContent = snapshot.unsupported ? "Live output unavailable on this server. Open the full transcript for details." : snapshot.stale ? "Updates paused — reconnecting" : "";
     const data = activityRows(state(), snapshot.items, rid()), keys = new Set(data.map(activityKey));
     for (const [key, row] of rows) if (!keys.has(key)) { row.el.remove(); rows.delete(key); }
