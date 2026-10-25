@@ -13,7 +13,7 @@ function host() {
     getBoundingClientRect: () => ({ width: 1000, height: 600 }), querySelector: () => null });
   for (const selector of [".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom"]) elements.set(selector, el());
   return { innerHTML: "", addEventListener() {}, contains: () => false,
-    querySelector: (selector) => elements.get(selector), elements };
+    querySelector: (selector) => elements.get(selector), querySelectorAll: () => [], elements };
 }
 const node = (id, request) => ({ id, request, title: id, st: "queued", label: "Queued", tone: "muted" });
 const model = {

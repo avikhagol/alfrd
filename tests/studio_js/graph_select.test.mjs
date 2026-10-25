@@ -21,13 +21,13 @@ function mounted(opts = {}) {
       getBoundingClientRect: () => ({ width: 1000, height: 600, left: 0, top: 0 }),
       querySelector: () => null, querySelectorAll: () => [], contains: () => false, focus() {} };
   };
-  const elements = new Map([".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom", "[data-gv-menu]"].map((s) => [s, element()]));
+  const elements = new Map([".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom", "[data-gv-menu]", "[data-gv-box]"].map((s) => [s, element()]));
   const host = element(); host.querySelector = (s) => elements.get(s);
   let focused = null;
-  elements.get(".world").querySelector = (s) => ({ focus() { focused = s; } });
+  elements.get(".world").querySelector = (s) => ({ setAttribute() {}, focus() { focused = s; } });
   const graph = mountGraph(host, opts);
   return { graph, host, canvas: elements.get(".gv-canvas"), world: elements.get(".world"), live: elements.get("[data-gv-live]"),
-    menu: elements.get("[data-gv-menu]"), focused: () => focused,
+    menu: elements.get("[data-gv-menu]"), box: elements.get("[data-gv-box]"), focused: () => focused,
     tick: () => { const f = frames; frames = []; f.forEach((fn) => fn()); } };
 }
 const focusNode = (canvas, key) => canvas.fire("focusin", { target: { closest: () => ({ dataset: { key } }) } });
@@ -60,7 +60,7 @@ test("G6 arrow panning never selects, at 20%, 100% and 200% zoom", () => {
   }
 });
 
-test("G6 keyboard: focus selects, arrows clamp at the ends, Space opens, Escape clears and announces", () => {
+test("G6 keyboard: focus selects, arrows clamp at the ends, Enter opens, Escape clears and announces", () => {
   const selected = [], opened = [];
   const { graph, canvas, live, tick } = mounted({ onSelect: (id) => selected.push(id), onOpen: (id) => opened.push(id) });
   graph.update(model(["a", "b", "c"])); tick();
@@ -70,7 +70,7 @@ test("G6 keyboard: focus selects, arrows clamp at the ends, Space opens, Escape 
   assert.equal(selected.at(-1), "a");
   key("ArrowRight"); key("ArrowDown"); key("ArrowRight"); key("ArrowRight");
   assert.equal(selected.at(-1), "c");
-  key(" "); assert.deepEqual(opened, ["c"]);
+  key("Enter"); assert.deepEqual(opened, ["c"]);
   key("Escape");
   assert.equal(selected.at(-1), null);
   assert.match(live.textContent, /Selection cleared/);
@@ -168,8 +168,169 @@ test("G5 overflow Enter and Space preserve native button activation", () => {
   assert.deepEqual(opened, []);
 });
 
-// G7 remains deferred.
-test("G7 rectangle selection selects nodes at 20%, 100% and 200% zoom", { skip: "G7 deferred at lazy payload cap" }, () => {});
+const nodeTarget = (key) => ({ closest: (s) => s === ".node" ? { dataset: { key } } : null });
+const setMode = (r, mode) => r.host.fire("click", { target: { closest: (s) => s === "[data-gv-mode]" ? { dataset: { gvMode: mode } } : null } });
+const clickNode = (r, key, shiftKey = false) => {
+  r.canvas.fire("pointerdown", { target: nodeTarget(key), shiftKey });
+  r.canvas.fire("pointerup");
+};
+const transform = (r) => r.world.style.transform.match(/-?[\d.]+/g).map(Number);
+const toClient = (r, x, y) => {
+  const [tx, ty, z] = transform(r), rect = r.canvas.getBoundingClientRect();
+  return { clientX: rect.left + tx + x * z, clientY: rect.top + ty + y * z };
+};
+const rectangle = (r, a, b, extra = {}) => {
+  r.canvas.fire("pointerdown", { ...toClient(r, ...a), ...extra });
+  r.canvas.fire("pointermove", toClient(r, ...b));
+  r.canvas.fire("pointerup", toClient(r, ...b));
+};
+const positions = (r) => [...r.world.innerHTML.matchAll(/data-key="([^"]+)"[^>]+style="left:([\d.]+)px;top:([\d.]+)px;width:([\d.]+)px"/g)]
+  .map((m) => ({ key: m[1], x: +m[2], y: +m[3], w: +m[4] }));
+
+test("G7 rectangle selection selects nodes at 20%, 100% and 200% zoom", () => {
+  for (const grouped of [false, true]) for (const zoom of [0.2, 1, 2]) for (const reverse of [false, true]) {
+    const opened = [], r = mounted({ groups: grouped, onOpen: (id) => opened.push(id) });
+    r.canvas.getBoundingClientRect = () => ({ width: 1000, height: 600, left: 37, top: 91 });
+    r.graph.update(model(["a", "b", "c"])); r.tick();
+    for (let i = 0; i < 50; i++) r.canvas.fire("wheel", { ctrlKey: true, deltaY: zoom < 1 ? 1 : -1, clientX: 37, clientY: 91 });
+    if (zoom === 1) r.canvas.fire("keydown", { key: "0" });
+    assert.ok(Math.abs(transform(r)[2] - zoom) < 1e-9);
+    r.canvas.fire("wheel", { deltaX: 123, deltaY: -57 });
+    const before = r.world.style.transform, p = positions(r)[0];
+    assert.ok(p);
+    // A tiny rectangle touches only the bottom-right corner: test node dimensions, not centres.
+    let a = [p.x + p.w - 1, p.y + 127], b = [p.x + p.w + 30, p.y + 160];
+    if (reverse) [a, b] = [b, a];
+    rectangle(r, a, b);
+    assert.deepEqual(r.graph.selection(), [p.key], `groups=${grouped}, zoom=${zoom}, reverse=${reverse}`);
+    assert.equal(r.box.hidden, true);
+    assert.equal(r.world.style.transform, before);
+    assert.deepEqual(opened, []);
+    rectangle(r, [-100, -100], [-50, -50]); assert.deepEqual(r.graph.selection(), []);
+  }
+});
+
+test("G7 Shift+click toggles membership, Shift+rectangle adds and never opens tasks", () => {
+  const opened = [], r = mounted({ onOpen: (id) => opened.push(id) });
+  r.graph.update(model(["a", "b", "c"])); r.tick();
+  clickNode(r, "a", true); clickNode(r, "b", true);
+  assert.deepEqual(r.graph.selection(), ["a", "b"]);
+  clickNode(r, "a", true); assert.deepEqual(r.graph.selection(), ["b"]);
+  const p = positions(r)[0]; rectangle(r, [p.x, p.y], [p.x + 20, p.y + 20], { shiftKey: true });
+  assert.deepEqual(r.graph.selection(), ["b", "a"]);
+  assert.deepEqual(opened, []);
+  r.canvas.fire("keydown", { key: "Escape" }); assert.deepEqual(r.graph.selection(), []);
+  clickNode(r, "c"); assert.deepEqual(opened, ["c"]);
+});
+
+test("G7 Pan control and held Space pan over nodes without activation; keyup and focus loss restore mode", () => {
+  const opened = [], r = mounted({ onOpen: (id) => opened.push(id) });
+  r.graph.update(model(["a"])); r.tick();
+  setMode(r, "pan"); assert.equal(r.canvas.style.cursor, "grab");
+  clickNode(r, "a"); assert.deepEqual(r.graph.selection(), []);
+  setMode(r, "select"); assert.equal(r.canvas.style.cursor, "crosshair");
+  focusNode(r.canvas, "a");
+  r.canvas.fire("keydown", { key: " " });
+  const before = r.world.style.transform;
+  r.canvas.fire("pointerdown", { target: nodeTarget("a") });
+  r.canvas.fire("pointermove", { clientX: 50, clientY: 25 }); r.canvas.fire("pointerup");
+  assert.notEqual(r.world.style.transform, before); assert.deepEqual(opened, []);
+  r.canvas.fire("keyup", { key: " " }); assert.equal(r.canvas.style.cursor, "crosshair");
+  r.canvas.fire("keydown", { key: " " }); r.host.fire("focusout");
+  assert.equal(r.canvas.style.cursor, "crosshair");
+  r.canvas.fire("keydown", { key: "Enter" }); assert.deepEqual(opened, ["a"]);
+});
+
+for (const finish of ["pointercancel", "lostpointercapture", "Escape", "focusout"]) {
+  test(`G7 ${finish} cancels and releases capture without activation, link or selection commit`, () => {
+    for (const kind of ["node", "box", "link"]) {
+      const opened = [], connected = [], r = mounted({ editable: kind === "link", onOpen: (id) => opened.push(id), onConnect: (...args) => connected.push(args) });
+      r.graph.update(model(["a", "b"])); r.tick();
+      let captured = null, releases = 0;
+      r.canvas.setPointerCapture = (id) => { captured = id; };
+      r.canvas.hasPointerCapture = (id) => captured === id;
+      r.canvas.releasePointerCapture = (id) => { assert.equal(captured, id); captured = null; releases++; r.canvas.fire("lostpointercapture", { pointerId: id }); };
+      const target = kind === "node" ? nodeTarget("a") : kind === "link" ? { closest: (s) => s === ".node" ? { dataset: { key: "a" } } : s === "[data-port]" ? {} : null } : undefined;
+      r.canvas.fire("pointerdown", { pointerId: 7, ...(target ? { target } : {}) });
+      if (kind === "box") r.canvas.fire("pointermove", { pointerId: 7, clientX: 900, clientY: 550 });
+      if (kind === "link") {
+        document.elementFromPoint = () => nodeTarget("b");
+        r.canvas.fire("pointermove", { pointerId: 7, clientX: 1, clientY: 1 });
+      }
+      r.canvas.fire("pointerup", { pointerId: 99 }); assert.equal(captured, 7);
+      if (finish === "Escape") r.canvas.fire("keydown", { key: "Escape" });
+      else if (finish === "focusout") r.host.fire("focusout");
+      else r.canvas.fire(finish, { pointerId: 7 });
+      assert.equal(releases, 1); assert.equal(captured, null);
+      r.canvas.fire("pointerup", { pointerId: 7 });
+      assert.deepEqual(opened, []); assert.deepEqual(connected, []); assert.deepEqual(r.graph.selection(), []);
+      assert.equal(r.box.hidden, true);
+    }
+  });
+}
+
+test("G7 rectangle defers updates, prunes removed ids with announcement and preserves viewport", () => {
+  const r = mounted(); r.graph.update(model(["a", "b", "c"])); r.tick();
+  clickNode(r, "a", true); clickNode(r, "b", true);
+  r.canvas.fire("pointerdown", toClient(r, -10, -10));
+  r.canvas.fire("pointermove", toClient(r, 1500, 1500));
+  const html = r.world.innerHTML, viewport = r.world.style.transform;
+  r.graph.update({ ...model(["a", "c"]), rev: 3 });
+  r.graph.update({ ...model(["stale"]), rev: 2 });
+  assert.equal(r.world.innerHTML, html);
+  r.canvas.fire("pointerup");
+  assert.deepEqual(r.graph.selection(), ["a", "c"]);
+  assert.match(r.live.textContent, /1 removed task.*dropped from selection/);
+  assert.equal(r.world.style.transform, viewport);
+  assert.doesNotMatch(r.world.innerHTML, /data-key="b"|stale/);
+  r.graph.update({ ...model([]), rev: 4 }); assert.deepEqual(r.graph.selection(), []);
+  assert.match(r.live.textContent, /2 removed tasks/);
+});
+test("G7 selection paints every member, retains one tab stop and exposes mode button state", () => {
+  const r = mounted(); r.graph.update(model(["a", "b"])); r.tick();
+  const make = (dataset) => {
+    const classes = new Set(), attrs = new Map();
+    return { dataset, classes, attrs, classList: { toggle(k, on) { if (on) classes.add(k); else classes.delete(k); } }, setAttribute(k, v) { attrs.set(k, v); } };
+  };
+  const nodes = [make({ key: "a" }), make({ key: "b" })];
+  const modes = [make({ gvMode: "select" }), make({ gvMode: "pan" })];
+  r.world.querySelectorAll = (s) => s === ".node" ? nodes : [];
+  r.host.querySelectorAll = (s) => s === "[data-gv-mode]" ? modes : [];
+  clickNode(r, "a", true); clickNode(r, "b", true);
+  for (const node of nodes) { assert.ok(node.classes.has("sel")); assert.equal(node.attrs.get("aria-pressed"), "true"); }
+  assert.deepEqual(nodes.map((n) => n.tabIndex), [-1, 0]);
+  r.graph.update({ ...model(["a", "b"]), rev: 2 });
+  assert.deepEqual(r.graph.selection(), ["a", "b"]);
+  assert.equal([...r.world.innerHTML.matchAll(/aria-pressed="true"/g)].length, 2);
+  assert.equal([...r.world.innerHTML.matchAll(/tabindex="0"/g)].length, 1);
+  setMode(r, "pan");
+  assert.deepEqual(modes.map((m) => m.attrs.get("aria-pressed")), ["false", "true"]);
+  r.canvas.fire("keydown", { key: " " }); r.canvas.fire("keyup", { key: " " });
+  assert.equal(r.canvas.style.cursor, "grab", "temporary Pan restores the chosen mode");
+  setMode(r, "select");
+  assert.deepEqual(modes.map((m) => m.attrs.get("aria-pressed")), ["true", "false"]);
+  r.graph.update({ ...model(["a", "b"]), rev: 1, stream: "another-session" });
+  assert.deepEqual(r.graph.selection(), [], "session changes cannot reuse an old selection");
+});
+
+test("G7 cancellation retains the existing selection and ignores other pointers and navigation", () => {
+  const r = mounted(); r.graph.update(model(["a", "b"])); r.tick(); clickNode(r, "a", true);
+  const viewport = r.world.style.transform;
+  r.canvas.fire("pointerdown", { pointerId: 7, ...toClient(r, -10, -10) });
+  r.canvas.fire("pointerdown", { pointerId: 8 });
+  r.canvas.fire("pointermove", { pointerId: 8, clientX: 500, clientY: 500 });
+  assert.notEqual(r.box.hidden, false);
+  r.canvas.fire("pointermove", { pointerId: 7, ...toClient(r, 1500, 1500) });
+  assert.equal(r.box.hidden, false);
+  for (const key of ["ArrowRight", "+", "0", "Enter"]) r.canvas.fire("keydown", { key });
+  r.canvas.fire("wheel", { deltaX: 100, deltaY: 100 });
+  assert.equal(r.world.style.transform, viewport);
+  r.canvas.fire("pointercancel", { pointerId: 8 }); assert.equal(r.box.hidden, false);
+  setMode(r, "pan"); assert.equal(r.box.hidden, true);
+  assert.deepEqual(r.graph.selection(), ["a"]);
+  r.canvas.fire("pointerup", { pointerId: 7 }); assert.deepEqual(r.graph.selection(), ["a"]);
+});
+
 test("G4 request scope selector is shared by Graph, Files and Goals", async () => {
   const { createRequestScope, tabsHtml } = await import("../../src/alfrd/web/js/components/inspector.js");
   const { graphModel } = await import("../../src/alfrd/web/js/data/chat.js");
