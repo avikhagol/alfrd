@@ -1,3 +1,4 @@
+import { revealMail } from "./chat_steps.js";
 import { $, esc } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { subscribeMailbox } from "../data/chat_live.js";
@@ -39,7 +40,11 @@ export function mountMailbox(box, o) {
   const cards = new Map(), teamCards = new Map();
   const view = ++mailboxViews;
   const replyKey = () => `reply-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
-  let sub, team, list, status;
+  let sub, team, list, status, jumpId;
+  function jump() {
+    const card = cards.get(jumpId)?.el || teamCards.get(jumpId);
+    if (card) { jumpId = null; revealMail(card); }
+  }
   box.className = "chat-mailbox";
   box.innerHTML = `<p class="muted small" role="status"></p><div data-mail-cards></div><section class="chat-team"><p class="small"><b data-team-title>Team messages</b></p><div></div></section>`;
   status = $("p", box); list = $("[data-mail-cards]", box); team = $(".chat-team", box);
@@ -61,7 +66,7 @@ export function mountMailbox(box, o) {
     $("[data-team-title]", team).textContent = `Team messages · ${peers.length}`;
     reorder($("div", team), [...peers].sort(compareMail).map((m) => {
       if (!teamCards.has(m.id)) {
-        const el = document.createElement("article"); el.className = "small";
+        const el = document.createElement("article"); el.className = "small"; el.dataset.mailId = m.id; el.tabIndex = -1;
         el.innerHTML = `${safe(`<p><b>${esc(m.sender.agent_id || m.sender.kind)} → ${esc(m.recipient.task_id || m.recipient.kind)}</b> · ${esc(m.summary || m.subject)}</p>`)}${expandedMail(m, view)}`;
         teamCards.set(m.id, el);
       }
@@ -124,8 +129,10 @@ export function mountMailbox(box, o) {
     }
     // Move existing cards, never replace their form, disclosure or unsent draft.
     reorder(list, user.map((m) => cards.get(m.id).el));
+    jump();
   }
   const api = {
+    jump(id) { jumpId = id; jump(); api.kick(); },
     kick() {
       if (!sub) sub = subscribeMailbox(o.project(), o.sid(), o.request(), draw, {
         visible: () => box.isConnected && !box.closest("[hidden]"), busy: o.busy,

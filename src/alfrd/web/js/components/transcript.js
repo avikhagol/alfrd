@@ -114,7 +114,7 @@ export function mountTranscript(box, o) {
         else {
           let line = lines.get(item.key);
           if (!line) {
-            line = mountLine(document.createElement("div"), { ...o, request: () => item.group.id, state: () => currentState, busy: () => line.group?.active });
+            line = mountLine(document.createElement("div"), { ...o, request: () => item.group.id, state: () => currentState, onMailJump: () => { stick = false; }, busy: () => line.group?.active });
             line.node.dataset.key = item.key; lines.set(item.key, line); changed = true;
           }
           line.group = item.group; line.update(item.group, state); node = line.node;
@@ -129,6 +129,7 @@ export function mountTranscript(box, o) {
         if (changed) newer.hidden = false;
       }
     },
+    jumpMail(request, id) { stick = false; lines.get(`run:${request}`)?.jump(id); },
     kick() { for (const l of lines.values()) l.kick(); },
     reset() { scope = ""; reset(); },
     stop: stopAll,

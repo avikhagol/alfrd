@@ -26,7 +26,7 @@ function line(group) {
   const calls = [], host = new El("section"), top = new El("div");
   top.append(host);
   const activity = { kick() {}, stop() {}, decisionsHost: () => host, teamMailboxHost: () => "team", rawHost: () => "raw" };
-  const l = mountRequestLine(top, { mountActivity: () => activity, mountMailbox: (box, o) => { calls.push(o); return { kick() {}, stop() {} }; } });
+  const l = mountRequestLine(top, { mountActivity: () => activity, mountMailbox: (box, o) => { calls.push(o); return { kick() {}, stop() {}, jump(id) { calls.push(id); } }; } });
   return { l, calls, host, top, group };
 }
 
@@ -77,4 +77,17 @@ test("Details content is sanitized with DOMPurify", () => {
   assert.equal(sanitizeHtml("<img src=x onerror=alert(1)>", { isSupported: false }), "&lt;img src=x onerror=alert(1)&gt;", "no usable DOMPurify: shown as text, never as markup");
   const card = mailCardHtml({ ...approval, subject: "<script>x()</script>", body: "<img src=x onerror=1>" }, (id) => id);
   assert.doesNotMatch(card, /<script|<img/, "message text is escaped");
+});
+
+
+test("M7 waiting navigation mounts a closed request and routes its exact message for page or dock", () => {
+  for (const version of [1, 2]) {
+    const { l, calls, top } = line();
+    l.update({ id: "r0", open: false }, { mailbox_version: version });
+    l.jump("peer-id");
+    assert.equal(calls.length, 2); assert.equal(calls[1], "peer-id");
+    let stopped = false;
+    top.listeners.click[0]({ target: { closest: () => ({ dataset: { mailJump: "user-id" } }) }, stopPropagation() { stopped = true; } });
+    assert.equal(calls.at(-1), "user-id"); assert.equal(stopped, true); assert.equal(calls.length, 3);
+  }
 });

@@ -26,7 +26,7 @@ function fixture(tasks) {
   const api = mountActivity(box, { project: () => "p", sid: () => "s", request: () => "r", state: () => state,
     agentName: (name) => name, openLog: (...args) => calls.push(args) });
   api.kick();
-  return { api, calls, setState(next) { state = next; },
+  return { api, calls, box, setState(next) { state = next; },
     click(index) { box.querySelector("details").querySelector(".chat-run-rows").children[index].querySelector("[data-log]").onclick(); } };
 }
 const task = (row, units, request = "r") => ({ row, request, status: "done", owner: "codex",
@@ -64,5 +64,21 @@ test("a higher attempt on another task does not make a single attempt historical
   try {
     f.click(0);
     assert.deepEqual(f.calls, [["a1-1.log", { unit: "a1", attempt: 1, latest: true }]]);
+  } finally { f.api.stop(); }
+});
+
+
+test("M7 run line shows M5 steps alongside the inspector button and preserves controls on unchanged polls", () => {
+  const f = fixture([]), step = { request_id: "r", kind: "execute", task_row: "a", status: "waiting", attempt: 1, waiting_on: ["m1"] };
+  try {
+    f.setState({ requests: [{ id: "r", status: "running", steps: [step] }], tasks: [] }); f.api.kick();
+    const steps = f.box.querySelector("[data-current-steps]");
+    assert.match(steps.innerHTML, /Execute a · waiting/); assert.match(steps.innerHTML, /data-mail-jump="m1"/);
+    const html = steps.innerHTML; f.api.kick(); assert.equal(steps.innerHTML, html);
+    assert.equal(typeof f.box.querySelector(".chat-run-head").onclick, "function");
+    f.setState({ requests: [{ id: "r", status: "done", steps: [step] }], tasks: [] }); f.api.kick();
+    assert.equal(steps.innerHTML, "", "completed request does not advertise an old current step");
+    f.setState({ requests: [{ id: "r", status: "running" }], tasks: [] }); f.api.kick();
+    assert.equal(steps.innerHTML, "", "legacy requests have no invented current step");
   } finally { f.api.stop(); }
 });

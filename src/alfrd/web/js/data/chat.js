@@ -1,3 +1,4 @@
+import { currentSteps } from "./chat_steps.js";
 // Project chat, pure helpers (no DOM): @-mentions, the task graph for the canvas, decisions,
 // task actions, progress and budget. Used by components/chat_view.js and components/chat_settings.js.
 // The server is the authority (alfrd/chat.py); these mirror its rules so the UI can explain them early.
@@ -93,7 +94,7 @@ export const ORCH_KIND = { plan: "Plan", repair: "Repair", replan: "Replan", sum
 
 /** The session graph ({nodes, edges}) as canvas nodes: owner label, status, dependency hint. `request` filters.
  *  Orchestrator rows (kind plan/repair/replan/summary) are nodes too (`orch`); `planned` edges link them to their tasks. */
-export function graphModel(graph, agents = {}, request = null) {
+export function graphModel(graph, agents = {}, request = null, requests = []) {
   const nodes = (graph?.nodes || []).filter((n) => !request || n.request === request);
   const ids = new Set(nodes.map((n) => n.id));
   const status = Object.fromEntries(nodes.map((n) => [n.id, n.status]));
@@ -105,7 +106,7 @@ export function graphModel(graph, agents = {}, request = null) {
       const info = statusInfo(n.status), orch = Boolean(n.kind && n.kind !== "task");
       const deps = edges.filter((e) => e.to === n.id && e.kind === "depends_on").map((e) => e.from);
       const made = edges.filter((e) => e.from === n.id && e.kind === "planned").length;
-      return { id: n.id, request: n.request, title: n.title || (orch ? `${ORCH_KIND[n.kind] || n.kind} ${n.request || ""}`.trim() : n.id),
+      return { id: n.id, request: n.request, steps: currentSteps(requests.find((r) => r.id === n.request), n.id), title: n.title || (orch ? `${ORCH_KIND[n.kind] || n.kind} ${n.request || ""}`.trim() : n.id),
         sub: `@${n.owner} · ${agents[n.owner]?.label || n.owner}`, status: n.status, ...info,
         ...(orch ? { orch: true, kind: n.kind, badge: "Orchestrator", nodeIcon: "graph", hint: made ? `Planned ${made} task${made === 1 ? "" : "s"}` : `${ORCH_KIND[n.kind] || n.kind} call` }
           : { hint: deps.length ? `Waits for ${deps.join(", ")}` : "No dependencies" }) };

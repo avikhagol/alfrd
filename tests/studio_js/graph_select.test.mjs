@@ -390,3 +390,22 @@ test("G4 session changes reset revision delivery without accepting stale scope u
   gate.update({ stream: "second", rev: 0, scope: "a" });
   assert.deepEqual(seen.map((m) => m.rev), [90, 1]);
 });
+
+
+test("M7 message controls navigate without node selection, opening, capture or keyboard interception", () => {
+  const mail = [], opened = [], selected = [];
+  const r = mounted({ onMail: (...args) => mail.push(args), onOpen: (id) => opened.push(id), onSelect: (id) => selected.push(id) });
+  const m = model(["a"]); m.nodes[0].steps = [{ kind: "execute", task_row: "a", attempt: 2, status: "waiting", waiting_on: ["peer"] }];
+  r.graph.update(m); r.tick();
+  assert.match(r.world.innerHTML, /Execute a · attempt 2 · waiting/);
+  assert.match(r.world.innerHTML, /data-mail-request="a"/);
+  assert.match(r.world.innerHTML, /<\/div><div id="[^"]+-steps" class="small"[^>]*>.*data-mail-jump/s, "message controls are siblings of the node role=button");
+  const target = { closest: (q) => q === "[data-mail-jump]" ? { dataset: { mailRequest: "a", mailJump: "peer" } } : null };
+  let captures = 0, prevented = 0;
+  r.canvas.setPointerCapture = () => captures++;
+  r.canvas.fire("pointerdown", { target }); r.canvas.fire("pointerup", { target });
+  for (const key of ["Enter", " ", "ArrowRight"]) r.canvas.fire("keydown", { target, key, preventDefault() { prevented++; } });
+  r.host.fire("click", { target });
+  assert.deepEqual(mail, [["a", "peer"]]); assert.deepEqual(opened, []); assert.deepEqual(selected, []);
+  assert.equal(captures, 0); assert.equal(prevented, 0);
+});

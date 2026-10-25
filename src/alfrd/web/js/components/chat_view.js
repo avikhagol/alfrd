@@ -120,7 +120,7 @@ function mount(el, ctx, p) {
       <section class="card chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
       <section class="card" id="chat-task" aria-live="polite" hidden></section>
     </aside></div>`;
-  graph = mountGraph($("#chat-graph", el), { taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
+  graph = mountGraph($("#chat-graph", el), { onMail: (request, id) => { insp?.close({ restoreFocus: false }); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
     select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
@@ -206,7 +206,7 @@ function draw(ctx) {
   $("#chat-insp-panel", host).dataset.request = request || "all";
   $("#chat-insp-panel", host).hidden = inspTab === "graph";
   $(".chat-graph-card", host).hidden = inspTab !== "graph";
-  const model = { ...graphModel(S.data?.graph, agents(), request), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
+  const model = { ...graphModel(S.data?.graph, agents(), request, S.data?.requests), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
   graph?.update(model, S.data ? S.task : null);
   if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
   drawTask(ctx);
@@ -650,11 +650,11 @@ function openGraphFull({ fromComposer = false, request = null } = {}) {
   ctxRef.modal(`<header class="modal-h"><h2 id="chat-gfull-h">${icon("graph")} Task graph</h2><span class="muted small">Arrows pick a task, Enter opens it · 0 fits</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close full screen">${icon("close")}</button></header>
     <div class="modal-b chat-gfull"><div id="chat-gfull"></div></div>`, (root, close) => {
     root.setAttribute("aria-labelledby", "chat-gfull-h");
-    const g = mountGraph($("#chat-gfull", root), { taskMenu: graphTaskMenu(close), groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
+    const g = mountGraph($("#chat-gfull", root), { onMail: (request, id) => { close(); insp?.close({ restoreFocus: false }); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(close), groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
       onSelect: (row) => { S.task = row; drawTask(ctxRef); },
       onOpen: (row) => { close(); S.task = row; S.keys.task = null; draw(ctxRef); $("#chat-task", host)?.focus(); } });
     full = { host: root, g };
-    g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data)), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
+    g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data), S.data?.requests), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
     requestAnimationFrame(() => { g.fit(); g.focus(); });
   }, "full");
 }

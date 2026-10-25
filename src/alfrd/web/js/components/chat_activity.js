@@ -1,3 +1,5 @@
+import { currentSteps } from "../data/chat_steps.js";
+import { stepsHtml } from "./chat_steps.js";
 import { $, esc, icon, storage } from "../utils/dom.js";
 import { subscribeActivity } from "../data/chat_live.js";
 import { activityKey, activityLabel, activityRows, duration, money, requestProgress, statusInfo } from "../data/chat.js";
@@ -27,7 +29,7 @@ export function mountActivity(box, o) {
     const active = ["planning", "running", "summarizing", "needs_decision"].includes(req?.status);
     if (!run) {
       box.hidden = false;
-      box.innerHTML = `<button type="button" class="btn sm link chat-run-head" aria-controls="chat-inspector" title="Open run inspector"></button><section class="chat-decisions" data-decisions></section><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
+      box.innerHTML = `<button type="button" class="btn sm link chat-run-head" aria-controls="chat-inspector" title="Open run inspector"></button><span class="small" data-current-steps></span><section class="chat-decisions" data-decisions></section><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div class="chat-run-rows"></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
       run = $("details", box); header = $(".chat-run-head", box); body = $(".chat-run-rows", run); notice = $("[data-notice]", run);
       header.onclick = () => o.inspect ? o.inspect(rid()) : o.viewGraph?.(rid());
       $("[data-run-graph]", run).onclick = () => o.viewGraph?.(rid());
@@ -44,6 +46,8 @@ export function mountActivity(box, o) {
     header.textContent = [req?.status ? label : "", p && Array.isArray(state().tasks) ? `${p.done}/${p.total} tasks complete` : "",
       Number.isFinite(started) && Number.isFinite(ended) ? duration(Math.max(0, Math.round((ended - started) / 1000))) : "",
       money(req?.usage?.total_cost_usd)].filter((s) => s && s !== "—").join(" · ");
+    const stepBox = $("[data-current-steps]", box), stepHtml = stepsHtml(active ? currentSteps(req) : [], rid());
+    if (stepBox.innerHTML !== stepHtml) stepBox.innerHTML = stepHtml;
     notice.textContent = snapshot.unsupported ? "Live output unavailable on this server. Open the full transcript for details." : snapshot.stale ? "Updates paused — reconnecting" : "";
     const data = activityRows(state(), snapshot.items, rid()), keys = new Set(data.map(activityKey));
     for (const [key, row] of rows) if (!keys.has(key)) { row.el.remove(); rows.delete(key); }

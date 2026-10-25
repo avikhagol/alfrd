@@ -1,3 +1,4 @@
+import { stepsHtml } from "./chat_steps.js";
 // A small graph canvas with the Workflow view's renderer (node cards, status classes, edge paths,
 // arrow markers and CSS from canvas.js / studio.css): the chat task graph (read-only) and the
 // New-project canvas (editable draft). Select with a background drag; hold Space or use Pan to navigate. Ctrl/Cmd+wheel or +/- to zoom, 0 fits.
@@ -91,6 +92,7 @@ export function mountGraph(host, opts = {}) {
     const L = (view.L = groups
       ? groups.layout(nodes, edges, Array.isArray(opts.groups) ? opts.groups : view.model.groups, { h: NODE_H })
       : layoutGraph(nodes, edges, { h: NODE_H }));
+    if (nodes.some((n) => n.steps?.length)) L.height += 52;
     $(".gv-empty", host).hidden = Boolean(nodes.length);
     $(".gv-empty", host).textContent = opts.empty || "Nothing to show yet.";
     world.style.width = `${L.width}px`; world.style.height = `${L.height}px`;
@@ -104,12 +106,12 @@ export function mountGraph(host, opts = {}) {
       + nodes.map((n) => {
         const p = L.pos[n.id], sel = selection.has(n.id);
         return `<div class="node st-${esc(n.st)}${sel ? " sel" : ""}${n.orch ? " gv-orch" : ""}" data-key="${esc(n.id)}" role="button" tabindex="${n.id === (view.selected || order()[0]) ? 0 : -1}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px"
-          aria-label="${n.badge ? `${esc(n.badge)}: ` : ""}${esc(n.title)}. ${esc(n.label)}. ${esc(n.sub || "")}. ${esc(n.hint || "")}" aria-pressed="${sel}" title="${esc(n.id)} · ${esc(n.sub || "")} · ${esc(n.hint || "")}">
+          ${n.steps?.length ? `aria-describedby="${id}-${esc(n.id)}-steps"` : ""} aria-label="${n.badge ? `${esc(n.badge)}: ` : ""}${esc(n.title)}. ${esc(n.label)}. ${esc(n.sub || "")}. ${esc(n.hint || "")}" aria-pressed="${sel}" title="${esc(n.id)} · ${esc(n.sub || "")} · ${esc(n.hint || "")}">
           ${opts.editable ? '<span class="node-port" data-port title="Drag onto another step: that step then waits for this one"></span>' : ""}
           ${n.st === "running" ? '<div class="node-prog"><i style="width:60%"></i></div>' : ""}
           <div class="node-h"><span class="node-ic">${icon(n.nodeIcon || "pipeline")}</span><div class="node-t"><b class="mono">${esc(n.id)}</b><span>${esc(n.title)}</span></div>${n.badge ? `<span class="badge tone-muted gv-badge"><span>${esc(n.badge)}</span></span>` : ""}</div>
           <div class="node-b"><span class="small muted grow gv-sub">${esc(n.sub || "")}</span><span class="badge tone-${esc(n.tone)}">${n.status ? statusIcon(n.status, n.label) : `${icon(n.icon || "info")}<span>${esc(n.label)}</span>`}</span></div>
-        </div>${opts.editable ? "" : `<button type="button" class="icon-btn sm gv-overflow" data-gv-menu-for="${esc(n.id)}" aria-label="Actions for ${esc(n.title)}" aria-haspopup="menu" style="left:${p.x + p.w - 32}px;top:${p.y + 4}px">⋯</button>`}`;
+        </div>${opts.editable || !n.steps?.length ? "" : `<div id="${id}-${esc(n.id)}-steps" class="small" style="position:absolute;left:${p.x}px;top:${p.y + NODE_H}px;width:${p.w}px;max-height:52px;overflow:auto">${stepsHtml(n.steps, n.request)}</div>`}${opts.editable ? "" : `<button type="button" class="icon-btn sm gv-overflow" data-gv-menu-for="${esc(n.id)}" aria-label="Actions for ${esc(n.title)}" aria-haspopup="menu" style="left:${p.x + p.w - 32}px;top:${p.y + 4}px">⋯</button>`}`;
       }).join("");
     if (!view.fitted) requestAnimationFrame(() => { if (!view.fitted) fit(); });
     apply();
@@ -133,6 +135,8 @@ export function mountGraph(host, opts = {}) {
   }
 
   host.addEventListener("click", (e) => {
+    const mail = e.target.closest("[data-mail-jump]");
+    if (mail) { e.stopPropagation(); opts.onMail?.(mail.dataset.mailRequest, mail.dataset.mailJump); return; }
     const modeButton = e.target.closest("[data-gv-mode]");
     if (modeButton) { end(null); mode = modeButton.dataset.gvMode; showMode(); return; }
     const overflow = e.target.closest("[data-gv-menu-for]");
@@ -157,7 +161,7 @@ export function mountGraph(host, opts = {}) {
   canvas.addEventListener("pointerenter", (e) => { if (e.pointerType !== "touch") hovering = true; });
   canvas.addEventListener("pointerleave", () => { hovering = false; updates.flush(); });
   canvas.addEventListener("pointerdown", (e) => {
-    if (drag || e.button !== 0 || e.target.closest("[data-gv-menu-for]")) return;
+    if (drag || e.button !== 0 || e.target.closest("[data-mail-jump]") || e.target.closest("[data-gv-menu-for]")) return;
     const node = e.target.closest(".node");
     if (opts.editable && node && e.target.closest("[data-port]")) drag = { kind: "link", from: node.dataset.key, over: null };
     else if (!opts.editable && panMode()) drag = { kind: "pan", sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y, moved: false };
@@ -239,6 +243,7 @@ export function mountGraph(host, opts = {}) {
     if (!opts.editable && !drag && !space && key && key !== view.selected && !view.link) select(key, { announce: true });
   });
   canvas.addEventListener("keydown", (e) => {
+    if (e.target.closest("[data-mail-jump]")) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (menu && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) {
       e.preventDefault(); e.stopPropagation(); openMenu(e.target.closest(".node")?.dataset.key || e.target.closest("[data-gv-menu-for]")?.dataset.gvMenuFor || view.selected); return;
@@ -287,6 +292,7 @@ export function mountGraph(host, opts = {}) {
     const key = JSON.stringify([model, selected]);
     if (key === view.key) return;
     view.key = key;
+    const mailFocus = host.contains(document.activeElement) && document.activeElement.closest?.("[data-mail-jump]")?.dataset;
     const hadFocus = host.contains(document.activeElement) && document.activeElement.closest?.(".node");
     if (view.model.scope !== model.scope) {
       if (groups) groups = createGraphGroups();
@@ -301,6 +307,7 @@ export function mountGraph(host, opts = {}) {
     if (removed.length) say(`${removed.length} removed task${removed.length === 1 ? "" : "s"} dropped from selection. ${selection.size} selected.`);
     draw();
     menu?.validate();
+    if (mailFocus) (world.querySelector(`[data-mail-request="${CSS.escape(mailFocus.mailRequest)}"][data-mail-jump="${CSS.escape(mailFocus.mailJump)}"]`) || canvas).focus({ preventScroll: true });
     if (hadFocus) (nodeEl(view.selected) || canvas).focus({ preventScroll: true });
   }, () => hovering || Boolean(drag) || Boolean(view.link) || Boolean(menu?.isOpen()));
 
