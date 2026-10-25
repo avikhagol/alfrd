@@ -1,6 +1,6 @@
 # v0.4.0.0 wave 3 status
 
-Branch `v0.4.0.0-wave3`. Not pushed: the branch has no upstream and no remote branch contains it.
+Branch `v0.4.0.0-wave3`. `origin/v0.4.0.0-wave3` was pushed at b96b280 by someone other than the integrate task (the reflog says "update by push"). The fix and status commits after b96b280 are local only.
 
 ## Commits (one per backlog id)
 
@@ -19,32 +19,37 @@ Branch `v0.4.0.0-wave3`. Not pushed: the branch has no upstream and no remote br
 | D3 | d607a74 | status icon set |
 | G2 | fbf46b6 | graph lanes per request |
 | G3 | 74c4eb4 | viewport preservation, rev guard, deferred updates |
+| T4 fix | 6b52b73 | lazy viewers import, startup payload |
 
-## Test results (run at 74c4eb4)
+## Test results (run at 6b52b73, after the T4 lazy-import fix)
 
-Python: `uv run --offline pytest -q` -> 1516 passed, 5 failed, 4 skipped, 11 xfailed (565 s).
+Python: `uv run --offline pytest -q` -> 1517 passed, 4 failed, 4 skipped, 11 xfailed (523 s). One of the 4 (`test_hub_initial_scan_discovers_once_and_retains_start_cursor`) is a flake: it passes alone (1 passed in 0.33 s) and did not fail at 74c4eb4. The other 3 are the known baseline failures below.
 
-Studio JS: `node --test tests/studio_js/*.test.mjs` -> 439 tests, 420 pass, 1 fail, 18 skipped.
+Studio JS: `node --test tests/studio_js/*.test.mjs` -> 440 tests, 421 pass, 1 fail, 18 skipped. The 1 failure is the known `notifications.test.mjs` baseline failure. One test was added (`viewer_find.test.mjs`: inline snippet awaits the lazy text tools).
 
-### Known baseline failures (4 of the 6 failures)
-- `tests/test_studio.py::test_lazy_payload_under_106kb_compressed` (321167 bytes gzip against a 300 KiB limit)
-- `tests/test_studio.py::test_js_parsers_with_node` (`shown is not defined`)
-- JS `notifications.test.mjs`: "app route selects the linked project before opening its run and deduplicates rendering" (`shown is not defined`; the same root cause as `test_js_parsers_with_node`)
+### Known baseline failures (3, all still failing)
+- `tests/test_studio.py::test_lazy_payload_under_106kb_compressed` (321167 bytes gzip against a 300 KiB limit). Not touched by wave 3; the lazy cap is a separate decision.
+- `tests/test_studio.py::test_js_parsers_with_node` (`shown is not defined`).
+- JS `notifications.test.mjs`: "app route selects the linked project before opening its run and deduplicates rendering" (`shown is not defined`; the same root cause as `test_js_parsers_with_node`).
 
-### NEW failures (not in the baseline)
-- `tests/test_studio.py::test_lazy_modules_are_not_imported_statically`: `js/components/viewers.js` is now statically imported (`logview.js:19`, added by T4 256d1dd). It must stay lazy, so T4 needs to load it with a dynamic import.
-- `tests/test_studio.py::test_startup_payload_under_178kb_compressed`: the startup payload is 201717 bytes gzip against a 193 KiB limit. This was not in the baseline list. I did not bisect it, but the wave's JS growth (17 files, +834/-200 lines since F0b) is the likely cause, and T4's static `viewers.js` import probably adds to it.
-- `tests/test_wheel.py::test_wheel_installs_and_public_imports_and_cli_work_outside_checkout`: `uv pip install` of the wheel exited with status 2. I did not capture the cause. It runs in this session's `uv --offline` environment, so it is probably an environment or network issue. I did not run it on a clean baseline, so this is unconfirmed.
+### Resolved since 74c4eb4
+- `test_lazy_modules_are_not_imported_statically`: `logview.js` now imports `viewers.js` dynamically in `openFull`, and both callers await it (6b52b73).
+- `test_startup_payload_under_178kb_compressed`: the static import was the cause. Startup payload fell from 201717 to 197335 bytes gzip and the test passes.
+- `test_wheel_installs_and_public_imports_and_cli_work_outside_checkout`: not a wave-3 regression, so no code commit. See "Still failing" below.
 
-I did not run the suite on an earlier commit to confirm the baseline. The baseline list comes from the U4 and G3 handoffs.
+### Still failing, with reasons
+- `test_wheel_installs_and_public_imports_and_cli_work_outside_checkout`: environmental. The test builds its venv with `venv.EnvBuilder` defaults (`symlinks=False`), which copies uv's standalone Python. The copy cannot find its stdlib, so `uv pip install` exits 2. The wave-2 commit 12c3641 fails identically and `tests/test_wheel.py` is unchanged since before 0.4. The wheel itself builds and installs into a symlinked venv. Optional fix: `symlinks=(os.name != "nt")` at `tests/test_wheel.py:110`. Not applied.
+- `test_hub_initial_scan_discovers_once_and_retains_start_cursor`: flaky under load in the full run; passes alone. Not investigated further.
+
+The baseline list comes from the U4 and G3 handoffs; I did not run the suite on an earlier commit.
 
 ## Skipped checks
 - Runtime and browser checks were skipped while ENV1 is open. This includes T4 Find (`bindTextTools` Range selection and scrolling), which has no DOM or browser test.
 
 ## Still open
-- ENV1
-- SP1
-- D4
+- ENV1: browser and socket checks; needs the user's decision Q6. Blocks D6 and R1.
+- SP1: runs the installed model CLIs on real images and costs money; needs the user's go-ahead. Blocks A3.
+- D4: sweep over icon buttons and placeholder strings; only useful after wave 3 and 4 UI has landed, so it goes at the end of wave 4.
 
 ## Known gaps reported by tasks
 - T4 (out of the task's file scope):
