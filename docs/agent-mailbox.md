@@ -225,3 +225,14 @@ Without units it returns running attempts. Explicit units (maximum 32) retrieve
 completed attempts too. `items` adds status, finished time, recorded cost or null,
 tail revision/state/truncation and normalized display_tail. Legacy running/tail
 fields remain available. Lines are clamped to 1–400 and reads are bounded.
+
+
+User-directed ASK questions linked to a stopped task's decision can be delegated with
+`chat.delegate_decisions: questions | all` or `POST …/decisions/<id>` with
+`{"delegate": true}`. `Mailbox.reply` verifies the stored delegation and records the
+reply sender and resolved-event actor as `kind: orchestrator`, `on_behalf_of: user`,
+with `delegated: setting | user`. The waiting task receives the reply through the
+same durable continuation outbox as a human answer. Repeated blockers stay with
+the user, and `bounds.max_replans` still caps orchestrator calls. PRM requests and
+all action-hash approvals remain human-only, even with `all`; an orchestrator
+cannot submit an approval carrying an action hash.

@@ -91,7 +91,7 @@ export function edgeTone(from, to) {
   return "idle";
 }
 
-export const ORCH_KIND = { plan: "Plan", repair: "Repair", replan: "Replan", summary: "Summary" };
+export const ORCH_KIND = { plan: "Plan", repair: "Repair", replan: "Replan", check: "Check", summary: "Summary" };
 
 /** The session graph ({nodes, edges}) as canvas nodes: owner label, status, dependency hint. `request` filters.
  *  Orchestrator rows (kind plan/repair/replan/summary) are nodes too (`orch`); `planned` edges link them to their tasks. */
@@ -352,8 +352,9 @@ export function chatBlock(s) {
   const warn = Number(s.warn_task_cost_usd) > 0 ? Number(s.warn_task_cost_usd) : null;
   // chat.watch: only the keys that differ from the defaults (a block without it keeps the defaults)
   const watch = Object.fromEntries(Object.entries(s.watch || {})
-    .filter(([k, v]) => k in DEFAULTS.watch && v !== "" && v != null && v !== DEFAULTS.watch[k])
-    .map(([k, v]) => [k, k === "wake_orchestrator" ? Boolean(v) : Number(v)]));
+    .filter(([k, v]) => k in DEFAULTS.watch && v !== "" && v != null)
+    .map(([k, v]) => [k, k === "wake_orchestrator" ? Boolean(v) : Number(v)])
+    .filter(([k, v]) => v !== DEFAULTS.watch[k]));
   return { orchestrator: s.orchestrator, orchestrator_model: model(s.orchestrator_model), escalation_model: model(s.escalation_model),
     final_summary: Boolean(s.final_summary), warn_task_cost_usd: warn, concurrency: Number(s.concurrency),
     history_messages: Number(s.history_messages),
@@ -376,7 +377,7 @@ export function chatProblems(s, personas = []) {
     if (a.fallback && (a.fallback === key || !keys.includes(a.fallback))) errors.push(`@${key}: the fallback must be another agent.`);
   }
   if (!keys.includes(s.orchestrator)) errors.push(`The orchestrator must be one of the agents (${keys.map((k) => `@${k}`).join(", ") || "none"}).`);
-  const int = (v, low) => Number.isInteger(Number(v)) && Number(v) >= low && v !== "" && v !== null;
+  const int = (v, low) => typeof v !== "boolean" && Number.isInteger(Number(v)) && Number(v) >= low && v !== "" && v !== null;
   if (!int(s.concurrency, 1)) errors.push("Concurrency: a whole number ≥ 1.");
   if (!int(s.history_messages, 0)) errors.push("History messages: a whole number ≥ 0.");
   if (s.delegate_decisions && !["off", "questions", "all"].includes(s.delegate_decisions)) errors.push("Let the orchestrator decide: off, questions or all.");
@@ -386,9 +387,10 @@ export function chatProblems(s, personas = []) {
   if (b.max_replans != null && !int(b.max_replans, 0)) errors.push("max_replans: a whole number ≥ 0.");
   for (const k of ["max_cost_usd", "max_seconds"]) if (!(Number(b[k]) > 0)) errors.push(`${k}: a positive number.`);
   const wt = s.watch || {};
+  if ("wake_orchestrator" in wt && typeof wt.wake_orchestrator !== "boolean") errors.push("Wake the orchestrator: true or false.");
   if (wt.interval_seconds != null && (!int(wt.interval_seconds, 0) || (Number(wt.interval_seconds) > 0 && Number(wt.interval_seconds) < 30))) errors.push("Check interval: 0 (off) or at least 30 seconds.");
   if (wt.stall_seconds != null && !int(wt.stall_seconds, 60)) errors.push("Stall after: a whole number of seconds ≥ 60.");
-  if (wt.max_checks != null && !int(wt.max_checks, 0)) errors.push("Orchestrator checks per request: a whole number ≥ 0.");
+  if ("max_checks" in wt && !int(wt.max_checks, 0)) errors.push("Orchestrator checks per request: a whole number ≥ 0.");
   const w = s.warn_task_cost_usd;
   if (w != null && w !== "" && !(Number(w) > 0)) errors.push("Task cost warning: a positive number (empty: no warning).");
   return errors;

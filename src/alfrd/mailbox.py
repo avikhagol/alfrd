@@ -380,9 +380,26 @@ class Mailbox:
         allowed = {"idempotency_key", "expected_version", "outcome", "choice_id", "answer", "action_hash"}
         if not isinstance(payload, dict) or set(payload) - allowed:
             raise MailboxError("invalid reply fields")
+        # The audit fields are store-owned: set below from a stored delegation, never taken from the caller.
+        actor = {k: v for k, v in actor.items() if k not in ("on_behalf_of", "delegated")}
         with self.locked():
             original = self._find(mid)
-            if not matches(original["recipient"], actor):
+            if actor.get("kind") == "orchestrator":
+                if original["kind"] == "permission_request" or payload.get("action_hash") is not None:
+                    raise MailboxError("action-hash approvals require a human", 403)
+                if original["recipient"] == USER:
+                    delegated = next((d for d in self.session.decisions()
+                                      if d.get("request") == self.run_id and d.get("mailbox_message_id") == mid
+                                      and d.get("delegated") and not d.get("repeat")
+                                      and d.get("needs") == "orchestrator"), None)
+                    if not delegated or original["kind"] != "question":
+                        raise MailboxError("question has not been delegated by the user", 403)
+                    actor = {**actor, "on_behalf_of": "user", "delegated": delegated["delegated"]}
+            # A person may answer any approval: the orchestrator never can, so one addressed to it would wait forever.
+            if not matches(original["recipient"], actor) and not (
+                    actor.get("kind") == "orchestrator" and actor.get("on_behalf_of") == "user"
+                    and original["recipient"] == USER) and not (
+                    actor == USER and original["kind"] == "permission_request"):
                 raise MailboxError("only the addressed recipient may reply", 403)
             if original["kind"] not in ("question", "permission_request"):
                 raise MailboxError("message cannot be resolved")

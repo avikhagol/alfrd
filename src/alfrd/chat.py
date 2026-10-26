@@ -14,10 +14,10 @@ Studio API:
   reply (``alfrd.orchestration/1``, see :mod:`alfrd.orchestration`) is validated
   and turned into task rows. An invalid plan gets one repair row, then an error.
 * an LLM is woken only for: a new message (plan), a blocker that names the
-  orchestrator (replan), and once per finished request for the final summary
+  orchestrator (replan), an opt-in bounded stall check, and once per finished request for the final summary
   when ``chat.final_summary`` is on (default off: the answer is built in code from
   the task results). Plan and summary calls use ``chat.orchestrator_model``
-  (default sonnet); a repair of an invalid plan and a replan use
+  (default sonnet); a repair of an invalid plan, replan and stall check use
   ``chat.escalation_model`` (default opus). Waiting, completion, dependencies and
   retries are code.
 * each task's prompt holds its own task, its dependencies' result summaries and
@@ -72,7 +72,7 @@ KIND_COLUMN = "KIND"
 REQUEST_COLUMN = "REQUEST"
 DEPTH_COLUMN = "DEPTH"
 EXTRA_COLUMNS = (KIND_COLUMN, REQUEST_COLUMN, DEPTH_COLUMN, pc.DEPENDS_COLUMN, pc.RETRIES_COLUMN, pc.SECONDS_COLUMN)
-ORCHESTRATOR_KINDS = ("plan", "repair", "replan", "summary")
+ORCHESTRATOR_KINDS = ("plan", "repair", "replan", "check", "summary")
 TERMINAL = ("done", "failed", "cancelled", "blocked", "stopped")
 REQUEST_ACTIVE = ("planning", "running", "needs_decision", "summarizing")
 AGENT_KEY = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
@@ -96,7 +96,7 @@ DEFAULTS: dict[str, Any] = {
     # max_replans: orchestrator wake-ups for blockers per request; past it, blockers go to the user.
     "bounds": {"max_depth": 2, "max_retries": 1, "max_cost_usd": 5.0, "max_seconds": 7200, "max_tasks": 20,
                "max_replans": 3},
-    # Scheduled checks (chat.check, code only): every interval_seconds (0: never) a dead runner with work left
+    # Scheduled checks (chat.check): every interval_seconds (0: never) a dead runner with work left
     # is resumed and a request stalled for stall_seconds is finished or handed on. wake_orchestrator lets a
     # stall wake the orchestrator, at most max_checks times per request.
     "watch": {"interval_seconds": 300, "stall_seconds": 1800, "wake_orchestrator": False, "max_checks": 3},
@@ -189,7 +189,7 @@ ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SETTING_KEYS = ("orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd",
                 "concurrency", "history_messages", "skill_selection", "delegate_decisions")
 DELEGATE_MODES = ("off", "questions", "all")
-ESCALATED_KINDS = ("repair", "replan")
+ESCALATED_KINDS = ("repair", "replan", "check")
 
 
 def now_iso() -> str:
@@ -1458,7 +1458,7 @@ def on_finalized(runner, unit: dict[str, Any]) -> None:
             _row_failed(runner, store, conf, req, rec, unit, unit.get("error") or unit.get("status"))
         else:
             text = _response(runner, unit)
-            if rec["kind"] in ("plan", "repair", "replan"):
+            if rec["kind"] in ("plan", "repair", "replan", "check"):
                 _plan_reply(runner, store, conf, req, rec, unit, text)
             elif rec["kind"] == "summary":
                 message = text
@@ -1597,6 +1597,9 @@ def _row_failed(runner, store: Session, conf, req, rec, unit, error) -> None:
     if rec["kind"] in ("plan", "repair"):
         store.add_message("system", f"The orchestrator could not plan this request: {rec['error']}", request=req["id"], kind="error")
         _finish_request(runner, store, req, "failed", error=rec["error"])
+    elif rec["kind"] == "check":
+        store.add_message("system", f"The stall check failed: {rec['error']}. Please review the request.",
+                          request=req["id"], kind="error")
     elif rec["kind"] == "replan":
         _escalate(runner, store, req, rec.get("blockers") or [])
     elif rec["kind"] == "task" and req.get("mode") == "direct":
@@ -1615,8 +1618,8 @@ def _plan_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
         if env["kind"] != "plan":
             raise proto.ProtocolError([f"expected \"kind\": \"plan\", got {env['kind']!r}"])
         tasks = env.get("tasks") or []
-        errors = proto.check_graph(tasks, agents=usable(conf), known=known_tasks if rec["kind"] == "replan" else ())
-        if rec["kind"] == "replan":
+        errors = proto.check_graph(tasks, agents=usable(conf), known=known_tasks if rec["kind"] in ("replan", "check") else ())
+        if rec["kind"] in ("replan", "check"):
             errors += [f"task id {t['id']!r} is already used in this request" for t in tasks if t["id"] in known_tasks]
         folders = project_access(store.root).get("folders") or []
         errors += [e for t in tasks for e in output_errors(store.root, t, folders)]
@@ -1634,6 +1637,10 @@ def _plan_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
         store.save_task(rec)
         _event(runner, "task.finished", unit=unit, task=rec["row"], request=req["id"], task_kind=rec["kind"],
                owner=rec["owner"], status="failed", error=rec["error"])
+        if rec["kind"] == "check":
+            store.add_message("system", f"The stall check returned an invalid plan: {exc}. Please review the request.",
+                              request=req["id"], kind="error")
+            return
         if rec["kind"] in ("plan", "replan") and not req.get("repair_used"):
             req["repair_used"] = True
             req["orchestrator_calls"] = int(req.get("orchestrator_calls") or 0) + 1
@@ -1662,7 +1669,9 @@ def _plan_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
     if tasks:  # before the decisions: a cancel below must not finish the request under its new tasks
         _add_tasks(runner, store, conf, req, tasks, depth=1, parent=None, prefix=req["id"], planned_by=rec["row"])
     for decision in env.get("decisions") or []:
-        if decision["id"] in pending:
+        current = store.decision(decision["id"]) if decision["id"] in pending else {}
+        # Only what is still the orchestrator's: another row may have decided it, or it went back to the user.
+        if current.get("status") == "pending" and current.get("needs") == "orchestrator":
             try:
                 _resolve(runner, store, store.request(req["id"]), decision["id"], decision.get("choice"),
                          decision.get("answer"), "orchestrator",
@@ -1759,23 +1768,30 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
                 while (store.decisions_dir / f"{base}.{n}.json").exists():
                     n += 1
                 did = f"{base}.{n}"
-            permission = is_permission_blocker(blocker)
-            if mid and permission and not (blocker.get("kind") == "permission" or blocker.get("requires")):
-                permission = False  # a mailbox permission_request approves an action (action_hash): keep that flow
-            elif permission:
-                mid = None  # sandbox access: a mailbox approval cannot widen the next launch; decide it here
+            permission = sandbox = is_permission_blocker(blocker)
+            mailbox_question = _mailbox_question(store, req["id"], mid) if mid else None
+            human_only = bool(mid) and not mailbox_question  # an action-hash approval (PRM) is involved
+            if mid and blocker.get("requires"):
+                mid = mailbox_question = None  # sandbox access: a mailbox reply cannot widen the next launch; grant it here
+            elif mid:
+                permission = False  # linked mail uses its own ASK/PRM semantics, not sandbox grant options
             options, actions = _decision_options(store, conf, rec, blocker, permission)
             # The orchestrator cannot change an agent's sandbox, and a repeat would only loop: ask the user.
             needs = "user" if permission or repeat else (blocker.get("needs") or "user")
             # The user handed decisions of this kind to the orchestrator (chat.delegate_decisions);
             # a repeat still goes to the user: deciding it again would only loop.
-            delegated = needs == "user" and not repeat and not mid and _delegable(conf, permission)
+            if mailbox_question:
+                options = [o["id"] for o in mailbox_question["payload"]["options"]]
+            delegated = needs == "user" and not repeat and not human_only and (not mid or mailbox_question) \
+                and _delegable(conf, sandbox)
+            if mid and not mailbox_question:
+                needs = "user"  # action-hash approvals always require a person
             if delegated:
                 needs = "orchestrator"
             store.save_decision({"id": did, "request": req["id"], "task": rec["row"], "blocker": blocker["id"],
                                  "reason": blocker["reason"], "question": blocker.get("question") or blocker["reason"],
                                  "options": options, "needs": needs, "status": "pending", "created": now_iso(),
-                                 "kind": "permission" if permission else (blocker.get("kind") or "other"),
+                                 "kind": "question" if mailbox_question else ("permission" if permission else (blocker.get("kind") or "other")),
                                  "signature": signature, **({"actions": actions} if actions else {}),
                                  **({"requires": blocker["requires"]} if blocker.get("requires") else {}),
                                  **({"repeat": rec["last_block"]["count"]} if repeat else {}),
@@ -2123,6 +2139,12 @@ _CANCEL_TEXT = re.compile(r"^\s*cancel\b", re.IGNORECASE)
 GRANT_KEYS = ("folders", "bash_commands")
 
 
+def _mailbox_question(store: Session, request: str, mid: str) -> dict[str, Any] | None:
+    from alfrd.mailbox import Mailbox, USER
+    message = Mailbox(store.root, store.id, request).status(mid, USER)["message"]
+    return message if message["kind"] == "question" and message["recipient"] == USER else None
+
+
 def _delegable(conf: Mapping[str, Any], permission: bool) -> bool:
     """A blocker the user lets the orchestrator decide (``chat.delegate_decisions``)."""
     mode = conf.get("delegate_decisions") or "off"
@@ -2394,7 +2416,9 @@ def _resolve(runner, store: Session, req, did: str, choice: str | None, answer: 
         box = Mailbox(store.root, store.id, req["id"])
         actor = {"kind": by}
         original = box.status(d["mailbox_message_id"], {"kind": "user"})["message"]
-        if original["recipient"]["kind"] != by:
+        if original["recipient"]["kind"] != by and not (
+                by == "orchestrator" and d.get("delegated") and not d.get("repeat")
+                and original["kind"] == "question" and original["recipient"] == {"kind": "user"}):
             return d  # orchestrator cannot resolve a user-directed approval
         permission = original["kind"] == "permission_request"
         box.reply(original["id"], actor, {"idempotency_key": "decision:" + did,
@@ -2612,6 +2636,11 @@ def process_mailbox(store: Session, *, runner=None) -> bool:
                                 answer=reply["answer"], decided_by=state["reply"]["sender"]["kind"], resolved=now_iso(),
                                 mailbox_delivery_pending=True)
                 store.save_decision(decision)
+                if decision.get("delegated") and decision["decided_by"] == "orchestrator":
+                    store.add_message("system", f"The orchestrator decided for you on {decision['task']}: "
+                                      f"{decision.get('question') or decision.get('reason')} → "
+                                      f"{reply['answer'] or reply['choice_id']}", request=req["id"],
+                                      decision=decision["id"], kind="delegated_decision")
             if rec["status"] == "needs_decision" and not any(store.decision(d)["status"] == "pending" for d in rec.get("decisions", [])):
                 if runner:
                     runner.set_cells({(rec["row"], rec["owner"]): pc.TODO}, only_if={(rec["row"], rec["owner"]): {pc.WAITING}})
@@ -2683,7 +2712,7 @@ def delegate_decision(root: str | Path, sid: str, did: str, *, spawn: bool = Tru
         d = store.decision(did)
         if d.get("status") != "pending":
             raise ValueError(f"decision {did} is {d.get('status')}")
-        if d.get("mailbox_message_id"):
+        if d.get("mailbox_message_id") and not _mailbox_question(store, d["request"], d["mailbox_message_id"]):
             raise ValueError(f"decision {did} answers an agent's mailbox approval; only you can reply to it")
         if d.get("repeat"):
             raise ValueError(f"decision {did} is a repeated blocker; the orchestrator would only re-run it unchanged")
@@ -2710,14 +2739,60 @@ def delegate_decision(root: str | Path, sid: str, did: str, *, spawn: bool = Tru
 
 
 # ---------------------------------------------------------------------------
-# Scheduled checks (chat.watch): persistence after a crash or reboot, in code (no LLM call)
+# Scheduled checks (chat.watch): code recovery first, optional bounded orchestrator wake-up
 
 
-def _idle_seconds(store: Session, req: Mapping[str, Any], now: float) -> float:
-    """Seconds since the request or any of its rows last changed (file times)."""
+def _idle_seconds(store: Session, req: Mapping[str, Any], now: float, *, units: bool = False) -> float:
+    """Seconds since the request or any of its rows last changed (file times). With ``units``, its attempts
+    and the logs they write count too: an agent still producing output is working, not stalled."""
     paths = [store.requests_dir / f"{req['id']}.json", *(store.tasks_dir / r / "task.json" for r in req.get("rows") or [])]
+    if units:
+        plan = _plan_folder(store)
+        for u in plan.units():
+            if u.get("row") in set(req.get("rows") or []):
+                paths.append(plan.units_dir / f"{u['id']}.json")
+                if u.get("log"):
+                    paths += [Path(u["log"]), Path(u["log"]).with_suffix(".events.jsonl")]
     times = [p.stat().st_mtime for p in paths if p.exists()]
     return now - max(times) if times else 0.0
+
+
+def _wake_for_stall(store: Session, conf, req, findings, idle: float) -> bool:
+    """Queue one bounded plan call; never duplicate a pending check or decide for the user."""
+    recs = [store.task(r) or {} for r in req["rows"]]
+    if any(r.get("kind") == "check" and r.get("status") not in TERMINAL for r in recs):
+        return False
+    count = int(req.get("checks") or 0)
+    limit = conf["watch"]["max_checks"]
+    if count >= limit:
+        findings.append({"kind": "check_limit_reached", "request": req["id"],
+                         "text": f"Request {req['id']} reached max_checks ({limit}); please review the stalled work."})
+        return False
+    blockers = [d["id"] for d in store.decisions() if d.get("request") == req["id"]
+                and d.get("status") == "pending" and d.get("needs") == "orchestrator"]
+    rec = _task_rec(req, f"{req['id']}.check-{count + 1}", "check", conf["orchestrator"], blockers=blockers)
+    lines = ["# ALFRD chat: a request is stalled", "", f"Request {req['id']} has been idle for {idle:.0f} seconds.",
+             "Findings: " + json.dumps(findings, ensure_ascii=False), "", "Stalled tasks / current rows:"]
+    lines += [f"- {r.get('row')} [{r.get('status')}] @{r.get('owner')}: "
+              f"{_clip((r.get('task') or {}).get('title') or r.get('error'), 500)}" for r in recs
+              if r.get("status") not in TERMINAL]
+    lines += ["", "Recover this request with a normal plan envelope (decisions, optional NEW tasks, message). "
+              "Existing task ids cannot be reused. You may answer only these orchestrator decisions: "
+              + json.dumps([store.decision(d) for d in blockers], ensure_ascii=False),
+              "User decisions and access approvals still belong to the user.", "", plan_prompt(store, conf, req)]
+    req["checks"] = count + 1
+    req["orchestrator_calls"] = int(req.get("orchestrator_calls") or 0) + 1
+    req["rows"].append(rec["row"])
+    store.save_request(req)
+    _write_prompt(store, rec["row"], "\n".join(lines))
+    _add_rows(store, [rec], conf)
+    server_event(store, "task.created", task=rec["row"], request=req["id"], task_kind="check", owner=rec["owner"])
+    store.add_message("system", f"Woke the orchestrator to check stalled request {req['id']} ({count + 1}/{limit}).",
+                      request=req["id"], kind="orchestrator_woken")
+    findings.append({"kind": "orchestrator_woken", "request": req["id"], "row": rec["row"],
+                     "text": f"The orchestrator was woken for stalled request {req['id']} ({count + 1}/{limit})."})
+    _write_graph(store, conf)
+    return True
 
 
 def check(root: str | Path, sid: str | None = None, *, spawn: bool = True, now: float | None = None) -> list[dict[str, Any]]:
@@ -2726,7 +2801,8 @@ def check(root: str | Path, sid: str | None = None, *, spawn: bool = True, now: 
     Per session with active requests: replay resolved mail (``process_mailbox``); a dead runner with work
     left is resumed (unless the plan is paused or cancelled); a request whose rows all ended, with no pending
     decision, idle for ``watch.stall_seconds``, is finished as the runner would have. A running unit whose
-    process is gone while the runner lives is only reported (the runner adopts it). Writes
+    process is gone while the runner lives is reported (the runner adopts it). With wake_orchestrator,
+    stalled requests also queue a bounded check plan call after code recovery. Writes
     ``<session>/check.json`` (``{at, next_at, runner_alive, findings}``) and, when something was found, a
     ``chat.check`` event. Returns one report per session checked."""
     from alfrd.runtime import scheduler
@@ -2748,6 +2824,7 @@ def check(root: str | Path, sid: str | None = None, *, spawn: bool = True, now: 
             if sid is not None:
                 raise
             continue
+        previous = _read(store.dir / "check.json") or {}
         findings: list[dict[str, Any]] = []
         active = [r for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
         plan = _plan_folder(store)
@@ -2789,6 +2866,23 @@ def check(root: str | Path, sid: str | None = None, *, spawn: bool = True, now: 
                             and not scheduler.pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host"), base):
                         findings.append({"kind": "unit_orphaned", "unit": unit.get("id"), "row": unit.get("row"),
                                          "text": f"Unit {unit.get('id')} is marked running but its process is gone."})
+            if watch["wake_orchestrator"] and plan.control() not in ("pause", "cancel"):
+                queued = False
+                with store.lock():
+                    for old in active:
+                        req = store.request(old["id"])
+                        rows = set(req.get("rows") or [])
+                        idle = _idle_seconds(store, req, now, units=True)
+                        orphaned = any(f["kind"] == "unit_orphaned" and f.get("row") in rows for f in findings)
+                        resumed_before = any(f["kind"] == "runner_resumed" and rows.intersection(f.get("rows") or [])
+                                             for f in previous.get("findings") or [])
+                        nonterminal = any((store.task(r) or {}).get("status") not in waiting
+                                          for r in rows)
+                        if req.get("status") in REQUEST_ACTIVE and nonterminal and (orphaned or (
+                                idle >= watch["stall_seconds"] and (alive or resumed_before))):
+                            queued = _wake_for_stall(store, conf, req, findings, idle) or queued
+                if queued:
+                    resume(store, spawn=spawn)
         at = datetime.fromtimestamp(now, timezone.utc)
         interval = watch["interval_seconds"]
         report = {"session": store.id, "at": at.isoformat(timespec="seconds"),
@@ -3212,7 +3306,7 @@ def _node_id(row: str) -> str:
     return "n_" + re.sub(r"[^A-Za-z0-9_]", "_", row)
 
 
-ORCHESTRATOR_TITLES = {"plan": "Plan", "repair": "Repair", "replan": "Replan", "summary": "Summary"}
+ORCHESTRATOR_TITLES = {"check": "Check", "plan": "Plan", "repair": "Repair", "replan": "Replan", "summary": "Summary"}
 
 
 def _planner_row(recs: Mapping[str, Mapping[str, Any]], rec: Mapping[str, Any]) -> str | None:

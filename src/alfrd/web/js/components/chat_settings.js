@@ -57,7 +57,9 @@ export function openChatSettings(ctx, project, text, apply) {
         ${num("bounds.max_tasks", "Tasks per request", s.bounds.max_tasks, 'min="1"')}${num("bounds.max_replans", "Replans per request", s.bounds.max_replans ?? 3, 'min="0" title="Times the orchestrator is woken for blockers; past it, you decide"')}</div></fieldset>
       <fieldset><legend>Scheduled checks</legend><div class="row gap wrap">
         ${num("watch.interval_seconds", "Check interval (seconds; 0 = off)", s.watch.interval_seconds, 'min="0" step="1" aria-describedby="cs-watch-help"')}
-        ${num("watch.stall_seconds", "Stall after (seconds)", s.watch.stall_seconds, 'min="60" step="1" aria-describedby="cs-watch-help"')}</div>
+        ${num("watch.stall_seconds", "Stall after (seconds)", s.watch.stall_seconds, 'min="60" step="1" aria-describedby="cs-watch-help"')}
+        <label class="row gap small"><input type="checkbox" data-s="watch.wake_orchestrator" ${s.watch.wake_orchestrator ? "checked" : ""}> Wake the orchestrator when a request stalls</label>
+        ${num("watch.max_checks", "Orchestrator checks per request", s.watch.max_checks, 'min="0" step="1"')}</div>
         <p class="muted small" id="cs-watch-help">Checks recover interrupted work while the server runs. Use 0 to turn scheduling off, or at least 30 seconds. A request can be finished after its tasks have ended and it has been idle for the stall period. Paused runners stay paused. If all projects have checks off, restart the server after enabling them.</p></fieldset>
       <fieldset><legend>Blocked tasks</legend>
         <label class="field small"><span>Let the orchestrator decide</span><select class="input sm" data-s="delegate_decisions" aria-describedby="cs-delegate-help cs-delegate-warn">

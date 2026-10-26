@@ -32,3 +32,18 @@ test("check status covers elapsed time, due checks and disabled scheduling", () 
   assert.equal(C.checkStatus(report, now + 180000), "Checked 5 min ago · next check due");
   assert.equal(C.checkStatus({ at: new Date(now).toISOString(), next_at: null }, now), "Checked just now · scheduled checks off");
 });
+
+
+test("orchestrator wake and check limit round trip with defaults omitted", () => {
+  const s = C.mergeChat({ watch: { wake_orchestrator: true, max_checks: 2 } });
+  assert.deepEqual(C.chatProblems(s), []);
+  assert.deepEqual(C.chatBlock(s).watch, { wake_orchestrator: true, max_checks: 2 });
+  assert.deepEqual(C.mergeChat(C.chatBlock(s)).watch, s.watch);
+  s.watch.wake_orchestrator = false;
+  s.watch.max_checks = "3";
+  assert.equal(C.chatBlock(s).watch, undefined);
+  s.watch.max_checks = true;
+  assert.match(C.chatProblems(s).join(" "), /checks per request/);
+  s.watch.wake_orchestrator = "yes";
+  assert.match(C.chatProblems(s).join(" "), /Wake the orchestrator/);
+});

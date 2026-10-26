@@ -29,10 +29,10 @@ chat:
     max_seconds: 7200         # wall clock from the message
     max_tasks: 20
     max_replans: 3            # orchestrator wake-ups for blockers; past it, blockers go to the user
-  watch:                      # scheduled checks (chat.check, code only): recovery after a crash or reboot
+  watch:                      # scheduled checks (chat.check): recovery after a crash or reboot
     interval_seconds: 300     # how often (0: never); a dead runner with tasks left is resumed
     stall_seconds: 1800       # a request whose tasks all ended, idle this long, is finished in code
-    wake_orchestrator: false  # (planned) a stall may wake the orchestrator ...
+    wake_orchestrator: false  # a stall may wake the orchestrator ...
     max_checks: 3             # ... at most this many times per request
   agents:
     claude: {label: Claude (Opus),   entrypoint: claude, model: opus,   roles: [orchestration], lean: true}
@@ -63,13 +63,25 @@ project starts with checks off, restart the server after enabling them.
 A check delivers resolved mailbox replies, resumes a dead runner with work left
 (preserving pause/cancel), and completes a request whose tasks have all ended and
 which has been idle for `stall_seconds` (at least 60). It calls no agent itself;
-resumed work uses the normal runner and may call agents. The optional LLM stall
-check (`wake_orchestrator` / `max_checks`) is reserved and not implemented yet.
+resumed work uses the normal runner and may call agents.
+
+With `wake_orchestrator: true` (default false), an orphaned unit or non-terminal
+work idle for the stall period can queue an orchestrator row of kind `check`.
+A dead runner gets a code recovery attempt first; if work remains stalled on a
+later check, the orchestrator can be woken. Paused/cancelled sessions stay held.
+The prompt includes findings, current stalled rows and idle time; its normal
+`plan` reply can add new tasks, answer orchestrator decisions and post a message.
+User decisions and access approvals remain with the user. Each wake posts a short
+system message and the finding `orchestrator_woken`. The request stores its
+`checks` count: at most `max_checks` (default 3, 0 disables calls), with no duplicate
+pending check. After the limit, `check_limit_reached` leaves the stall for the
+user. These calls use the escalation model and the existing request budgets.
 
 In Studio, the chat header shows the last and next check times. **Check now**
 runs the same recovery check and reports its findings, including when there are
 no issues. Settings → Agent chat → **Scheduled checks** edits the interval and
-stall period. Every check saves `.alfrd/chat/<sid>/check.json`; session state
+stall period, **Wake the orchestrator when a request stalls**, and the maximum
+orchestrator checks per request. Every check saves `.alfrd/chat/<sid>/check.json`; session state
 includes it as `check`. Only checks with findings add a `chat.check` event.
 
 To check without a running server:
@@ -121,8 +133,11 @@ automatic checks. The CLI and **Check now** remain available.
      permission blockers do too, and the orchestrator may pick a grant option. One pending decision
      can also be handed over from the Chat page: `POST …/decisions/<id>` with `{"delegate": true}`
      (`delegated: user`; any of its options, grants included). Replans stay bounded by
-     `max_replans`; repeats and mailbox approvals stay with the user. Each delegated choice is
-     posted as a system message (`kind: delegated_decision`). In the Studio: Settings → Agent chat →
+     `max_replans`; repeats and mailbox PRM action-hash approvals stay with the user, even with `all`.
+     Mailbox ASK questions can be delegated by either mode or per decision. Replies use the normal
+     mailbox delivery path, with sender `kind: orchestrator`, `on_behalf_of: user` and `delegated: setting | user`
+     recorded on the reply and resolved event. The orchestrator cannot approve an action hash.
+     Each delegated choice is posted as a system message (`kind: delegated_decision`). In the Studio: Settings → Agent chat →
      *Blocked tasks* sets the mode; a decision card's **Let orchestrator decide** button hands one over
      (not shown for a repeat, a mailbox approval, or a decision the orchestrator already handed back).
    * The **same blocker again with the same access** (same owner, command and folders) is not sent
@@ -325,7 +340,7 @@ credit balance, "hit your limit", model not found / unavailable — the row move
 the old owner's cell becomes `skip`, the fallback's `todo`, the task record gets `owner` and
 `fallback_from`, and event `task.fallback` `{task, from, to, reason}` is written with a system message.
 No retry is spent (the new agent's attempts count from 1); each agent is tried once per row, so
-`a → b → a` stops. Orchestrator rows (plan, repair, replan, summary) fall back too; on another agent
+`a → b → a` stops. Orchestrator rows (plan, repair, replan, check, summary) fall back too; on another agent
 they run on that agent's own model (`orchestrator_model` / `escalation_model` apply to the configured
 orchestrator only). An orchestrator reply that exits 0 but holds only a short limit message (no JSON)
 also falls back; a specialist task's exit-0 reply is never second-guessed.
@@ -339,7 +354,7 @@ events (Claude stream-json, Codex `--json`) are shown as compact lines (joined t
 `[result]`). An agent's stdout is its reply when it has no output file, so progress shows there only
 when it writes to stderr (as `alfrd.llm_chat` does).
 
-The session state's `graph` has `nodes` with `kind` `task`, `plan`, `repair`, `replan` or `summary`
+The session state's `graph` has `nodes` with `kind` `task`, `plan`, `repair`, `replan`, `check` or `summary`
 (orchestrator rows are titled e.g. "Plan r0002") and `edges` with `kind` `depends_on`, `delegated`
 (task → sub-task) and `planned` (the orchestrator row → each task it created, from the task record's
 `planned_by`). `mermaid` draws orchestrator rows as hexagons and `planned` edges as thick arrows.

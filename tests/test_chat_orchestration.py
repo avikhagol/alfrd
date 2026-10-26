@@ -32,6 +32,7 @@ kind, task = "task", None
 if prompt.startswith("# ALFRD chat: plan this request"): kind = "plan"
 elif prompt.startswith("# ALFRD chat: fix your plan"): kind = "repair"
 elif prompt.startswith("# ALFRD chat: a task is blocked"): kind = "replan"
+elif prompt.startswith("# ALFRD chat: a request is stalled"): kind = "check"
 elif prompt.startswith("# ALFRD chat: final summary"): kind = "summary"
 else: task = re.match(r"# ALFRD task (\S+):", prompt).group(1)
 with open("calls.jsonl", "a") as f:
@@ -125,7 +126,7 @@ def calls(root):
 
 
 def orchestrator_calls(root):
-    return [c for c in calls(root) if c["kind"] in ("plan", "repair", "replan", "summary")]
+    return [c for c in calls(root) if c["kind"] in ("plan", "repair", "replan", "check", "summary")]
 
 
 def run(root, sid):

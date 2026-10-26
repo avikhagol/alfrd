@@ -126,12 +126,12 @@ def test_startup_payload_under_200kib_compressed():
     assert total < 200 * 1024, f"{total} bytes gzip"
 
 
-def test_lazy_payload_under_336kib_compressed():
+def test_lazy_payload_under_400kib_compressed():
     startup = _startup_files()
     total = sum(_gz(p) for p in _web_files()
                 if p.resolve() not in startup and p.suffix not in {".png", ".ico"})
-    # v0.4.0.0 wave5 decision 1A: 336 KiB (344,064 B), excluding local runtime state.
-    assert total < 336 * 1024, f"{total} bytes gzip"
+    # v0.4.0.0 wave5 decision 1A: 336 KiB (344,064 B); raised by owner 2026-10-26 to 400 KiB (409,600 B) for chat delegation/outputs/watch UI. Excludes local runtime state.
+    assert total < 400 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
