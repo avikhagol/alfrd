@@ -26,7 +26,7 @@ def events(folder):
 # -- EventLog ----------------------------------------------------------------
 
 def test_kinds_and_prefix_matching():
-    assert len(EVENT_KINDS) == 30  # 17 plan/turn kinds + 12 chat orchestration kinds + budget.warning
+    assert len(EVENT_KINDS) == 31  # 17 plan/turn kinds + 13 chat orchestration kinds + budget.warning
     assert kind_matches("plan.*", "plan.failed") and kind_matches("review.pending", "review.pending")
     assert kind_matches("*", "turn.idle")
     assert not kind_matches("plan.*", "planner.x") and not kind_matches("plan", "plan.failed")

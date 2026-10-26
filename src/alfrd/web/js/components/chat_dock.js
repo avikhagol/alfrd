@@ -206,7 +206,7 @@ function drawLog() {
 
 function messageHtml(original) {
   const m = presentMessage(original, D.data?.tasks?.find((t) => t.row === original.task));
-  const who = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.task ? `${agentName(m.agent)} · ${D.data?.tasks?.find((t) => t.row === m.task)?.task?.title || "Task result"}` : agentName(m.agent || "alfrd");
+  const who = m.role === "user" ? "You" : m.role === "system" ? m.identity : m.task ? `${agentName(m.agent)} · ${D.data?.tasks?.find((t) => t.row === m.task)?.task?.title || "Task result"}` : agentName(m.agent || "alfrd");
   const t = m.task && D.data?.tasks?.find((x) => x.row === m.task);
   const l = t?.logs?.[t.logs.length - 1], log = l?.log;
   return `<article class="chat-msg chat-${esc(m.role)}${m.kind ? ` chat-${esc(m.kind)}` : ""}" aria-label="${esc(who)}">

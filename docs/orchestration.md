@@ -18,6 +18,7 @@ chat:
   orchestrator_model: sonnet  # model of plan calls (null: the orchestrator agent's own model)
   escalation_model: opus      # model of replans (blocker decisions) and plan repair (null: same as above)
   final_summary: false        # true: one more orchestrator call per finished request; false: the answer is built in code
+  delegate_decisions: "off"   # questions | all: blockers that would ask you go to the orchestrator instead
   warn_task_cost_usd: null    # a task that costs more gets a badge and a budget.warning event (work goes on)
   concurrency: 2              # tasks running at once in a session
   history_messages: 8         # recent messages the planning prompt sees
@@ -28,6 +29,11 @@ chat:
     max_seconds: 7200         # wall clock from the message
     max_tasks: 20
     max_replans: 3            # orchestrator wake-ups for blockers; past it, blockers go to the user
+  watch:                      # scheduled checks (chat.check, code only): recovery after a crash or reboot
+    interval_seconds: 300     # how often (0: never); a dead runner with tasks left is resumed
+    stall_seconds: 1800       # a request whose tasks all ended, idle this long, is finished in code
+    wake_orchestrator: false  # (planned) a stall may wake the orchestrator ...
+    max_checks: 3             # ... at most this many times per request
   agents:
     claude: {label: Claude (Opus),   entrypoint: claude, model: opus,   roles: [orchestration], lean: true}
     sonnet: {label: Claude (Sonnet), entrypoint: claude, model: sonnet, roles: [test planning, verification, failure analysis], lean: true}
@@ -43,6 +49,45 @@ chat:
 * `agents: {agy: null}` removes a preset. Adapters: `claude` (stream-json: model, tokens
   and cost), `codex` (tokens from its log), `generic` (nothing assumed). AGY runs through
   the generic adapter: research and image generation work only as far as its CLI does.
+
+## Scheduled recovery checks
+
+`alfrd serve` checks each project in its scope at `chat.watch.interval_seconds`
+(default 300 seconds). The serving process starts one daemon thread and stops it
+with the server; the debug reloader's parent does not start another watcher.
+Each project is checked once on startup, then at its own interval. An interval of
+0 disables scheduled checks; otherwise it must be at least 30 seconds. Interval
+changes take effect within 30 seconds while a watcher is running. If every scoped
+project starts with checks off, restart the server after enabling them.
+
+A check delivers resolved mailbox replies, resumes a dead runner with work left
+(preserving pause/cancel), and completes a request whose tasks have all ended and
+which has been idle for `stall_seconds` (at least 60). It calls no agent itself;
+resumed work uses the normal runner and may call agents. The optional LLM stall
+check (`wake_orchestrator` / `max_checks`) is reserved and not implemented yet.
+
+In Studio, the chat header shows the last and next check times. **Check now**
+runs the same recovery check and reports its findings, including when there are
+no issues. Settings → Agent chat → **Scheduled checks** edits the interval and
+stall period. Every check saves `.alfrd/chat/<sid>/check.json`; session state
+includes it as `check`. Only checks with findings add a `chat.check` event.
+
+To check without a running server:
+
+```sh
+alfrd chat check --root /absolute/project/path
+alfrd chat check --root /absolute/project/path --session SESSION_ID --json
+```
+
+For recovery after a reboot without Studio, install a cron entry (replace both
+absolute paths with your installation and project paths):
+
+```cron
+*/5 * * * * /absolute/alfrd/.venv/bin/alfrd chat check --root /absolute/project/path >> /absolute/project/path/.alfrd/chat-check.log 2>&1
+```
+
+Cron determines its own interval; `interval_seconds: 0` only disables the server's
+automatic checks. The CLI and **Check now** remain available.
 
 ## How a request runs
 
@@ -71,6 +116,15 @@ chat:
      sandbox denial: "requires approval", "outside the allowed directories", "add-dir", …) always go
      to the user: the orchestrator cannot change an agent's folders or commands. See
      [Access and permission blockers](#access-and-permission-blockers).
+   * **Delegated decisions.** With `chat.delegate_decisions: questions`, a blocker that would ask
+     the user goes to a replan call instead (`delegated: setting` on the decision); with `all`,
+     permission blockers do too, and the orchestrator may pick a grant option. One pending decision
+     can also be handed over from the Chat page: `POST …/decisions/<id>` with `{"delegate": true}`
+     (`delegated: user`; any of its options, grants included). Replans stay bounded by
+     `max_replans`; repeats and mailbox approvals stay with the user. Each delegated choice is
+     posted as a system message (`kind: delegated_decision`). In the Studio: Settings → Agent chat →
+     *Blocked tasks* sets the mode; a decision card's **Let orchestrator decide** button hands one over
+     (not shown for a repeat, a mailbox approval, or a decision the orchestrator already handed back).
    * The **same blocker again with the same access** (same owner, command and folders) is not sent
      to the orchestrator a second time: it goes to the user with a system message and event
      `task.stuck`.
@@ -129,16 +183,39 @@ Envelope: `{"protocol": "alfrd.orchestration/1", "kind": "plan" | "result" | "su
 | kind | fields |
 |---|---|
 | `plan` | `message?`, `tasks?: [task]`, `decisions?: [decision]` (at least one) |
-| `result` | `result: {task_id?, status: done\|failed\|blocked, summary, artifacts?, usage?, blockers?, tasks?}` |
+| `result` | `result: {task_id?, status: done\|failed\|blocked, summary, artifacts?, usage?, blockers?, tasks?, outputs_changed?}` |
 | `summary` | `message` |
 | `blocker` / `decision` | `blocker` / `decision` |
 
 Task: `id`, `title`, `owner` (agent key), `role?`, `description?`, `depends_on?` (ids),
 `acceptance_criteria` (≥ 1), `inputs?` (artifact refs, or `{ref, note}`),
 `expected_outputs?` (paths or `{path, description}`), `budget?: {max_cost_usd,
-max_seconds, max_retries ≤ 5}`. Before a task is accepted as done, ALFRD checks in code that every
-`expected_outputs` path exists inside the project (a trailing `/` means a folder); if any is missing the
-attempt fails ("expected output(s) missing: …") and is retried within `max_retries`, with no LLM call.
+max_seconds, max_retries ≤ 5}`.
+
+**Expected outputs are frozen.** When ALFRD adds a task it resolves each `expected_outputs` path to an
+absolute path (a relative one is taken from the project root; a trailing `/` means a folder) and stores
+it on the task record as `outputs: [{id: "o1", path, folder, written, description?, rev: 1, history: []}]`.
+A path outside the project and the folders agents may write (`project_settings.agent_access.folders`) is a
+plan error, so the orchestrator gets one repair; for sub-tasks a task delegates it makes that result
+invalid. Prompts show the frozen paths (`- o1: /abs/path`), and before a task is accepted as done ALFRD
+checks in code that each one exists; if any is missing the attempt fails ("expected output(s) missing: …")
+and is retried within `max_retries`, with no LLM call.
+
+**An agent can move an output.** A result may carry `outputs_changed: [{output: "o1", to: "/abs/new/path",
+reason?}]`. ALFRD validates each `to` (absolute, inside the project or this task's writable folders,
+including folders granted to it) and applies all of them or none: each moved output gets `rev + 1`, its old
+path in `history` (`rev`, `path`, `at`, `by`, `unit`, `reason`), a `task.output_changed` event and a system
+message (`kind: output_changed`). The missing-output check then uses the new path, and dependent tasks see
+the current path of each output they depend on. A refused change ("output change(s) refused: …") is a
+failed attempt, retried with the reason in the next prompt. A new path may not be the project or a
+writable folder itself (it always exists, so it would pass the check unwritten), nor the output's current
+path, nor the path another output of the task has after the moves (one file must not pass the check for
+two outputs; swapping two paths is fine), and one output may be moved only once per result. Instead of the result field an agent may send mailbox code `OUT` (payload
+`{output, to, from?, reason?}`, see [the agent mailbox](agent-mailbox.md)) as soon as it knows; the mail
+that attempt sent is applied with the result, through the same checks. Moves (old → current path) are
+listed in the replan and summary prompts and in ALFRD's own summary; the summary's files, promoted
+workflow steps (`outputs`) and the Files tab use the current paths. Studio's task inspector lists each
+output's current path, a "moved · rev N" badge and its earlier paths.
 
 Blocker: `id`, `reason`, `task_id?`, `question?`, `options?`, `needs: user | orchestrator`,
 `kind?: permission | input | other`, `requires?: {folders?, bash_commands?}`.

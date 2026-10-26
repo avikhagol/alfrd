@@ -471,8 +471,7 @@ def test_missing_expected_outputs_fail_the_attempt_and_retry(project, tmp_path):
     assert str(other / "out/a.png") in attempts[1]
     assert "ALFRD checks these exact absolute paths; write them there even if you also edit another repo." in attempts[0]
     planner = next(c["prompt"] for c in calls(project) if c["kind"] == "plan")
-    assert "Whenever a task works in a repo other than the project" in planner
-    assert "in each expected output's description" in planner
+    assert "Give each expected output as an absolute path" in planner
     assert str(project) in planner
     assert not [c for c in calls(project) if c["task"] == "b"]         # the dependent never ran
     assert chat.missing_outputs(project, ["../escape.txt"]) == ["../escape.txt"]

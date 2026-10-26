@@ -277,6 +277,23 @@
         "final_summary": {
           "type": "boolean"
         },
+        "delegate_decisions": {
+          "type": "string",
+          "enum": ["off", "questions", "all"]
+        },
+        "watch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interval_seconds": {
+              "type": "integer",
+              "anyOf": [{"const": 0}, {"minimum": 30}]
+            },
+            "stall_seconds": {"type": "integer", "minimum": 60},
+            "wake_orchestrator": {"type": "boolean"},
+            "max_checks": {"type": "integer", "minimum": 0}
+          }
+        },
         "orchestrator_model": {
           "type": ["string", "null"]
         },
@@ -319,6 +336,10 @@
             "max_tasks": {
               "type": "integer",
               "minimum": 1
+            },
+            "max_replans": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         },

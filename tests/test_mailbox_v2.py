@@ -82,9 +82,10 @@ def test_code_table_and_defaults(box, code):
         message = box.reply(parent["id"], USER, answer())["message"]
         assert message["category"] == "question" and message["priority"] == "urgent"
     else:
+        info_payload = {"output": "o1", "to": "/abs/new/path"} if code == "OUT" else {}  # OUT requires both
         data = permission(code=code) if code == "PRM" else question(
             kind=row["kind"], code=code,
-            payload={} if row["kind"] == "info" else question()["payload"])
+            payload=info_payload if row["kind"] == "info" else question()["payload"])
         message = box.send(AGENT, data)["message"]
         assert message["category"] == row["category"]
         assert message["priority"] == row["priority"]

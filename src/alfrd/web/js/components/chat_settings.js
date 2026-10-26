@@ -12,6 +12,11 @@ import { DEFAULTS, chatBlock, chatProblems, mergeChat, freeKey, AGENT_KEY } from
 import { permissionBadge } from "./permission_ui.js";
 
 const ADAPTERS = ["", "claude", "codex", "generic"];
+// chat.delegate_decisions: who decides a blocked task's question (see chat._delegable)
+const DELEGATE_OPTIONS = [["off", "Off: ask me"], ["questions", "Questions (not access)"], ["all", "Questions and access grants"]];
+// Always in the DOM (a live region and an aria-describedby target): empty unless "all", so the select's
+// description and the announcement only carry the warning when it applies.
+const delegateWarn = (v) => (v === "all" ? `<p class="callout warn small">${icon("alert")}<span>The orchestrator may grant the folders and commands a blocked task asks for, without asking you.</span></p>` : "");
 
 /** Open the editor for draft `text`; `apply(text, save)` writes the new text into the Settings draft (and saves). */
 export function openChatSettings(ctx, project, text, apply) {
@@ -50,6 +55,15 @@ export function openChatSettings(ctx, project, text, apply) {
         ${num("bounds.max_depth", "Delegation depth", s.bounds.max_depth, 'min="1"')}${num("bounds.max_retries", "Retries per task", s.bounds.max_retries, 'min="0" max="5"')}
         ${num("bounds.max_cost_usd", "Cost limit (USD)", s.bounds.max_cost_usd, 'min="0" step="0.5"')}${num("bounds.max_seconds", "Time limit (s)", s.bounds.max_seconds, 'min="1"')}
         ${num("bounds.max_tasks", "Tasks per request", s.bounds.max_tasks, 'min="1"')}${num("bounds.max_replans", "Replans per request", s.bounds.max_replans ?? 3, 'min="0" title="Times the orchestrator is woken for blockers; past it, you decide"')}</div></fieldset>
+      <fieldset><legend>Scheduled checks</legend><div class="row gap wrap">
+        ${num("watch.interval_seconds", "Check interval (seconds; 0 = off)", s.watch.interval_seconds, 'min="0" step="1" aria-describedby="cs-watch-help"')}
+        ${num("watch.stall_seconds", "Stall after (seconds)", s.watch.stall_seconds, 'min="60" step="1" aria-describedby="cs-watch-help"')}</div>
+        <p class="muted small" id="cs-watch-help">Checks recover interrupted work while the server runs. Use 0 to turn scheduling off, or at least 30 seconds. A request can be finished after its tasks have ended and it has been idle for the stall period. Paused runners stay paused. If all projects have checks off, restart the server after enabling them.</p></fieldset>
+      <fieldset><legend>Blocked tasks</legend>
+        <label class="field small"><span>Let the orchestrator decide</span><select class="input sm" data-s="delegate_decisions" aria-describedby="cs-delegate-help cs-delegate-warn">
+          ${DELEGATE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === (s.delegate_decisions || "off") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <p class="muted small" id="cs-delegate-help">Questions an agent would ask you go to the orchestrator first (within the replans per request); each choice it makes shows in the chat. Repeated blockers and an agent's own approval requests still come to you.</p>
+        <div id="cs-delegate-warn" role="status">${delegateWarn(s.delegate_decisions)}</div></fieldset>
       <div class="cs-table"><table class="tbl small"><caption class="sr-only">Chat agents</caption><thead><tr><th scope="col">Agent</th><th scope="col">Label</th><th scope="col">Entrypoint</th><th scope="col">Model</th><th scope="col">Adapter</th><th scope="col">Persona</th><th scope="col" title="Takes over when this agent reports a usage limit or a missing model">Fallback</th><th scope="col">Roles</th><th scope="col"><span class="sr-only">Remove</span></th></tr></thead><tbody id="cs-agents"></tbody></table></div>
       <div class="row gap wrap"><label class="sr-only" for="cs-new">New agent key</label><input class="input sm mono" id="cs-new" placeholder="new-agent" aria-describedby="cs-errors">
         <button type="button" class="btn sm" data-cs="add">${icon("plus")} Add agent</button>
@@ -83,7 +97,8 @@ export function openChatSettings(ctx, project, text, apply) {
       if (t.dataset.s) {
         const v = t.type === "checkbox" ? t.checked : t.type === "number" ? (t.value === "" ? "" : Number(t.value)) : t.value;
         const [a, b] = t.dataset.s.split(".");
-        if (b) s.bounds[b] = v; else s[a] = v;
+        if (b && ["bounds", "watch"].includes(a)) s[a][b] = v; else if (!b) s[a] = v;
+        if (a === "delegate_decisions") $("#cs-delegate-warn", root).innerHTML = delegateWarn(v);
       }
       const tr = t.closest("[data-agent]");
       if (tr && t.dataset.a) {

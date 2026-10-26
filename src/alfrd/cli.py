@@ -262,6 +262,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         _start_plugin_services(database)
     _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
+    if serving:
+        _chat_watch_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
     restart = threading.Event()
     browser_thread = None
     if not no_browser and (loopback or host in {"0.0.0.0", "::"}) and serving:
@@ -340,6 +342,61 @@ def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
             print(f"Plan reconcile skipped: {error}")
 
     threading.Thread(target=work, name="alfrd-plan-reconcile", daemon=True).start()
+
+
+def _chat_watch_later(service, scope, stopped: threading.Event, *, spawn: bool):
+    """Check scoped projects until the server stops; disabled projects need no thread.
+
+    Settings are re-read while watching, so interval edits take effect within 30 seconds.
+    If every project starts disabled, enabling checks requires restarting the server.
+    """
+    from alfrd import chat
+
+    roots = {}
+    try:
+        projects = service.list_projects()
+    except Exception as error:  # noqa: BLE001 - catalogue recovery must not block serving
+        print(f"Chat checks not started: {error}")
+        return None
+    for item in projects:
+        if scope and item.identifier not in scope:
+            continue
+        root = Path(item.root_path)
+        try:
+            roots[root] = chat.settings(root)["watch"]["interval_seconds"]
+        except Exception as error:  # noqa: BLE001 - one project's settings must not stop the server
+            print(f"Chat check skipped ({root}): {error}")
+    if not any(roots.values()):
+        return None
+
+    def work() -> None:
+        import time
+
+        last = {}
+        while not stopped.is_set():
+            delay = 30.0
+            for root in roots:
+                if stopped.is_set():
+                    break
+                try:
+                    interval = chat.settings(root)["watch"]["interval_seconds"]
+                    if not interval:
+                        continue
+                    now = time.monotonic()
+                    remaining = last.get(root, now - interval) + interval - now
+                    if remaining <= 0:
+                        # Advance even if checking fails; retry on the next scheduled interval.
+                        last[root] = now
+                        chat.check(root, spawn=spawn)
+                        remaining = interval
+                    delay = min(delay, remaining)
+                except Exception as error:  # noqa: BLE001 - a failed check must not kill the watcher
+                    print(f"Chat check skipped ({root}): {error}")
+            stopped.wait(delay)
+
+    thread = threading.Thread(target=work, name="alfrd-chat-watch", daemon=True)
+    thread.start()
+    return thread
 
 
 @alfrd_cli.command()
@@ -1676,6 +1733,24 @@ def chat_probe(root: str = _ROOT_OPT):
     from alfrd import chat
 
     print(_json.dumps(_chat_call(chat.probe, Path(root).resolve()), indent=2))
+
+
+@chat_cli.command("check")
+def chat_check(session: str | None = typer.Option(None, "--session", help="Check one session (default: all)."),
+               json_out: bool = typer.Option(False, "--json"), root: str = _ROOT_OPT):
+    """Recover interrupted chat work without an agent call; suitable for cron/systemd."""
+    import json as _json
+
+    from alfrd import chat
+
+    reports = _chat_call(chat.check, Path(root).resolve(), session)
+    if json_out:
+        print(_json.dumps(reports, indent=2))
+        return
+    for report in reports:
+        print(f"{report['session']}: " + ("; ".join(f["text"] for f in report["findings"]) or "No issues found."))
+    if not reports:
+        print("No chat sessions found.")
 
 
 @chat_cli.command("decide")

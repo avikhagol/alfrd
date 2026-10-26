@@ -17,16 +17,16 @@ import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
 import { createGoalsTab } from "./goals_tab.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
-  parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, presentMessage,
+  parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, presentMessage, checkStatus, taskOutputs,
 } from "../data/chat.js";
 
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
-  error: null, loading: false, task: null, open: new Map(), sendError: "", gen: 0, keys: {}, notes: [] };
+  error: null, loading: false, checking: null, task: null, open: new Map(), sendError: "", gen: 0, keys: {}, notes: [] };
 let scope = createRequestScope();
 let inspTab = "graph";
 let insp = null; // the inspector shell (inspector.js): closed unless the user opened it
 const goals = createGoalsTab({ get, refresh: () => loadSession() });
-let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, composer = null, draft = null, act = null, full = null;
+let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, lastLoaded = 0, composer = null, draft = null, act = null, full = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
 const COLLAPSE_KEY = "ui:chat.sessionsCollapsed"; // the chat list folded to a rail (wide screens; per browser)
@@ -84,9 +84,14 @@ export function render(el, ctx) {
     if (sid !== S.sid) openSession(sid, { replace: !ctx.state.chatSession || ctx.state.chatSession !== sid });
   }
   draw(ctx);
-  if (!clock) clock = setInterval(() => { if (host?.isConnected && activeRequest(S.data)?.finished == null) drawProgress(ctxRef); }, 1000);
-  if (!slowTimer) slowTimer = setInterval(() => { // the existing live fallback is faster; this only covers "live off"
-    if (host?.isConnected && !liveFlowing(ctxRef) && S.data?.requests?.some((r) => ["planning", "running", "needs_decision", "summarizing"].includes(r.status))) loadSession();
+  if (!clock) clock = setInterval(() => {
+    if (!host?.isConnected) return;
+    if (activeRequest(S.data)?.finished == null) drawProgress(ctxRef);
+    drawCheckStatus();
+  }, 1000);
+  if (!slowTimer) slowTimer = setInterval(() => {
+    // Idle checks intentionally write no event. Refresh their timestamps even with a live stream.
+    if (host?.isConnected && S.sid && (Date.now() - lastLoaded >= 60000 || (!liveFlowing(ctxRef) && hasActivity(S.data)))) loadSession();
   }, 15000);
 }
 
@@ -116,6 +121,7 @@ function mount(el, ctx, p) {
       <ul class="chat-list" id="chat-list" role="list"></ul></nav>
     <section class="chat-main" aria-label="Conversation">
       <header class="chat-head" id="chat-head"></header>
+      <p class="sr-only" id="chat-check-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
       <section class="chat-activity" id="chat-activity" aria-label="Running now" hidden></section>
       ${composerHtml("chat", { attachments: true })}
@@ -173,7 +179,7 @@ async function loadSession() {
     if (gen !== S.gen || p !== S.project || sid !== S.sid) return; // a newer request or another session won
     if (staleState(S.data, data)) { S.loading = false; return; }
     const was = hasActivity(S.data);
-    S.data = data; S.error = null;
+    S.data = data; S.error = null; lastLoaded = Date.now();
     if (hasActivity(data) && !was) act?.kick();
   } catch (error) { if (gen === S.gen) S.error = error.message; }
   S.loading = false;
@@ -183,6 +189,8 @@ async function loadSession() {
 function openSession(sid, { replace = false } = {}) {
   scope = createRequestScope();
   S.sid = sid; S.data = null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
+  const feedback = $("#chat-check-feedback", host);
+  if (feedback) feedback.textContent = "";
   const remembered = storage.get(SESSION_KEY, {}) || {};
   if (sid) storage.set(SESSION_KEY, { ...remembered, [S.project]: sid });
   const st = ctxRef.state;
@@ -309,18 +317,54 @@ function setCollapsed(on) {
 function drawHead(ctx) {
   const live = ctx.state.liveStatus?.state || "off";
   const s = S.sessions?.find((x) => x.id === S.sid);
-  if (!changed("head", [s?.title, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) return;
+  if (!changed("head", [s?.title, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) { drawCheckStatus(); return; }
+  const focused = $("#chat-head", host).contains(document.activeElement) ? document.activeElement.dataset.chat : null;
   const flowing = ["live", "polling"].includes(live);
   $("#chat-head", host).innerHTML = `<button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
     ${S.data?.plan ? `<span class="muted small" title="Session plan ${esc(S.data.plan.id)}">runner ${S.data.plan.runner_alive ? "active" : "idle"}</span>` : ""}
     <span class="badge tone-${flowing ? "ok" : "warn"}" role="status" title="${esc(ctx.state.liveStatus?.detail || "")}">${icon(flowing ? "sync" : "alert")}<span>${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}</span></span>
     <button type="button" class="btn sm chat-inspect-toggle" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">Inspect</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>
+    ${S.sid ? `<span class="muted small" id="chat-check-status"></span><button type="button" class="btn sm" data-chat="check" aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${S.checking === `${S.project}/${S.sid}` ? "Checking…" : "Check now"}</button>` : ""}
     ${S.settingsError ? `<p class="callout fail small chat-wide" role="alert">Chat settings: ${esc(S.settingsError)} — fix the <code>chat:</code> block in <a href="${esc(routeHash("config", S.project, ctx.state.selectedTarget))}">Settings</a>.</p>` : ""}`;
+  drawCheckStatus();
+  if (focused) $(`[data-chat="${CSS.escape(focused)}"]`, $("#chat-head", host))?.focus();
+}
+
+function drawCheckStatus() {
+  const label = $("#chat-check-status", host);
+  if (label) label.textContent = checkStatus(S.data?.check);
+}
+
+async function checkNow(button) {
+  const project = S.project, sid = S.sid, key = `${project}/${sid}`;
+  if (!sid || S.checking === key) return;
+  S.checking = key;
+  button.setAttribute("aria-disabled", "true"); button.textContent = "Checking…";
+  const current = () => host?.isConnected && S.project === project && S.sid === sid;
+  $("#chat-check-feedback", host).textContent = "Checking this session for interrupted work.";
+  try {
+    const report = await post(project, `/sessions/${encodeURIComponent(sid)}/check`);
+    if (!current()) return;
+    const text = report.findings?.length ? report.findings.map((f) => f.text).join(" ") : "Check complete. No issues found.";
+    $("#chat-check-feedback", host).textContent = text;
+    ctxRef.toast(text, "ok");
+    if (S.data) S.data.check = report;
+    drawCheckStatus();
+    loadSession();
+  } catch (error) {
+    if (current()) { $("#chat-check-feedback", host).textContent = `Check failed: ${error.message}`; ctxRef.toast(`Check failed: ${error.message}`, "fail"); }
+  } finally {
+    if (S.checking === key) S.checking = null;
+    if (current()) {
+      const b = $('[data-chat="check"]', host);
+      if (b) { b.setAttribute("aria-disabled", "false"); b.textContent = "Check now"; }
+    }
+  }
 }
 
 function messageHtml(original) {
   const m = presentMessage(original, S.data?.tasks?.find((t) => t.row === original.task));
-  const who = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.task ? `${agentName(m.agent)} · ${S.data?.tasks?.find((t) => t.row === m.task)?.task?.title || "Task result"}` : m.agent === orchestrator() ? `Orchestrator · ${agentName(m.agent)}` : agentName(m.agent || "alfrd");
+  const who = m.role === "user" ? "You" : m.role === "system" ? m.identity : m.task ? `${agentName(m.agent)} · ${S.data?.tasks?.find((t) => t.row === m.task)?.task?.title || "Task result"}` : m.agent === orchestrator() ? `Orchestrator · ${agentName(m.agent)}` : agentName(m.agent || "alfrd");
   const open = m.task && S.open.get(m.task);
   const t = m.task && S.data?.tasks?.find((x) => x.row === m.task), l = t?.logs?.[t.logs.length - 1];
   return `<article class="chat-msg chat-${esc(m.role)}${m.kind ? ` chat-${esc(m.kind)}` : ""}" data-msg="${esc(m.id)}" aria-label="${esc(who)}">
@@ -336,6 +380,19 @@ const artifactItem = (ref) => {
   const [path, sha] = String(ref).split("@");
   return `<li><span class="mono small" title="${esc(ref)}">${esc(path)}</span> <span class="muted small mono">${esc((sha || "").slice(0, 8))}</span> <button type="button" class="btn sm" data-artifact="${esc(ref)}" aria-label="View ${esc(path)}">View</button></li>`;
 };
+
+// Frozen outputs: the path ALFRD checks now, and where it was before an agent moved it (newest first).
+function outputsHtml(outputs) {
+  if (!outputs.length) return "";
+  const earlier = (o) => {
+    const h = [...(o.history || [])].reverse();
+    return h.length ? `<details class="chat-output-history"><summary>Earlier path${h.length === 1 ? "" : "s"} (${h.length})</summary><ol>${h.map((e) =>
+      `<li><span class="mono">${esc(e.path)}</span> <span class="muted">rev ${esc(e.rev)}${e.by ? ` · moved by @${esc(e.by)}` : ""}${e.at ? ` · <time datetime="${esc(e.at)}">${esc(String(e.at).slice(0, 16).replace("T", " "))}</time>` : ""}</span>${e.reason ? `<div>${esc(e.reason)}</div>` : ""}</li>`).join("")}</ol></details>` : "";
+  };
+  return `<h4>Expected outputs</h4><ul class="chat-outputs small">${outputs.map((o) => `<li>
+    <div class="row gap wrap"><span class="badge tone-muted"><span>${esc(o.id)}</span></span>${o.rev > 1 ? `<span class="badge tone-warn" title="This path differs from the plan; the earlier paths are listed below"><span>moved · rev ${esc(o.rev)}</span></span>` : ""}<span class="mono chat-path">${esc(o.path)}${o.folder ? "/" : ""}</span></div>
+    ${o.description ? `<div class="muted">${esc(o.description)}</div>` : ""}${earlier(o)}</li>`).join("")}</ul>`;
+}
 
 function transcriptHtml(row) {
   const t = S.open.get(row);
@@ -382,6 +439,10 @@ const meter = (label, value, max, ratio, shown, limit, tone) => `<div class="cha
   <meter min="0" max="${max || 1}" value="${max ? Math.min(value, max) : 0}" low="${(max || 1) * 0.6}" high="${(max || 1) * 0.8}" optimum="0" aria-label="${label} used: ${esc(shown)} of ${esc(limit)}"></meter>
   <span class="small tabular ${ratio >= 1 ? "fail-t" : ratio >= 0.8 ? "warn-t" : ""}">${esc(shown)} / ${esc(limit)}</span></div>`;
 
+// "Let orchestrator decide" (chat.delegate_decision): not for an agent's mailbox approval, a repeated
+// blocker (it would only loop) or one the orchestrator already handed back.
+const canDelegate = (d) => !d.mailbox_message_id && !d.repeat && !d.delegated;
+
 function drawDecisions() {
   const box = $("#chat-decisions", host);
   const list = S.data?.blockers || [];
@@ -394,14 +455,15 @@ function drawDecisions() {
   box.innerHTML = `<h3 id="chat-decisions-h">Blockers and decisions ${list.length ? `<span class="badge tone-warn"><span>${list.length}</span></span>` : ""}</h3>
     ${list.length ? list.map((d) => d.mailbox_message_id ? `<p class="small"><b>${esc(d.question || d.reason)}</b> <button type="button" class="btn sm link" data-mail-jump="${esc(d.mailbox_message_id)}">Answer in conversation</button></p>` : d.needs === "user" ? `<form class="chat-decision" data-decision="${esc(d.id)}" aria-label="Decision for task ${esc(d.task)}">
       <p class="small"><b>${esc(d.question || d.reason)}</b></p>${d.question && d.reason !== d.question ? `<p class="muted small">${esc(d.reason)}</p>` : ""}
-      <p class="muted small">Task <span class="mono">${esc(d.task)}</span></p>${d.kind === "permission" ? `<p class="small warn-t">${d.repeat ? `Blocked ${esc(d.repeat)}× with the same access. ` : ""}An approval cannot reach a running agent: grant access, reassign or cancel to change the next run.</p>` : ""}
+      <p class="muted small">Task <span class="mono">${esc(d.task)}</span></p>${d.delegated ? `<p class="small warn-t">The orchestrator handed this back to you (it did not decide, or its replans per request ran out).</p>` : ""}${d.kind === "permission" ? `<p class="small warn-t">${d.repeat ? `Blocked ${esc(d.repeat)}× with the same access. ` : ""}An approval cannot reach a running agent: grant access, reassign or cancel to change the next run.</p>` : ""}
       ${d.options?.length ? `<fieldset><legend class="sr-only">Options</legend>${d.options.map((o, i) => `<label class="row gap small"><input type="radio" name="choice" value="${esc(o)}" ${i ? "" : ""}> ${esc(o)}</label>`).join("")}</fieldset>` : ""}
       <label class="field small"><span>${d.options?.length ? "Or answer (optional)" : "Answer"}</span><textarea class="input" name="answer" rows="2" maxlength="8000"></textarea></label>
       <p class="fail-t small" role="alert" data-decision-error></p>
-      <button type="submit" class="btn sm primary">Send decision</button></form>`
-    : `<p class="small muted">${esc(d.question || d.reason)} — the orchestrator is deciding.</p>`).join("")
+      <div class="row gap wrap"><button type="submit" class="btn sm primary">Send decision</button>${canDelegate(d) ? `<button type="button" class="btn sm" data-delegate="${esc(d.id)}" aria-describedby="dlg-${esc(d.id)}">Let orchestrator decide</button>` : ""}</div>
+      ${canDelegate(d) ? `<p class="muted small" id="dlg-${esc(d.id)}">${d.options?.length ? "It picks one of these options for you" : "It answers for you"}${d.kind === "permission" ? ", which may grant this access" : ""}; you see its choice in the chat.</p>` : ""}</form>`
+    : `<p class="small muted">${esc(d.question || d.reason)} — the orchestrator is deciding.${d.delegated ? ` <span class="badge tone-muted"><span>delegated</span></span>` : ""}</p>`).join("")
     : `<p class="muted small">Nothing needs a decision.</p>`}
-    ${done.length ? `<details><summary class="small">Decided (${done.length})</summary><ul class="small">${done.map((d) => `<li>${esc(d.question || d.reason)} → <b>${esc(d.choice || d.answer || d.status)}</b>${d.decided_by ? ` <span class="muted">(${esc(d.decided_by)})</span>` : ""}</li>`).join("")}</ul></details>` : ""}`;
+    ${done.length ? `<details><summary class="small">Decided (${done.length})</summary><ul class="small">${done.map((d) => `<li>${esc(d.question || d.reason)} → <b>${esc(d.choice || d.answer || d.status)}</b>${d.decided_by ? ` <span class="muted">(${esc(d.decided_by)}${d.delegated && d.decided_by === "orchestrator" ? " · delegated" : ""})</span>` : ""}</li>`).join("")}</ul></details>` : ""}`;
 }
 
 function drawTask(ctx) {
@@ -424,8 +486,8 @@ function drawTask(ctx) {
       <dt>Depends on</dt><dd>${(t.depends_on || []).map((d) => `<span class="mono">${esc(d)}</span>`).join(", ") || "nothing"}</dd>
       <dt>Attempts</dt><dd>${t.attempts || 0}${t.model ? ` · model ${esc(t.model)}` : ""}</dd>
       <dt>Tokens</dt><dd data-tokens="task">${esc(tokenLine(t.usage) || "not reported")}${t.cost_warning ? ` <span class="badge tone-warn">${icon("alert")}<span>over the ${money(t.cost_warning.bound)} warning</span></span>` : ""}</dd>
-      ${task.expected_outputs?.length ? `<dt>Expected outputs</dt><dd>${task.expected_outputs.map((o) => `<span class="mono">${esc(typeof o === "string" ? o : o.path)}</span>`).join(", ")}</dd>` : ""}
     </dl>
+    ${outputsHtml(taskOutputs(t))}
     ${t.result?.summary ? `<h4>Result</h4><p class="small chat-text">${esc(t.result.summary)}</p>` : ""}
     ${t.result?.artifacts?.length ? `<h4>Artifacts</h4><ul class="chat-arts">${t.result.artifacts.map(artifactItem).join("")}</ul>` : ""}
     ${t.error ? `<p class="callout fail small">${esc(t.error)}</p>` : ""}
@@ -533,6 +595,7 @@ function bind(el) {
     else if (a === "collapse") setCollapsed(true);
     else if (a === "sessions" && wide() && $(".chat", host).classList.contains("chat-sessions-collapsed")) setCollapsed(false);
     else if (a === "refresh") { loadSession(); loadSessions(); loadSettings(); }
+    else if (a === "check") checkNow(b);
     else if (a === "reload") loadSessions();
     else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); }
     else if (a === "promote") promoteRequest(b.dataset.request);
@@ -559,6 +622,7 @@ function bind(el) {
     else if (b.dataset.more) loadPart(...b.dataset.more.split("|"), true);
     else if (b.dataset.artifact) viewArtifact(b.dataset.artifact);
     else if (b.dataset.taskAct) taskAction(b.dataset.taskAct, b.dataset.row, b);
+    else if (b.dataset.delegate) delegateDecision(b.dataset.delegate, b);
   });
   el.addEventListener("change", (e) => {
     if (!e.target.matches("[data-request-scope]")) return;
@@ -589,6 +653,16 @@ function bind(el) {
       chat.classList.remove("chat-sessions-open"); $("[data-chat=sessions]", host)?.setAttribute("aria-expanded", "false"); $("[data-chat=sessions]", host)?.focus(); e.preventDefault();
     }
   });
+}
+
+async function delegateDecision(id, button) {
+  const err = button.closest("[data-decision]")?.querySelector("[data-decision-error]");
+  button.disabled = true;
+  try {
+    const out = await post(S.project, `/sessions/${encodeURIComponent(S.sid)}/decisions/${encodeURIComponent(id)}`, { delegate: true });
+    ctxRef.toast(out?.decision?.needs === "user" ? "The orchestrator's replans ran out; this decision stays with you" : "The orchestrator will decide; its choice shows in the chat", out?.decision?.needs === "user" ? "warn" : "ok");
+    S.keys.decisions = null; loadSession();
+  } catch (error) { if (err) err.textContent = error.message; button.disabled = false; }
 }
 
 async function taskAction(action, row, button) {

@@ -70,13 +70,21 @@ must fit within 32 KiB (32,768 bytes), not 32,768 characters.
 | BLK | info | blocker | urgent | Cannot proceed `{needs?}` |
 | DEP | info | coordination | normal | Note to a sibling or dependent task |
 | CLM | info | coordination | high | Claims a shared path `{path}` |
+| OUT | info | coordination | high | An expected output moved `{output, to, from?, reason?}` |
 | ASK | question | question | high | Question for the user |
 | ASO | question | question | high | Question for the orchestrator |
 | PRM | permission_request | permission | urgent | Approval for an exact action |
 | REP | reply | (inherited) | (inherited) | Set by the store |
 
 Payload hints in the meanings describe conventions for informational mail;
-they do not add requirements to its free-form JSON object.
+they do not add requirements to its free-form JSON object. `OUT` is the
+exception: its payload must name the output id (`o1`, `o2`, …) and the new
+absolute path in `to`. When the task finishes, ALFRD applies the OUT mail that
+attempt sent together with the result's `outputs_changed` (the result wins for
+the same output; the last mail per output wins otherwise). The same checks
+apply: the new path must be inside the task's writable folders, and one refused
+change refuses them all and retries the task (see "An agent can move an
+output" in [orchestration](orchestration.md)).
 
 State is derived from lifecycle events, never accepted on send. Unacknowledged
 info is `pending`; its recipient's receipt makes it `acked`. A receipt leaves

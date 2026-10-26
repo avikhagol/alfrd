@@ -15,8 +15,9 @@ export const staleState = (applied, incoming) => !!incoming?.unchanged || incomi
 /** Mirrors chat.DEFAULTS (the presets the chat: block edits). */
 export const DEFAULTS = {
   orchestrator: "claude", orchestrator_model: "sonnet", escalation_model: "opus", final_summary: false, warn_task_cost_usd: null,
-  concurrency: 2, history_messages: 8,
+  delegate_decisions: "off", concurrency: 2, history_messages: 8,
   bounds: { max_depth: 2, max_retries: 1, max_cost_usd: 5, max_seconds: 7200, max_tasks: 20, max_replans: 3 },
+  watch: { interval_seconds: 300, stall_seconds: 1800, wake_orchestrator: false, max_checks: 3 },
   agents: {
     claude: { label: "Claude (Opus)", entrypoint: "claude", model: "opus", roles: ["orchestration"], lean: true },
     sonnet: { label: "Claude (Sonnet)", entrypoint: "claude", model: "sonnet", roles: ["test planning", "verification", "failure analysis"], lean: true },
@@ -153,11 +154,19 @@ export function timeline(state) {
   return [...msgs, ...results].map((m, i) => [m, i]).sort(([a, i], [b, j]) => (a.at && b.at && a.at !== b.at ? (a.at < b.at ? -1 : 1) : i - j)).map(([m]) => m);
 }
 
+/** A task's expected outputs as ALFRD froze them (absolute path, rev, earlier paths); tasks
+ * planned before outputs were frozen fall back to the plan's paths. */
+export function taskOutputs(t) {
+  if (Array.isArray(t?.outputs)) return t.outputs;
+  return (t?.task?.expected_outputs || []).map((o, i) => ({ id: `o${i + 1}`, path: typeof o === "string" ? o : o?.path,
+    description: typeof o === "string" ? "" : o?.description || "", rev: 1, history: [] })).filter((o) => o.path);
+}
+
 /** Public chat copy. Only complete, recognizable protocol envelopes are interpreted;
  * user JSON and ordinary code examples always remain untouched. Originals stay in details. */
 export function presentMessage(message, task) {
   const m = message || {}, original = String(m.text || "");
-  const identity = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.agent || "ALFRD";
+  const identity = m.role === "user" ? "You" : m.kind === "delegated_decision" ? "Orchestrator · decided for you" : m.kind === "output_changed" ? "ALFRD · output moved" : m.role === "system" ? "ALFRD" : m.agent || "ALFRD";
   if (m.role !== "assistant") return { ...m, identity, text: original };
   let text = original, envelope = null, prefix = "";
   const fences = [...original.matchAll(/(?:^|\n)```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g)];
@@ -307,7 +316,7 @@ export function duration(s) {
 // --- chat: settings (Settings → Agent chat) --------------------------------------------
 
 const AGENT_FIELDS = ["label", "entrypoint", "cmd", "model", "adapter", "roles", "persona", "timeout", "lean", "env", "fallback", "model_option", "skills", "plugins", "mcp"];
-const SETTING_KEYS = ["orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd", "concurrency", "history_messages", "skill_selection"];
+const SETTING_KEYS = ["orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd", "concurrency", "history_messages", "skill_selection", "delegate_decisions"];
 
 /** The effective chat settings of a `chat:` block (presets merged under it, `agent: null` removes one). */
 export function mergeChat(raw = {}) {
@@ -315,6 +324,7 @@ export function mergeChat(raw = {}) {
   const r = raw && typeof raw === "object" ? raw : {};
   for (const k of SETTING_KEYS) if (k in r) out[k] = r[k];
   Object.assign(out.bounds, r.bounds || {});
+  Object.assign(out.watch, r.watch || {});
   for (const [key, a] of Object.entries(r.agents || {})) {
     if (a == null) delete out.agents[key];
     else out.agents[key] = { ...(out.agents[key] || {}), ...a };
@@ -340,9 +350,16 @@ export function chatBlock(s) {
   }
   const model = (v) => (String(v ?? "").trim() || null); // empty: the orchestrator agent's own model
   const warn = Number(s.warn_task_cost_usd) > 0 ? Number(s.warn_task_cost_usd) : null;
+  // chat.watch: only the keys that differ from the defaults (a block without it keeps the defaults)
+  const watch = Object.fromEntries(Object.entries(s.watch || {})
+    .filter(([k, v]) => k in DEFAULTS.watch && v !== "" && v != null && v !== DEFAULTS.watch[k])
+    .map(([k, v]) => [k, k === "wake_orchestrator" ? Boolean(v) : Number(v)]));
   return { orchestrator: s.orchestrator, orchestrator_model: model(s.orchestrator_model), escalation_model: model(s.escalation_model),
     final_summary: Boolean(s.final_summary), warn_task_cost_usd: warn, concurrency: Number(s.concurrency),
-    history_messages: Number(s.history_messages), ...(s.skill_selection ? { skill_selection: s.skill_selection } : {}), bounds: { ...s.bounds }, agents };
+    history_messages: Number(s.history_messages),
+    ...(s.delegate_decisions && s.delegate_decisions !== "off" ? { delegate_decisions: s.delegate_decisions } : {}),
+    ...(s.skill_selection ? { skill_selection: s.skill_selection } : {}), bounds: { ...s.bounds },
+    ...(Object.keys(watch).length ? { watch } : {}), agents };
 }
 
 /** Problems with effective settings (mirrors chat.merge_settings); `personas` are the project's persona keys. */
@@ -362,11 +379,16 @@ export function chatProblems(s, personas = []) {
   const int = (v, low) => Number.isInteger(Number(v)) && Number(v) >= low && v !== "" && v !== null;
   if (!int(s.concurrency, 1)) errors.push("Concurrency: a whole number ≥ 1.");
   if (!int(s.history_messages, 0)) errors.push("History messages: a whole number ≥ 0.");
+  if (s.delegate_decisions && !["off", "questions", "all"].includes(s.delegate_decisions)) errors.push("Let the orchestrator decide: off, questions or all.");
   const b = s.bounds || {};
   for (const k of ["max_depth", "max_tasks"]) if (!int(b[k], 1)) errors.push(`${k}: a whole number ≥ 1.`);
   if (!int(b.max_retries, 0) || Number(b.max_retries) > 5) errors.push("max_retries: a whole number from 0 to 5.");
   if (b.max_replans != null && !int(b.max_replans, 0)) errors.push("max_replans: a whole number ≥ 0.");
   for (const k of ["max_cost_usd", "max_seconds"]) if (!(Number(b[k]) > 0)) errors.push(`${k}: a positive number.`);
+  const wt = s.watch || {};
+  if (wt.interval_seconds != null && (!int(wt.interval_seconds, 0) || (Number(wt.interval_seconds) > 0 && Number(wt.interval_seconds) < 30))) errors.push("Check interval: 0 (off) or at least 30 seconds.");
+  if (wt.stall_seconds != null && !int(wt.stall_seconds, 60)) errors.push("Stall after: a whole number of seconds ≥ 60.");
+  if (wt.max_checks != null && !int(wt.max_checks, 0)) errors.push("Orchestrator checks per request: a whole number ≥ 0.");
   const w = s.warn_task_cost_usd;
   if (w != null && w !== "" && !(Number(w) > 0)) errors.push("Task cost warning: a positive number (empty: no warning).");
   return errors;
@@ -485,4 +507,14 @@ export function setupSummary(s) {
   const roles = roleWords(s.agents).map((r) => `${r} → @${roleOwner(s.agents, r)}`);
   const fb = Object.entries(s.agents).filter(([, a]) => a.fallback).map(([k, a]) => `@${k} falls back to @${a.fallback}`);
   return [`Setup saved: orchestrator @${s.orchestrator} (${s.orchestrator_model || s.agents[s.orchestrator]?.model || "agent model"})`, ...roles, ...fb].join(", ");
+}
+/** Scheduled check timestamps are offset-aware; tolerate sessions checked before this feature. */
+export function checkStatus(report, now = Date.now()) {
+  const at = Date.parse(report?.at || "");
+  if (!Number.isFinite(at)) return "Not checked yet";
+  const minutes = Math.max(0, Math.floor((now - at) / 60000));
+  const age = minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} hr ago`;
+  const next = Date.parse(report?.next_at || "");
+  const due = !Number.isFinite(next) ? "scheduled checks off" : next <= now ? "next check due" : `next in ${Math.ceil((next - now) / 60000)} min`;
+  return `Checked ${age} · ${due}`;
 }

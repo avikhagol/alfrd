@@ -167,6 +167,17 @@ def chat_session_state(project_name: str, session_id: str):
         return _fail(error)
 
 
+@studio_api.post(_BASE + "/sessions/<session_id>/check")
+def chat_session_check(project_name: str, session_id: str):
+    """Check and recover this session; returns the durable report and its findings."""
+    try:
+        [report] = chat.check(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    _poke(project_name)
+    return jsonify(report)
+
+
 @studio_api.get(_BASE + "/sessions/<session_id>/activity")
 def chat_activity(project_name: str, session_id: str):
     """Running units of the session (orchestrator calls too) with the last ``?lines=`` (≤ 400) lines of each log."""
@@ -233,8 +244,11 @@ def chat_attachment_content(project_name: str, session_id: str, ref: str):
 def chat_decision(project_name: str, session_id: str, decision_id: str):
     payload = request.get_json(silent=True) or {}
     try:
-        decision = chat.decide(_project_root(project_name), session_id, decision_id,
-                               choice=payload.get("choice"), answer=payload.get("answer"))
+        if payload.get("delegate") is True:  # "let the orchestrator decide"
+            decision = chat.delegate_decision(_project_root(project_name), session_id, decision_id)
+        else:
+            decision = chat.decide(_project_root(project_name), session_id, decision_id,
+                                   choice=payload.get("choice"), answer=payload.get("answer"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
