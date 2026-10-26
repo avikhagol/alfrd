@@ -2,7 +2,7 @@
 import { $ } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { sessionDraft } from "../data/chat_draft.js";
-import { mountComposerAttachments } from "./chat_composer.js";
+import { autogrow, mountComposerAttachments } from "./chat_composer.js";
 
 export function imageWarning(text, settings, probe) {
   const target = /^@([\w-]+)/.exec(text.trim())?.[1] || settings?.orchestrator;
@@ -18,9 +18,16 @@ export function mountComposerDraft(root, id, { settings, blocked = () => false, 
   let key = "", model = null, tray = null, unsubscribe = () => {}, probe = null, project = null, session = null;
   const refresh = () => {
     if (model && input.value !== model.read().text) input.value = model.read().text;
+    autogrow(input);
     tray?.refresh();
-    button.disabled = !session || blocked() || !server.session?.mutations_enabled || !!model?.busy();
-    button.setAttribute("aria-busy", String(!!model?.busy()));
+    const draft = model?.read(), sending = !!model?.sending(), uploading = !!model?.busy() && !sending, failed = !!model?.failed(), empty = !draft?.text.trim() && !draft?.refs.length;
+    const reason = !session ? "Choose a session to send a message."
+      : blocked() || !server.session?.mutations_enabled ? "Sending is unavailable: this session is read-only or not ready."
+      : uploading ? "Wait for uploads to finish." : failed ? "Retry or remove failed images before sending." : "";
+    button.disabled = !!reason || sending || empty;
+    button.setAttribute("aria-busy", String(sending));
+    const label = $("[data-send-label]", button); if (label) label.textContent = sending ? "Sending…" : "Send";
+    const note = $(`#${id}-send-reason`, root); if (note) note.textContent = reason;
     warning.textContent = [model?.error(), model?.read().refs.length ? imageWarning(input.value, settings(), probe) : ""].filter(Boolean).join(" ");
   };
   return {

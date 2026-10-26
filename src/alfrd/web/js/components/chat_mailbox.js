@@ -23,8 +23,10 @@ export function mailCardHtml(m, agentName, view = "card") {
   const approval = m.kind === "permission_request", p = m.payload || {};
   return `<header>${safe(`<b>${esc(approval ? "Approval needed" : m.kind === "question" ? "Question" : m.subject)} · ${esc(agentName(m.sender.agent_id || m.sender.kind))}</b>`)}</header>
           ${safe(`<p>${esc(m.summary || m.subject)}</p><p class="muted small">${esc(m.code || m.kind)} · ${esc(m.priority || "normal")}</p>`)}
+          ${safe(`<p class="muted small">Request ${esc(m.request_id || m.request || "—")} · Task ${esc(m.sender?.task_id || m.task_id || "—")}</p>`)}
           ${expandedMail(m, view)}
           ${approval ? safe(`<dl class="chat-dl small"><dt>Action</dt><dd>${esc(p.description || p.action)}</dd><dt>Target</dt><dd>${esc(p.target)}</dd><dt>Scope</dt><dd>Once, for this attempt</dd></dl>`) : ""}
+          ${approval ? `<button type="button" class="btn sm" data-mail-expand aria-expanded="false" aria-controls="mail-scope-${view}-${esc(m.id)}">Action details · exact permission scope</button><div class="chat-action-details" id="mail-scope-${view}-${esc(m.id)}" hidden><pre tabindex="0" aria-label="Permission action hash and arguments" data-action-scope></pre></div>` : ""}
           ${m.expires_at ? safe(`<p class="muted small">Expires ${esc(m.expires_at)}</p>`) : ""}
           <form><fieldset><legend class="sr-only">Your answer</legend>${!approval ? (p.options || []).map((v) => `<label class="row gap small"><input type="radio" name="choice" value="${esc(v.id)}">${safe(esc(v.label))}</label>`).join("") : ""}
           ${approval || p.allow_text ? `<label class="field small"><span>${approval ? "Explanation (optional)" : "Answer"}</span><textarea class="input" name="answer" rows="2" maxlength="16384"></textarea></label>` : ""}
@@ -37,10 +39,10 @@ export const decisionsFor = (messages) => messages.filter((m) => m.recipient?.ki
 
 /** One editable form per mailbox id; polling never replaces an unsent answer. */
 export function mountMailbox(box, o) {
-  const cards = new Map(), teamCards = new Map();
+  const cards = new Map(), teamCards = new Map(), announced = new Set();
   const view = ++mailboxViews;
   const replyKey = () => `reply-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
-  let sub, team, list, status, jumpId;
+  let sub, team, list, status, jumpId, announcement = "";
   function jump() {
     const card = cards.get(jumpId)?.el || teamCards.get(jumpId);
     if (card) { jumpId = null; revealMail(card); }
@@ -56,11 +58,14 @@ export function mountMailbox(box, o) {
   };
   list.addEventListener("click", expand); team.addEventListener("click", expand);
   if (o.teamBox) o.teamBox.append(team);
-  const rawBox = o.rawBox;
   const url = `/studio/projects/${encodeURIComponent(o.project())}/chat/sessions/${encodeURIComponent(o.sid())}/requests/${encodeURIComponent(o.request())}/mailbox/messages`;
   function draw(snapshot) {
-    status.textContent = snapshot.unsupported ? "Agent messages are unavailable on this server. Existing blockers remain in Decisions." : snapshot.stale ? "Messages paused — reconnecting" : "";
     const user = decisionsFor(snapshot.messages);
+    const arrivals = user.filter((m) => pendingMail(m) && m.kind === "permission_request" && !announced.has(m.id));
+    arrivals.forEach((m) => announced.add(m.id));
+    if (arrivals.length) announcement = `Permission requested by @${arrivals[0].sender?.agent_id || arrivals[0].sender?.kind || "unknown"}`;
+    const notice = snapshot.unsupported ? "Agent messages are unavailable on this server. Existing blockers remain in Decisions." : snapshot.stale ? "Messages paused — reconnecting" : announcement;
+    if (status.textContent !== notice) status.textContent = notice;
     const peers = snapshot.messages.filter((m) => m.recipient?.kind !== "user" && (m.kind !== "reply" || m.sender?.kind !== "user"));
     team.hidden = !peers.length;
     $("[data-team-title]", team).textContent = `Team messages · ${peers.length}`;
@@ -77,17 +82,17 @@ export function mountMailbox(box, o) {
       if (!card) {
         const el = document.createElement("article"); el.className = "chat-mail-card"; el.dataset.mailId = m.id;
         const approval = m.kind === "permission_request";
-        el.innerHTML = mailCardHtml(m, o.agentName, view);
-        if (approval && m.payload.arguments) {
-          const raw = document.createElement("div"); raw.className = "chat-raw"; raw.dataset.rawFor = m.id;
-          raw.innerHTML = safe(`<p class="small muted">Raw protocol · ${esc(m.subject)}</p><pre class="log chat-pre">${esc(JSON.stringify(m.payload.arguments, null, 2))}</pre>`);
-          (rawBox || el).append(raw);
-        }
+        el.innerHTML = mailCardHtml({ ...m, request_id: m.request_id || m.request || o.request() }, o.agentName, view);
         list.append(el); card = { el, message: m }; cards.set(m.id, card);
         $("form", el).hidden = m.kind === "info";
         $("form", el).onsubmit = async (event) => {
           event.preventDefault(); event.stopPropagation();
           if (card.sending || card.message.state !== "pending" || (card.message.expires_at && Date.parse(card.message.expires_at) <= Date.now())) return;
+          if (card.conflict) {
+            card.conflict = false;
+            $("[data-error]", el).textContent = "Permission changed. Review the current action details, then choose again.";
+            return;
+          }
           const original = card.message, form = event.currentTarget, error = $("[data-error]", el);
           const outcome = event.submitter?.value, answer = $("textarea", form)?.value.trim() || null;
           const choice = $("input:checked", form)?.value || null;
@@ -107,6 +112,7 @@ export function mountMailbox(box, o) {
           } catch (e) {
             error.textContent = e.message;
             $("fieldset", form).disabled = e.status === 409;
+            if (e.status === 409) { card.conflict = true; card.blockedVersion = original.version; }
             if (e.status === 409 && /answered elsewhere/i.test(e.message)) {
               card.message = { ...original, state: "resolved" }; card.elsewhere = true;
               $("[data-resolution]", el).textContent = resolvedLabel(false);
@@ -118,10 +124,18 @@ export function mountMailbox(box, o) {
       }
       // A poll started before our successful reply must not re-enable the form.
       const current = (card.reply || card.elsewhere) && m.state === "pending" ? { ...m, state: "resolved" } : m;
+      if (m.version < card.message.version) continue;
+      if (m.payload?.action_hash !== card.message.payload?.action_hash || JSON.stringify(m.payload?.arguments) !== JSON.stringify(card.message.payload?.arguments)) {
+        card.conflict = true;
+        $("[data-error]", card.el).textContent = "Permission changed. Review the current action details, then choose again.";
+      }
+      const actionScope = $("[data-action-scope]", card.el);
+      if (actionScope) actionScope.textContent = JSON.stringify({ action_hash: m.payload?.action_hash, action: m.payload?.action, target: m.payload?.target, arguments: m.payload?.arguments }, null, 2);
       card.message = current;
       const expired = m.expires_at && Date.parse(m.expires_at) <= Date.now();
       const pending = pendingMail(current);
-      $("fieldset", card.el).disabled = !pending || Boolean(card.sending);
+      $("fieldset", card.el).disabled = !pending || Boolean(card.sending) || (card.blockedVersion != null && m.version <= card.blockedVersion);
+      if (!pending && card.el.contains(document.activeElement)) { $("[data-resolution]", card.el).tabIndex = -1; $("[data-resolution]", card.el).focus({ preventScroll: true }); }
       if (!pending && m.kind !== "info") {
         const reply = snapshot.messages.find((r) => r.reply_to === m.id) || card.reply;
         $("[data-resolution]", card.el).textContent = current.state === "resolved" ? `${resolvedLabel(card.reply)}${reply ? `: ${reply.payload.outcome === "answer" ? reply.payload.answer || reply.payload.choice_id : reply.payload.outcome === "approve" ? "Approved once" : "Denied"}` : ""}; agent will read it at its next checkpoint.` : expired ? "Expired" : current.state;

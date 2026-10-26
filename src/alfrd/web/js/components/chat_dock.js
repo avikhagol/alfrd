@@ -10,18 +10,31 @@ import { mountComposerDraft } from "./composer_draft.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
-import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, staleState, statusInfo, tokenLine, presentMessage } from "../data/chat.js";
+import { messageHtml as sharedMessageHtml } from "./chat_message.js";
+import { chatSheet, conversationStarter } from "../data/chat_sessions.js";
+import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, staleState, statusInfo, tokenLine, createRequestStop } from "../data/chat.js";
 
 const SESSION_KEY = "ui:chat.session"; // shared with the Chat page: the dock follows the session you last opened
 const MIN = 300, MAX = 720;
 const D = { project: null, sessions: null, sid: null, data: null, error: "", sendError: "", gen: 0, key: "", notes: [] };
 let el = null, ctxRef = null, opts = {}, timer = 0, clock = 0, slow = 0, composer = null, draft = null, cssReady = null, act = null;
+let sheet = null;
+const syncSheet = () => {
+  const modal = el && !el.hidden && window.innerWidth <= 900;
+  if (modal && !sheet) sheet = chatSheet(el, () => opts.onClose?.());
+  else if (!modal && sheet) { sheet(); sheet = null; }
+  if (el && !modal) el.setAttribute("role", "complementary");
+};
+window.addEventListener("resize", syncSheet);
+const stop = createRequestStop({ state: () => D.data, context: () => ({ project: D.project, sid: D.sid }),
+  cancel: (row, ctx, task) => server.mutate(`/studio/projects/${encodeURIComponent(ctx.project)}/chat/sessions/${encodeURIComponent(ctx.sid)}/tasks/${encodeURIComponent(row)}/cancel`, { expected_status: task.status, ...(task.units?.at(-1) ? { expected_unit: task.units.at(-1) } : {}) }),
+  refresh: loadSession, changed: () => composer?.refresh(), report: (text, tone) => ctxRef.toast(text, tone) });
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 
 async function get(url) {
   const res = await server.request(url, { headers: { Accept: "application/json" } });
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(body?.error?.message || `${res.status} ${res.statusText}`);
+  if (!res.ok) { const e = new Error(body?.error?.message || `${res.status} ${res.statusText}`); e.status = res.status; throw e; }
   return body;
 }
 
@@ -58,7 +71,7 @@ export async function render(host, ctx, o = {}) {
   const wasHidden = host.hidden;
   host.hidden = false;
   if (wasHidden) { loadSessions(); if (D.sid) loadSession(); act?.kick(); }
-  draw();
+  draw(); syncSheet();
   if (!clock) clock = setInterval(() => { if (!el?.hidden) drawProgress(); }, 1000);
   if (!slow) slow = setInterval(() => { // only when live updates are off; the event stream is faster
     const live = ["live", "polling"].includes(ctxRef?.state.liveStatus?.state);
@@ -68,6 +81,7 @@ export async function render(host, ctx, o = {}) {
 }
 
 export function hide() {
+  sheet?.(); sheet = null;
   if (el) el.hidden = true;
   clearInterval(clock); clearInterval(slow); clock = slow = 0;
   act?.stop();
@@ -89,22 +103,25 @@ function mount(host, p) {
   host.setAttribute("aria-labelledby", "cd-title");
   host.innerHTML = `<div class="cd-grip" role="separator" aria-orientation="vertical" aria-label="Resize the chat dock" tabindex="0" aria-valuemin="${MIN}" aria-valuemax="${MAX}"></div>
     <header class="cd-head"><h2 id="cd-title" tabindex="-1">${icon("chat")} Chat</h2>
-      <label class="sr-only" for="cd-session">Session</label><select id="cd-session" class="input sm"></select>
+
       <span class="grow"></span>
       <a class="btn sm" id="cd-full" href="#/chat" title="Open the full Chat page: task graph, decisions, sessions">Open full</a>
       <button type="button" class="icon-btn sm" data-cd="close" aria-label="Close the chat dock" aria-keyshortcuts="Alt+Shift+A" title="Close (Alt+Shift+A)">${icon("close")}</button></header>
+    <div class="cd-session-row"><label class="sr-only" for="cd-session">Session</label><select id="cd-session" class="input sm"></select><button type="button" class="btn sm" data-cd="new">${icon("plus")} New</button></div>
     <p class="cd-progress small" id="cd-progress" aria-live="off"></p>
     <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
+    <p class="chat-stop-status muted small" role="status"></p>
     ${composerHtml("cd", { rows: 2, hint: false, attachments: true })}`;
   act = mountTranscript($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid),
     select: () => { $("#cd-full", el)?.click(); },
     openLog: (rel) => openLog(ctxRef, D.project, rel), cancel: cancelRow });
   draft = mountComposerDraft(host, "cd", { settings: () => D.data?.settings, onError: (m) => { D.sendError = m; $("#cd-send-error", host).textContent = m; } });
-  composer = bindComposer(host, "cd", { agents, orchestrator: () => D.data?.settings?.orchestrator, send, where: "dock", onCommand: command,
+  composer = bindComposer(host, "cd", { agents, orchestrator: () => D.data?.settings?.orchestrator, send, stopState: stop.state, onStop: stop.stop, where: "dock", onCommand: command,
     onError: (m) => { D.sendError = m; draw(); },
     onDraft: (text) => { draft.edit(text); if (D.sendError) { D.sendError = ""; $("#cd-send-error", el).textContent = ""; } } });
   host.addEventListener("click", onClick);
+  $("#cd-full", host).addEventListener("click", () => opts.onClose?.());
   host.addEventListener("keydown", onKey); // named handlers: a re-mount on the same host doesn't add a second copy
   $("#cd-session", host).addEventListener("change", (e) => openSession(e.target.value));
   grip($(".cd-grip", host));
@@ -147,7 +164,7 @@ async function loadSessions() {
     if (p !== D.project) return;
     D.sessions = sessions;
     const remembered = (storage.get(SESSION_KEY, {}) || {})[p];
-    const want = sessions.some((s) => s.id === remembered) ? remembered : D.sid && sessions.some((s) => s.id === D.sid) ? D.sid : sessions[0]?.id || null;
+    const want = sessions.some((s) => s.id === remembered) ? remembered : D.sid ? D.sid : sessions[0]?.id || null;
     if (want !== D.sid) openSession(want, { remember: false });
   } catch (error) { if (p === D.project) D.error = error.message; }
   draw();
@@ -155,16 +172,19 @@ async function loadSessions() {
 
 async function loadSession() {
   const p = D.project, sid = D.sid, gen = ++D.gen;
-  if (!sid) return;
+  if (!sid) return false;
+  let accepted = false;
   try {
     const data = await get(`${base(p)}/sessions/${encodeURIComponent(sid)}?messages=200`);
-    if (gen !== D.gen || p !== D.project || sid !== D.sid) return;
-    if (staleState(D.data, data)) return;
+    if (gen !== D.gen || p !== D.project || sid !== D.sid) return false;
+    if (staleState(D.data, data)) return false;
     const was = hasActivity(D.data);
     D.data = data; D.error = "";
+    accepted = true;
     if (hasActivity(data) && !was) act?.kick();
-  } catch (error) { if (gen === D.gen) D.error = error.message; }
+  } catch (error) { if (gen === D.gen) D.error = error.status === 404 ? "This session is no longer available. Refresh sessions or start a New session." : `Couldn’t load this conversation. ${error.message}`; }
   draw();
+  return accepted;
 }
 
 function openSession(sid, { remember = true } = {}) {
@@ -194,26 +214,23 @@ function draw() {
   drawProgress();
   draft?.select(D.project, D.sid);
   $("#cd-send-error", el).textContent = D.sendError || "";
+  composer?.refresh();
+  $(".chat-stop-status", el).textContent = stop.state().reason || "";
 }
 
 function drawLog() {
   const box = $("#cd-log", el);
-  if (D.data) { act?.update(D.data, D.notes.filter((n) => n.sid === D.sid)); return; }
+  box.setAttribute("aria-busy", String(Boolean(!D.data && !D.error && (!D.sessions || D.sid))));
+  if (D.data) { act?.update(D.data, D.notes.filter((n) => n.sid === D.sid)); conversationStarter(box); return; }
   if (D.error) box.innerHTML = `<p class="callout fail small" role="alert">${esc(D.error)} <button type="button" class="btn sm" data-cd="refresh">Retry</button></p>`;
-  else if (D.sessions && !D.sessions.length) box.innerHTML = `<div class="empty small"><p>No chat session yet.</p><button type="button" class="btn sm primary" data-cd="new">New session</button></div>`;
-  else box.innerHTML = `<p class="muted small" role="status">Loading the session…</p>`;
+  else if (D.sessions && !D.sessions.length) box.innerHTML = `<div class="empty small"><p>Start a conversation with your agents.</p><button type="button" class="btn sm primary" data-cd="new">New session</button></div>`;
+  else box.innerHTML = `<p class="muted small" role="status">Loading conversation…</p>`;
 }
 
 function messageHtml(original) {
-  const m = presentMessage(original, D.data?.tasks?.find((t) => t.row === original.task));
-  const who = m.role === "user" ? "You" : m.role === "system" ? m.identity : m.task ? `${agentName(m.agent)} · ${D.data?.tasks?.find((t) => t.row === m.task)?.task?.title || "Task result"}` : agentName(m.agent || "alfrd");
-  const t = m.task && D.data?.tasks?.find((x) => x.row === m.task);
-  const l = t?.logs?.[t.logs.length - 1], log = l?.log;
-  return `<article class="chat-msg chat-${esc(m.role)}${m.kind ? ` chat-${esc(m.kind)}` : ""}" aria-label="${esc(who)}">
-    <header><b class="small">${esc(who)}</b><time class="muted small" datetime="${esc(m.at)}">${esc(String(m.at || "").slice(11, 16))}</time></header>
-    <div class="chat-text">${esc(m.text)}</div>${m.technical ? `<details><summary class="small">Technical details</summary><pre class="log chat-pre">${esc(m.technical)}</pre></details>` : ""}
-    ${m.artifacts?.length ? `<p class="muted small mono cd-arts">${m.artifacts.filter((r) => !String(r).includes("/handoffs/")).map((r) => esc(String(r).split("@")[0])).join(" · ")}</p>` : ""}
-    ${log ? `<button type="button" class="btn sm link" data-cd-log="${esc(log)}">${icon("log")} Open log</button>` : ""}${l?.handoff ? `<button type="button" class="btn sm link" data-cd-log="${esc(`${l.handoff}/response.md`)}">${icon("file")} Reply</button>` : ""}</article>`;
+  const t = original.task && D.data?.tasks?.find((x) => x.row === original.task), l = t?.logs?.at(-1);
+  const controls = `${l?.log ? `<button type="button" class="btn sm link" data-cd-log="${esc(l.log)}">${icon("log")} Open log</button>` : ""}${l?.handoff ? `<button type="button" class="btn sm link" data-cd-log="${esc(`${l.handoff}/response.md`)}">${icon("file")} Reply</button>` : ""}`;
+  return sharedMessageHtml(original, { agentName, orchestrator: D.data?.settings?.orchestrator, agents: agents(), compact: true }).replace("</article>", `${controls}</article>`);
 }
 
 function drawProgress() {
@@ -250,12 +267,23 @@ async function send() {
 
 async function onClick(e) {
   const b = e.target.closest("button, a[data-cd-log]");
+  if (b?.dataset.artifact) { viewArtifact(b.dataset.artifact); return; }
   if (!b) return;
   if (b.dataset.cdLog) { openLog(ctxRef, D.project, b.dataset.cdLog); return; }
+  if (b.dataset.chatPrompt) { composer.input.value = b.dataset.chatPrompt; draft.edit(composer.input.value); composer.refresh(); composer.input.focus(); return; }
   const a = b.dataset.cd;
   if (a === "close") opts.onClose?.();
   else if (a === "refresh") { D.error = ""; loadSessions(); loadSession(); }
   else if (a === "new") newSession();
+}
+
+async function viewArtifact(ref) {
+  const project = D.project, sid = D.sid;
+  try {
+    const page = await get(`${base(project)}/sessions/${encodeURIComponent(sid)}/artifacts?${new URLSearchParams({ ref, offset: 0 })}`);
+    const { openFull } = await import("./logview.js");
+    await openFull(ctxRef, page.path, page.content, page.eof ? ref : `${ref} · Partial text; Open full Chat for more`, null);
+  } catch (error) { ctxRef.toast(`Artifact: ${error.message}`, "fail"); }
 }
 
 async function newSession() {

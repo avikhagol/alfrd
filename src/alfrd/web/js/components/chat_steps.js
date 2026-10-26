@@ -1,8 +1,12 @@
 import { esc } from "../utils/dom.js";
 import { stepLabel } from "../data/chat_steps.js";
 
-export function stepsHtml(steps, request) {
-  return steps.map((s) => `<span>${esc(stepLabel(s))}</span>${s.status === "waiting" ? [...new Set(s.waiting_on || [])].map((id) => `<button type="button" class="btn sm link" data-mail-jump="${esc(id)}" data-mail-request="${esc(request)}" aria-label="${esc(stepLabel(s))}: open message ${esc(id)}">Message ${esc(id)}</button>`).join("") : ""}`).join(" · ");
+export function stepsHtml(steps, request, messages = []) {
+  return steps.map((s) => `<span>${esc(stepLabel(s))}</span>${s.status === "waiting" ? [...new Set(s.waiting_on || [])].map((id) => {
+    const message = (messages || []).find((m) => (m.mailbox_message_id || m.id) === id);
+    const label = ["permission", "permission_request"].includes(message?.kind) ? "Review permission" : message ? "Open question" : "Open message";
+    return `<button type="button" class="btn sm link" data-mail-jump="${esc(id)}" data-mail-request="${esc(request)}" aria-label="${esc(stepLabel(s))}: ${label.toLowerCase()} ${esc(id)}">${label} · Message ${esc(id)}</button>`;
+  }).join("") : ""}`).join(" · ");
 }
 
 // Open only on deliberate navigation; later polls never steal focus.

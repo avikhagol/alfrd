@@ -35,10 +35,10 @@ function decodeImage(file) {
 export function attachmentTrayHtml(id) {
   return `<section class="attach-tray" id="${esc(id)}-attachments" aria-label="Attachments">
     <div class="attach-chips" data-attach-chips aria-live="polite"></div>
-    <div class="attach-actions"><label class="btn sm" for="${esc(id)}-file">${icon("paperclip")} Add image</label>
+    <div class="attach-actions"><label class="btn sm" for="${esc(id)}-file">${icon("paperclip")} Attach images</label>
       <input id="${esc(id)}-file" type="file" accept="image/png,image/jpeg,image/webp" multiple class="sr-only">
       <span class="muted small" data-attach-hint>Images are resized to 2000 px and cleaned of metadata.</span></div>
-    <p class="fail small" data-attach-reason role="status"></p>
+    <p class="fail small chat-composer-note" data-attach-reason role="status"></p>
   </section>`;
 }
 

@@ -316,10 +316,17 @@ in [orchestration.md](orchestration.md).
   `.alfrd/chat/` and its plan in `.alfrd/plans/chat-<id>/` (messages, tasks, logs, mailbox) for good; it
   is refused while a request is still active, so cancel its tasks first. The sidebar button next to
   **New** folds the list away (remembered in this browser); **Chats** in the header brings it back. On a
-  phone **Chats** opens the list as an overlay.
+  phone **Chats** opens a modal list with trapped focus; Escape returns to Chats. **Search sessions**
+  filters local title, ID and available preview, together with **Needs me**, without changing the
+  selected conversation or its draft. Failed renames keep the typed name for another save.
 - **Composer:** Enter sends, Shift+Enter adds a line. A message that starts with `@agent` goes
   straight to that agent (no orchestrator call); typing `@` at the start lists the configured agents
-  with their labels and roles (arrows, Enter or Tab to pick, Esc to close). Global shortcuts stay off
+  with their labels and roles (arrows, Enter or Tab inserts a hint; submit again to execute a slash
+  command; Esc closes hints first). IME composition never sends. The input grows with the draft.
+  Send stays separate from **Stop request** while work runs. Stop confirms a concrete request and
+  task list, keeps completed work and draft text, and reports partial failures; **Retry Stop** only
+  retries that list. Each cancellation requires a fresh conversation snapshot; a failed refresh
+  leaves the task untouched for retry. During planning it explains when no task can yet be stopped. Global shortcuts stay off
   while you type. A leading `/` opens the commands: `/setup` (who does what, with which model:
   orchestrator and escalation models, role → agent, model, fallback agent, availability, and **New agent**:
   a Codex / Claude Code / Antigravity agent with its own model, e.g. `@luna` on Codex `gpt-5.6-luna`, or a
@@ -344,8 +351,11 @@ in [orchestration.md](orchestration.md).
   amber at 80 % and red at the limit), tokens and orchestrator calls, plus the session totals. Cost
   shows "—" for agents whose CLI does not report it.
 - **Updates** arrive through the live event stream (the badge says *Live* or *Disconnected*);
-  nothing polls while it works. With live updates off, an active request is re-read every 15 s and
-  the refresh button re-reads it at once.
+  visible recorded activity still polls at a bounded 2 s cadence. Mailbox polls every 2 s while
+  active/pending, otherwise every 10 s; hidden views pause. With live updates off, an active request
+  is also re-read every 15 s. Refresh re-reads it at once. Inline questions and permissions preserve
+  unsent answers across updates. **Action details** exposes exact supplied arguments and action hash
+  beside Approve once / Deny. Replies use server versions; changed permissions require review again.
 
 ### Chat dock
 
@@ -354,10 +364,10 @@ dock on the right of every project view: Workflow, Results, Overview, Schedule, 
 the session you last opened (a selector switches or starts one), its transcript, the composer (same
 `@agent` completion; Enter sends, Shift+Enter adds a line) and one progress line for the active
 request: tasks done, cost against the bound, elapsed time, tokens and warning badges. **Open full**
-goes to the Chat page (graph, decisions, sessions). Open or closed and the width (drag its left edge,
+closes the dock and opens the same session on the Chat page (graph, decisions, sessions), preserving its draft. Open or closed and the width (drag its left edge,
 or arrow keys on it) are remembered in this browser. In compact workflow mode the dock stays hidden
 unless you open it by hand. Windows 900 px wide or narrower show it as an overlay on top of the view
-(Esc or the close button returns). It loads on the first open, updates from the same live event stream
+(Escape or Close returns focus to the invoker; the background is inert and Tab stays inside). It loads on the first open, updates from the same live event stream
 as the Chat page, and is a labelled landmark (`aria-expanded` on its button).
 
 Each chat session is also a run: Workflow → Runs lists it under *Chat sessions* (tasks × agents grid,

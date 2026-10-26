@@ -1,0 +1,48 @@
+/* Shell and decisions only; message, activity and composer styles have separate owners. */
+.chat.chat { box-sizing: border-box; min-width: 0; gap: 16px; }
+.chat .chat-main, .chat .chat-sessions, .chat .chat-side { min-width: 0; }
+.chat .chat-sessions { gap: 8px; }
+.chat .chat-close-sessions { display: none; }
+.chat .chat-search, .chat-dock .cd-session-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-search .input, .cd-session-row select { flex: 1; min-width: 0; width: 0; }
+.chat #chat-session-count { margin: 0; }
+.chat .chat-list { overscroll-behavior: contain; }
+.chat .chat-session b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.chat .chat-session.on { border-color: var(--chat-action); }
+.chat .chat-rename { flex-wrap: wrap; }
+.chat .chat-rename [role=alert] { width: 100%; margin: 0; color: var(--chat-error); }
+.chat .chat-head { gap: 4px; flex: none; }
+.chat .chat-stop-status:empty, .chat-dock .chat-stop-status:empty { display: none; }
+.chat .chat-stop-status, .chat-dock .chat-stop-status { margin: 0; flex: none; }
+.chat .chat-head-title, .chat .chat-head-status { display: flex; width: 100%; align-items: center; gap: 8px; min-width: 0; }
+.chat .chat-head-title > button, .chat .chat-head-status > button { flex: none; }
+.chat #chat-check-status { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat .chat-head h3 { flex: 1; min-width: 0; }
+.chat .chat-head .chat-wide { flex-basis: auto; }
+.chat-dock.chat-dock { box-sizing: border-box; min-height: 0; }
+.chat-dock .cd-head { flex: none; flex-wrap: nowrap; gap: 8px; }
+.chat-dock .cd-head h2 { min-width: 0; overflow-wrap: anywhere; }
+.chat-dock .cd-session-row { flex: none; }
+.chat-dock .cd-progress { flex: none; height: auto; max-height: none; overflow: visible; overflow-wrap: anywhere; }
+.chat-dock .cd-progress > * { min-width: 0; max-width: 100%; white-space: normal; }
+.chat-dock .cd-grip:focus-visible { opacity: 1; outline: 2px solid var(--chat-focus); outline-offset: 2px; }
+.chat .chat-mail-card, .chat-dock .chat-mail-card { padding: 16px; border: 1px solid var(--chat-warning-border); border-radius: var(--chat-radius-card); background: var(--chat-surface); overflow-wrap: anywhere; }
+.chat-mail-card + .chat-mail-card { margin-top: 12px; }
+.chat-mail-card fieldset { min-width: 0; border: 0; padding: 0; margin: 12px 0 0; }
+.chat-mail-card .chat-action-details { margin-block: 12px; }
+.chat-mail-card .chat-action-details pre { overflow: auto; max-height: 240px; white-space: pre; font: var(--chat-code-size)/var(--chat-code-leading) var(--chat-mono); background: var(--chat-code-bg); padding: 12px; }
+.chat-mail-card summary { cursor: pointer; }
+.chat-mail-card [data-error]:empty, .chat-mail-card [data-resolution]:empty, .chat-mailbox > p:empty { display: none; }
+@media (max-width: 900px) {
+  .chat .chat-close-sessions { display: inline-flex; }
+  .chat .chat-sessions { max-height: calc(100% - 24px); }
+  .chat .chat-head button, .chat .chat-sessions button, .chat-dock .cd-head .btn, .chat-dock .cd-head button, .chat-dock .cd-session-row > *, .chat-mail-card button, .chat-mail-card summary { min-height: 44px; }
+  .chat .chat-sessions .icon-btn, .chat-dock .cd-head .icon-btn { min-width: 44px; }
+  .chat .chat-session-item .chat-session { padding-right: 104px; }
+  .chat .chat-session-acts { opacity: 1; }
+  .chat-dock.chat-dock { max-height: 100%; width: min(100%, 440px); }
+}
+@media (max-width: 640px) {
+  .chat .chat-sessions { inset: 8px; width: auto; max-height: none; }
+  .chat-dock.chat-dock { inset: 8px; width: auto; }
+}

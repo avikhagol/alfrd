@@ -1,0 +1,117 @@
+/* Custom themes inherit their shell palette; built-in identity/execution slots follow below. */
+.chat, .chat-dock {
+  --chat-bg: var(--bg, #090D16);
+  --chat-surface: var(--surface, #0F1523);
+  --chat-surface-2: var(--surface-2, #161E31);
+  --chat-code-bg: var(--console-bg, var(--surface-2, #06090F));
+  --chat-hover: var(--subtle, #1E293B);
+  --chat-border: var(--border, #334155);
+  --chat-border-strong: var(--border-strong, #64748B);
+  --chat-text: var(--text, #F8FAFC);
+  --chat-text-2: var(--text-2, #C3CEDD);
+  --chat-muted: var(--text-3, var(--muted, #A6B3C6));
+  --chat-live: var(--run-text, var(--accent-text, #4CD7F6));
+  --chat-live-bg: var(--run-bg, var(--accent-bg, #083344));
+  --chat-action: var(--accent-control, var(--accent, #5B5EE6));
+  --chat-on-action: var(--on-accent, #F8FAFC);
+  --chat-agent-orchestrator: var(--accent-text, #B6B9FF);
+  --chat-agent-purple: var(--accent-text, #C084FC);
+  --chat-agent-sky: var(--accent-text, #38BDF8);
+  --chat-success: var(--ok-text, #51E0B3);
+  --chat-warning: var(--warn-text, #FBC66A);
+  --chat-error: var(--fail-text, #FF9B9B);
+  --chat-success-bg: var(--ok-bg, var(--subtle, #1E293B));
+  --chat-success-border: var(--ok-border, var(--border-strong, #64748B));
+  --chat-warning-bg: var(--warn-bg, var(--subtle, #1E293B));
+  --chat-warning-border: var(--warn-border, var(--border-strong, #64748B));
+  --chat-error-bg: var(--fail-bg, var(--subtle, #1E293B));
+  --chat-error-border: var(--fail-border, var(--border-strong, #64748B));
+  --chat-focus: var(--focus, var(--accent-text, #A5B4FC));
+  --chat-sans: var(--sans, system-ui, sans-serif);
+  --chat-mono: var(--mono, ui-monospace, monospace);
+  --chat-title-size: 20px;
+  --chat-title-leading: 28px;
+  --chat-heading-size: 16px;
+  --chat-heading-leading: 22px;
+  --chat-body-size: 14px;
+  --chat-body-leading: 20px;
+  --chat-control-size: 13px;
+  --chat-control-leading: 18px;
+  --chat-meta-size: 12px;
+  --chat-meta-leading: 16px;
+  --chat-code-size: 12.5px;
+  --chat-code-leading: 18px;
+  --chat-space-1: 4px;
+  --chat-space-2: 6px;
+  --chat-space-3: 8px;
+  --chat-space-4: 12px;
+  --chat-space-5: 16px;
+  --chat-space-6: 24px;
+  --chat-radius-sm: 4px;
+  --chat-radius-control: 6px;
+  --chat-radius-card: 8px;
+  --chat-radius-composer: 12px;
+  --chat-radius-pill: 9999px;
+  color: var(--chat-text);
+  font: var(--chat-body-size)/var(--chat-body-leading) var(--chat-sans);
+}
+[data-theme="obsidian-orbit"] :is(.chat, .chat-dock) {
+  --chat-live: #4CD7F6;
+  --chat-live-bg: #083344;
+  --chat-agent-purple: #C084FC;
+  --chat-agent-sky: #38BDF8;
+}
+[data-theme="daylight-orbit"] :is(.chat, .chat-dock) {
+  --chat-live: #00687A;
+  --chat-live-bg: #E0F7FA;
+  --chat-agent-purple: #7E22CE;
+  --chat-agent-sky: #0369A1;
+}
+:is(.chat, .chat-dock) .small {
+  font-size: var(--chat-meta-size);
+  line-height: var(--chat-meta-leading);
+}
+:is(.chat, .chat-dock) :is(pre, code, .mono) {
+  font-family: var(--chat-mono);
+  font-size: var(--chat-code-size);
+  line-height: var(--chat-code-leading);
+  font-variant-numeric: tabular-nums;
+}
+/* Decorative dividers stay faint; keyboard focus supplies an essential boundary. */
+:is(.chat, .chat-dock) :focus-visible {
+  outline: 2px solid var(--chat-focus);
+  outline-offset: 3px;
+}
+@media (forced-colors: active) {
+  .chat, .chat-dock {
+    --chat-bg: Canvas;
+    --chat-surface: Canvas;
+    --chat-surface-2: Canvas;
+    --chat-code-bg: Canvas;
+    --chat-hover: Canvas;
+    --chat-text: CanvasText;
+    --chat-text-2: CanvasText;
+    --chat-muted: CanvasText;
+    --chat-border: CanvasText;
+    --chat-border-strong: CanvasText;
+    --chat-action: Highlight;
+    --chat-on-action: HighlightText;
+    --chat-focus: Highlight;
+    --chat-agent-orchestrator: LinkText;
+    --chat-success: CanvasText;
+    --chat-warning: CanvasText;
+    --chat-error: CanvasText;
+    --chat-success-bg: Canvas;
+    --chat-warning-bg: Canvas;
+    --chat-error-bg: Canvas;
+    --chat-success-border: CanvasText;
+    --chat-warning-border: CanvasText;
+    --chat-error-border: CanvasText;
+  }
+  [data-theme] :is(.chat, .chat-dock), .chat, .chat-dock {
+    --chat-live: CanvasText;
+    --chat-live-bg: Canvas;
+    --chat-agent-purple: LinkText;
+    --chat-agent-sky: LinkText;
+  }
+}

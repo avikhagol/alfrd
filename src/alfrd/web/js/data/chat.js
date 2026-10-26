@@ -259,6 +259,44 @@ export function activeRequest(state) {
   return [...list].reverse().find((r) => REQUEST_ACTIVE.includes(r.status)) || list[list.length - 1] || null;
 }
 
+/** Host-owned Stop: freeze the confirmation set; retries never absorb new tasks. */
+export function createRequestStop({ state, context, cancel, refresh, changed = () => {}, report = () => {}, confirm = (text) => globalThis.confirm(text) }) {
+  let stopping = false, retry = null;
+  const eligible = (s, id) => (s?.tasks || []).filter((t) => t.request === id && canCancel(t));
+  const same = (a, b) => a.project === b.project && a.sid === b.sid;
+  const api = {
+    state() {
+      const req = activeRequest(state()), tasks = req && eligible(state(), req.id);
+      const visible = Boolean(req && REQUEST_ACTIVE.includes(req.status));
+      return { visible, disabled: stopping || !tasks?.length, label: stopping ? "Stopping…" : retry && same(retry, context()) && retry.request === req?.id ? "Retry Stop" : "Stop request",
+        reason: visible && !tasks?.length ? "Planning cannot be stopped yet" : "" };
+    },
+    async stop() {
+      if (stopping) return;
+      const req = activeRequest(state()), ctx = { ...context() };
+      if (!req || !REQUEST_ACTIVE.includes(req.status)) return;
+      const ids = retry && same(retry, ctx) && retry.request === req.id ? [...retry.ids] : eligible(state(), req.id).map((t) => t.row);
+      if (!ids.length) return;
+      stopping = true; changed();
+      let stopped = 0; const failed = [];
+      try {
+        if (!await confirm(`Cancel ${ids.length} queued or running tasks in request ${req.id}? Completed work is kept.\n\nTasks: ${ids.join(", ")}`)) return;
+        for (const id of ids) {
+          try {
+            const fresh = await refresh();
+            if (fresh === false || !same(ctx, context()) || !eligible(state(), req.id).some((t) => t.row === id)) { failed.push(id); continue; }
+            await cancel(id, ctx, eligible(state(), req.id).find((t) => t.row === id)); stopped++;
+          } catch { failed.push(id); }
+        }
+        retry = failed.length ? { ...ctx, request: req.id, ids: failed } : null;
+        report(`Stopped ${stopped} of ${ids.length} tasks.${failed.length ? ` ${failed.length} couldn't be stopped.` : ""}`, failed.length ? "warn" : "ok");
+        await refresh();
+      } finally { stopping = false; changed(); }
+    },
+  };
+  return api;
+}
+
 /** Progress and budget use of one request: task counts, cost and time against its bounds. */
 export function requestProgress(state, req, now = Date.now()) {
   if (!req) return null;

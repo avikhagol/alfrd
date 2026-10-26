@@ -7,5 +7,5 @@ export function currentSteps(request, row) {
 }
 export function stepLabel(s) {
   const kind = { plan: "Plan", execute: "Execute", repair: "Repair", replan: "Replan", summary: "Summary" }[s.kind] || s.kind;
-  return `${kind}${s.task_row ? ` ${s.task_row}` : ""}${s.attempt > 1 ? ` · attempt ${s.attempt}` : ""} · ${s.status}`;
+  return `${s.kind !== "execute" ? "Orchestrator · " : ""}${kind}${s.task_row ? ` ${s.task_row}` : ""}${s.attempt > 1 ? ` · attempt ${s.attempt}` : ""} · ${s.status}`;
 }

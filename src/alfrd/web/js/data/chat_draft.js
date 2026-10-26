@@ -24,13 +24,14 @@ export function sessionDraft(project, session) {
     sending: () => sending,
     read: () => value,
     busy: () => sending || [...chips.values()].some((c) => c.status === "uploading"),
+    failed: () => [...chips.values()].some((c) => c.status === "error"),
     sync() { value = { ...value, refs: [...chips.values()].filter((c) => c.status === "done" && c.ref).map((c) => c.ref) }; persist(); },
     finish() { sending = false; persist(); },
     error: () => storageError,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     edit(text, refs) { value = { ...value, text, refs: [...refs] }; persist(); },
     beginSend() {
-      if (model.busy()) return null;
+      if (model.busy() || model.failed()) return null; // failed files must be retried or removed first
       const text = value.text.trim(), attachments = [...value.refs];
       if (!text && !attachments.length) return null;
       const content = JSON.stringify({ text, attachments });
