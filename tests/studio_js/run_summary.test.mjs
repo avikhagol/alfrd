@@ -37,10 +37,10 @@ test("summary shows status, task count, duration and reported cost", () => {
   assert.equal(text, "Working · 1/2 tasks complete · 2m 5s · $0.123");
 });
 
-test("a recorded zero cost is shown, an absent cost is omitted", () => {
+test("a recorded zero cost is shown, an absent cost is explicitly not reported", () => {
   assert.match(summary({ requests: [req({ usage: { total_cost_usd: 0 } })], tasks: [] }).text, /\$0\.000$/);
-  assert.doesNotMatch(summary({ requests: [req()], tasks: [] }).text, /\$|—/);
-  assert.doesNotMatch(summary({ requests: [req({ usage: { total_cost_usd: null } })], tasks: [] }).text, /\$|—/);
+  assert.match(summary({ requests: [req()], tasks: [] }).text, /Cost — \/ Not reported$/);
+  assert.match(summary({ requests: [req({ usage: { total_cost_usd: null } })], tasks: [] }).text, /Cost — \/ Not reported$/);
 });
 
 test("a non-numeric cost is omitted, not shown as a dash", () => {
@@ -48,7 +48,7 @@ test("a non-numeric cost is omitted, not shown as a dash", () => {
 });
 
 test("legacy request without timestamps or task list omits those fields", () => {
-  assert.equal(summary({ requests: [{ id: "r", status: "done" }] }).text, "Run completed");
+  assert.equal(summary({ requests: [{ id: "r", status: "done" }] }).text, "Run completed · Cost — / Not reported");
 });
 
 test("empty state: no request yields an empty line, not placeholders", () => {
@@ -56,7 +56,7 @@ test("empty state: no request yields an empty line, not placeholders", () => {
 });
 
 test("an unparsable created time omits duration instead of showing a dash", () => {
-  assert.equal(summary({ requests: [{ id: "r", status: "done", created: "garbage" }] }).text, "Run completed");
+  assert.equal(summary({ requests: [{ id: "r", status: "done", created: "garbage" }] }).text, "Run completed · Cost — / Not reported");
 });
 
 test("activating the summary opens the inspector, falling back to the graph", () => {

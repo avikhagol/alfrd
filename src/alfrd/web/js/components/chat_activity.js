@@ -19,7 +19,7 @@ export function sanitizeHtml(html, p = purify) {
 }
 
 // One request's activity line and its single Details disclosure: the line says where the run is;
-// Details holds the attempt rows with their recorded output, team messages and raw protocol.
+// Details holds attempt output and raw protocol; team messages have a separate disclosure.
 // Pending decisions sit above Details (see decisionsHost), so they never need it opened.
 // Output is recorded public activity.
 export function mountActivity(box, o) {
@@ -35,7 +35,7 @@ export function mountActivity(box, o) {
     const active = ["planning", "running", "summarizing", "needs_decision"].includes(req?.status);
     if (!run) {
       box.hidden = false;
-      box.innerHTML = `<button type="button" class="btn sm link chat-run-head" aria-controls="chat-inspector" title="Open run inspector"></button><span class="small warn-t" role="status" data-run-warning></span><span class="small" data-current-steps></span><section class="chat-decisions" data-decisions></section><details data-usage><summary>Usage</summary><button type="button" class="btn sm link" data-usage-refresh>Refresh usage</button><div data-usage-counts></div></details><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div data-task-progress></div><div class="chat-run-rows"><div class="chat-islands"></div><section class="chat-orchestrator-steps" aria-label="Orchestrator steps"></section></div><section data-team-mailbox></section><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
+      box.innerHTML = `<button type="button" class="btn sm link chat-run-head" aria-controls="chat-inspector" title="Open run inspector"></button><span class="small warn-t" role="status" data-run-warning></span><span class="small" data-current-steps></span><section class="chat-decisions" data-decisions></section><details data-usage><summary>Usage</summary><button type="button" class="btn sm link" data-usage-refresh>Refresh usage</button><div data-usage-counts></div></details><section data-team-mailbox></section><details class="chat-details"><summary>Details</summary><p class="muted small" data-notice role="status"></p><div data-task-progress></div><div class="chat-run-rows"><div class="chat-islands"></div><section class="chat-orchestrator-steps" aria-label="Orchestrator steps"></section></div><section data-raw-protocol></section><button type="button" class="btn sm link" data-run-graph>View graph</button></details>`;
       run = $(".chat-details", box); usage = $("[data-usage]", box);
       usage.open = storage.get(pref("usage", rid()), false);
       usage.addEventListener("toggle", () => { storage.set(pref("usage", rid()), usage.open); draw(); subscription?.kick(); });
@@ -49,7 +49,7 @@ export function mountActivity(box, o) {
     const label = active ? req.status === "planning" ? "Planning the tasks" : req.status === "needs_decision" ? "Needs your answer" : "Working" : req?.status === "done" ? "Run completed" : statusInfo(req?.status).label;
     const started = Number(req?.created_ts) ? req.created_ts * 1000 : Date.parse(req?.created);
     const ended = req?.finished ? Date.parse(req.finished) : Date.now();
-    header.textContent = [req?.status ? label : "", p && Array.isArray(state().tasks) ? (progress.total ? `${progress.done}/${progress.total} tasks complete` : "Planning tasks…") : "",
+    header.textContent = !req ? "" : [req?.status ? label : "", p && Array.isArray(state().tasks) ? (progress.total ? `${progress.done}/${progress.total} tasks complete` : "Planning tasks…") : "",
       Number.isFinite(started) && Number.isFinite(ended) ? duration(Math.max(0, Math.round((ended - started) / 1000))) : "",
       (req?.usage?.total_cost_usd == null ? "Cost — / Not reported" : money(req.usage.total_cost_usd)), quietCounts(snapshot.telemetry?.requests?.[rid()] || req?.telemetry)].filter((s) => s && s !== "—").join(" · ");
     const warned = costWarnings(state(), rid());

@@ -354,7 +354,7 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 
 .ho-artifact p:empty { display: none; }
 .ho-markdown pre code { border: 0; padding: 0; background: none; }
-.plug-form .plug-field-bool { min-height: 32px; }
+.plug-form .plug-field-bool { min-height: 44px; }
 
 /* Workflow editor (components/workflow_editor.js) */
 .wf-info.wfe-on { flex-direction: column; align-items: stretch; gap: 10px; border-color: var(--accent-border); }

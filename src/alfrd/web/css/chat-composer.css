@@ -32,6 +32,9 @@
 :is(.chat, .chat-dock) .chat-composer .attach-chip { display: inline-flex; align-items: center; gap: var(--chat-space-2); max-width: 100%; padding: var(--chat-space-1) var(--chat-space-3);
   background: var(--chat-surface-2); border: 1px solid var(--chat-border); border-radius: var(--chat-radius-pill); font-size: var(--chat-meta-size); }
 :is(.chat, .chat-dock) .chat-composer .attach-error { border-color: var(--chat-error-border); background: var(--chat-error-bg); }
+:is(.chat, .chat-dock) .chat-composer .attach-error { flex-wrap: wrap; border-radius: var(--chat-radius-card); }
+:is(.chat, .chat-dock) .chat-composer .attach-error > span { flex: 1 1 100%; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:is(.chat, .chat-dock) .chat-composer .attach-error p { margin: 0; }
 :is(.chat, .chat-dock) .chat-composer .attach-actions { display: flex; align-items: center; gap: var(--chat-space-3); flex-wrap: wrap; }
 :is(.chat, .chat-dock) .chat-composer .attach-actions [data-attach-hint] { flex: 1 1 12rem; min-width: 0; font-size: var(--chat-meta-size); line-height: var(--chat-meta-leading); white-space: normal; }
 

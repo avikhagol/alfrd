@@ -2,8 +2,8 @@ import { mountActivity } from "./chat_activity.js";
 import { mountMailbox } from "./chat_mailbox.js";
 
 // A request's activity line in the transcript (transcript.js). Pending decisions (approvals and
-// questions from the mailbox) render inline under the line; Details, the request's one
-// disclosure, holds the attempt rows with their output, team messages and raw protocol.
+// questions from the mailbox) render inline under the line. The request's Details
+// holds attempt output and raw protocol; team messages have their own disclosure.
 // Mail is read for requests that are open (active, waiting on you, or the newest) and for any
 // whose Details the reader opens.
 export function mountRequestLine(node, o) {

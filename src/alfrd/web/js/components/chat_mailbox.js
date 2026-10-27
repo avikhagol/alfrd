@@ -48,7 +48,7 @@ export function mountMailbox(box, o) {
     if (card) { jumpId = null; revealMail(card); }
   }
   box.className = "chat-mailbox";
-  box.innerHTML = `<p class="muted small" role="status"></p><div data-mail-cards></div><section class="chat-team"><p class="small"><b data-team-title>Team messages</b></p><div></div></section>`;
+  box.innerHTML = `<p class="muted small" role="status"></p><div data-mail-cards></div><details class="chat-team"><summary data-team-title>Team messages</summary><div></div></details>`;
   status = $("p", box); list = $("[data-mail-cards]", box); team = $(".chat-team", box);
   const expand = (e) => {
     const button = e.target.closest("[data-mail-expand]");

@@ -18,6 +18,8 @@ test("identity remains keyed across order, status, deleted agents and surfaces",
   assert.equal(messageIdentity(message, { orchestrator: () => "worker" }).role, "Orchestrator");
   assert.equal(messageIdentity({ role: "system", agent: "provider" }).name, "ALFRD");
   assert.equal(messageIdentity({ role: "user" }).name, "You");
+  assert.equal(messageIdentity(message, { agents: { worker: { label: "GPT (Codex)" } } }).initials, "GC");
+  assert.equal(messageIdentity(message, { agents: { worker: { label: "Claude (Opus)" } } }).initials, "CO");
   assert.ok([...messageIdentity(message, { agents: { worker: { label: "ß ß" } } }).initials].length <= 2);
   for (const compact of [false, true]) {
     const html = messageHtml(message, { ...options, compact });

@@ -1,9 +1,10 @@
 """M2: event index, summary cache, 2,000-message benchmark and rebuild paths."""
 import json
 import time
+from copy import deepcopy
 
-from alfrd.mailbox import Mailbox, USER, canonical
-from test_agent_mailbox import AGENT, answer, box, question  # noqa: F401
+from alfrd.mailbox import Mailbox, MailboxError, USER, _validator, canonical, validate
+from test_agent_mailbox import AGENT, answer, box, permission, question  # noqa: F401
 from test_chat_orchestration import project  # noqa: F401
 
 COUNT = 2000
@@ -53,6 +54,38 @@ def test_summary_benchmark_2000_messages(box):
     assert cold < 10 * POLL_BUDGET, f"cold summary {cold:.3f}s"
     assert incremental < POLL_BUDGET, f"incremental summary {incremental:.3f}s"
     assert cached < 0.02, f"cached summary {cached:.3f}s"
+
+
+def test_specialized_validation_matches_complete_schema(box):
+    info = box.send(AGENT, question("info", kind="info", payload={}))["message"]
+    ask = box.send(AGENT, question("ask"))["message"]
+    permit = box.send(AGENT, permission())["message"]
+    reply = box.reply(ask["id"], USER, answer())["message"]
+    for version in ("v1", "v2"):
+        complete = _validator("agent_message", version)
+        for message in (info, ask, permit, reply):
+            original = {k: v for k, v in message.items() if k in complete.schema["properties"]}
+            original["protocol"] = f"alfrd.mailbox/{version[1:]}"
+            assert complete.is_valid(original)
+            variants = [original, {**original, "unknown": True}]
+            for field in original:
+                variants.extend([{k: v for k, v in original.items() if k != field}, {**original, field: None}])
+            for field, choices in {
+                "kind": ["info", "question", "permission_request", "reply", "unknown", {}],
+                "code": ["NTE", "ASK", "PRM", "REP", "OUT", "unknown", {}],
+                "payload": [{}, {"unexpected": True}],
+                "sender": [USER, {"kind": "agent"}, {"kind": "orchestrator", "agent_id": "codex"}],
+                "recipient": [USER, {"kind": "agent"}, {"kind": "orchestrator", "task_id": "a"}],
+            }.items():
+                variants.extend({**original, field: choice} for choice in choices)
+            for candidate in variants:
+                expected = complete.is_valid(candidate)
+                try:
+                    validate("agent_message", deepcopy(candidate))
+                    accepted = True
+                except MailboxError:
+                    accepted = False
+                assert accepted == expected, (version, message["kind"], candidate)
 
 
 def test_state_lookup_does_not_scan_events(box):

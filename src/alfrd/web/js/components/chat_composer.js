@@ -49,7 +49,6 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   const composing = (e) => e.isComposing || e.keyCode === 229;
   const route = () => {
     const text = input.value;
-    if (!text.trim()) return "";
     if (text[0] === "/") return "Command: runs here, not sent";
     const m = parseMention(text.trim(), agents());
     if (m?.error) return m.error;

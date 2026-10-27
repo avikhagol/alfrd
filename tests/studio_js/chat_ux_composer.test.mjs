@@ -77,9 +77,10 @@ test("unknown commands and mentions cannot dispatch; no /benchmark or /inspect",
 
 test("target hint names the recipient", () => {
   const m = mount();
+  assert.equal(m.el("#chat-target").textContent, "To orchestrator @claude");
   m.type("hi"); assert.equal(m.el("#chat-target").textContent, "To orchestrator @claude");
   m.type("@sonnet do it"); assert.equal(m.el("#chat-target").textContent, "To @sonnet directly");
-  m.type(""); assert.equal(m.el("#chat-target").textContent, "");
+  m.type(""); assert.equal(m.el("#chat-target").textContent, "To orchestrator @claude");
 });
 
 test("keyboard cannot bypass a disabled Send", () => {

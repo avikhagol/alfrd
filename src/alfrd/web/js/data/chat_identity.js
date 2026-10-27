@@ -13,7 +13,7 @@ export function messageIdentity(message, { agentName, orchestrator, agents = {} 
   const name = key === "you" ? "You" : key === "alfrd" ? "ALFRD" : config?.label || agentName?.(key) || key;
   const roles = config?.roles || [];
   const role = key === orchestrator ? "Orchestrator" : message.agent_role || config?.role || (Array.isArray(roles) ? roles.join(" · ") : roles);
-  const words = String(name).trim().split(/[\s_-]+/u);
+  const words = String(name).match(/[\p{L}\p{N}]+/gu) || [String(key)];
   const initials = [...(words.length > 1 ? [...words[0]][0] + [...words.at(-1)][0] : [...String(name)].slice(0, 2).join("")).toLocaleUpperCase()].slice(0, 2).join("");
   return { key, name, role, initials, slot: key === orchestrator ? "orchestrator" : identitySlot(key) };
 }

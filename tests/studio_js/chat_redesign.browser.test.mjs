@@ -99,9 +99,9 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       const row = active.locator('.chat-run-row').filter({ hasText: "Implement chat" });
       await row.locator('.chat-output > summary').click();
       await page.waitForFunction(() => document.querySelector('.chat-output[open] pre').textContent.includes('Public output'));
-      assert.equal(await row.locator('[data-cost]').innerText(), "—");
+      assert.equal(await row.locator('[data-cost]').innerText(), "— / Not reported");
       const pre = row.locator('.chat-act-tail');
-      await pre.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); });
+      await pre.evaluate((el) => { document.activeElement.blur(); el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); });
       await page.evaluate(() => { window.tailVersion = 2; window.dispatchEvent(new CustomEvent('alfrd-events', { detail: { project: 'p', events: [{ plan: 'chat-s' }] } })); });
       await page.waitForFunction(() => document.querySelector('.chat-output[open] pre').textContent.includes('Public output 2'));
       assert.equal(await pre.evaluate((el) => el.scrollTop), 0);
@@ -110,7 +110,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       assert.equal(await active.locator('.chat-mail-card').count(), 1);
       assert.equal(await active.locator('.chat-mail-card').isVisible(), true, 'pending cards are visible without opening anything');
       assert.equal(await page.locator('.chat-mail-card input:checked').count(), 0);
-      if (width <= 1280) await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+      await page.getByRole('button', { name: 'Inspect', exact: true }).click();
       assert.equal(await page.locator('#chat-progress').isVisible(), true);
       assert.equal(await page.locator('#chat-decisions').isVisible(), true);
       assert.match(await page.locator('[data-decision="d2"]').innerText(), /Blocked 2× with the same access[\s\S]*Grant this task access and re-run: \/srv\/site[\s\S]*Reassign this task to @codex/);
@@ -120,8 +120,8 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
         await active.getByRole('button', { name: 'View graph', exact: true }).click();
         await page.locator('#chat-gfull .node').first().waitFor();
         assert.equal(await page.locator('#chat-gfull .node').count(), 3, 'run graph filters to this request');
-        await page.locator('#chat-gfull .gv-canvas').press('ArrowRight');
-        await page.locator('#chat-gfull .gv-canvas').press('Enter');
+        await page.locator('#chat-gfull .node').first().focus();
+        await page.locator('#chat-gfull .node').first().press('Enter');
         assert.equal(await page.locator('#graph-modal').count(), 0);
         assert.equal(await page.locator('#chat-task').isVisible(), true);
         await page.locator('#chat-input').fill('An unsent follow-up');
@@ -136,7 +136,8 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
           for (const task of window.fixture.tasks.filter((t) => t.request === 'r2')) { task.status = 'done'; for (const log of task.logs) log.status = 'done'; }
           window.dispatchEvent(new CustomEvent('alfrd-events', { detail: { project: 'p', events: [{ plan: 'chat-s' }] } }));
         });
-        await page.waitForFunction(() => document.querySelector('[data-key="run:r2"] .chat-run').open === false);
+        await page.waitForFunction(() => document.querySelector('[data-key="run:r2"] .chat-run-head').textContent.includes('Run completed'));
+        assert.equal(await active.locator('.chat-details').getAttribute('open'), '', 'completion preserves open Details');
         await page.waitForFunction(() => document.querySelector('.chat-output[open] pre')?.textContent.includes('Public output 3'));
         assert.equal(await old.locator('details').last().getAttribute('open'), '', 'an opened disclosure survives updates');
       }
@@ -146,10 +147,12 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
   }
   for (const outcome of ["approve", "deny"]) await t.test(`mailbox ${outcome}: run placement, request and durable outcome`, async () => {
     const page = await open("daylight-orbit", 1024); t.after(() => page.close());
-    const run = page.locator('[data-key="run:r2"] .chat-run');
-    const team = run.locator('.chat-team');
+    const run = page.locator('[data-key="run:r2"] .chat-details');
+    const team = page.locator('[data-key="run:r2"] .chat-team');
+    await run.locator(':scope > summary').click();
     await team.waitFor();
-    assert.equal(await team.getAttribute('open'), null, 'team mail starts collapsed inside its run');
+    assert.equal(await run.getAttribute('open'), null, 'team disclosure is visible with activity Details closed');
+    assert.equal(await team.getAttribute('open'), null, 'team mail starts collapsed beside activity Details');
     assert.equal(await page.locator('[data-key="run:r1"] .chat-team:not([hidden])').count(), 0);
     await team.locator('summary').click();
     assert.match(await team.innerText(), /API ready/);
@@ -168,7 +171,6 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
     await page.waitForTimeout(220);
     assert.equal(await card.getByRole('button', { name: 'Approve once', exact: true }).isDisabled(), true);
     assert.match(await card.locator('[data-resolution]').innerText(), outcome === 'approve' ? /Approved once/ : /Denied/);
-    await run.locator(':scope > summary').click();
     assert.equal(await card.isVisible(), true, 'permission outcome remains visible with run collapsed');
   });
   await t.test("mailbox failure preserves draft and permits a changed retry", async () => {
@@ -191,7 +193,8 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
   await t.test("dock shares history, readable messages and expandable live output", async () => {
     const page = await open("daylight-orbit", 1024, true); t.after(() => page.close());
     assert.equal(await page.locator('#cd-log [data-key="run:r2"] .chat-run-row').count(), 3);
-    await page.locator('#cd-log .chat-output > summary').nth(1).click();
+    await page.locator('#cd-log [data-key="run:r2"] .chat-output > summary').first().click();
+    await page.evaluate(() => document.activeElement.blur());
     await page.waitForFunction(() => document.querySelector('#cd-log .chat-output[open] pre').textContent.includes('Public output'));
     await page.locator('.chat-mail-card').getByRole('button', { name: 'Deny', exact: true }).click();
     await page.waitForFunction(() => window.mutations.length > 0);

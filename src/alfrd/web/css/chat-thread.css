@@ -25,9 +25,10 @@
 :is(.chat, .chat-dock) .chat-markdown :is(th,td) { padding: var(--chat-space-2) var(--chat-space-3); border: 1px solid var(--chat-border); }
 :is(.chat, .chat-dock) .chat-msg :is(pre,code) { font: var(--chat-code-size)/var(--chat-code-leading) var(--chat-mono); }
 :is(.chat, .chat-dock) .chat-msg pre { white-space: pre; overflow: auto; max-width: 100%; padding: var(--chat-space-4); margin: 0; background: var(--chat-code-bg); color: var(--chat-text); }
+:is(.chat, .chat-dock) .chat-msg pre code { padding: 0; border: 0; background: transparent; color: inherit; }
 :is(.chat, .chat-dock) .chat-code { margin-block: var(--chat-space-4); border: 1px solid var(--chat-border); border-radius: var(--chat-radius-card); overflow: hidden; background: var(--chat-code-bg); }
 :is(.chat, .chat-dock) .chat-code-head { display: flex; align-items: center; justify-content: space-between; gap: var(--chat-space-3); padding: var(--chat-space-2) var(--chat-space-4); background: var(--chat-surface-2); font-size: var(--chat-meta-size); }
-:is(.chat, .chat-dock) .chat-copy-status { display: block; min-height: 32px; padding-inline: var(--chat-space-4); font-size: var(--chat-meta-size); color: var(--chat-muted); }
+:is(.chat, .chat-dock) .chat-copy-status { display: block; min-height: 32px; padding-inline: var(--chat-space-4); font-size: var(--chat-meta-size); line-height: var(--chat-meta-leading); color: var(--chat-muted); }
 :is(.chat, .chat-dock) .chat-new-activity { position: sticky; bottom: var(--chat-space-3); align-self: center; max-width: 100%; white-space: normal; background: var(--chat-surface); color: var(--chat-text); border-color: var(--chat-border-strong); }
 :is(.chat, .chat-dock) .chat-msg button, :is(.chat, .chat-dock) .chat-new-activity { min-height: 44px; }
 :is(.chat, .chat-dock) .chat-msg :is(button,pre,a,summary):focus-visible { outline: 2px solid var(--chat-focus); outline-offset: 2px; }

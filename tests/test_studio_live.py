@@ -324,7 +324,11 @@ def test_file_watcher_sees_runtime_db(tmp_path):
     assert w.check()["type"] == "runtime"
 
 
-def test_hub_runs_watchers_only_while_used(tree):
+def test_hub_runs_watchers_only_while_used(tree, monkeypatch):
+    # This test exercises background polling, subscriptions and leases. Keep
+    # its poll interval deterministic on slow filesystems; adaptive backoff is
+    # checked separately in test_watcher_versions_events_and_adapts.
+    monkeypatch.setattr("alfrd.studio_live.Watcher.next_delay", lambda self, now=None: self.interval)
     hub = LiveHub(lambda name: tree if name == "p" else None, interval=0.2, idle=0.2, lease=0.5)
     sub, hello = hub.subscribe(["p", "missing"])
     assert set(hello) == {"p"} and hello["p"]["version"] == 0
@@ -446,7 +450,7 @@ def test_full_scan_endpoint_reuses_discovery_for_initial_baseline(served, monkey
 
 
 def test_event_stream_hello_tree_and_ping(served):
-    _, client, name, tree = served
+    app, client, name, tree = served
     res = client.get("/api/studio/events", query_string={"projects": f"{name},not-in-scope"}, buffered=False)
     assert res.mimetype == "text/event-stream"
     chunks = iter(res.response)
@@ -456,6 +460,10 @@ def test_event_stream_hello_tree_and_ping(served):
     hello = json.loads(text.split("event: hello\ndata: ", 1)[1].split("\n\n", 1)[0])
     assert set(hello["state"]) == {name, "@runtime"}
     _bump(tree / META, "\n")
+    # Exercise SSE delivery without waiting for adaptive polling's slow-tree
+    # backoff (up to 60s). Studio writes use this same wakeup; background polling
+    # and its delay calculation are covered by the watcher/hub tests above.
+    app.extensions["alfrd_live"].poke(name)
     seen = ""
     deadline = time.time() + 5
     while "event: tree" not in seen and time.time() < deadline:

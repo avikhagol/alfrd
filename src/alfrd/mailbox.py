@@ -53,9 +53,33 @@ def action_hash(payload):
                                                for k in ("action", "target", "arguments", "scope")}).encode()).hexdigest()
 
 
-@lru_cache(maxsize=4)
-def _validator(name, version="v1"):
+def _specialize_discriminator(schema, field, selected, allowed):
+    if selected in allowed:
+        schema["properties"][field] = {"const": selected}
+        rules = []
+        for rule in schema.get("allOf", []):
+            branch = rule.get("if", {}).get("properties", {}).get(field, {}).get("const")
+            condition = {"properties": {field: {"const": branch}}}
+            if branch and rule.get("if") in (condition, {**condition, "required": [field]}) and set(rule) == {"if", "then"}:
+                if branch == selected:
+                    rules.append(rule["then"])
+            else:
+                rules.append(rule)
+        schema["allOf"] = rules
+
+
+@lru_cache(maxsize=128)
+def _validator(name, version="v1", kind=None, sender=None, recipient=None, actor=None, code=None):
     schema = json.loads((Path(__file__).parent / "schemas" / f"{name}.{version}.json").read_text())
+    # Compile known kind discriminators once during a cold JSONL replay.
+    # Every other constraint remains; each specialized schema binds its kind
+    # with const, so it cannot validate a different branch by mistake.
+    if name == "agent_message":
+        _specialize_discriminator(schema, "kind", kind, ("info", "question", "permission_request", "reply"))
+        _specialize_discriminator(schema, "code", code, schema["properties"].get("code", {}).get("enum", ()))
+    for field, selected in (("sender", sender), ("recipient", recipient), ("actor", actor)):
+        if field in schema.get("properties", {}):
+            _specialize_discriminator(schema["properties"][field], "kind", selected, ("agent", "user", "orchestrator"))
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
@@ -64,7 +88,12 @@ def validate(name, value):
     if protocol not in (PROTOCOL_V1, PROTOCOL):
         raise MailboxError("unsupported mailbox protocol")
     try:
-        _validator(name, "v2" if protocol == PROTOCOL else "v1").validate(value)
+        kind = value.get("kind")
+        actors = [value.get(field) for field in ("sender", "recipient", "actor")]
+        actor_kinds = [a.get("kind") if isinstance(a, dict) and isinstance(a.get("kind"), str) else None for a in actors]
+        code = value.get("code")
+        _validator(name, "v2" if protocol == PROTOCOL else "v1", kind if isinstance(kind, str) else None,
+                   *actor_kinds, code=code if isinstance(code, str) else None).validate(value)
     except ValidationError as exc:
         field = ".".join(str(part) for part in exc.absolute_path) or "<root>"
         kind = value.get("kind", name) if isinstance(value, dict) else name
