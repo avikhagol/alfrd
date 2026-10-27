@@ -21,6 +21,8 @@ EVENT_KINDS: frozenset[str] = frozenset({
     # chat orchestration (alfrd.chat): one session's plan carries these too
     "task.created", "task.started", "task.finished", "task.blocked",
     "decision.needed", "decision.resolved", "request.finished", "budget.exceeded",
+    # Durable chat notification projections (also recognized in route patterns).
+    "approval.needed", "permission.needed", "request.failed", "task.failed", "request.cancelled", "request.stopped",
     # a chat row hit a usage/rate/quota limit and moved to its owner's fallback agent
     "task.fallback", "task.reassigned", "task.access_granted", "task.stuck",
     # an agent wrote an expected output to another path (result "outputs_changed")

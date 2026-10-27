@@ -300,12 +300,15 @@ class AlfrdWatcher(Watcher):
 
     def probe(self):
         from alfrd import notify
+        from alfrd.chat_notifications import Changes
         from alfrd.runtime import scheduler
+        if not hasattr(self, "_chat_notifications"):
+            self._chat_notifications = Changes()
         if self._ref is None:
             self._ref = notify.project_ref(self.root)
         plans = scheduler.list_plans(self.root) + scheduler.chat_plans(self.root)
         active = {p["id"] for p in plans if p.get("status") in scheduler.ACTIVE}
-        out = []
+        out = self._chat_notifications.poll(self.root, self.key, baseline=self._snapshot is None)
         for plan in plans:
             ident = plan["id"]
             if ident not in active and ident not in self._tails:
@@ -342,6 +345,8 @@ class AlfrdWatcher(Watcher):
                     seq = number
                     brief = notify._brief(record, self._ref["identifier"])
                     brief.update(plan=ident, target=record.get("target"), project=self.key)
+                    if plan.get("chat"):
+                        brief["notification_suppressed"] = True  # retain activity for UI refreshes
                     out.append(brief)
                 self._tails[ident] = (inode, offset, seq)
             except OSError:

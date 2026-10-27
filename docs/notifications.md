@@ -6,6 +6,49 @@ ALFRD tells you when a plan needs you or is done: a review is pending, a turn
 failed or went quiet, the plan finished. The runner sends them itself, so
 **`alfrd serve` doesn't have to run**. An open Studio tab can show them too.
 
+## Chat requests and human decisions
+
+Chat notifications describe saved request, decision and mailbox state. An idle
+chat runner or a completed agent/orchestrator call does not mean the request
+finished. Studio live updates (SSE and polling) and the Telegram bot watcher
+also detect mailbox-only questions on idle chat plans.
+
+| Kind | Notification |
+| --- | --- |
+| `approval.needed` | Approval needed: action, description, target and the first 12 hash digits |
+| `decision.needed` | Your answer is needed: the pending ASK or human decision question |
+| `permission.needed` | Permission needed: question and required folders/commands |
+| `request.finished` | Request finished, only for terminal `done` with no pending mail/decisions or unfinished rows |
+| `request.failed`, `task.failed` | Terminal request/task failure, with its error |
+| `request.cancelled`, `request.stopped` | Explicit cancellation/stop; never called finished |
+
+Use these event kinds in route `on` lists (or `"*"`). Chat runner/attempt
+completion events are filtered before route delivery. Non-chat runs keep their
+existing event vocabulary. Browser native notifications still require the
+**Show browser notifications** preference and granted browser permission;
+attention toasts are sticky and use the configured route patterns. Native
+alerts include attention, terminal success and failure by default when enabled.
+Opening Studio establishes a baseline rather than replaying old alerts.
+
+Each mailbox message owns its notification identity, including linked blocker
+records. Unlinked decisions use their ID and creation stamp; terminal requests
+use status and finish stamp. Repeated polls do not resend them. Telegram stores
+identities across bot restarts, and shares a per-chat delivery ledger with core
+Telegram routes so both paths do not send the same decision twice. Historical
+terminal requests are baselined when the bot first watches a project. Failed
+network delivery remains eligible for retry on the next poll.
+
+Configure **Studio URL** in the Telegram plugin settings (or `studio_url` in a
+route) to include a phone-reachable chat link. Without a reachable base URL,
+Telegram omits the external link. The bot must be running to detect mailbox-only
+changes after the runner has stopped. Digest and mute settings apply to attention
+notifications too: digest holds them and mute discards them while Studio is active.
+
+Notifications have no approval buttons and never include the full action hash or
+arbitrary action arguments. The displayed hash prefix identifies the action only.
+Open chat to review and reply through the existing exact-hash, unexpired mailbox
+approval path. Permission grants continue to apply to the next agent launch.
+
 ## How it works
 
 Every plan event is appended to `.alfrd/plans/<id>/events.jsonl`, one JSON

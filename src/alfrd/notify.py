@@ -221,12 +221,13 @@ def _status(event: Mapping[str, Any]) -> str:
 
 
 def _brief(event: Mapping[str, Any], key: Any = None) -> dict[str, Any]:
-    """The fields a notification may carry. Never ``text`` or ``data`` (handoffs stay out of Part A)."""
+    """Explicit notification fields only: raw ``text``/``data`` and handoffs stay out."""
     return {
+        **({k: event[k] for k in ("notification_id", "title", "body", "session", "request") if k in event}),
         "seq": event.get("seq"), "at": event.get("at"), "kind": event.get("kind"),
         "unit": event.get("unit"), "turn": event.get("turn"), "turns": event.get("turns"),
         "agent": event.get("agent"), "status": _status(event),
-        "link": studio_link(key or event.get("project"), event.get("plan"), event.get("unit")),
+        "link": event.get("link") or studio_link(key or event.get("project"), event.get("plan"), event.get("unit")),
     }
 
 
@@ -248,6 +249,8 @@ def build_message(events: list[Mapping[str, Any]], *, skipped: int = 0, dropped:
     for event in events:
         counts[str(event.get("kind"))] = counts.get(str(event.get("kind")), 0) + 1
     title = ", ".join(_phrase(k, n) for k, n in counts.items())
+    if any(e.get("notification_id") for e in events):
+        title = ", ".join(dict.fromkeys(e.get("title") or str(e.get("kind")) for e in events))
     if target:
         title += f" in {target}"
     lines = []
@@ -258,7 +261,7 @@ def build_message(events: list[Mapping[str, Any]], *, skipped: int = 0, dropped:
             f"turn {event['turn']}/{event.get('turns') or '?'}" if event.get("turn") else "",
             f"({event['agent']})" if event.get("agent") else "",
         ) if x)
-        lines.append(part)
+        lines.append(str(event.get("body") or part))
     if skipped:
         lines.append(f"{skipped} older event(s) were not sent")
     if dropped:
@@ -269,7 +272,7 @@ def build_message(events: list[Mapping[str, Any]], *, skipped: int = 0, dropped:
         "schema": "alfrd.notification/1", "project": first.get("project"),
         "project_name": (project or {}).get("name"), "plan": first.get("plan"), "target": target, "title": title, "body": "\n".join(lines), "kinds": list(counts),
         "count": len(events), "skipped": skipped, "dropped": dropped,
-        "link": studio_link(key or first.get("project"), first.get("plan"), unit),
+        "link": first.get("link") or studio_link(key or first.get("project"), first.get("plan"), unit),
         "events": [_brief(e, key) for e in events],
     }
 
@@ -379,6 +382,8 @@ class Dispatcher:
         self.cursor = 0
         self.queued = 0  # highest seq accepted, so the backlog and live events never overlap
         self.warned: set[str] = set()
+        from alfrd.chat_notifications import Changes
+        self.chat_notifications = Changes(self.plan_dir / "notify.attention.json")
         self.stale: list[dict[str, Any]] = []  # backlog too old to send one by one (delivered as one summary)
 
     # -- feeding --
@@ -468,6 +473,19 @@ class Dispatcher:
     def _deliver_batch(self, events: list[dict[str, Any]], *, summary: bool = False, dropped: int = 0) -> None:
         if dropped:
             self.log(f"notify: queue full, {dropped} event(s) dropped")
+        # Chat runner/attempt completion is activity, not request completion.
+        chat_events = [e for e in events if str(e.get("plan") or "").startswith("chat-")]
+        if chat_events:
+            activity = {"plan.finished", "turn.finished", "task.finished", "request.finished",
+                        "decision.needed", "task.blocked"}
+            events = [e for e in events if e not in chat_events or e.get("kind") not in activity]
+            plans = {e.get("plan") for e in chat_events}
+            try:
+                events += [e for e in self.chat_notifications.poll(_root_of(self.plan_dir), self.project.get("identifier"))
+                           if e.get("plan") in plans]
+                self.chat_notifications.save()
+            except Exception as exc:  # noqa: BLE001 - the other events of this batch still go out
+                self.log(f"notify: chat notifications not read: {type(exc).__name__}")
         workers = []
         run: list[Any] = []  # the run summary, computed once per batch when a matched event ends the plan
         for index, route in enumerate(self.routes):

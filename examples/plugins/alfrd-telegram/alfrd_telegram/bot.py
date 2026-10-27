@@ -133,6 +133,11 @@ class Plans:
 
 class Bot:
     def __init__(self, route: Mapping[str, Any], plans, *, log: Callable = print, state: Path | None = None):
+        from alfrd.chat_notifications import Changes
+
+        self.chat_roots = set()
+        self.route = dict(route)
+        self.chat_notifications = Changes(Path(state).with_suffix(".notifications.json") if state else None)
         self.token = route["token"].strip()
         self.chat = str(route["chat_id"]).strip()
         self.plans, self.log = plans, log
@@ -451,8 +456,29 @@ class Bot:
         if now < self.next_watch:
             return
         self.next_watch = now + WATCH_EVERY
-        for project in self.plans.projects().values():
+        for project_key, project in self.plans.projects().items():
             try:
+                from alfrd import notify
+
+                records = self.chat_notifications.poll(project["root"], project_key)
+                # Persisted, so a restart still reports requests that ended while the bot was down.
+                marker = f"root:{project['root']}"
+                first = marker not in self.chat_notifications.seen
+                self.chat_notifications.seen.add(marker)
+                self.chat_roots.add(project["root"])
+                for record in records:
+                    if first and record["kind"].startswith("request."):
+                        continue  # historical terminal requests are a baseline
+                    if self.route.get("on") and not notify.route_matches(self.route, record):
+                        continue  # a notify.json route's event filter applies here too
+                    try:
+                        notifiers.telegram(self.route, notify.build_message([record]), 10)
+                    except notifiers.Skip:
+                        pass  # existing mute/config policy applies
+                    except Exception:
+                        self.chat_notifications.seen.difference_update(r["notification_id"] for r in records)
+                        raise
+                self.chat_notifications.save()
                 loops = self.plans.loops(project["root"])
             except Exception:  # noqa: BLE001, S112 - a missing project folder must not stop the others
                 continue

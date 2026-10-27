@@ -253,3 +253,19 @@ PYTHONPATH=examples/plugins/alfrd-telegram uv run pytest -q examples/plugins/alf
 ```
 
 The tests fake the Telegram API; they make no network calls.
+
+### Chat decisions
+
+The running bot watches chat requests as well as agent loops. Pending approvals,
+ASK questions and permission blockers receive their own notification, including
+mailbox-only requests on idle plans. A finished chat alert requires a terminal
+successful request; failures say failed. Each decision is sent once across polls
+and bot restarts, and shared deduplication prevents a matching Telegram event
+route from sending it again. Old terminal requests are not replayed on startup.
+
+Set **Studio URL** in plugin settings to a base URL reachable from your phone
+(for example `https://studio.example`) for chat links. Approval alerts show the
+action and a 12-digit hash prefix, with no approval callback or full action hash.
+Review and approve in Studio through the existing secure mailbox path. Digest
+and mute preferences apply to these alerts. Browser notification preferences
+remain independent. See [notification kinds](../../../docs/notifications.md#chat-requests-and-human-decisions).
