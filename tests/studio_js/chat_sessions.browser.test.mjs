@@ -32,7 +32,7 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
       const { server } = await import("/js/data/server.js");
       const { DEFAULTS } = await import("/js/data/chat.js");
       window.sessions = [{ id: "a", title: "Alpha", messages: 0, active_requests: 0 }, { id: "b", title: "Beta", messages: 0, active_requests: 0 },
-        { id: "c", title: "Busy", messages: 0, active_requests: 1 }];
+        { id: "c", title: "Busy", plan_status: "running", messages: 0, active_requests: 1 }];
       window.mutations = []; window.confirm = () => window.answer !== false;
       const state = (sid) => ({ session: { id: sid }, requests: [], tasks: [], messages: [], settings: DEFAULTS, mailbox_version: 1,
         graph: { nodes: [], edges: [] }, blockers: [], decisions: [], plan: { id: `chat-${sid}`, runner_alive: false } });
@@ -71,17 +71,12 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
       window.projectRows = {
         p: window.sessions,
         q: [{ id: "a", title: "Same id in Q", active_requests: 0, pending_user: 0 },
-          { id: "q-busy", title: "Q active", active_requests: 1, pending_user: 0 }],
+          { id: "q-busy", title: "Q active", plan_status: "running", active_requests: 1, pending_user: 0 }],
         empty: [],
       };
       server.request = async (url, options) => {
         const project = decodeURIComponent(url.split("/projects/")[1]?.split("/")[0] || "");
         if (url.endsWith("/sessions")) return new Response(JSON.stringify({ sessions: window.projectRows[project] }));
-        if (url.endsWith("?view=activity")) {
-          const rows = window.projectRows[project] || [];
-          return new Response(JSON.stringify({ activity: { active_sessions: rows.filter((s) => s.active_requests > 0 || s.pending_user > 0).length,
-            needs_user_sessions: rows.filter((s) => s.pending_user > 0).length } }));
-        }
         return previous(url, options);
       };
       ctx.projects = () => Object.keys(window.projectRows).map((id) => ({ id }));
@@ -99,7 +94,7 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
     await page.evaluate(() => switchChatProject('q'));
     await page.locator('.chat-session[data-sid="q-busy"].on').waitFor();
     assert.equal(await page.locator('.chat-session[data-sid="c"]').count(), 0);
-    assert.match(await page.locator('.chat-session[data-sid="q-busy"]').innerText(), /Active/);
+    assert.equal(await page.locator('.chat-session[data-sid="q-busy"] .chat-running').getAttribute("aria-label"), "Running");
     assert.equal(await page.locator('#chat-input').inputValue(), '');
     await page.locator('#chat-input').fill('Draft in Q');
     await page.locator('.chat-session[data-sid="q-busy"]').focus();
@@ -134,6 +129,8 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
     await page.locator("[data-chat=new]").click();
     await page.waitForTimeout(300);
     assert.equal(await page.evaluate(() => window.mutations.filter((m) => m.url.endsWith("/sessions")).length), 1);
+    await page.evaluate(() => { ctx.state.chatSession = "b"; ctx.update(); });
+    if (await page.locator('.chat-session-menu').getAttribute('open') === null) await page.locator('.chat-session-menu summary').click();
     await page.locator('[data-chat=delete][data-sid-act="b"]').click();
     await page.waitForTimeout(300);
     assert.equal(await page.evaluate(() => window.mutations.filter((m) => m.method === "DELETE").length), 1);
@@ -142,6 +139,8 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
 
   await t.test("rename: F2 / button, Enter saves, Esc keeps the old name", async () => {
     const { page, errors } = await open(1440); t.after(() => page.close());
+    await page.evaluate(() => { ctx.state.chatSession = "b"; ctx.update(); });
+    if (await page.locator('.chat-session-menu').getAttribute('open') === null) await page.locator('.chat-session-menu summary').click();
     await page.locator('[data-chat=rename][data-sid-act="b"]').click();
     const input = page.locator("#chat-rename-input");
     assert.equal(await input.inputValue(), "Beta");
@@ -160,11 +159,17 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
 
   await t.test("delete: confirm, open the next chat; busy chats can't be deleted", async () => {
     const { page, errors } = await open(1440); t.after(() => page.close());
+    await page.evaluate(() => { ctx.state.chatSession = "c"; ctx.update(); });
+    if (await page.locator('.chat-session-menu').getAttribute('open') === null) await page.locator('.chat-session-menu summary').click();
     assert.equal(await page.locator('[data-chat=delete][data-sid-act="c"]').isDisabled(), true);
     await page.evaluate(() => { window.answer = false; });
+    await page.evaluate(() => { ctx.state.chatSession = "a"; ctx.update(); });
+    if (await page.locator('.chat-session-menu').getAttribute('open') === null) await page.locator('.chat-session-menu summary').click();
     await page.locator('[data-chat=delete][data-sid-act="a"]').click();
     assert.equal(await page.evaluate(() => window.mutations.length), 0);
     await page.evaluate(() => { window.answer = true; });
+    await page.evaluate(() => { ctx.state.chatSession = "a"; ctx.update(); });
+    if (await page.locator('.chat-session-menu').getAttribute('open') === null) await page.locator('.chat-session-menu summary').click();
     await page.locator('[data-chat=delete][data-sid-act="a"]').click();
     await page.locator('.chat-session[data-sid="b"].on').waitFor();
     assert.equal(await page.locator('.chat-session[data-sid="a"]').count(), 0);
@@ -198,7 +203,7 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
     assert.equal(await page.locator("[data-chat=collapse]").isVisible(), false);
     await page.locator("[data-chat=sessions]").click();
     await page.locator(".chat-sessions").waitFor({ state: "visible" });
-    await page.locator('[data-chat=rename][data-sid-act="b"]').waitFor({ state: "visible" });
+    assert.equal(await page.locator(".chat-list [data-chat=rename]").count(), 0);
     assert.deepEqual(errors, []);
   });
 });

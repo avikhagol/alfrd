@@ -49,6 +49,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -453,6 +454,8 @@ class Session:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             held[key] = [handle, 0]
             try:
+                if self.session_file.exists():
+                    _repair_title(self)
                 yield
             finally:
                 del held[key]
@@ -607,46 +610,22 @@ def create_session(root: str | Path, title: str | None = None) -> dict[str, Any]
         "runner": {}, "history": [{"at": created, "event": "chat session created"}], "chat": {"session": sid},
     })
     folder.set_control("run")
-    data = {"id": sid, "title": (str(title).strip()[:120] if title else "") or f"Chat {created[:16].replace('T', ' ')}",
+    data = {"id": sid, "title": (str(title).strip()[:120] if title else "") or "New chat",
+            "title_source": "explicit" if title and str(title).strip() else "placeholder",
             "created": created, "plan": store.plan_id}
     _write(store.session_file, data)
     _write_graph(store)
     return data
 
 
-def _attention_records(folder):
-    records = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))]
-    if not all(isinstance(r, dict) for r in records):
-        raise ValueError("invalid chat attention metadata")
-    return records
-
-
-def _session_attention(store, *, strict=False):
+def _session_attention(store):
     from alfrd.mailbox import Mailbox
 
-    requests = _attention_records(store.requests_dir) if strict else store.requests()
-    decisions = _attention_records(store.decisions_dir) if strict else store.decisions()
+    requests, decisions = store.requests(), store.decisions()
     pending = sum(Mailbox(store.root, store.id, r["id"]).summary()["pending_user"] for r in requests)
     pending += sum(d.get("status") == "pending" and d.get("needs") == "user"
                    and not d.get("mailbox_message_id") for d in decisions)
     return {"pending_user": pending, "active_requests": sum(r.get("status") in REQUEST_ACTIVE for r in requests)}
-
-
-def session_activity(root: str | Path) -> dict[str, int]:
-    """Attention counts without loading transcripts, task graphs or logs."""
-    base = Path(root).resolve() / CHAT_DIR
-    active = needs = 0
-    for folder in base.iterdir() if base.is_dir() else []:
-        try:
-            data = json.loads((folder / "session.json").read_text(encoding="utf-8"))
-        except (FileNotFoundError, NotADirectoryError):  # half-created session or a stray file
-            continue
-        if not isinstance(data, dict):
-            raise ValueError("invalid chat session metadata")
-        summary = _session_attention(Session(Path(root).resolve(), data["id"]), strict=True)
-        needs += summary["pending_user"] > 0
-        active += summary["active_requests"] > 0 or summary["pending_user"] > 0
-    return {"active_sessions": active, "needs_user_sessions": needs}
 
 
 def list_sessions(root: str | Path) -> list[dict[str, Any]]:
@@ -677,6 +656,7 @@ def rename_session(root: str | Path, sid: str, title: Any) -> dict[str, Any]:
     with store.lock():
         data = store.load()
         data["title"] = text
+        data["title_source"] = "explicit"
         _write(store.session_file, data)
         store.bump_rev()
     return data
@@ -804,6 +784,53 @@ def _replay(store: Session, message: dict[str, Any]) -> dict[str, Any]:
     return {"message": message, "request": req, "task": store.task(rows[0]) if rows else None, "replayed": True}
 
 
+def _prompt_title(text: str, agents) -> str:
+    text = unicodedata.normalize("NFC", text)
+    mention = _MENTION.match(text)
+    if mention and mention.group(1).lower() in agents:
+        text = mention.group(2)
+    text = re.sub(r"(?<!\S)@([A-Za-z0-9][A-Za-z0-9_-]{0,39})(?=\s|$)",
+                  lambda m: "@" + m.group(1).lower() if m.group(1).lower() in agents else m.group(0), text)
+    text = " ".join("".join(c for c in text if not unicodedata.category(c).startswith("C") or c.isspace()).split())
+    if not text:
+        return "Image conversation"
+    if len(text) <= 48:
+        return text
+    head = text[:47]
+    if not text[47].isspace() and " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip() + "…"
+
+
+def _repair_title(store, agents=None):
+    """Under the session lock, repair from the first durable user message only."""
+    data = store.load()
+    source = data.get("title_source")
+    if source is None:
+        old = f"Chat {str(data.get('created', ''))[:16].replace('T', ' ')}"
+        source = "placeholder" if data.get("title") == old else "explicit"
+    if source != "placeholder":
+        if "title_source" not in data:
+            data["title_source"] = source
+            _write(store.session_file, data)
+        return
+    try:
+        with store.messages_file.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(message, dict) and message.get("role") == "user":
+                    data.update(title=_prompt_title(message.get("text", ""), agents or settings(store.root)["agents"]), title_source="prompt")
+                    _write(store.session_file, data)
+                    store.bump_rev()
+                    server_event(store, "chat.session.changed")
+                    return
+    except FileNotFoundError:
+        pass
+
+
 def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
                  attachments: list[str] | None = None, client_message_id: str | None = None) -> dict[str, Any]:
     """Store a user message and start its request: ``@agent …`` → one task, else one orchestrator plan call.
@@ -823,6 +850,7 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
             for old in store.messages():
                 if old.get("client_message_id") == cid:
                     if old.get("text") == text and [a["ref"] for a in old.get("attachments") or []] == [a["ref"] for a in images]:
+                        _repair_title(store)
                         return _replay(store, old)
                     raise DuplicateMessageError(f"client_message_id {cid!r} was already used with different content")
     if not text and not images:
@@ -850,9 +878,11 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
             for old in store.messages():
                 if old.get("client_message_id") == cid:
                     if old.get("text") == text and [a["ref"] for a in old.get("attachments") or []] == [a["ref"] for a in images]:
+                        _repair_title(store)
                         return _replay(store, old)
                     raise DuplicateMessageError(f"client_message_id {cid!r} was already used with different content")
         message = store.add_message("user", text, request=rid, attachments=images or None, client_message_id=cid)
+        _repair_title(store, conf["agents"])
         req: dict[str, Any] = {"id": rid, "message": message["id"], "text": text, "created": now_iso(),
                                "created_ts": time.time(), "bounds": _bounds(conf), "status": "planning",
                                "mailbox_protocol": "alfrd.mailbox/2",

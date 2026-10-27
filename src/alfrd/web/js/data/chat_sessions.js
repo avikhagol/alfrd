@@ -67,15 +67,7 @@ export function paintSessionList(box, html) {
   const link = focused.querySelector('a[data-sid]'), fresh = replacement.querySelector('a[data-sid]');
   link.className = fresh.className;
   if (fresh.hasAttribute('aria-current')) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
-  const title = link.querySelector('b'), freshTitle = fresh.querySelector('b');
-  title.textContent = freshTitle.textContent; title.title = freshTitle.title;
-  link.querySelectorAll('.badge').forEach((badge) => badge.remove());
-  let after = title;
-  fresh.querySelectorAll('.badge').forEach((badge) => { after.after(badge); after = badge; });
-  for (const button of focused.querySelectorAll('[data-chat]')) {
-    const other = replacement.querySelector(`[data-chat="${button.dataset.chat}"]`);
-    if (other) { button.disabled = other.disabled; button.title = other.title; button.setAttribute('aria-label', other.getAttribute('aria-label')); }
-  }
+  link.innerHTML = fresh.innerHTML;
   const nodes = [...next.children].map((row) => row === replacement ? focused : row);
   for (const node of [...box.children]) if (node !== focused) node.remove();
   nodes.forEach((node, i) => { if (box.children[i] !== node) box.insertBefore(node, box.children[i] || null); });

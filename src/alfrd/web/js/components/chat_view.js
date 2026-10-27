@@ -1,3 +1,4 @@
+import { mountPanelResize } from './panel_resize.js';
 // Chat section (#/chat/<session>?p=<project>): sessions, transcript, composer with @agent
 // autocomplete, task graph (graph_view.js, read-only), task detail with Cancel/Retry, decisions,
 // progress and usage against the request's budget. Lazy: loaded on the first visit.
@@ -6,7 +7,6 @@
 // (/setup → chat_setup.js, /help, /new, /graph) run here. Full transcripts and artifacts load when opened.
 import { $, $$, esc, icon, keyLabel, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
 import { server } from "../data/server.js";
-import { countText } from "../data/inbox.js";
 import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { mountComposerDraft } from "./composer_draft.js";
@@ -34,7 +34,8 @@ let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, c
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
 const COLLAPSE_KEY = "ui:chat.sessionsCollapsed"; // the chat list folded to a rail (wide screens; per browser)
-const wide = () => !window.matchMedia || window.matchMedia("(min-width: 901px)").matches;
+const wide = () => window.innerWidth > 900 && (!host || ($(".chat", host)?.clientWidth || host.clientWidth) >= 572);
+let panelResizers = [], layoutObserver;
 let needsOnly = false, sessionSheet = null, inspectorSheet = null;
 const queries = new Map();
 const stop = createRequestStop({ state: () => S.data, context: () => ({ project: S.project, sid: S.sid }),
@@ -117,7 +118,12 @@ function closeSessions() {
 }
 function syncSheets() {
   if (wide()) closeSessions();
-  const overlay = insp?.isOpen() && window.innerWidth <= 1280;
+  const chat = $(".chat", host);
+  const room = chat?.clientWidth || host?.clientWidth || window.innerWidth;
+  chat?.classList.toggle("chat-sessions-sheet", !wide());
+  const overlay = insp?.isOpen() && (window.innerWidth <= 1280 || room < (chat?.classList.contains("chat-sessions-collapsed") ? 692 : 868));
+  chat?.classList.toggle("chat-inspector-sheet", Boolean(overlay));
+  panelResizers.forEach((r) => r.sync());
   if (overlay && !inspectorSheet) { closeSessions(); inspectorSheet = chatSheet($("#chat-inspector", host), () => { insp.close(); syncSheets(); }); }
   else if (!overlay && inspectorSheet) { inspectorSheet({ restore: false }); inspectorSheet = null; }
 }
@@ -126,6 +132,7 @@ function closeInspector() { insp?.close({ restoreFocus: false }); syncSheets(); 
 window.addEventListener("resize", () => { if (host?.isConnected) syncSheets(); });
 
 function mount(el, ctx, p) {
+  panelResizers.forEach((r) => r.destroy()); panelResizers = []; layoutObserver?.disconnect();
   host = el;
   sessionSheet?.({ restore: false }); inspectorSheet?.({ restore: false }); sessionSheet = inspectorSheet = null;
   goals.stop();
@@ -139,13 +146,12 @@ function mount(el, ctx, p) {
   el.dataset.chat = p;
   const folded = storage.get(COLLAPSE_KEY, false) === true;
   el.innerHTML = `<div class="chat${folded ? " chat-sessions-collapsed" : ""}">
-    <nav class="chat-sessions" id="chat-sessions" aria-label="Chat sessions"><div class="row gap"><h2 class="grow" tabindex="-1">Chat</h2>
-      <button type="button" class="btn sm" data-chat="new" title="Start a new chat session">${icon("plus")} New</button>
+    <nav class="chat-sessions" id="chat-sessions" aria-label="Chat sessions"><div class="chat-sessions-resize"></div><div class="row gap chat-sessions-top"><span class="sr-only" tabindex="-1" aria-label="Chat sessions"></span>
+      <button type="button" class="chat-new" data-chat="new" aria-label="Start a new chat session" title="Start a new chat session">${icon("plus")}<span aria-hidden="true">New chat</span></button>
       <button type="button" class="icon-btn sm chat-collapse" data-chat="collapse" aria-controls="chat-sessions" aria-expanded="true" aria-label="Hide the chat list" title="Hide the chat list">${icon("sidebar")}</button><button type="button" class="icon-btn chat-close-sessions" data-chat="close-sessions" aria-label="Close chat list">${icon("close")}</button></div>
-      <button type="button" class="btn sm" data-chat="needs-me" aria-pressed="${needsOnly}">Needs me</button>
-      <label class="field small" for="chat-session-search">Search sessions</label>
-      <div class="chat-search"><input class="input sm" type="search" id="chat-session-search" value="${esc(queries.get(p) || "")}"><button type="button" class="btn sm" data-chat="clear-search">Clear search</button></div>
-      <p class="muted small" id="chat-session-count" role="status"></p>
+      <div class="chat-search"><label class="sr-only" for="chat-session-search">Search sessions</label>${icon("search")}<input class="input sm" type="search" id="chat-session-search" placeholder="Search chats" value="${esc(queries.get(p) || "")}"><button type="button" class="icon-btn sm" data-chat="clear-search" aria-label="Clear search" title="Clear search">${icon("close")}</button></div>
+      <div class="chat-sec-h chat-recents-h"><span class="grow">Chats</span><button type="button" class="chat-chip" data-chat="needs-me" aria-pressed="${needsOnly}">Needs me</button></div>
+      <p class="sr-only" id="chat-session-count" role="status"></p>
       <ul class="chat-list" id="chat-list" role="list"></ul></nav>
     <section class="chat-main" aria-label="Conversation">
       <header class="chat-head" id="chat-head"></header>
@@ -153,15 +159,15 @@ function mount(el, ctx, p) {
       <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
       <section class="chat-activity" id="chat-activity" aria-label="Running now" hidden></section>
       <p class="chat-stop-status muted small" role="status"></p>
-      ${composerHtml("chat", { attachments: true })}
+      ${composerHtml("chat", { rows: 1, attachments: true })}
     </section>
-    <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks">
+    <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks"><div class="chat-inspector-resize"></div><div class="chat-inspector-content">
       <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-request-scope"></div><div id="chat-insp-tabs">${tabsHtml()}</div></section>
       <section class="card" id="chat-progress" aria-labelledby="chat-progress-h"></section>
       <section class="card" id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
       <section class="card chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
       <section class="card" id="chat-task" aria-live="polite" hidden></section>
-    </aside></div>`;
+    </div></aside></div>`;
   graph = mountGraph($("#chat-graph", el), { onMail: (request, id) => { closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid && n.project === S.project),
@@ -175,7 +181,19 @@ function mount(el, ctx, p) {
   const toggle = () => $("[data-chat=inspect]", el);
   insp = createInspector({ chat: $(".chat", el), panel: $("#chat-inspector", el), button: { setAttribute: (k, v) => toggle()?.setAttribute(k, v) },
     focus: (target) => { inspectorSheet?.({ restore: false }); inspectorSheet = null; (target?.isConnected ? target : toggle())?.focus(); } });
-  insp.restore(); syncSheets();
+  insp.restore();
+  const chat = $(".chat", el), sessions = $("#chat-sessions", el), inspector = $("#chat-inspector", el);
+  panelResizers = [
+    mountPanelResize({ panel: sessions, handle: $(".chat-sessions-resize", el), key: "ui:chat.sessionsWidth", min: 160, max: 360, defaultWidth: 220,
+      label: "Resize chat sessions", enabled: () => wide() && !chat.classList.contains("chat-sessions-collapsed"),
+      available: () => chat.clientWidth - 52 - 360 - (insp.isOpen() && !chat.classList.contains("chat-inspector-sheet") ? inspector.offsetWidth + 16 : 0),
+      apply: (w) => chat.style.setProperty("--sessions-width", `${w}px`) }),
+    mountPanelResize({ panel: inspector, handle: $(".chat-inspector-resize", el), key: "ui:chat.inspectorWidth", min: 280, max: 560, defaultWidth: 320, side: "right",
+      label: "Resize chat inspector", enabled: () => insp.isOpen() && !chat.classList.contains("chat-inspector-sheet"),
+      available: () => chat.clientWidth - 52 - 360 - (wide() && !chat.classList.contains("chat-sessions-collapsed") ? sessions.offsetWidth + 16 : 0),
+      apply: (w) => chat.style.setProperty("--inspector-width", `${w}px`) })];
+  layoutObserver = typeof ResizeObserver === "function" ? new ResizeObserver(syncSheets) : null; layoutObserver?.observe(el);
+  syncSheets();
   loadSessions(false);
   loadSettings();
 }
@@ -184,6 +202,7 @@ function mount(el, ctx, p) {
 
 async function loadSessions(refresh = true) {
   const p = S.project;
+  chatProjects.select(p);
   const entry = await chatProjects.load(p, true, refresh);
   if (p !== S.project || !entry) return;
   S.sessions = entry.sessions; S.sessionsError = entry.error;
@@ -301,10 +320,8 @@ function drawSessions() {
   paintSessionList(box, explanation + (sessions.map((s) => s.id === S.renaming ? `<li class="chat-session-item"><form class="chat-rename" data-rename="${esc(s.id)}">
       <label class="sr-only" for="chat-rename-input">Chat name</label><input class="input sm" id="chat-rename-input" name="title" maxlength="120" value="${esc(s.title)}" required>
       <button type="submit" class="icon-btn sm" aria-label="Save the name" title="Save (Enter)">${icon("check")}</button><button type="button" class="icon-btn sm" data-chat="rename-cancel" aria-label="Keep the old name" title="Cancel (Esc)">${icon("close")}</button></form></li>`
-    : `<li class="chat-session-item"><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${activeSession(s) ? " active-chat" : ""}${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
-    <b title="${esc(s.title)}">${esc(s.title)}</b>${countText(s.pending_user) ? `<span class="badge">${countText(s.pending_user)}</span>` : ""}${activeSession(s) ? `<span class="badge tone-run">${icon("sync")}<span>${s.pending_user > 0 ? "Needs you" : "Active"}</span></span>` : ""}
-    <span class="muted small">${esc(s.last_message ? `${s.last_message.role === "user" ? "You" : agentName(s.last_message.agent || "alfrd")}: ${s.last_message.text}` : "No messages")}</span>${s.last_message?.at ? `<time class="muted small" datetime="${esc(s.last_message.at)}">${esc(new Date(s.last_message.at).toLocaleString())}</time>` : ""}</a>
-    <span class="chat-session-acts"><button type="button" class="icon-btn sm" data-chat="rename" data-sid-act="${esc(s.id)}" aria-label="Rename ${esc(s.title)}" title="Rename">${icon("edit")}</button><button type="button" class="icon-btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" aria-label="Delete ${esc(s.title)}" title="${s.active_requests ? "Cancel its running tasks before deleting" : "Delete"}" ${s.active_requests ? "disabled" : ""}>${icon("trash")}</button></span></li>`).join("") || `<li class="muted small" role="status">${query ? `No sessions match “${esc(query)}”.` : "No sessions need you."} <button type="button" class="btn sm" data-chat="clear-filters">Clear filters</button></li>`));
+    : `<li class="chat-session-item"><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
+    <b title="${esc(s.title)}">${esc(s.title)}</b>${s.plan_status === "running" ? '<span class="chat-running" role="img" aria-label="Running" title="Running"></span>' : ""}</a></li>`).join("") || `<li class="muted small" role="status">${query ? `No sessions match “${esc(query)}”.` : "No sessions need you."} <button type="button" class="btn sm" data-chat="clear-filters">Clear filters</button></li>`));
   if (S.renaming) { const input = $("#chat-rename-input", box); if (input && document.activeElement !== input) { input.focus(); input.select(); } }
 }
 
@@ -313,7 +330,7 @@ function drawSessions() {
 function startRename(sid) { S.renaming = sid; S.keys.sessions = null; drawSessions(); }
 function endRename(focusSid) {
   S.renaming = null; S.keys.sessions = null; drawSessions();
-  if (focusSid) $(`[data-sid-act="${CSS.escape(focusSid)}"][data-chat=rename]`, host)?.focus();
+  if (focusSid) $(`.chat-session[data-sid="${CSS.escape(focusSid)}"]`, host)?.focus();
 }
 
 async function saveRename(sid, title) {
@@ -357,6 +374,7 @@ function setCollapsed(on) {
   const chat = $(".chat", host);
   chat.classList.toggle("chat-sessions-collapsed", on);
   storage.set(COLLAPSE_KEY, on);
+  syncSheets();
   $("[data-chat=collapse]", host)?.setAttribute("aria-expanded", String(!on));
   requestAnimationFrame(() => (on ? $("[data-chat=sessions]", host) : $("[data-chat=collapse]", host))?.focus());
 }
@@ -364,14 +382,13 @@ function setCollapsed(on) {
 function drawHead(ctx) {
   const live = ctx.state.liveStatus?.state || "off";
   const s = S.sessions?.find((x) => x.id === S.sid);
-  if (!changed("head", [s?.title, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) { drawCheckStatus(); return; }
+  if (!changed("head", [s?.title, s?.active_requests, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) { drawCheckStatus(); return; }
   const focused = $("#chat-head", host).contains(document.activeElement) ? document.activeElement.dataset.chat : null;
   const flowing = ["live", "polling"].includes(live);
   $("#chat-head", host).innerHTML = `<div class="chat-head-title"><button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
-    <button type="button" class="btn sm chat-inspect-toggle" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">Inspect</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button></div>
-    <div class="chat-head-status"><span class="badge tone-${flowing ? "ok" : "warn"}" role="status" title="${esc(ctx.state.liveStatus?.detail || "")}">${icon(flowing ? "sync" : "alert")}<span>${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}</span></span>
-    ${S.data?.plan ? `<span class="muted small" title="Session plan ${esc(S.data.plan.id)}">runner ${S.data.plan.runner_alive ? "active" : "idle"}</span>` : ""}
-    ${S.sid ? `<span class="muted small" id="chat-check-status"></span><button type="button" class="btn sm" data-chat="check" aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${S.checking === `${S.project}/${S.sid}` ? "Checking…" : "Check now"}</button>` : ""}</div>
+    <button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>${s ? `<details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests ? "disabled" : ""}>${icon("trash")} Delete</button></div></details>` : ""}</div>
+    <div class="chat-head-status"><span class="chat-live tone-${flowing ? "ok" : "warn"}" role="status" title="${esc([flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected", ctx.state.liveStatus?.detail, S.data?.plan ? `runner ${S.data.plan.runner_alive ? "active" : "idle"} (plan ${S.data.plan.id})` : ""].filter(Boolean).join(" · "))}"><span class="sr-only">${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}${S.data?.plan ? `, runner ${S.data.plan.runner_alive ? "active" : "idle"}` : ""}</span></span>
+    ${S.sid ? `<span class="muted small" id="chat-check-status"></span><button type="button" class="icon-btn sm" data-chat="check" aria-label="${S.checking === `${S.project}/${S.sid}` ? "Checking" : "Check for interrupted work and resume it; paused runners stay paused"}" aria-busy="${S.checking === `${S.project}/${S.sid}`}" ${S.checking === `${S.project}/${S.sid}` ? "disabled" : ""} aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${icon(S.checking === `${S.project}/${S.sid}` ? "sync" : "check")}</button>` : ""}</div>
     ${S.settingsError ? `<p class="callout fail small chat-wide" role="alert">Chat settings: ${esc(S.settingsError)} — fix the <code>chat:</code> block in <a href="${esc(routeHash("config", S.project, ctx.state.selectedTarget))}">Settings</a>.</p>` : ""}`;
   drawCheckStatus();
   if (focused) $(`[data-chat="${CSS.escape(focused)}"]`, $("#chat-head", host))?.focus();
@@ -386,7 +403,7 @@ async function checkNow(button) {
   const project = S.project, sid = S.sid, key = `${project}/${sid}`;
   if (!sid || S.checking === key) return;
   S.checking = key;
-  button.setAttribute("aria-disabled", "true"); button.textContent = "Checking…";
+  button.setAttribute("aria-disabled", "true"); button.innerHTML = icon("sync"); button.setAttribute("aria-label", "Checking"); button.setAttribute("aria-busy", "true"); button.disabled = true;
   const current = () => host?.isConnected && S.project === project && S.sid === sid;
   $("#chat-check-feedback", host).textContent = "Checking this session for interrupted work.";
   try {
@@ -404,7 +421,7 @@ async function checkNow(button) {
     if (S.checking === key) S.checking = null;
     if (current()) {
       const b = $('[data-chat="check"]', host);
-      if (b) { b.setAttribute("aria-disabled", "false"); b.textContent = "Check now"; }
+      if (b) { b.setAttribute("aria-disabled", "false"); b.innerHTML = icon("check"); b.setAttribute("aria-label", "Check for interrupted work and resume it; paused runners stay paused"); b.setAttribute("aria-busy", "false"); b.disabled = false; }
     }
   }
 }

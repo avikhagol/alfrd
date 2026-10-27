@@ -54,35 +54,18 @@ def test_two_tabs_get_answered_elsewhere_but_retry_remains_idempotent(box):
     assert chat.list_sessions(box.session.root)[0]["pending_user"] == 0
 
 
-@pytest.mark.parametrize("status", sorted(chat.REQUEST_ACTIVE))
-def test_compact_activity_counts_sessions_once_without_transcripts(project, monkeypatch, status):
-    sid = chat.create_session(project)["id"]
-    store = chat.session(project, sid)
-    store.save_request({"id": "r1", "status": status})
-    store.save_request({"id": "r2", "status": status})
-    chat.create_session(project, "recent but idle")
-    def forbidden(*args, **kwargs):
-        raise AssertionError("compact activity read a transcript or detail graph")
-    monkeypatch.setattr(chat.Session, "messages", forbidden)
-    monkeypatch.setattr(chat.Session, "tasks", forbidden)
-    assert chat.session_activity(project) == {"active_sessions": 1, "needs_user_sessions": 0}
-    store.save_request({"id": "r1", "status": "done"})
-    store.save_request({"id": "r2", "status": "failed"})
-    assert chat.session_activity(project) == {"active_sessions": 0, "needs_user_sessions": 0}
-
-
-def test_compact_attention_resolution_expiry_and_link_deduplication(box):
+def test_list_attention_resolution_expiry_and_link_deduplication(box):
     store = box.session
     req = store.request(box.run_id)
     mid = box.send(AGENT, question())["message"]["id"]
     box.send(AGENT, permission())
     box.send(AGENT, question("expired", expires_at="2000-01-01T00:00:00Z"))
     store.save_decision({"id": "linked", "status": "pending", "needs": "user", "mailbox_message_id": mid})
-    assert chat.session_activity(store.root) == {"active_sessions": 1, "needs_user_sessions": 1}
+    assert chat.list_sessions(store.root)[0]["pending_user"] == 2
     store.save_request({**req, "status": "done"})
-    assert chat.session_activity(store.root) == {"active_sessions": 1, "needs_user_sessions": 1}
+    assert chat.list_sessions(store.root)[0]["pending_user"] == 2
     store.save_request(req)
     box.reply(mid, USER, answer())
     box.cancel()
     store.save_request({**req, "status": "done"})
-    assert chat.session_activity(store.root) == {"active_sessions": 0, "needs_user_sessions": 0}
+    assert chat.list_sessions(store.root)[0]["pending_user"] == 0

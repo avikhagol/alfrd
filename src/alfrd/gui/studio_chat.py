@@ -120,8 +120,6 @@ def chat_skill_preview(project_name: str):
 def chat_sessions(project_name: str):
     try:
         root = _project_root(project_name)
-        if request.args.get("view") == "activity":
-            return jsonify(activity=chat.session_activity(root))
         return jsonify(sessions=chat.list_sessions(root))
     except Exception as error:  # noqa: BLE001
         return _fail(error)

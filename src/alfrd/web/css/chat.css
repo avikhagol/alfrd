@@ -5,7 +5,7 @@
 @import "chat-dock.css";
 
 /* Chat section, the graph canvas (graph_view.js) and the New-project canvas; loaded on first use. */
-.chat { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; padding: 14px 18px; height: 100%; min-height: 0; position: relative; }
+.chat { display: grid; grid-template-columns: var(--sessions-width, 220px) minmax(0, 1fr); gap: 16px; padding: 14px 18px; height: 100%; min-height: 0; position: relative; }
 .chat-sessions, .chat-main, .chat-side { min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .chat-side { overflow: auto; display: none; } /* the inspector: hidden until .chat-inspect-open */
 .chat-inspect-open .chat-side { display: flex; }
@@ -16,9 +16,6 @@
 .chat-session:hover { background: var(--subtle); }
 .chat-session-item { position: relative; }
 .chat-session-item .chat-session { padding-right: 62px; }
-.chat-session-acts { position: absolute; top: 4px; right: 4px; display: flex; gap: 2px; opacity: 0; }
-.chat-session-item:hover .chat-session-acts, .chat-session-item:focus-within .chat-session-acts, .chat-session.on + .chat-session-acts { opacity: 1; }
-@media (hover: none) { .chat-session-acts { opacity: 1; } }
 .chat-rename { display: flex; gap: 4px; align-items: center; padding: 4px; }
 .chat-rename .input { flex: 1; min-width: 0; }
 .chat-collapse { flex: none; }
@@ -125,7 +122,6 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .cd-arts { margin: 4px 0 0; overflow-wrap: anywhere; }
 .chat-dock .chat-input-wrap textarea { min-height: 44px; }
 .chat-dock .chat-mentions { min-width: 0; width: 100%; }
-#btn-chat-dock.on { color: var(--accent-text); border-color: var(--accent); }
 .chat-logs { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
 /* orchestrator rows in the graph, planned edges, full-screen graph */
 .node.gv-orch { border-style: dashed; border-color: var(--accent); }
@@ -201,11 +197,11 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
   .chat-sessions-collapsed .chat-sessions { display: none; }
 }
 @media (min-width: 1281px) { /* docked: a third column only while the inspector is open */
-  .chat.chat-inspect-open { grid-template-columns: 220px minmax(0, 1fr) 320px; }
-  .chat.chat-inspect-open.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr) 320px; }
+  .chat.chat-inspect-open { grid-template-columns: var(--sessions-width, 220px) minmax(0, 1fr) var(--inspector-width, 320px); }
+  .chat.chat-inspect-open.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr) var(--inspector-width, 320px); }
 }
 @media (min-width: 901px) and (max-width: 1280px) {
-  .chat { grid-template-columns: 208px minmax(0, 1fr); }
+  .chat { grid-template-columns: var(--sessions-width, 220px) minmax(0, 1fr); }
   .chat.chat-sessions-collapsed { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 1280px) { /* overlay; 200 % zoom on a 1280 px window is 640 CSS px, so it lands here too */
@@ -252,3 +248,72 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 [data-gv-menu]:not([hidden]) { position: absolute; right: 8px; top: 48px; z-index: 5; display: flex; flex-direction: column; max-width: min(420px, 100%); max-height: 75%; overflow: auto; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 20px #0004; }
 [data-gv-menu] button { text-align: left; padding: 8px; }
 [data-gv-menu] [aria-disabled=true] { color: var(--text-3); }
+
+.chat-sessions, .chat-side { position: relative; }
+.chat.chat-inspector-sheet { grid-template-columns: var(--sessions-width, 220px) minmax(0, 1fr); }
+.chat.chat-inspector-sheet.chat-sessions-collapsed, .chat.chat-sessions-sheet { grid-template-columns: minmax(0, 1fr); }
+.chat.chat-inspector-sheet .chat-side { position: absolute; right: 12px; top: 62px; bottom: 12px; width: min(320px, calc(100% - 24px)); z-index: 5; padding: 12px; background: var(--surface-float); border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
+.chat.chat-sessions-sheet .chat-sessions { display: none; position: absolute; top: 62px; bottom: 12px; left: 12px; width: min(240px, calc(100% - 24px)); z-index: 5; padding: 12px; background: var(--surface-float); border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
+.chat.chat-sessions-sheet.chat-sessions-open .chat-sessions { display: flex; }
+.chat-sessions-sheet .chat-nav-toggle, .chat-sessions-sheet .chat-close-sessions { display: inline-flex; }
+.chat-sessions-sheet .chat-collapse { display: none; }
+.app.chat-dock-sheet > main { margin-right: 0; }
+.chat-dock.cd-sheet { box-shadow: var(--shadow-lg); width: min(100vw, 440px); }
+.chat-dock .cd-grip.panel-resize { left: -6px; width: 12px; background: transparent; opacity: 1; }
+@media (max-width: 900px) { .chat-sessions, .chat-side { position: absolute; } }
+@media (max-width: 640px) {
+  .chat.chat-sessions-sheet .chat-sessions, .chat.chat-inspector-sheet .chat-side { inset: 8px; width: auto; }
+  .chat-dock.cd-sheet { inset: 8px; width: auto; }
+}
+
+.chat-side { overflow: visible; }
+.chat-inspector-content { display: flex; flex-direction: column; gap: 12px; overflow: auto; min-height: 0; height: 100%; }
+
+/* Claude-style sidebar: small regular-weight rows, a quiet Chats label. */
+.chat .chat-sessions { gap: 2px; font-size: 13px; line-height: 18px; }
+.chat .chat-sessions-top { gap: 2px; margin-bottom: 2px; }
+.chat .chat-new { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 8px; border: 0; border-radius: var(--chat-radius-control); background: transparent; color: var(--chat-text); font: 500 13px/18px var(--chat-sans); text-align: left; cursor: pointer; }
+.chat .chat-new .ic { color: var(--chat-action); }
+.chat :is(.chat-new, .chat-session):hover { background: var(--chat-hover); }
+.chat .chat-search { position: relative; gap: 0; margin-bottom: 6px; }
+.chat .chat-search > .ic { position: absolute; left: 8px; width: 14px; height: 14px; color: var(--chat-muted); pointer-events: none; }
+.chat .chat-search .input { padding-left: 28px; padding-right: 28px; background: transparent; font-size: 13px; }
+.chat .chat-search [data-chat=clear-search] { position: absolute; right: 2px; width: 24px; height: 24px; min-width: 0; min-height: 0; }
+.chat .chat-search:has(input:placeholder-shown) [data-chat=clear-search] { display: none; }
+.chat .chat-sec-h { display: flex; align-items: center; gap: 6px; padding: 8px 8px 4px; color: var(--chat-muted); font-size: 12px; font-weight: 400; line-height: 16px; }
+.chat .chat-chip { margin-left: auto; padding: 1px 8px; border: 1px solid var(--chat-border); border-radius: var(--chat-radius-pill); background: transparent; color: var(--chat-muted); font-size: 11px; line-height: 16px; cursor: pointer; }
+.chat .chat-chip[aria-pressed=true] { border-color: var(--chat-action); color: var(--chat-text); }
+.chat .chat-list { gap: 1px; }
+.chat .chat-session-item .chat-session { padding: 5px 8px; min-height: 28px; border: 0; border-radius: var(--chat-radius-control); }
+.chat .chat-session b { font-weight: 400; font-size: 13px; line-height: 18px; color: var(--chat-text-2); }
+.chat .chat-session.on { background: var(--chat-hover); border: 0; }
+.chat .chat-session.on b { color: var(--chat-text); }
+
+/* Minimal heading: one row, small title, the live state as a dot; the transcript gets the room. */
+.chat.chat { padding-top: 8px; padding-bottom: 8px; gap: 12px; }
+.chat .chat-main { gap: 6px; }
+.chat .chat-head { flex-wrap: nowrap; gap: 4px; min-height: 32px; }
+.chat .chat-head .chat-head-title { flex: 1; width: auto; gap: 4px; }
+.chat .chat-head .chat-head-status { flex: none; width: auto; gap: 4px; }
+.chat .chat-head h3 { font-size: 14px; line-height: 20px; font-weight: 500; }
+.chat .chat-head :is(.icon-btn, .chat-session-menu summary) { color: var(--chat-muted); }
+.chat .chat-head #chat-check-status { flex: 0 1 auto; max-width: 16rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat .chat-head #chat-check-status:empty { display: none; }
+.chat-live { display: inline-block; flex: none; width: 7px; height: 7px; margin: 0 6px; border-radius: 50%; background: var(--chat-warning); }
+.chat-live.tone-ok { background: var(--chat-success); }
+.chat .chat-log { border: 0; background: transparent; padding: 8px 4px; }
+
+/* Composer squeezes to one line while idle and empty; it opens up on focus, text or attachments. */
+:is(.chat, .chat-dock) .chat-composer { gap: var(--chat-space-2); padding: var(--chat-space-3) var(--chat-space-4); padding-bottom: calc(var(--chat-space-3) + env(safe-area-inset-bottom, 0px)); }
+:is(.chat, .chat-dock) .chat-composer .chat-input-wrap textarea { min-height: calc(var(--chat-body-leading) + 2 * var(--chat-space-2)); padding: var(--chat-space-2) var(--chat-space-3); }
+:is(.chat, .chat-dock) .chat-composer:focus-within .chat-input-wrap textarea { min-height: calc(2 * var(--chat-body-leading) + 2 * var(--chat-space-2)); }
+:is(.chat, .chat-dock) .chat-composer:not(:focus-within) .chat-hint, :is(.chat, .chat-dock) .chat-composer:not(:focus-within) [data-attach-hint] { display: none; }
+:is(.chat, .chat-dock) .chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) {
+  flex-direction: row; flex-wrap: nowrap; align-items: center; padding-block: var(--chat-space-1);
+}
+.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) > .chat-input-wrap { flex: 1 1 auto; min-width: 0; order: 1; }
+.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) > .attach-tray { flex: none; order: 0; }
+.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) > .chat-composer-bar { flex: none; order: 2; }
+.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) :is(.chat-composer-info, .chat-target) { display: none; }
+.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) .attach-actions > label.btn { width: 32px; padding-inline: 7px; overflow: hidden; white-space: nowrap; justify-content: flex-start; }
+:is(.chat, .chat-dock) .chat-composer .chat-composer-bar .chat-composer-info p.chat-target { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

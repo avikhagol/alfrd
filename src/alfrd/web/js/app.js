@@ -26,7 +26,7 @@ import * as metadata from "./components/metadata.js";
 import * as results from "./components/results.js";
 import * as config from "./components/alfrd_config.js";
 import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace, unsaved } from "./data/workspace.js";
-import { forgetPlan, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
+import { forgetPlan, syncPlanCatalog, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
 watchThemeAccent(); // tab icon follows the theme accent
 const DEMO_ALFRD_PROJECT = "avica-demo"; // data/demo.js's key; the demo data itself loads on demand
 
@@ -612,7 +612,7 @@ function loadPending(p) {
 async function loadServer() {
   if (!projectLoader) {
     projectLoader = createProjectLoader({ scan: (p) => server.projectScan(p.name), runtime: (p) => server.loadProjectRuntime(p), onSettle: settleProject, onChange: scheduleRender });
-    server.onAuthRequired(() => projectLoader.invalidate()); // expired access: drop late responses
+    server.onAuthRequired(() => { projectLoader.invalidate(); syncPlanCatalog([]); }); // expired access: drop late responses
   }
   projectLoader.invalidate();
   catalogPending = true;
@@ -625,6 +625,7 @@ async function loadServer() {
     catalogPending = false;
     const keep = { project: state.selectedProject, target: state.selectedTarget }; // the header, across a Re-scan
     const names = new Set(projects.map((p) => p.name));
+    syncPlanCatalog(names);
     state.serverWorkflows = (state.serverWorkflows || []).filter((w) => names.has(w.project));
     state.projectTitles = Object.fromEntries(projects.map((p) => [p.name, p.title || p.description || p.name]));
     state.projectNames = Object.fromEntries(projects.map((p) => [p.name, p.title || p.manifest_name || p.name]));
@@ -1452,6 +1453,23 @@ const shown = (id) => id == "overview" || !server.session?.superuser?.hidden_sec
 ctx.refreshSession = async (throttle) => (await import("./data/session_refresh.js")).refreshSession(ctx, { views: VIEWS, shown, chatOn, goTo, render: scheduleRender, throttle });
 const su = () => !document.hidden && ctx.refreshSession(true).catch(() => {});
 document.addEventListener("visibilitychange", su); addEventListener("alfrd-events", su);
+addEventListener("alfrd-events", ({ detail }) => {
+  if (detail?.project && plansAvailable(ctx, detail.project)) loadPlan(ctx, detail.project, { quiet: true });
+});
+let jobSummaryRefresh;
+function refreshJobSummaries() {
+  if (jobSummaryRefresh) return jobSummaryRefresh;
+  jobSummaryRefresh = refreshJobCatalog().finally(() => { jobSummaryRefresh = null; });
+  return jobSummaryRefresh;
+}
+async function refreshJobCatalog() {
+  if (document.hidden || state.mode !== "server") return;
+  const queue = ctx.projects().map((p) => p.id);
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (queue.length) { const p = queue.shift(); if (plansAvailable(ctx, p)) await loadPlan(ctx, p, { quiet: true }); }
+  }));
+}
+document.addEventListener("visibilitychange", refreshJobSummaries);
 ctx.setChat = (on) => { writePrefs({ "ui.experimental_chat": Boolean(on) }); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
 Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && shown(v.id) && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
 ctx.goTo = goTo;
@@ -1523,22 +1541,21 @@ document.addEventListener("keydown", (e) => {
 const dockUi = { open: false, width: 380, ...storage.get("ui:chat.dock", {}) };
 let dockMod = null, dockExplicit = false;
 const dockAvailable = () => chatOn() && state.mode === "server" && Boolean(activeProject()) && !["chat", "new-project"].includes(state.view);
+let dockOpener;
 function setChatDock(open = !dockUi.open) {
+  if (open && !dockUi.open) dockOpener = document.activeElement;
   dockUi.open = open;
   dockExplicit = open; // opened by hand: shown in compact workflow mode too (a remembered open state is not)
   storage.set("ui:chat.dock", { open, width: dockUi.width });
   renderChatDock({ focus: true });
 }
 async function renderChatDock({ focus = false } = {}) {
-  const el = $("#chat-dock"), btn = $("#btn-chat-dock");
-  if (!el || !btn) return;
+  const el = $("#chat-dock");
+  if (!el) return;
   const avail = dockAvailable(), show = avail && dockUi.open;
-  btn.hidden = !avail;
-  btn.setAttribute("aria-expanded", String(show));
-  btn.classList.toggle("on", show);
   $("#app").dataset.dock = show ? (dockExplicit ? "explicit" : "open") : "closed";
   if (!show) {
-    if (!el.hidden) { dockMod?.hide(); el.hidden = true; if (focus && avail) btn.focus(); }
+    if (!el.hidden) { dockMod?.hide(); el.hidden = true; if (focus && avail) (dockOpener?.isConnected ? dockOpener : $('.rail a[data-view="chat"]'))?.focus(); }
     return;
   }
   try { dockMod ||= await import("./components/chat_dock.js"); } catch (error) { ctx.toast(`Chat dock: ${error.message}`, "fail"); return; }
@@ -1687,7 +1704,7 @@ const live = createLive({
   onRuntime: liveRuntime,
   onPluginJob: () => renderJobs(),
   onAlfrd: (project, events) => (window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project, events } })), import("./components/notifications.js").then((m) => m.handleNotifications(ctx, project, events)).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server"))),
-  onResync: (project) => (chatProjects?.invalidate(project), loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
+  onResync: (project) => (refreshJobSummaries(), chatProjects?.invalidate(project), loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
   onStatus: (status) => { state.liveStatus = status; chatProjects?.sync(); renderLiveBadge(); },
 });
 live.enabled = state.prefs.live !== false;
@@ -1817,6 +1834,7 @@ async function onLiveBadge() {
 
 
 const shellUi = loadUi("shell.v2", { sidebarCollapsed: true });
+let railResize;
 function setSidebar(collapsed) {
   shellUi.sidebarCollapsed = collapsed === true;
   $("#app").dataset.sidebar = shellUi.sidebarCollapsed ? "collapsed" : "expanded";
@@ -1827,7 +1845,8 @@ function setSidebar(collapsed) {
     b.setAttribute("aria-label", label);
     b.title = `${label} (Alt+Shift+S)`;
   }
-  storage.set("ui:shell.v2", { sidebarCollapsed: shellUi.sidebarCollapsed }); // at once: a reload right after must keep it
+  railResize?.sync();
+  storage.set("ui:shell.v2", { ...shellUi, sidebarCollapsed: shellUi.sidebarCollapsed }); // at once: a reload right after must keep it
 }
 document.addEventListener("keydown", (e) => {
   if (!(e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyS") || e.isComposing) return;
@@ -1891,8 +1910,6 @@ function renderShell() {
       <div class="picker"><button class="picker-btn" id="pick-target">${icon("target")}<span class="picker-l">Target</span><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button></div>
       <button class="btn sm jobs-btn" id="btn-jobs" aria-haspopup="dialog" hidden>${icon("play")} <span id="jobs-label">Jobs</span></button><span class="sr-only" id="jobs-live" aria-live="polite"></span>
       <span class="grow"></span>
-      <a class="btn sm" id="chat-inbox" hidden aria-live="polite"></a>
-      <button class="icon-btn" id="btn-chat-dock" aria-label="Chat dock" aria-controls="chat-dock" aria-expanded="false" aria-keyshortcuts="Alt+Shift+A" title="Chat with the agents beside this view (Alt+Shift+A)" hidden>${icon("chat")}</button>
       <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (${keyLabel("Ctrl+K")})">${icon("search")}</button>
       <button class="live-badge live-off" id="btn-live" aria-pressed="false"><i></i><span>Live off</span></button>
       <button class="icon-btn" id="btn-rescan" aria-label="Re-scan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")}</button>
@@ -1900,7 +1917,7 @@ function renderShell() {
       <button class="icon-btn" id="btn-settings" aria-label="Studio settings" title="Studio settings">${icon("gear")}</button>
       <button class="icon-btn" id="btn-quit" aria-label="Quit alfrd" title="Quit alfrd" hidden>${icon("power")}</button>
     </header>
-    <nav class="rail" aria-label="Workspace">
+    <nav class="rail" id="workspace-rail" aria-label="Workspace"><div id="rail-resize"></div>
       <div class="rail-head"><span class="rail-label">Workspace</span></div>
       <div class="rail-links" id="rail-links">${VIEWS.filter((v) => !v.page).map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span>${v.id === "chat" ? '<b class="badge" data-inbox-count hidden></b>' : ""}</a>`).join("")}</div>
       <div id="rail-plugins" class="rail-plugins" hidden></div>
@@ -1922,7 +1939,6 @@ function renderShell() {
     <aside id="chat-dock" class="chat-dock" hidden aria-label="Chat"></aside>
     <section class="dock-strip" id="dock-strip" hidden aria-label="Followed log"></section>
     <section class="console" id="console" hidden aria-label="Log stream"></section>`;
-  $("#btn-chat-dock").addEventListener("click", () => setChatDock());
   $("#btn-jobs").addEventListener("click", async (e) => {
     try {
       lazy.jobs ||= import("./components/jobs_tray.js");
@@ -1942,6 +1958,15 @@ function renderShell() {
 
   $("#btn-rail").addEventListener("click", () => setSidebar(!shellUi.sidebarCollapsed));
   setSidebar(shellUi.sidebarCollapsed);
+  import("./components/panel_resize.js").then(({ mountPanelResize }) => {
+    railResize?.destroy();
+    railResize = mountPanelResize({ panel: $(".rail"), handle: $("#rail-resize"), width: shellUi.navWidth,
+      min: 180, max: 360, defaultWidth: 240, label: "Resize Workspace navigation",
+      enabled: () => window.innerWidth >= 1280 && !shellUi.sidebarCollapsed,
+      available: () => window.innerWidth - 400,
+      apply: (w) => $("#app").style.setProperty("--nav-width", `${w}px`),
+      save: (w) => { shellUi.navWidth = w; storage.set("ui:shell.v2", { ...shellUi }); } });
+  });
   $("#btn-projects").addEventListener("click", projectsAction);
   $("#btn-rescan").addEventListener("click", () => rescan());
   $("#btn-live").addEventListener("click", onLiveBadge);
@@ -2075,7 +2100,9 @@ onDock(() => renderStrip());
 /** Jobs · N running: every active run across projects (switching never stops them). */
 const jobStatus = new Map(); // `${project}\u0000${run}` -> label, for polite announcements
 function jobLabel(s) {
-  if (s.plan.start_at || s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
+  if (["paused", "interrupted"].includes(s.plan.status)) return s.plan.status === "paused" ? "Paused" : "Interrupted";
+  if (s.plan.phase === "running") return "Running";
+  if (["scheduled", "manual", "review", "decision"].includes(s.plan.phase) || s.plan.start_at || s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
   return { running: "Running", paused: "Paused", interrupted: "Interrupted" }[s.plan.status] || s.plan.status;
 }
 function renderJobs() {

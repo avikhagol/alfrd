@@ -2501,20 +2501,26 @@ def plan_activity(root: str | Path, plan: Mapping[str, Any]) -> dict[str, Any]:
     review = [u for u in units if u.get("review_status") == "pending"]
     manual = [u for u in running if u.get("manual")]
     live = [u for u in running if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), root)]
-    if review:
+    if plan.get("status") in {"paused", "interrupted"}:
+        phase = plan["status"]
+    elif live:
+        phase = "running"
+    elif review:
         phase = "review"
     elif manual:
         phase = "manual"
-    elif live:
-        phase = "running"
-    elif plan.get("status") == "paused":
-        phase = "paused"
     elif plan.get("start_at"):
         phase = "scheduled"
     else:
         phase = "waiting"
     current = (review or manual or live or running or [u for u in units if u.get("iteration")] or [{}])[-1]
-    return {"working": bool(review or manual or live), "phase": phase, "turn": current.get("iteration"),
+    if plan.get("chat") and plan.get("status") == "running" and not live:
+        from alfrd.chat import Session, _session_attention
+
+        store = Session(Path(root).resolve(), plan["chat"]["session"])
+        if _session_attention(store)["pending_user"]:
+            phase = "decision"
+    return {"start_at": plan.get("start_at"), "working": bool(review or manual or live), "phase": phase, "turn": current.get("iteration"),
             "turns": (plan.get("loop") or {}).get("iterations"), "agent": current.get("agent")}
 
 
@@ -2601,7 +2607,7 @@ def chat_runs(root: str | Path, limit: int = 20) -> list[dict[str, Any]]:
     """Chat sessions' plans for run pickers (newest ``limit`` plus active ones): never workflow runs."""
     out = []
     for i, p in enumerate(chat_plans(root)):
-        if i >= limit and p.get("status") not in ACTIVE:
+        if i >= limit and p.get("status") not in (*ACTIVE, "interrupted"):
             continue
         out.append({"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"),
                     "run_kind": "chat", "chat": p.get("chat"), "title": chat_title(root, p),
@@ -2613,7 +2619,7 @@ def _listed(plans: Sequence[Mapping[str, Any]], plan_id: str, limit: int = 20) -
     """The newest ``limit`` plans plus every active one and the shown one (so the switcher sees them all)."""
     head = list(plans[:limit])
     ids = {p["id"] for p in head}
-    return head + [p for p in plans[limit:] if p["id"] not in ids and (p.get("status") in ACTIVE or p["id"] == plan_id)]
+    return head + [p for p in plans[limit:] if p["id"] not in ids and (p.get("status") in (*ACTIVE, "interrupted") or p["id"] == plan_id)]
 
 
 def waiting_rows(plan: Mapping[str, Any], table: pc.PlanTable, units: Sequence[Mapping[str, Any]],

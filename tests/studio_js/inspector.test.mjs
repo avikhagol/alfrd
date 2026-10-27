@@ -187,7 +187,7 @@ const block = (query) => {
 test("css: hidden by default; open shows it", () => {
   assert.match(css, /\.chat-side \{[^}]*display: none/);
   assert.match(css, /\.chat-inspect-open \.chat-side \{ display: flex; \}/);
-  assert.match(css, /\.chat \{[^}]*grid-template-columns: 220px minmax\(0, 1fr\);/, "no inspector column by default");
+  assert.match(css, /\.chat \{[^}]*grid-template-columns: var\(--sessions-width, 220px\) minmax\(0, 1fr\);/, "no inspector column by default");
 });
 
 test("css: the Inspect toggle is shown at every width", () => {
@@ -198,7 +198,7 @@ test("css: the Inspect toggle is shown at every width", () => {
 
 test("css: docked above 1280 px adds the third column only when open", () => {
   const docked = block("(min-width: 1281px)");
-  assert.match(docked, /\.chat\.chat-inspect-open \{ grid-template-columns: 220px minmax\(0, 1fr\) 320px/);
+  assert.match(docked, /\.chat\.chat-inspect-open \{ grid-template-columns: var\(--sessions-width, 220px\) minmax\(0, 1fr\) var\(--inspector-width, 320px\)/);
   assert.doesNotMatch(docked, /position: absolute/);
 });
 
@@ -211,7 +211,7 @@ test("css: overlay at 1280 px and below, and at 900 px", () => {
   assert.match(narrow, /grid-template-columns: minmax\(0, 1fr\)/);
   assert.doesNotMatch(narrow, /\.chat-inspect-toggle \{ display: none/);
   const mid = block("(min-width: 901px) and (max-width: 1280px)");
-  assert.match(mid, /grid-template-columns: 208px minmax\(0, 1fr\)/);
+  assert.match(mid, /grid-template-columns: var\(--sessions-width, 220px\) minmax\(0, 1fr\)/);
 });
 
 test("css: 200 % zoom (1280 px window = 640 CSS px) fills the view and scrolls", () => {

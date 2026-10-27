@@ -135,14 +135,12 @@ test("two mounted forms preserve drafts while polling and show answered elsewher
 
 test("Chat navigation hides unknown and zero badges and labels positive counts", async () => {
   const src = await readFile(new URL("../../src/alfrd/web/js/data/chat_projects.js", import.meta.url), "utf8");
-  const body = src.slice(src.indexOf("  function paint() {"), src.indexOf("  picker.decorate"));
-  const link = {}, badge = { parentElement: {}, setAttribute(k, v) { this[k] = v; } };
+  const body = src.slice(src.indexOf("  function paint() {"), src.indexOf("  const events"));
+  const badge = { parentElement: {}, setAttribute(k, v) { this[k] = v; } };
   const paint = new Function("pendingCount", "countText", "$", "chatProjects", "enabled", "ctx", "routeHash", "project", `${body}; paint();`);
   for (const count of [null, 0, 3, null]) {
-    paint(() => count, countText, (selector) => selector === "#chat-inbox" ? link : badge, { snapshot: () => ({ sessions: [] }) }, true, { state: {} }, () => "#chat", "p");
+    paint(() => count, countText, () => badge, { snapshot: () => ({ sessions: [] }) }, true, { state: {} }, () => "#chat", "p");
     const label = count > 0 ? "Chat · 3 pending" : "Chat";
-    assert.equal(link.textContent, label);
-    assert.equal(link.hidden, false);
     assert.equal(badge.hidden, !(count > 0));
     assert.equal(badge.textContent, count > 0 ? count : "");
     assert.equal(badge["aria-label"], label);
@@ -151,14 +149,10 @@ test("Chat navigation hides unknown and zero badges and labels positive counts",
 });
 
 
-test("session list omits malformed count badges and retains known counts", async () => {
+test("session rows contain only escaped title and a plan-running dot", async () => {
   const src = await readFile(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
-  const body = src.slice(src.indexOf("function drawSessions() {"), src.indexOf("\n// --- session list:"));
-  const box = {};
-  const draw = new Function("S", "countText", "$", "host", "changed", "needsOnly", "needsMe", "esc", "routeHash", "ctxRef", "icon", "activeSession", "paintSessionList", `${body}; drawSessions();`);
-  for (const pending_user of [null, undefined, "2", 1.5, -1, 0, 2]) {
-    draw({ sessions: [{ id: "s", title: "Session", pending_user }] }, countText, () => box, {}, () => true, false, needsMe, (x) => x, () => "#chat/s", { state: {} }, () => "", activeSession, paintSessionList);
-    if (Number.isInteger(pending_user) && pending_user >= 0) assert.ok(box.innerHTML.includes(`<span class="badge">${pending_user} pending</span>`));
-    else assert.doesNotMatch(box.innerHTML, /class="badge"|unavailable/);
-  }
+  const row = src.slice(src.indexOf('    : `<li class="chat-session-item"><a'), src.indexOf('// --- session list:'));
+  assert.match(row, /s.plan_status === "running"/);
+  assert.match(row, /aria-label="Running"/);
+  assert.doesNotMatch(row, /activeSession|countText|last_message|<time|data-chat="rename"|data-chat="delete"/);
 });

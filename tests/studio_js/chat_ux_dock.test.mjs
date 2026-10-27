@@ -151,6 +151,7 @@ test("dock host integration: sessions, permission continuity, Stop and responsiv
     assert.equal(await page.locator("#chat-input").inputValue(),"unsent draft");
     assert.equal(await page.evaluate(()=>location.hash),route);
     await page.locator("[data-chat=clear-search]").click();
+    await page.locator(".chat-session-menu summary").click();
     await page.locator('[data-chat=rename][data-sid-act="s"]').click();
     await page.locator("#chat-rename-input").fill("Keep failed edit");
     await page.evaluate(()=>{window.replyError="offline";});
@@ -272,7 +273,7 @@ test("dock host integration: sessions, permission continuity, Stop and responsiv
         }else if(width<=900){
           await page.locator("[data-chat=sessions]").click();
           const nav = page.locator(".chat-sessions");
-          const last = nav.locator("button:visible:not([disabled])").last();
+          const last = nav.locator('a[href]:visible, button:visible:not([disabled]), input:visible, [tabindex="0"]:visible').last();
           await last.focus(); await page.keyboard.press("Tab");
           assert.equal(await nav.locator("[data-chat=new]").evaluate(e=>e===document.activeElement),true);
           await page.keyboard.press("Shift+Tab");assert.equal(await last.evaluate(e=>e===document.activeElement),true);

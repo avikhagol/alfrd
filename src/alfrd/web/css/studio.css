@@ -1160,3 +1160,14 @@ body.wf-compact:has(#view-workflow:not([hidden])) :is(.footbar, .dock-strip, .co
   .modal.full:has([data-text-find]) .modal-h > .trunc { max-width: 100%; }
   .modal.full:has([data-text-find]) [data-log-dock] { font-size: 0; gap: 0; padding: 0 8px; }
 }
+
+/* Panel boundaries share one accessible interaction; the hit area stays outside actions. */
+.panel-resize { position: absolute; z-index: 4; top: 0; bottom: 0; right: -6px; width: 12px; cursor: col-resize; touch-action: none; }
+.panel-resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; background: transparent; }
+.panel-resize:hover::after, .panel-resize:focus-visible::after { background: var(--accent); }
+.panel-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.panel-resize-right { right: auto; left: -6px; }
+.panel-resize[hidden] { display: none; }
+.rail { position: relative; }
+@media (min-width: 1280px) { .app[data-sidebar="expanded"] { --rail: var(--nav-width, 240px); } }
+@media (forced-colors: active) { .panel-resize::after { background: CanvasText; } .panel-resize:focus-visible { outline-color: Highlight; } }

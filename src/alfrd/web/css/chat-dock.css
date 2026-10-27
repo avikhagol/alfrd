@@ -10,7 +10,7 @@
 .chat .chat-list { flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
 .chat [data-chat="needs-me"][aria-pressed="true"] { border-color: var(--chat-action); background: var(--accent-wash, var(--chat-hover)); color: var(--chat-text); }
 .chat [data-chat="needs-me"][aria-pressed="true"]::before { content: "\2713" / ""; }
-.chat .chat-session b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.chat .chat-session b { display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat .chat-session.on { border-color: var(--chat-action); }
 .chat .chat-rename { flex-wrap: wrap; }
 .chat .chat-rename [role=alert] { width: 100%; margin: 0; color: var(--chat-error); }
@@ -20,7 +20,7 @@
 .chat .chat-head-title, .chat .chat-head-status { display: flex; width: 100%; align-items: center; gap: 8px; min-width: 0; }
 .chat .chat-head-title > button, .chat .chat-head-status > button { flex: none; }
 .chat #chat-check-status { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.chat .chat-head h3 { flex: 1; min-width: 0; }
+.chat .chat-head h3 { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat .chat-head .chat-wide { flex-basis: auto; }
 .chat-dock.chat-dock { box-sizing: border-box; min-height: 0; }
 .chat-dock .cd-head { flex: none; flex-wrap: nowrap; gap: 8px; }
@@ -42,8 +42,7 @@
   .chat .chat-head button, .chat .chat-sessions button, .chat-dock .cd-head .btn, .chat-dock .cd-head button, .chat-dock .cd-session-row > *, .chat-mail-card button, .chat-mail-card summary { min-height: 44px; }
   .chat .chat-sessions .icon-btn, .chat-dock .cd-head .icon-btn { min-width: 44px; }
   .chat .chat-search .input { min-height: 44px; }
-  .chat .chat-session-item .chat-session { padding-right: 104px; }
-  .chat .chat-session-acts { opacity: 1; }
+
   .chat-dock.chat-dock { max-height: 100%; width: min(100%, 440px); }
 }
 @media (max-width: 640px) {
@@ -51,4 +50,17 @@
   .chat-dock.chat-dock { inset: 8px; width: auto; }
 }
 
-.chat-session.active-chat { border-inline-start: 3px solid var(--chat-action); }
+
+.chat .chat-session { display: flex; flex-direction: row; align-items: center; gap: 8px; min-width: 0; }
+.chat .chat-session b { flex: 1; }
+.chat .chat-session-item .chat-session { padding: 10px; }
+.chat-running { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--chat-success); }
+.chat-session-menu { position: relative; }
+.chat-session-menu summary { display: flex; align-items: center; justify-content: center; cursor: pointer; min-width: 32px; min-height: 32px; }
+.chat-session-menu > div { position: absolute; z-index: 6; right: 0; padding: 8px; background: var(--surface-float); border: 1px solid var(--border); }
+.chat-session-menu summary:focus-visible { outline: 2px solid var(--accent); }
+.chat :is([data-chat="new"], [data-chat="inspect"], [data-chat="check"]) { min-width: 32px; min-height: 32px; }
+@media (pointer: coarse), (max-width: 900px) { .chat [data-chat], .chat-session-menu summary { min-width: 44px; min-height: 44px; } }
+
+
+.chat-running[hidden] { display: none; }

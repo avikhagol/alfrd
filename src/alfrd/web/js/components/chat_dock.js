@@ -1,3 +1,4 @@
+import { mountPanelResize } from './panel_resize.js';
 // Chat dock: the active chat session beside any project view (Workflow, Results, Overview, plugin
 // pages…). Transcript (transcript.js, shared with the Chat page), composer (@-mentions, Enter / Shift+Enter) and one progress line for the active
 // request; "Open full" goes to the Chat page (graph, decisions, sessions). Loaded on the first open
@@ -11,7 +12,7 @@ import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
 import { messageHtml as sharedMessageHtml } from "./chat_message.js";
-import { activeSession, destinationSession, chatSheet, conversationStarter } from "../data/chat_sessions.js";
+import { destinationSession, chatSheet, conversationStarter } from "../data/chat_sessions.js";
 import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, staleState, statusInfo, tokenLine, createRequestStop } from "../data/chat.js";
 
 import { chatProjects } from "../data/chat_projects.js";
@@ -20,9 +21,13 @@ const SESSION_KEY = "ui:chat.session"; // shared with the Chat page: the dock fo
 const MIN = 300, MAX = 720;
 const D = { project: null, sessions: null, sid: null, data: null, error: "", sendError: "", gen: 0, key: "", notes: [] };
 let el = null, ctxRef = null, opts = {}, timer = 0, clock = 0, slow = 0, composer = null, draft = null, cssReady = null, act = null;
-let sheet = null;
+let sheet = null, resizer, railObserver;
 const syncSheet = () => {
-  const modal = el && !el.hidden && window.innerWidth <= 900;
+  const rail = document.querySelector(".rail")?.getBoundingClientRect().width || 0;
+  const modal = el && !el.hidden && (window.innerWidth <= 900 || window.innerWidth - rail < 708);
+  document.querySelector("#app")?.classList.toggle("chat-dock-sheet", Boolean(modal));
+  el?.classList.toggle("cd-sheet", Boolean(modal));
+  resizer?.sync();
   if (modal && !sheet) sheet = chatSheet(el, () => opts.onClose?.());
   else if (!modal && sheet) { sheet(); sheet = null; }
   if (el && !modal) el.setAttribute("role", "complementary");
@@ -70,8 +75,7 @@ export async function render(host, ctx, o = {}) {
   if (p !== ctx.activeProject()) return;
   if (o.isOpen && !o.isOpen()) return; // closed while the stylesheet loaded
   if (el !== host || host.dataset.project !== (p || "")) mount(host, p);
-  host.style.setProperty("--dock-w", `${clamp(o.width || 380)}px`);
-  document.documentElement.style.setProperty("--dock-w", `${clamp(o.width || 380)}px`);
+  resizer?.sync();
   const wasHidden = host.hidden;
   host.hidden = false;
   if (wasHidden) { loadSessions(false); if (D.sid) loadSession(); act?.kick(); }
@@ -91,13 +95,13 @@ export function hide() {
   act?.stop();
 }
 
-const clamp = (w) => Math.max(MIN, Math.min(MAX, Math.round(Number(w) || 380)));
 
 function onKey(e) {
   if (e.key === "Escape" && !e.defaultPrevented && matchMedia("(max-width: 900px)").matches) { e.preventDefault(); opts.onClose?.(); }
 }
 
 function mount(host, p) {
+  resizer?.destroy(); railObserver?.disconnect();
   draft?.destroy();
   act?.stop();
   el = host;
@@ -111,7 +115,7 @@ function mount(host, p) {
       <span class="grow"></span>
       <a class="btn sm" id="cd-full" href="#/chat" title="Open the full Chat page: task graph, decisions, sessions">Open full</a>
       <button type="button" class="icon-btn sm" data-cd="close" aria-label="Close the chat dock" aria-keyshortcuts="Alt+Shift+A" title="Close (Alt+Shift+A)">${icon("close")}</button></header>
-    <div class="cd-session-row"><label class="sr-only" for="cd-session">Session</label><select id="cd-session" class="input sm"></select><button type="button" class="btn sm" data-cd="new">${icon("plus")} New</button></div>
+    <div class="cd-session-row"><label class="sr-only" for="cd-session">Session</label><select id="cd-session" class="input sm"></select><span id="cd-running" class="chat-running" role="img" aria-label="Running" title="Running" hidden></span><button type="button" class="btn sm" data-cd="new">${icon("plus")} New</button></div>
     <p class="cd-progress small" id="cd-progress" aria-live="off"></p>
     <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
@@ -129,33 +133,16 @@ function mount(host, p) {
   host.addEventListener("keydown", onKey); // named handlers: a re-mount on the same host doesn't add a second copy
   $("#cd-session", host).addEventListener("change", (e) => openSession(e.target.value));
   grip($(".cd-grip", host));
+  railObserver = typeof ResizeObserver === "function" ? new ResizeObserver(syncSheet) : null;
+  const rail = document.querySelector(".rail"); if (rail) railObserver?.observe(rail);
 }
 
 function grip(g) {
-  const set = (w, save) => {
-    const v = clamp(w);
-    el.style.setProperty("--dock-w", `${v}px`);
-    document.documentElement.style.setProperty("--dock-w", `${v}px`);
-    g.setAttribute("aria-valuenow", String(v));
-    if (save) opts.onWidth?.(v);
-  };
-  g.setAttribute("aria-valuenow", String(clamp(opts.width || 380)));
-  g.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    g.setPointerCapture?.(e.pointerId);
-    const move = (ev) => set(window.innerWidth - ev.clientX, false);
-    const up = (ev) => { g.removeEventListener("pointermove", move); g.removeEventListener("pointerup", up); set(window.innerWidth - ev.clientX, true); };
-    g.addEventListener("pointermove", move);
-    g.addEventListener("pointerup", up);
-  });
-  g.addEventListener("keydown", (e) => {
-    const now = Number(g.getAttribute("aria-valuenow")) || 380;
-    const step = e.shiftKey ? 80 : 20;
-    const to = { ArrowLeft: now + step, ArrowRight: now - step, Home: MAX, End: MIN }[e.key];
-    if (to == null) return;
-    e.preventDefault();
-    set(to, true);
-  });
+  resizer = mountPanelResize({ panel: el, handle: g, width: opts.width, min: MIN, max: MAX, defaultWidth: 380, side: "right",
+    label: "Resize the chat dock", enabled: () => !el.classList.contains("cd-sheet") && window.innerWidth > 900,
+    available: () => window.innerWidth - (document.querySelector(".rail")?.getBoundingClientRect().width || 0) - 408,
+    apply: (w) => { el.style.setProperty("--dock-w", `${w}px`); document.documentElement.style.setProperty("--dock-w", `${w}px`); },
+    save: (w) => opts.onWidth?.(w) });
 }
 
 // --- data --------------------------------------------------------------------------
@@ -173,7 +160,7 @@ function applySessions(entry) {
 chatProjects.subscribe(applySessions);
 async function loadSessions(refresh = true) {
   const p = D.project;
-  if (p) applySessions(await chatProjects.load(p, true, refresh));
+  if (p) { chatProjects.select(p); applySessions(await chatProjects.load(p, true, refresh)); }
 }
 
 async function loadSession() {
@@ -210,7 +197,9 @@ const agentName = (key) => (key === "alfrd" ? "ALFRD" : agents()[key]?.label || 
 function draw() {
   if (!el || el.hidden) return;
   const sel = $("#cd-session", el);
-  const opts_ = (D.sessions || []).map((s) => `<option value="${esc(s.id)}" ${s.id === D.sid ? "selected" : ""}>${esc(s.title)}${s.pending_user > 0 ? " · Needs you" : activeSession(s) ? " · Active" : ""}</option>`).join("");
+  const runningDot = $("#cd-running", el);
+  if (runningDot) runningDot.hidden = !D.sessions?.some((s) => s.id === D.sid && s.plan_status === "running");
+  const opts_ = (D.sessions || []).map((s) => `<option value="${esc(s.id)}" ${s.id === D.sid ? "selected" : ""}>${esc(s.title)}</option>`).join("");
   const html = opts_ || `<option value="">${D.sessions ? "No session yet" : "Loading…"}</option>`;
   if (sel.dataset.html !== html) { sel.dataset.html = html; sel.innerHTML = html; }
   sel.disabled = !D.sessions?.length;

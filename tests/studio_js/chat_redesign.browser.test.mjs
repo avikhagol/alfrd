@@ -110,7 +110,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       assert.equal(await active.locator('.chat-mail-card').count(), 1);
       assert.equal(await active.locator('.chat-mail-card').isVisible(), true, 'pending cards are visible without opening anything');
       assert.equal(await page.locator('.chat-mail-card input:checked').count(), 0);
-      await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+      await page.getByRole('button', { name: 'Show or hide the inspector', exact: true }).click();
       assert.equal(await page.locator('#chat-progress').isVisible(), true);
       assert.equal(await page.locator('#chat-decisions').isVisible(), true);
       assert.match(await page.locator('[data-decision="d2"]').innerText(), /Blocked 2× with the same access[\s\S]*Grant this task access and re-run: \/srv\/site[\s\S]*Reassign this task to @codex/);
