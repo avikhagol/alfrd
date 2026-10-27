@@ -309,6 +309,20 @@ class AlfrdWatcher(Watcher):
         plans = scheduler.list_plans(self.root) + scheduler.chat_plans(self.root)
         active = {p["id"] for p in plans if p.get("status") in scheduler.ACTIVE}
         out = self._chat_notifications.poll(self.root, self.key, baseline=self._snapshot is None)
+        metadata = {}
+        base = self.root / ".alfrd" / "chat"
+        for folder in base.iterdir() if base.is_dir() else []:
+            try:
+                stat = (folder / "session.json").stat()
+                metadata[folder.name] = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+        previous = getattr(self, "_session_metadata", None)
+        if previous is not None:
+            for sid in sorted(previous.keys() | metadata.keys()):
+                if previous.get(sid) != metadata.get(sid):
+                    out.append({"kind": "chat.session.changed", "plan": f"chat-{sid}", "project": self.key})
+        self._session_metadata = metadata
         for plan in plans:
             ident = plan["id"]
             if ident not in active and ident not in self._tails:

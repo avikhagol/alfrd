@@ -11,8 +11,10 @@ import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
 import { messageHtml as sharedMessageHtml } from "./chat_message.js";
-import { chatSheet, conversationStarter } from "../data/chat_sessions.js";
+import { activeSession, destinationSession, chatSheet, conversationStarter } from "../data/chat_sessions.js";
 import { activeRequest, costWarnings, duration, hasActivity, helpText, money, parseMention, requestProgress, staleState, statusInfo, tokenLine, createRequestStop } from "../data/chat.js";
+
+import { chatProjects } from "../data/chat_projects.js";
 
 const SESSION_KEY = "ui:chat.session"; // shared with the Chat page: the dock follows the session you last opened
 const MIN = 300, MAX = 720;
@@ -55,7 +57,7 @@ window.addEventListener("alfrd-events", (e) => {
   if (!el || el.hidden || project !== D.project) return;
   if (!(events || []).some((ev) => String(ev.plan || "").startsWith("chat-"))) return;
   clearTimeout(timer);
-  timer = setTimeout(() => { loadSessions(); if (D.sid) loadSession(); }, 250);
+  timer = setTimeout(() => { if (D.sid) loadSession(); }, 250);
   if (events.some((ev) => ev.plan === `chat-${D.sid}`)) act?.kick();
 });
 
@@ -63,14 +65,16 @@ window.addEventListener("alfrd-events", (e) => {
 export async function render(host, ctx, o = {}) {
   ctxRef = ctx; opts = o;
   const p = ctx.activeProject();
+  if (host.dataset.project !== (p || "")) { hide(); host.replaceChildren(); }
   await loadCssOnce();
+  if (p !== ctx.activeProject()) return;
   if (o.isOpen && !o.isOpen()) return; // closed while the stylesheet loaded
-  if (el !== host || host.dataset.project !== p) mount(host, p);
+  if (el !== host || host.dataset.project !== (p || "")) mount(host, p);
   host.style.setProperty("--dock-w", `${clamp(o.width || 380)}px`);
   document.documentElement.style.setProperty("--dock-w", `${clamp(o.width || 380)}px`);
   const wasHidden = host.hidden;
   host.hidden = false;
-  if (wasHidden) { loadSessions(); if (D.sid) loadSession(); act?.kick(); }
+  if (wasHidden) { loadSessions(false); if (D.sid) loadSession(); act?.kick(); }
   draw(); syncSheet();
   if (!clock) clock = setInterval(() => { if (!el?.hidden) drawProgress(); }, 1000);
   if (!slow) slow = setInterval(() => { // only when live updates are off; the event stream is faster
@@ -97,7 +101,7 @@ function mount(host, p) {
   draft?.destroy();
   act?.stop();
   el = host;
-  Object.assign(D, { project: p, sessions: null, sid: null, data: null, error: "", sendError: "", key: "" });
+  Object.assign(D, { project: p, sessions: null, sid: null, data: null, error: "", sendError: "", key: "", gen: D.gen + 1 });
   host.dataset.project = p || "";
   host.className = "chat-dock";
   host.setAttribute("aria-labelledby", "cd-title");
@@ -113,7 +117,7 @@ function mount(host, p) {
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
     <p class="chat-stop-status muted small" role="status"></p>
     ${composerHtml("cd", { rows: 2, hint: false, attachments: true })}`;
-  act = mountTranscript($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid),
+  act = mountTranscript($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid && n.project === D.project),
     select: () => { $("#cd-full", el)?.click(); },
     openLog: (rel) => openLog(ctxRef, D.project, rel), cancel: cancelRow });
   draft = mountComposerDraft(host, "cd", { settings: () => D.data?.settings, onError: (m) => { D.sendError = m; $("#cd-send-error", host).textContent = m; } });
@@ -156,18 +160,20 @@ function grip(g) {
 
 // --- data --------------------------------------------------------------------------
 
-async function loadSessions() {
-  const p = D.project;
-  if (!p) return;
-  try {
-    const { sessions } = await get(`${base(p)}/sessions`);
-    if (p !== D.project) return;
-    D.sessions = sessions;
-    const remembered = (storage.get(SESSION_KEY, {}) || {})[p];
-    const want = sessions.some((s) => s.id === remembered) ? remembered : D.sid ? D.sid : sessions[0]?.id || null;
-    if (want !== D.sid) openSession(want, { remember: false });
-  } catch (error) { if (p === D.project) D.error = error.message; }
+function applySessions(entry) {
+  if (!entry || entry.project !== D.project || !el || el.hidden) return;
+  D.sessions = entry.sessions; D.error = entry.error || "";
+  if (D.sessions) {
+    const remembered = (storage.get(SESSION_KEY, {}) || {})[D.project];
+    const want = destinationSession(D.sessions, D.sid || remembered);
+    if (want !== D.sid) openSession(want);
+  }
   draw();
+}
+chatProjects.subscribe(applySessions);
+async function loadSessions(refresh = true) {
+  const p = D.project;
+  if (p) applySessions(await chatProjects.load(p, true, refresh));
 }
 
 async function loadSession() {
@@ -204,7 +210,7 @@ const agentName = (key) => (key === "alfrd" ? "ALFRD" : agents()[key]?.label || 
 function draw() {
   if (!el || el.hidden) return;
   const sel = $("#cd-session", el);
-  const opts_ = (D.sessions || []).map((s) => `<option value="${esc(s.id)}" ${s.id === D.sid ? "selected" : ""}>${esc(s.title)}${s.active_requests ? " ●" : ""}</option>`).join("");
+  const opts_ = (D.sessions || []).map((s) => `<option value="${esc(s.id)}" ${s.id === D.sid ? "selected" : ""}>${esc(s.title)}${s.pending_user > 0 ? " · Needs you" : activeSession(s) ? " · Active" : ""}</option>`).join("");
   const html = opts_ || `<option value="">${D.sessions ? "No session yet" : "Loading…"}</option>`;
   if (sel.dataset.html !== html) { sel.dataset.html = html; sel.innerHTML = html; }
   sel.disabled = !D.sessions?.length;
@@ -221,9 +227,9 @@ function draw() {
 function drawLog() {
   const box = $("#cd-log", el);
   box.setAttribute("aria-busy", String(Boolean(!D.data && !D.error && (!D.sessions || D.sid))));
-  if (D.data) { act?.update(D.data, D.notes.filter((n) => n.sid === D.sid)); conversationStarter(box); return; }
+  if (D.data) { act?.update(D.data, D.notes.filter((n) => n.sid === D.sid && n.project === D.project)); conversationStarter(box); return; }
   if (D.error) box.innerHTML = `<p class="callout fail small" role="alert">${esc(D.error)} <button type="button" class="btn sm" data-cd="refresh">Retry</button></p>`;
-  else if (D.sessions && !D.sessions.length) box.innerHTML = `<div class="empty small"><p>Start a conversation with your agents.</p><button type="button" class="btn sm primary" data-cd="new">New session</button></div>`;
+  else if (D.sessions && !D.sessions.length) box.innerHTML = `<div class="empty small"><p>No conversations in ${esc(ctxRef?.projectName?.(D.project) || D.project)}.</p><button type="button" class="btn sm primary" data-cd="new">New session</button></div>`;
   else box.innerHTML = `<p class="muted small" role="status">Loading conversation…</p>`;
 }
 
@@ -287,8 +293,11 @@ async function viewArtifact(ref) {
 }
 
 async function newSession() {
+  const p = D.project;
   try {
-    const { session } = await server.mutate(`/studio/projects/${encodeURIComponent(D.project)}/chat/sessions`, {});
+    const { session } = await server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat/sessions`, {});
+    chatProjects.load(p, true, true);
+    if (p !== D.project) return;
     D.sessions = [session, ...(D.sessions || [])];
     openSession(session.id);
     $("#cd-input", el)?.focus();
@@ -306,7 +315,7 @@ async function cancelRow(row, button) {
 // --- slash commands (never sent) --------------------------------------------------------
 
 function note(text) {
-  D.notes.push({ id: `local:${Date.now()}`, sid: D.sid, role: "system", text, at: new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 19) });
+  D.notes.push({ id: `local:${Date.now()}`, sid: D.sid, project: D.project, role: "system", text, at: new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 19) });
   D.key = ""; draw();
   const box = $("#cd-log", el); box.scrollTop = box.scrollHeight;
 }

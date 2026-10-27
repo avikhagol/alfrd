@@ -6,7 +6,7 @@ export function pendingCount(sessions) {
 export const needsMe = (sessions) => sessions.filter((s) => s.pending_user == null || s.pending_user > 0);
 export const countText = (n) => !Number.isInteger(n) || n < 0 ? "" : `${n} pending`;
 
-/** A project-scoped shell poll; old requests cannot overwrite a newly selected project. */
+/** A project-scoped one-shot loader; old requests cannot overwrite a newly selected project. */
 export function createInbox({ request, publish, visible = () => !document.hidden }) {
   let project = null, generation = 0, timer, loading = false, again = false;
   async function load() {
@@ -23,7 +23,7 @@ export function createInbox({ request, publish, visible = () => !document.hidden
     } catch { if (gen === generation) publish(p, null, null); }
     finally {
       loading = false;
-      if (project) timer = setTimeout(load, again || gen !== generation ? 80 : 10000);
+      if (project && (again || gen !== generation)) timer = setTimeout(load, 80);
     }
   }
   return {

@@ -484,3 +484,40 @@ def test_changes_poll_and_live_off(served, tmp_path):
     app.extensions.pop("alfrd_live").stop_all()
     assert client.get("/api/studio/events").status_code == 404
     assert client.get("/api/studio/session").get_json()["live"]["enabled"] is False
+
+
+def test_idle_session_membership_rename_and_removal_invalidate_without_plan(tmp_path):
+    from alfrd.studio_live import AlfrdWatcher
+    folder = tmp_path / ".alfrd" / "chat" / "idle"
+    folder.mkdir(parents=True)
+    meta = folder / "session.json"
+    meta.write_text('{"id":"idle","title":"One"}')
+    w = AlfrdWatcher("project-a", tmp_path, lambda *args: None)
+    assert w.probe() == []  # initial baseline produces no storm
+    meta.write_text('{"id":"idle","title":"Renamed"}')
+    expected = {"kind": "chat.session.changed", "plan": "chat-idle", "project": "project-a"}
+    assert w.probe() == [expected]
+    assert w.probe() == []
+    shutil.rmtree(folder)
+    assert w.probe() == [expected]
+    folder.mkdir()
+    meta.write_text('{"id":"idle","title":"Recreated"}')
+    assert w.probe() == [expected]
+    (folder.parent / ".DS_Store").write_text("")  # a stray file is not a session
+    assert w.probe() == []
+
+
+def test_session_metadata_invalidation_uses_existing_versioned_history(tmp_path):
+    from alfrd.studio_live import AlfrdWatcher
+    published = []
+    w = AlfrdWatcher("p", tmp_path, published.append)
+    assert w.check() is None
+    folder = tmp_path / ".alfrd" / "chat" / "idle"
+    folder.mkdir(parents=True)
+    (folder / "session.json").write_text('{"id":"idle"}')
+    event = w.check()
+    assert event["type"] == "alfrd" and event["version"] == 1
+    assert event["events"][0]["plan"] == "chat-idle"
+    assert published == [event]
+    assert w.since(w.epoch, 0) == ([event], False)
+    assert w.since("expired-cursor", 0) == ([], True)

@@ -35,6 +35,7 @@ export function typeahead(items, index, typed) {
  */
 export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "Nothing to choose", action = () => null }) {
   const valEl = trigger.querySelector(".picker-val");
+  let raw = [], decorator = null;
   let items = [], value = null, typed = "", typedAt = 0, refresh;
   trigger.setAttribute("aria-haspopup", "listbox");
   trigger.setAttribute("aria-expanded", "false");
@@ -153,12 +154,15 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
 
   return {
     set(next, selected) {
-      items = next;
+      raw = next;
+      items = decorator ? raw.map(decorator) : raw;
       value = selected;
       trigger.disabled = !items.length && !action();
       fit();
       refresh?.();
     },
+    decorate(fn) { decorator = fn; this.redecorate(); },
+    redecorate() { items = decorator ? raw.map(decorator) : raw; fit(); refresh?.(); },
     open,
     close: () => close(false),
     get value() { return value; },

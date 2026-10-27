@@ -14,13 +14,15 @@ import { bindComposer, composerHtml } from "./chat_composer.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
 import { messageHtml as sharedMessageHtml } from "./chat_message.js";
-import { filterSessions, chatSheet, conversationStarter } from "../data/chat_sessions.js";
+import { activeSession, destinationSession, paintSessionList, filterSessions, chatSheet, conversationStarter } from "../data/chat_sessions.js";
 import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
 import { createGoalsTab } from "./goals_tab.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
   parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
 } from "../data/chat.js";
+
+import { chatProjects } from "../data/chat_projects.js";
 
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
   error: null, loading: false, checking: null, task: null, open: new Map(), sendError: "", gen: 0, keys: {}, notes: [] };
@@ -38,9 +40,9 @@ const queries = new Map();
 const stop = createRequestStop({ state: () => S.data, context: () => ({ project: S.project, sid: S.sid }),
   cancel: (row, ctx, task) => post(ctx.project, `/sessions/${encodeURIComponent(ctx.sid)}/tasks/${encodeURIComponent(row)}/cancel`, { expected_status: task.status, ...(task.units?.at(-1) ? { expected_unit: task.units.at(-1) } : {}) }),
   refresh: loadSession, changed: () => composer?.refresh(), report: (text, tone) => ctxRef.toast(text, tone) });
-window.addEventListener("alfrd-inbox", ({ detail }) => {
-  if (host?.isConnected && detail.project === S.project && detail.sessions) {
-    S.sessions = detail.sessions; S.sessionsError = null; ctxRef?.update();
+chatProjects.subscribe((entry) => {
+  if (host?.isConnected && entry.project === S.project) {
+    S.sessions = entry.sessions; S.sessionsError = entry.error; ctxRef?.update();
   }
 });
 
@@ -64,7 +66,7 @@ window.addEventListener("alfrd-events", (e) => {
 
 function scheduleRefresh(session = true) {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => { if (session && S.sid) loadSession(); loadSessions(); }, 250);
+  refreshTimer = setTimeout(() => { if (session && S.sid) loadSession(); }, 250);
 }
 
 const liveFlowing = (ctx) => ["live", "polling"].includes(ctx.state.liveStatus?.state);
@@ -87,7 +89,7 @@ export function render(el, ctx) {
   host = el;
   const wanted = ctx.state.chatSession || (storage.get(SESSION_KEY, {}) || {})[p] || null;
   if (S.sessions && !S.sessionsError) {
-    const sid = wanted && (ctx.state.chatSession || S.sessions.some((s) => s.id === wanted)) ? wanted : S.sessions[0]?.id || null;
+    const sid = destinationSession(S.sessions, S.sid || wanted, ctx.state.chatSession);
     if (sid !== S.sid) openSession(sid, { replace: !ctx.state.chatSession || ctx.state.chatSession !== sid });
   }
   draw(ctx);
@@ -129,7 +131,7 @@ function mount(el, ctx, p) {
   goals.stop();
   draft?.destroy();
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
-    task: null, sendError: "", keys: {}, renaming: null });
+    task: null, sendError: "", keys: {}, renaming: null, gen: S.gen + 1 });
   act?.stop();
   scope = createRequestScope(); inspTab = "graph";
   S.sessionQuery = queries.get(p) || "";
@@ -162,7 +164,7 @@ function mount(el, ctx, p) {
     </aside></div>`;
   graph = mountGraph($("#chat-graph", el), { onMail: (request, id) => { closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
-  act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid),
+  act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid && n.project === S.project),
     select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
     inspect: openInspector,
     openLog: (rel, meta) => openLog(ctxRef, S.project, rel, meta), cancel: (row, b) => taskAction("cancel", row, b) });
@@ -174,19 +176,17 @@ function mount(el, ctx, p) {
   insp = createInspector({ chat: $(".chat", el), panel: $("#chat-inspector", el), button: { setAttribute: (k, v) => toggle()?.setAttribute(k, v) },
     focus: (target) => { inspectorSheet?.({ restore: false }); inspectorSheet = null; (target?.isConnected ? target : toggle())?.focus(); } });
   insp.restore(); syncSheets();
-  loadSessions();
+  loadSessions(false);
   loadSettings();
 }
 
 // --- loading ----------------------------------------------------------------------
 
-async function loadSessions() {
+async function loadSessions(refresh = true) {
   const p = S.project;
-  try {
-    const { sessions } = await get(`${base(p)}/sessions`);
-    if (p !== S.project) return;
-    S.sessions = sessions; S.sessionsError = null;
-  } catch (error) { if (p === S.project) S.sessionsError = error.message; }
+  const entry = await chatProjects.load(p, true, refresh);
+  if (p !== S.project || !entry) return;
+  S.sessions = entry.sessions; S.sessionsError = entry.error;
   ctxRef?.update();
 }
 
@@ -284,32 +284,27 @@ function draw(ctx) {
 
 function drawSessions() {
   const box = $("#chat-list", host);
+  box.setAttribute?.("aria-busy", String(!S.sessions && !S.sessionsError));
   // a refresh while a name is being edited keeps the input (and what was typed) as it is
   if (S.renaming && box.querySelector(`[data-rename="${CSS.escape(S.renaming)}"]`) && S.sessions?.some((x) => x.id === S.renaming)) return;
   if (!changed("sessions", [S.sessions, S.sessionsError, S.sid, S.renaming, needsOnly, S.sessionQuery])) return;
   if (S.sessionsError) { box.innerHTML = `<li class="callout fail small" role="alert">${esc(S.sessionsError)} <button type="button" class="btn sm" data-chat="reload">Retry</button></li>`; return; }
   if (!S.sessions) { box.innerHTML = `<li class="muted small" role="status">Loading sessions…</li>`; return; }
-  if (!S.sessions.length) { box.innerHTML = `<li class="muted small">Start a conversation with your agents. <button type="button" class="btn sm" data-chat="new">New session</button><button type="button" class="btn sm" data-chat="setup">Setup</button></li>`; return; }
-  // Keep a focused row stable while list snapshots arrive.
-  const focusedSid = globalThis.document?.activeElement?.closest?.("[data-sid-act], a[data-sid]");
-  if (!S.renaming && focusedSid && box.contains(focusedSid) && S.sessions.some((s) => s.id === (focusedSid.dataset.sid || focusedSid.dataset.sidAct))) {
-    for (const link of box.querySelectorAll("a[data-sid]")) {
-      const selected = link.dataset.sid === S.sid; link.classList.toggle("on", selected);
-      if (selected) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
-    }
-    S.keys.sessions = null; return;
-  }
+  const name = ctxRef.projectName?.(S.project) || S.project; // the identifier is not for people
+  if (!S.sessions.length) { box.innerHTML = `<li class="muted small">No conversations in ${esc(name)}. <button type="button" class="btn sm" data-chat="new">New session</button><button type="button" class="btn sm" data-chat="setup">Setup</button></li>`; return; }
   const query = S.sessionQuery || "";
   const sessions = typeof filterSessions === "function" ? filterSessions(S.sessions, query, needsOnly) : S.sessions;
   const count = $("#chat-session-count", host);
-  if (count) count.textContent = `${sessions.length} of ${S.sessions.length} sessions`;
-  box.innerHTML = sessions.map((s) => s.id === S.renaming ? `<li class="chat-session-item"><form class="chat-rename" data-rename="${esc(s.id)}">
+  if (count) count.textContent = `${sessions.length} of ${S.sessions.length} sessions${S.sessions.some((s) => activeSession(s)) ? "" : ` · No active chats in ${name}`}`;
+  const hiddenCurrent = S.sid && !sessions.some((s) => s.id === S.sid);
+  const explanation = hiddenCurrent ? `<li class="muted small">Current conversation is outside the current filter. <button type="button" class="btn sm" data-chat="clear-filters">Clear filters</button></li>` : "";
+  paintSessionList(box, explanation + (sessions.map((s) => s.id === S.renaming ? `<li class="chat-session-item"><form class="chat-rename" data-rename="${esc(s.id)}">
       <label class="sr-only" for="chat-rename-input">Chat name</label><input class="input sm" id="chat-rename-input" name="title" maxlength="120" value="${esc(s.title)}" required>
       <button type="submit" class="icon-btn sm" aria-label="Save the name" title="Save (Enter)">${icon("check")}</button><button type="button" class="icon-btn sm" data-chat="rename-cancel" aria-label="Keep the old name" title="Cancel (Esc)">${icon("close")}</button></form></li>`
-    : `<li class="chat-session-item"><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
-    <b title="${esc(s.title)}">${esc(s.title)}</b>${countText(s.pending_user) ? `<span class="badge">${countText(s.pending_user)}</span>` : ""}${s.active_requests ? `<span class="badge tone-run">${icon("sync")}<span>${s.active_requests} active</span></span>` : ""}
+    : `<li class="chat-session-item"><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${activeSession(s) ? " active-chat" : ""}${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
+    <b title="${esc(s.title)}">${esc(s.title)}</b>${countText(s.pending_user) ? `<span class="badge">${countText(s.pending_user)}</span>` : ""}${activeSession(s) ? `<span class="badge tone-run">${icon("sync")}<span>${s.pending_user > 0 ? "Needs you" : "Active"}</span></span>` : ""}
     <span class="muted small">${esc(s.last_message ? `${s.last_message.role === "user" ? "You" : agentName(s.last_message.agent || "alfrd")}: ${s.last_message.text}` : "No messages")}</span>${s.last_message?.at ? `<time class="muted small" datetime="${esc(s.last_message.at)}">${esc(new Date(s.last_message.at).toLocaleString())}</time>` : ""}</a>
-    <span class="chat-session-acts"><button type="button" class="icon-btn sm" data-chat="rename" data-sid-act="${esc(s.id)}" aria-label="Rename ${esc(s.title)}" title="Rename">${icon("edit")}</button><button type="button" class="icon-btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" aria-label="Delete ${esc(s.title)}" title="${s.active_requests ? "Cancel its running tasks before deleting" : "Delete"}" ${s.active_requests ? "disabled" : ""}>${icon("trash")}</button></span></li>`).join("") || `<li class="muted small" role="status">${query ? `No sessions match “${esc(query)}”.` : "No sessions need you."}</li>`;
+    <span class="chat-session-acts"><button type="button" class="icon-btn sm" data-chat="rename" data-sid-act="${esc(s.id)}" aria-label="Rename ${esc(s.title)}" title="Rename">${icon("edit")}</button><button type="button" class="icon-btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" aria-label="Delete ${esc(s.title)}" title="${s.active_requests ? "Cancel its running tasks before deleting" : "Delete"}" ${s.active_requests ? "disabled" : ""}>${icon("trash")}</button></span></li>`).join("") || `<li class="muted small" role="status">${query ? `No sessions match “${esc(query)}”.` : "No sessions need you."} <button type="button" class="btn sm" data-chat="clear-filters">Clear filters</button></li>`));
   if (S.renaming) { const input = $("#chat-rename-input", box); if (input && document.activeElement !== input) { input.focus(); input.select(); } }
 }
 
@@ -454,7 +449,7 @@ function transcriptHtml(row) {
 function drawLog() {
   const box = $("#chat-log", host);
   box.setAttribute("aria-busy", String(Boolean(S.sid && !S.data && !S.error)));
-  if (S.data) { act?.update(S.data, S.notes.filter((n) => n.sid === S.sid)); conversationStarter(box); return; }
+  if (S.data) { act?.update(S.data, S.notes.filter((n) => n.sid === S.sid && n.project === S.project)); conversationStarter(box); return; }
   if (!S.sid) box.innerHTML = `<div class="empty"><p>Start a session with <b>New</b>, then ask for something.</p></div>`;
   else if (S.error) box.innerHTML = `<div class="callout fail" role="alert">${esc(S.error)} <button type="button" class="btn sm" data-chat="refresh">Retry</button></div>`;
   else box.innerHTML = `<p class="muted" role="status">Loading conversation…</p>`;
@@ -612,13 +607,15 @@ async function send() {
 }
 
 async function newSession() {
+  const p = S.project;
   try {
-    const { session } = await post(S.project, "/sessions", {});
+    const { session } = await post(p, "/sessions", {});
+    chatProjects.load(p, true, true);
+    if (p !== S.project) return;
     S.sessions = [session, ...(S.sessions || [])]; S.keys.sessions = null;
     openSession(session.id);
     ctxRef.update();
     requestAnimationFrame(() => $("#chat-input", host)?.focus());
-    loadSessions();
   } catch (error) { ctxRef.toast(`New session: ${error.message}`, "fail"); }
 }
 
@@ -640,6 +637,12 @@ function bind(el) {
     if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { openSession(b.dataset.sid); ctxRef.update(); } return; }
     if (b.dataset.chatPrompt) { composer.input.value = b.dataset.chatPrompt; draft.edit(composer.input.value); composer.refresh(); composer.input.focus(); return; }
     const a = b.dataset.chat;
+    if (a === "clear-filters") {
+      needsOnly = false; S.sessionQuery = ""; queries.set(S.project, "");
+      $("#chat-session-search", host).value = "";
+      $("[data-chat=needs-me]", host).setAttribute("aria-pressed", "false");
+      ctxRef.update(); return;
+    }
     if (a === "new") newSession();
     else if (a === "needs-me") { needsOnly = !needsOnly; b.setAttribute("aria-pressed", String(needsOnly)); drawSessions(); }
     else if (a === "clear-search") { queries.set(S.project, ""); S.sessionQuery = ""; $("#chat-session-search", host).value = ""; drawSessions(); $("#chat-session-search", host).focus(); }
@@ -771,7 +774,7 @@ async function promoteRequest(rid) {
 
 /** A local ALFRD note in the transcript (not sent, not stored: gone on reload). */
 function note(text) {
-  S.notes.push({ id: `local:${Date.now()}:${S.notes.length}`, sid: S.sid, role: "system", text, at: new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 19) });
+  S.notes.push({ id: `local:${Date.now()}:${S.notes.length}`, sid: S.sid, project: S.project, role: "system", text, at: new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 19) });
   S.keys.log = null; draw(ctxRef);
   const box = $("#chat-log", host); if (box) box.scrollTop = box.scrollHeight;
 }

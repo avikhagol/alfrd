@@ -62,6 +62,68 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
     return { page, errors };
   };
 
+  await t.test("project-scoped active sessions, empty state, live update and drafts survive A/B/A", async () => {
+    const { page, errors } = await open(1440); t.after(() => page.close());
+    await page.evaluate(async () => {
+      const { server } = await import("/js/data/server.js");
+      const { mountChatProjects } = await import("/js/data/chat_projects.js");
+      const previous = server.request;
+      window.projectRows = {
+        p: window.sessions,
+        q: [{ id: "a", title: "Same id in Q", active_requests: 0, pending_user: 0 },
+          { id: "q-busy", title: "Q active", active_requests: 1, pending_user: 0 }],
+        empty: [],
+      };
+      server.request = async (url, options) => {
+        const project = decodeURIComponent(url.split("/projects/")[1]?.split("/")[0] || "");
+        if (url.endsWith("/sessions")) return new Response(JSON.stringify({ sessions: window.projectRows[project] }));
+        if (url.endsWith("?view=activity")) {
+          const rows = window.projectRows[project] || [];
+          return new Response(JSON.stringify({ activity: { active_sessions: rows.filter((s) => s.active_requests > 0 || s.pending_user > 0).length,
+            needs_user_sessions: rows.filter((s) => s.pending_user > 0).length } }));
+        }
+        return previous(url, options);
+      };
+      ctx.projects = () => Object.keys(window.projectRows).map((id) => ({ id }));
+      ctx.chatOn = () => true;
+      ctx.projectName = (p) => (p === 'empty' ? 'Empty project' : p);
+      window.controller = mountChatProjects(ctx, { decorate() {}, redecorate() {} });
+      const update = ctx.update;
+      ctx.update = () => { controller.sync(); update(); };
+      window.switchChatProject = (project) => {
+        window.project = project; ctx.state.selectedProject = project; ctx.state.chatSession = ""; ctx.update();
+      };
+      controller.sync();
+    });
+    await page.locator('#chat-input').fill('Draft in P');
+    await page.evaluate(() => switchChatProject('q'));
+    await page.locator('.chat-session[data-sid="q-busy"].on').waitFor();
+    assert.equal(await page.locator('.chat-session[data-sid="c"]').count(), 0);
+    assert.match(await page.locator('.chat-session[data-sid="q-busy"]').innerText(), /Active/);
+    assert.equal(await page.locator('#chat-input').inputValue(), '');
+    await page.locator('#chat-input').fill('Draft in Q');
+    await page.locator('.chat-session[data-sid="q-busy"]').focus();
+    await page.evaluate(() => {
+      window.focusedChatRow = document.activeElement;
+      window.projectRows.q = [...window.projectRows.q, { id: 'live-q', title: 'Live Q question', active_requests: 0, pending_user: 1 }];
+      window.dispatchEvent(new CustomEvent('alfrd-events', { detail: { project: 'q', events: [{ plan: 'chat-live-q' }] } }));
+    });
+    await page.locator('.chat-session[data-sid="live-q"]').waitFor();
+    assert.equal(await page.locator('.chat-session.on').getAttribute('data-sid'), 'q-busy');
+    assert.equal(await page.evaluate(() => document.activeElement === window.focusedChatRow), true);
+    await page.evaluate(() => switchChatProject('empty'));
+    await page.getByText('No conversations in Empty project.', { exact: false }).waitFor();
+    assert.equal(await page.locator('.chat-session').count(), 0);
+    await page.evaluate(() => switchChatProject('p'));
+    await page.locator('.chat-session[data-sid="a"].on').waitFor();
+    assert.equal(await page.locator('#chat-input').inputValue(), 'Draft in P');
+    assert.equal(await page.locator('.chat-session[data-sid="live-q"]').count(), 0);
+    await page.evaluate(() => switchChatProject('q'));
+    await page.locator('.chat-session[data-sid="q-busy"].on').waitFor();
+    assert.equal(await page.locator('#chat-input').inputValue(), 'Draft in Q');
+    assert.deepEqual(errors, []);
+  });
+
   await t.test("one click = one request after the view is mounted again (project switches)", async () => {
     const { page, errors } = await open(1440); t.after(() => page.close());
     for (const p of ["q", "p", "q", "p"]) {

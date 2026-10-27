@@ -118,7 +118,13 @@ def chat_skill_preview(project_name: str):
 
 @studio_api.get(_BASE + "/sessions")
 def chat_sessions(project_name: str):
-    return jsonify(sessions=chat.list_sessions(_project_root(project_name)))
+    try:
+        root = _project_root(project_name)
+        if request.args.get("view") == "activity":
+            return jsonify(activity=chat.session_activity(root))
+        return jsonify(sessions=chat.list_sessions(root))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
 
 
 @studio_api.post(_BASE + "/sessions")

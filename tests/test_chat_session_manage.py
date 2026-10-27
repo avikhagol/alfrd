@@ -44,7 +44,7 @@ def test_delete_is_refused_while_a_request_is_active(project):
     assert chat.session(project, sid).dir.is_dir()
 
 
-def test_studio_rename_and_delete_endpoints(project, tmp_path):
+def test_studio_rename_and_delete_endpoints(project, tmp_path, monkeypatch):
     from alfrd.gui import create_app
     from alfrd.gui.services import RuntimeCatalogReader
     from alfrd.runtime import RuntimeService, RuntimeStore
@@ -60,15 +60,52 @@ def test_studio_rename_and_delete_endpoints(project, tmp_path):
     client = app.test_client()
     headers = {"X-CSRF-Token": client.get("/api/studio/session").get_json()["csrf_token"]}
     url = f"/api/studio/projects/{ident}/chat/sessions"
+    assert client.get(url + "?view=activity").get_json() == {"activity": {"active_sessions": 0, "needs_user_sessions": 0}}
     sid = client.post(url, json={"title": "One"}, headers=headers).get_json()["session"]["id"]
     assert client.patch(f"{url}/{sid}", json={"title": "Renamed"}).status_code == 403  # CSRF
     renamed = client.patch(f"{url}/{sid}", json={"title": "Renamed"}, headers=headers)
     assert renamed.status_code == 200 and renamed.get_json()["session"]["title"] == "Renamed"
     assert client.patch(f"{url}/{sid}", json={"title": ""}, headers=headers).status_code == 400
+    assert client.get(url).get_json()["sessions"][0]["id"] == sid
     say(project, sid, "@codex busy")
+    assert client.get(url + "?view=activity").get_json()["activity"]["active_sessions"] == 1
     assert client.delete(f"{url}/{sid}", headers=headers).status_code == 409
     fake(project, t1={"text": "done"})
     run(project, sid)
     assert client.delete(f"{url}/{sid}", headers=headers).status_code == 200
     assert client.get(url).get_json()["sessions"] == []
     assert client.delete(f"{url}/{sid}", headers=headers).status_code == 404
+    def broken(root):
+        raise ValueError("unreadable session summary")
+    monkeypatch.setattr(chat, "session_activity", broken)
+    failed = client.get(url + "?view=activity")
+    assert failed.status_code == 400 and "activity" not in failed.get_json()
+
+
+def test_activity_projects_with_same_session_id_are_isolated(project, tmp_path):
+    import shutil
+    other = tmp_path / "other"
+    other.mkdir()
+    sid = chat.create_session(project, "same identity, different owner")["id"]
+    shutil.copytree(project / chat.CHAT_DIR, other / chat.CHAT_DIR)
+    chat.session(project, sid).save_request({"id": "r1", "status": "running"})
+    assert chat.session_activity(project)["active_sessions"] == 1
+    assert chat.session_activity(other) == {"active_sessions": 0, "needs_user_sessions": 0}
+    assert chat.session_activity(tmp_path / "missing") == {"active_sessions": 0, "needs_user_sessions": 0}
+
+
+def test_activity_skips_stray_files_beside_sessions(project):
+    sid = chat.create_session(project)["id"]
+    chat.session(project, sid).save_request({"id": "r1", "status": "running"})
+    (project / chat.CHAT_DIR / ".DS_Store").write_text("")
+    assert chat.session_activity(project) == {"active_sessions": 1, "needs_user_sessions": 0}
+    assert [s["id"] for s in chat.list_sessions(project)] == [sid]
+
+
+def test_activity_corrupt_metadata_is_an_error_not_a_verified_zero(project):
+    sid = chat.create_session(project)["id"]
+    store = chat.session(project, sid)
+    store.requests_dir.mkdir(exist_ok=True)
+    (store.requests_dir / "bad.json").write_text("{")
+    with pytest.raises(ValueError):
+        chat.session_activity(project)

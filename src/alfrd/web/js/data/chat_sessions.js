@@ -49,3 +49,34 @@ export function conversationStarter(box) {
   empty.dataset.starter = "true";
   empty.innerHTML = `What would you like the agents to do? <button type="button" class="btn sm" data-chat-prompt="Explain this project">Explain this project</button> <button type="button" class="btn sm" data-chat-prompt="Plan a change">Plan a change</button>`;
 }
+
+export const activeSession = (s) => [s?.active_requests, s?.pending_user].some((n) => Number.isInteger(n) && n > 0);
+export function destinationSession(sessions, remembered, explicit = null) {
+  return explicit || (sessions.some((s) => s.id === remembered) ? remembered : null)
+    || sessions.find(activeSession)?.id || sessions[0]?.id || null;
+}
+
+// Keep the focused row in the document while allowing new/live rows around it.
+export function paintSessionList(box, html) {
+  const focused = globalThis.document?.activeElement?.closest?.('.chat-session-item');
+  if (!focused || !box.contains(focused)) { box.innerHTML = html; return; }
+  const next = document.createElement('ul'); next.innerHTML = html;
+  const sid = focused.querySelector('a[data-sid]')?.dataset.sid;
+  const replacement = [...next.children].find((row) => row.querySelector('a[data-sid]')?.dataset.sid === sid);
+  if (!sid || !replacement) { box.innerHTML = html; return; }
+  const link = focused.querySelector('a[data-sid]'), fresh = replacement.querySelector('a[data-sid]');
+  link.className = fresh.className;
+  if (fresh.hasAttribute('aria-current')) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+  const title = link.querySelector('b'), freshTitle = fresh.querySelector('b');
+  title.textContent = freshTitle.textContent; title.title = freshTitle.title;
+  link.querySelectorAll('.badge').forEach((badge) => badge.remove());
+  let after = title;
+  fresh.querySelectorAll('.badge').forEach((badge) => { after.after(badge); after = badge; });
+  for (const button of focused.querySelectorAll('[data-chat]')) {
+    const other = replacement.querySelector(`[data-chat="${button.dataset.chat}"]`);
+    if (other) { button.disabled = other.disabled; button.title = other.title; button.setAttribute('aria-label', other.getAttribute('aria-label')); }
+  }
+  const nodes = [...next.children].map((row) => row === replacement ? focused : row);
+  for (const node of [...box.children]) if (node !== focused) node.remove();
+  nodes.forEach((node, i) => { if (box.children[i] !== node) box.insertBefore(node, box.children[i] || null); });
+}

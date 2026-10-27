@@ -614,9 +614,42 @@ def create_session(root: str | Path, title: str | None = None) -> dict[str, Any]
     return data
 
 
-def list_sessions(root: str | Path) -> list[dict[str, Any]]:
+def _attention_records(folder):
+    records = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))]
+    if not all(isinstance(r, dict) for r in records):
+        raise ValueError("invalid chat attention metadata")
+    return records
+
+
+def _session_attention(store, *, strict=False):
     from alfrd.mailbox import Mailbox
 
+    requests = _attention_records(store.requests_dir) if strict else store.requests()
+    decisions = _attention_records(store.decisions_dir) if strict else store.decisions()
+    pending = sum(Mailbox(store.root, store.id, r["id"]).summary()["pending_user"] for r in requests)
+    pending += sum(d.get("status") == "pending" and d.get("needs") == "user"
+                   and not d.get("mailbox_message_id") for d in decisions)
+    return {"pending_user": pending, "active_requests": sum(r.get("status") in REQUEST_ACTIVE for r in requests)}
+
+
+def session_activity(root: str | Path) -> dict[str, int]:
+    """Attention counts without loading transcripts, task graphs or logs."""
+    base = Path(root).resolve() / CHAT_DIR
+    active = needs = 0
+    for folder in base.iterdir() if base.is_dir() else []:
+        try:
+            data = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, NotADirectoryError):  # half-created session or a stray file
+            continue
+        if not isinstance(data, dict):
+            raise ValueError("invalid chat session metadata")
+        summary = _session_attention(Session(Path(root).resolve(), data["id"]), strict=True)
+        needs += summary["pending_user"] > 0
+        active += summary["active_requests"] > 0 or summary["pending_user"] > 0
+    return {"active_sessions": active, "needs_user_sessions": needs}
+
+
+def list_sessions(root: str | Path) -> list[dict[str, Any]]:
     base = Path(root).resolve() / CHAT_DIR
     out = []
     for folder in sorted(base.iterdir(), reverse=True) if base.is_dir() else []:
@@ -625,14 +658,9 @@ def list_sessions(root: str | Path) -> list[dict[str, Any]]:
             continue
         store = Session(Path(root).resolve(), data["id"])
         last = store.messages(1)
-        requests = store.requests()
-        pending_user = sum(Mailbox(store.root, store.id, r["id"]).summary()["pending_user"] for r in requests)
-        # Linked decisions are the same question, not a second pending item.
-        pending_user += sum(d.get("status") == "pending" and d.get("needs") == "user"
-                            and not d.get("mailbox_message_id") for d in store.decisions())
+        attention = _session_attention(store)
         out.append({**data, "messages": len(store.messages()), "last_message": last[0] if last else None,
-                    "pending_user": pending_user,
-                    "active_requests": sum(r.get("status") in REQUEST_ACTIVE for r in requests),
+                    **attention,
                     "plan_status": (_read(_plan_folder(store).plan_file) or {}).get("status")})
     return out
 

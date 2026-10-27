@@ -50,3 +50,5 @@
   .chat .chat-sessions { inset: 8px; width: auto; max-height: none; }
   .chat-dock.chat-dock { inset: 8px; width: auto; }
 }
+
+.chat-session.active-chat { border-inline-start: 3px solid var(--chat-action); }

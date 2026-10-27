@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createInbox, pendingCount, needsMe, countText } from "../../src/alfrd/web/js/data/inbox.js";
 import { mergeMailbox } from "../../src/alfrd/web/js/data/chat_live.js";
+import { activeSession, paintSessionList } from "../../src/alfrd/web/js/data/chat_sessions.js";
 import { server } from "../../src/alfrd/web/js/data/server.js";
 
 // Small DOM surface; exercise the installed mailbox handlers and actual subscription.
@@ -133,12 +134,12 @@ test("two mounted forms preserve drafts while polling and show answered elsewher
 
 
 test("Chat navigation hides unknown and zero badges and labels positive counts", async () => {
-  const src = await readFile(new URL("../../src/alfrd/web/js/app.js", import.meta.url), "utf8");
-  const body = src.slice(src.indexOf("function paintInbox() {"), src.indexOf('\nwindow.addEventListener("alfrd-events"'));
+  const src = await readFile(new URL("../../src/alfrd/web/js/data/chat_projects.js", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("  function paint() {"), src.indexOf("  picker.decorate"));
   const link = {}, badge = { parentElement: {}, setAttribute(k, v) { this[k] = v; } };
-  const paint = new Function("inboxCount", "countText", "$", "activeProject", "chatOn", "state", "routeHash", `${body}; paintInbox();`);
+  const paint = new Function("pendingCount", "countText", "$", "chatProjects", "enabled", "ctx", "routeHash", "project", `${body}; paint();`);
   for (const count of [null, 0, 3, null]) {
-    paint(count, countText, (selector) => selector === "#chat-inbox" ? link : badge, () => "p", () => true, { mode: "server" }, () => "#chat");
+    paint(() => count, countText, (selector) => selector === "#chat-inbox" ? link : badge, { snapshot: () => ({ sessions: [] }) }, true, { state: {} }, () => "#chat", "p");
     const label = count > 0 ? "Chat · 3 pending" : "Chat";
     assert.equal(link.textContent, label);
     assert.equal(link.hidden, false);
@@ -154,9 +155,9 @@ test("session list omits malformed count badges and retains known counts", async
   const src = await readFile(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
   const body = src.slice(src.indexOf("function drawSessions() {"), src.indexOf("\n// --- session list:"));
   const box = {};
-  const draw = new Function("S", "countText", "$", "host", "changed", "needsOnly", "needsMe", "esc", "routeHash", "ctxRef", "icon", `${body}; drawSessions();`);
+  const draw = new Function("S", "countText", "$", "host", "changed", "needsOnly", "needsMe", "esc", "routeHash", "ctxRef", "icon", "activeSession", "paintSessionList", `${body}; drawSessions();`);
   for (const pending_user of [null, undefined, "2", 1.5, -1, 0, 2]) {
-    draw({ sessions: [{ id: "s", title: "Session", pending_user }] }, countText, () => box, {}, () => true, false, needsMe, (x) => x, () => "#chat/s", { state: {} }, () => "");
+    draw({ sessions: [{ id: "s", title: "Session", pending_user }] }, countText, () => box, {}, () => true, false, needsMe, (x) => x, () => "#chat/s", { state: {} }, () => "", activeSession, paintSessionList);
     if (Number.isInteger(pending_user) && pending_user >= 0) assert.ok(box.innerHTML.includes(`<span class="badge">${pending_user} pending</span>`));
     else assert.doesNotMatch(box.innerHTML, /class="badge"|unavailable/);
   }

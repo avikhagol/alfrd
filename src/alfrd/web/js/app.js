@@ -7,7 +7,6 @@ import { toCsv, aliasRules } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
 import { readPrefs, writePrefs } from "./data/prefs.js";
-import { createInbox, countText } from "./data/inbox.js";
 let folderScan = null;
 const folderMod = () => (folderScan ||= import("./data/folder_scan.js"));
 const canPickDirectory = () => typeof window.showDirectoryPicker === "function";
@@ -521,6 +520,7 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
     out.view = state.view;
     out.scroll[state.view] = $("#main")?.scrollTop || 0;
   }
+  if (before !== next) state.chatSession = "";
   state.selectedProject = next;
   projectLoader?.promote(next); // a project still queued for loading goes first
   setActive(next);
@@ -1434,20 +1434,18 @@ const experimentalOn = () => server.session?.experimental === true;
 ctx.experimental = experimentalOn;
 // Chat mode (Preferences, per browser, off by default): Chat section, dock, chat runs
 function chatOn() { return experimentalOn() && shown("chat") && readPrefs()["ui.experimental_chat"] === true; }
-let inboxCount = null;
-const inbox = createInbox({ request: (url) => server.request(url), publish(project, sessions, count) {
-  inboxCount = count; paintInbox();
-  window.dispatchEvent(new CustomEvent("alfrd-inbox", { detail: { project, sessions } }));
-} });
-function paintInbox() {
-  const p = activeProject(), enabled = chatOn() && state.mode === "server" && Boolean(p);
-  const link = $("#chat-inbox"), badge = $("[data-inbox-count]"), label = inboxCount > 0 ? `Chat · ${countText(inboxCount)}` : "Chat";
-  if (link) { link.hidden = !enabled; link.href = routeHash("chat", p, state.selectedTarget); link.textContent = label; }
-  if (badge) { badge.hidden = !enabled || !(inboxCount > 0); badge.textContent = inboxCount > 0 ? inboxCount : ""; badge.setAttribute("aria-label", label); badge.parentElement.title = label; }
+let chatProjects, chatProjectsLoading;
+function syncChatProjects() {
+  if (chatProjects) {
+    if (!chatOn() || state.mode !== "server") { chatProjects.stop(); chatProjects = chatProjectsLoading = null; }
+    else chatProjects.sync();
+    return;
+  }
+  if (!chatOn() || state.mode !== "server" || chatProjectsLoading) return;
+  chatProjectsLoading = import("./data/chat_projects.js").then((m) => {
+    chatProjects = m.mountChatProjects(ctx, pickers.project, projectsFollowed); chatProjects.sync();
+  }).catch(() => { chatProjectsLoading = null; });
 }
-window.addEventListener("alfrd-events", () => inbox.kick());
-window.addEventListener("alfrd-mail-replied", () => inbox.kick());
-document.addEventListener("visibilitychange", () => { if (!document.hidden) inbox.kick(); });
 ctx.chatOn = chatOn;
 // Superuser-hidden sections (Overview stays)
 const shown = (id) => id == "overview" || !server.session?.superuser?.hidden_sections?.includes(id);
@@ -1689,8 +1687,8 @@ const live = createLive({
   onRuntime: liveRuntime,
   onPluginJob: () => renderJobs(),
   onAlfrd: (project, events) => (window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project, events } })), import("./components/notifications.js").then((m) => m.handleNotifications(ctx, project, events)).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server"))),
-  onResync: (project) => (loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
-  onStatus: (status) => { state.liveStatus = status; renderLiveBadge(); },
+  onResync: (project) => (chatProjects?.invalidate(project), loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
+  onStatus: (status) => { state.liveStatus = status; chatProjects?.sync(); renderLiveBadge(); },
 });
 live.enabled = state.prefs.live !== false;
 setTails(live.enabled);
@@ -1951,7 +1949,7 @@ function renderShell() {
   $("#btn-data").addEventListener("click", (e) => menu(e.currentTarget, dataItems()));
   $("#btn-settings").addEventListener("click", openSettings);
   $("#btn-quit").addEventListener("click", quitServer);
-  pickers.project = mountPicker($("#pick-project"), { label: "Project", onChange: (value) => switchProject(value, { push: true }) });
+  pickers.project = mountPicker($("#pick-project"), { label: "Project", onChange: (value) => switchProject(value, { push: true, restoreView: state.view !== "chat" }) });
   $("#main").addEventListener("click", (e) => {
     const b = e.target.closest("[data-ws-open]");
     if (b) switchProject(b.dataset.wsOpen, { restoreView: false, push: true });
@@ -1968,8 +1966,7 @@ function renderShell() {
 }
 
 function renderHeader() {
-  inbox.select(chatOn() && state.mode === "server" ? activeProject() : null);
-  paintInbox();
+  syncChatProjects();
   VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) { a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); a.hidden = (v.id === "chat" && !chatOn()) || !shown(v.id); } });
   const badge = $("#mode-badge");
   const live = state.mode === "server";
@@ -2298,12 +2295,12 @@ function route() {
   const url = parseRoute(location.hash);
   const [id, page] = url.view.split("/");
   if (id === "plugin") state.pluginPage = page || "";
-  if (id === "chat") state.chatSession = page || "";
   if (url.project && (url.project === "all" || ctx.projects().some((p) => p.id === url.project))) {
     if (state.selectedProject !== url.project) switchProject(url.project, { render: false, restoreView: false, syncUrl: false });
     state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[url.project], state.selectedTarget);
     rememberTarget();
   }
+  if (id === "chat") state.chatSession = page || "";
   const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) && shown(id) ? id : "overview";
   if (next !== state.view) {
     VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
