@@ -231,6 +231,7 @@ const P = {
   log: '<path d="M4 5h16M4 10h12M4 15h16M4 20h9"/>', // every log affordance; `terminal` only for a real terminal
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
   terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5L5 20"/>',
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
   edit: '<path d="M12 20h9M16 3l5 5-12 12H4v-5zM14 5l5 5"/>',
   convert: '<path d="M4 7h11l-3-3M20 17H9l3 3"/>',

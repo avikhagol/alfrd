@@ -563,3 +563,30 @@ quickstart:
 Other field settings: `label`, `help`, `placeholder`, `required`, `default` (shown when the file has no value).
 For a `key = value` file the field key is the key (`<step>.<param>` allowed); only changed values are written and other lines and comments stay. For `alfrd.yaml` the key is a dotted path, where a list segment is an index or an item's `name` (`entrypoint.claude.model`, `workflows.0.repeat.iterations`); an emptied optional field removes the key. Only the changed top-level sections are rewritten, the result must validate and load, or nothing is saved. A project's `quickstart:` overrides its template's forms one by one. API: `GET /api/studio/projects/<p>/quickstart`, `POST …/quickstart/<form>` with `{"values": {...}}` (loopback + CSRF).
 
+
+## Schedule a chat batch
+
+Choose **Schedule** below the composer, select a date/time and IANA time zone, then
+save. Studio shows the resolved UTC instant and offset. A clock-change gap is
+rejected; a time occurring twice offers both offsets. Each **Add to queue** stores
+an item on the server, shared by Chat and the dock. The queue survives reloads and
+server restarts. Edit or remove items, change the time, choose **Run now**, or
+**Cancel schedule**. Cancellation discards pending items and does not stop a running
+request. The countdown is informational; the server owns dispatch.
+
+At the deadline, the latest saved items become one orchestrator plan. Agent mentions
+are preferences in this mode. Current agent settings and saved skills apply when the
+batch is submitted. Unsaved composer text and unsaved item edits are excluded. Run
+now is disabled while an item edit is dirty. If the deadline wins, the unsaved edit
+is retained for copying and cannot change the submitted batch.
+
+If this chat already has active work, the batch waits until all its requests finish.
+A blocker or a manually paused/cancelled workflow can hold it indefinitely; resume
+that workflow explicitly. Validation errors retain an editable queue with **Retry**.
+Empty schedules expire at their deadline. After submission, cancellation or expiry,
+the composer returns to ordinary Send.
+
+**ALFRD Studio must be running. Missed schedules run when it returns.** Timing is
+best effort (roughly one-second detection while healthy). A remote/read-only Studio
+server cannot start scheduled work. The stored instant remains fixed if your display
+time zone changes.

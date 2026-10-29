@@ -23,12 +23,16 @@ test("downscaleImage rejects unsupported formats", async () => {
   await assert.rejects(() => A.downscaleImage({ type: "image/gif", name: "x.gif" }), /PNG, JPEG, or WebP/);
 });
 
-test("tray HTML exposes picker, one-line hint, and state hooks", () => {
+test("tray HTML exposes hidden picker and state hooks without an extra helper row", () => {
   const html = A.attachmentTrayHtml("chat");
   assert.match(html, /type="file"/);
   assert.match(html, /data-attach-chips/);
-  assert.match(html, /data-attach-hint/);
-  assert.match(html, /2000 px/);
+  assert.match(html, /multiple hidden/);
+  assert.doesNotMatch(html, /data-attach-hint|attach-actions/);
+  assert.doesNotMatch(html, /2000 px/);
+  const button = A.attachmentButtonHtml("chat");
+  assert.match(button, /<button type="button"/);
+  assert.match(button, /title="Attach images" aria-label="Attach images"/);
 });
 
 test("mixed text and image paste keeps native text and queues the image", async () => {

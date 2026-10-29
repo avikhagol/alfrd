@@ -7,7 +7,7 @@ const C = await import("../../src/alfrd/web/js/data/chat.js");
 
 test("watch merges per key and only changed keys are written", () => {
   const d = C.mergeChat({});
-  assert.deepEqual(d.watch, { interval_seconds: 300, stall_seconds: 1800, wake_orchestrator: false, max_checks: 3 });
+  assert.deepEqual(d.watch, { enabled: true, interval_seconds: 300, stall_seconds: 1800, wake_orchestrator: false, max_checks: 3 });
   assert.equal(C.chatBlock(d).watch, undefined);
   const s = C.mergeChat({ watch: { interval_seconds: 0 } });
   assert.equal(s.watch.stall_seconds, 1800);
@@ -46,4 +46,14 @@ test("orchestrator wake and check limit round trip with defaults omitted", () =>
   assert.match(C.chatProblems(s).join(" "), /checks per request/);
   s.watch.wake_orchestrator = "yes";
   assert.match(C.chatProblems(s).join(" "), /Wake the orchestrator/);
+});
+
+
+test("periodic checker toggle survives settings round trips", () => {
+  const s = C.mergeChat({ watch: { enabled: false, interval_seconds: 600 } });
+  assert.deepEqual(C.chatProblems(s), []);
+  assert.deepEqual(C.chatBlock(s).watch, { enabled: false, interval_seconds: 600 });
+  assert.deepEqual(C.mergeChat(C.chatBlock(s)).watch, s.watch);
+  s.watch.enabled = "false";
+  assert.match(C.chatProblems(s).join(" "), /Periodic chat checker/);
 });

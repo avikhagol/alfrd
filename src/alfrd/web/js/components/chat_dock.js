@@ -1,3 +1,4 @@
+import { viewerFor, openViewer } from "./viewers.js";
 import { mountPanelResize } from './panel_resize.js';
 // Chat dock: the active chat session beside any project view (Workflow, Results, Overview, plugin
 // pages…). Transcript (transcript.js, shared with the Chat page), composer (@-mentions, Enter / Shift+Enter) and one progress line for the active
@@ -93,6 +94,7 @@ export function hide() {
   if (el) el.hidden = true;
   clearInterval(clock); clearInterval(slow); clock = slow = 0;
   act?.stop();
+  draft?.suspend?.();
 }
 
 
@@ -120,11 +122,11 @@ function mount(host, p) {
     <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
     <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
     <p class="chat-stop-status muted small" role="status"></p>
-    ${composerHtml("cd", { rows: 2, hint: false, attachments: true })}`;
+    ${composerHtml("cd", { attachments: true })}`;
   act = mountTranscript($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid && n.project === D.project),
     select: () => { $("#cd-full", el)?.click(); },
     openLog: (rel) => openLog(ctxRef, D.project, rel), cancel: cancelRow });
-  draft = mountComposerDraft(host, "cd", { settings: () => D.data?.settings, onError: (m) => { D.sendError = m; $("#cd-send-error", host).textContent = m; } });
+  draft = mountComposerDraft(host, "cd", { settings: () => D.data?.settings, createSession: newSession, onError: (m) => { D.sendError = m; $("#cd-send-error", host).textContent = m; } });
   composer = bindComposer(host, "cd", { agents, orchestrator: () => D.data?.settings?.orchestrator, send, stopState: stop.state, onStop: stop.stop, where: "dock", onCommand: command,
     onError: (m) => { D.sendError = m; draw(); },
     onDraft: (text) => { draft.edit(text); if (D.sendError) { D.sendError = ""; $("#cd-send-error", el).textContent = ""; } } });
@@ -199,7 +201,7 @@ function draw() {
   const sel = $("#cd-session", el);
   const runningDot = $("#cd-running", el);
   if (runningDot) runningDot.hidden = !D.sessions?.some((s) => s.id === D.sid && s.plan_status === "running");
-  const opts_ = (D.sessions || []).map((s) => `<option value="${esc(s.id)}" ${s.id === D.sid ? "selected" : ""}>${esc(s.title)}</option>`).join("");
+  const opts_ = (D.sessions || []).map((s) => `<option value="${esc(s.id)}" ${s.id === D.sid ? "selected" : ""}>${esc(s.title)}${s.schedule ? ` · ${s.schedule.queued_count || 0} queued` : ""}</option>`).join("");
   const html = opts_ || `<option value="">${D.sessions ? "No session yet" : "Loading…"}</option>`;
   if (sel.dataset.html !== html) { sel.dataset.html = html; sel.innerHTML = html; }
   sel.disabled = !D.sessions?.length;
@@ -252,7 +254,7 @@ function drawProgress() {
 async function send() {
   const input = $("#cd-input", el);
   const mention = parseMention(input.value.trim(), agents());
-  if (mention?.error) { D.sendError = mention.error; draw(); return; }
+  if (mention?.error && $(`#cd-form`, el).dataset?.scheduled !== "true") { D.sendError = mention.error; draw(); return; }
   D.sendError = "";
   try {
     if (await draft.send()) { composer?.close(); loadSession(); loadSessions(); }
@@ -276,6 +278,11 @@ async function viewArtifact(ref) {
   const project = D.project, sid = D.sid;
   try {
     const page = await get(`${base(project)}/sessions/${encodeURIComponent(sid)}/artifacts?${new URLSearchParams({ ref, offset: 0 })}`);
+    const viewer = /\.(md|markdown)$/i.test(page.path) ? viewerFor(page.path, "text/markdown") : null;
+    if (viewer && viewer.id !== "text") {
+      if (!page.eof) ctxRef.toast("Partial text; Open full Chat for more", "warn");
+      return openViewer(ctxRef, project, page.path, viewer, { text: page.content, mime: "text/markdown" });
+    }
     const { openFull } = await import("./logview.js");
     await openFull(ctxRef, page.path, page.content, page.eof ? ref : `${ref} · Partial text; Open full Chat for more`, null);
   } catch (error) { ctxRef.toast(`Artifact: ${error.message}`, "fail"); }

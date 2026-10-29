@@ -264,6 +264,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     stopped = threading.Event()
     if serving:
         _chat_watch_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
+        _chat_schedule_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
     restart = threading.Event()
     browser_thread = None
     if not no_browser and (loopback or host in {"0.0.0.0", "::"}) and serving:
@@ -344,11 +345,34 @@ def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
     threading.Thread(target=work, name="alfrd-plan-reconcile", daemon=True).start()
 
 
-def _chat_watch_later(service, scope, stopped: threading.Event, *, spawn: bool):
-    """Check scoped projects until the server stops; disabled projects need no thread.
+def _chat_schedule_later(service, scope, stopped: threading.Event, *, spawn: bool):
+    """Independent one-second clock, including a startup catch-up and dynamic catalogue scope."""
+    from alfrd import chat
 
-    Settings are re-read while watching, so interval edits take effect within 30 seconds.
-    If every project starts disabled, enabling checks requires restarting the server.
+    def work():
+        while not stopped.is_set():
+            try:
+                roots = {Path(p.root_path).resolve() for p in service.list_projects()
+                         if not scope or p.identifier in scope}
+                for root in roots:
+                    if stopped.is_set():
+                        break
+                    for result in chat.dispatch_due_schedules(root, spawn=spawn):
+                        if result.get("error"):
+                            print(f"Chat schedule skipped ({root}): {result['error']}")
+            except Exception as error:
+                print(f"Chat schedule sweep failed: {error}")
+            stopped.wait(1)
+
+    thread = threading.Thread(target=work, name="alfrd-chat-schedule", daemon=True)
+    thread.start()
+    return thread
+
+
+def _chat_watch_later(service, scope, stopped: threading.Event, *, spawn: bool):
+    """Check scoped projects until the server stops.
+
+    Settings are re-read within 30 seconds, including projects initially disabled.
     """
     from alfrd import chat
 
@@ -366,7 +390,7 @@ def _chat_watch_later(service, scope, stopped: threading.Event, *, spawn: bool):
             roots[root] = chat.settings(root)["watch"]["interval_seconds"]
         except Exception as error:  # noqa: BLE001 - one project's settings must not stop the server
             print(f"Chat check skipped ({root}): {error}")
-    if not any(roots.values()):
+    if not roots:
         return None
 
     def work() -> None:
@@ -379,15 +403,16 @@ def _chat_watch_later(service, scope, stopped: threading.Event, *, spawn: bool):
                 if stopped.is_set():
                     break
                 try:
-                    interval = chat.settings(root)["watch"]["interval_seconds"]
-                    if not interval:
+                    watch = chat.settings(root)["watch"]
+                    interval = watch["interval_seconds"]
+                    if not watch.get("enabled", True) or not interval:
                         continue
                     now = time.monotonic()
                     remaining = last.get(root, now - interval) + interval - now
                     if remaining <= 0:
                         # Advance even if checking fails; retry on the next scheduled interval.
                         last[root] = now
-                        chat.check(root, spawn=spawn)
+                        chat.check(root, spawn=spawn, periodic=True)
                         remaining = interval
                     delay = min(delay, remaining)
                 except Exception as error:  # noqa: BLE001 - a failed check must not kill the watcher
@@ -1588,6 +1613,18 @@ def su_set(assignments: list[str] = typer.Argument(..., help="key=value, e.g. fe
         print(f"{key} = {superuser.flat()[key]}")
 
 
+@su_cli.command("checker")
+def su_checker(enabled: bool = typer.Option(..., "--enabled/--disabled", help="Enable or disable periodic chat recovery."),
+               root: str = _ROOT_OPT):
+    """Set this project's periodic checker (local OS owner, as with other su commands)."""
+    from alfrd import chat
+
+    view = _chat_call(chat.settings_view, root)
+    block = {**view["block"], "watch": {**(view["block"].get("watch") or {}), "enabled": enabled}}
+    _chat_call(chat.save_settings, root, block, base_hash=view["hash"])
+    print(f"chat.watch.enabled = {str(enabled).lower()}")
+
+
 @su_cli.command("reset")
 def su_reset(yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation.")):
     """Remove the superuser file: every setting back to its default."""
@@ -1671,7 +1708,9 @@ def chat_list(root: str = _ROOT_OPT):
     from alfrd import chat
 
     for item in _chat_call(chat.list_sessions, Path(root).resolve()):
-        print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}")
+        schedule = item.get("schedule")
+        pending = f" · {schedule.get('queued_count', 0)} queued · {schedule.get('run_at', '')}" if schedule else ""
+        print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}{pending}")
 
 
 @chat_cli.command("rename")
@@ -1701,6 +1740,9 @@ def chat_send(session: str, text: str, root: str = _ROOT_OPT):
     from alfrd import chat
 
     out = _chat_call(chat.post_message, Path(root).resolve(), session, text)
+    if out.get("queued"):
+        print(f"Queued {out['item']['id']} for {out['schedule']['run_at']}")
+        return
     print(f"{out['request']['id']}: {out['request']['mode']} → {out['task']['row']}")
 
 
@@ -1715,6 +1757,12 @@ def chat_show(session: str, json_out: bool = typer.Option(False, "--json"), root
     if json_out:
         print(_json.dumps(state, indent=2, default=str))
         return
+    if state.get("schedule"):
+        batch = state["schedule"]
+        print(f"schedule {batch['id']}: {batch['status']} · {batch['run_at']} ({batch['timezone']})")
+        for item in batch["items"]:
+            if not item.get("removed_at"):
+                print(f"  queued {item['id']}: {item['text']}")
     for m in state["messages"]:
         print(f"[{m['role']}{'/' + m['agent'] if m.get('agent') else ''}] {m['text']}")
     for t in state["tasks"]:

@@ -30,20 +30,25 @@ export function sessionDraft(project, session) {
     error: () => storageError,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     edit(text, refs) { value = { ...value, text, refs: [...refs] }; persist(); },
-    beginSend() {
+    beginSend(target = {}) {
       if (model.busy() || model.failed()) return null; // failed files must be retried or removed first
       const text = value.text.trim(), attachments = [...value.refs];
       if (!text && !attachments.length) return null;
       const content = JSON.stringify({ text, attachments });
       if (value.pending?.content !== content) {
-        value.pending = { content, client_message_id: crypto.randomUUID() };
+        value.pending = { content, target, client_message_id: crypto.randomUUID() };
         persist();
       }
       sending = true; persist();
-      return { text, attachments, client_message_id: value.pending.client_message_id };
+      return { text, attachments, ...value.pending.target, client_message_id: value.pending.client_message_id };
+    },
+    rebaseSchedule(revision, scheduleId) {
+      if (value.pending?.target?.schedule_id === scheduleId) {
+        value.pending.target.expected_schedule_revision = revision; persist();
+      }
     },
     accepted(status, payload) {
-      if (status !== 201 || value.pending?.client_message_id !== payload.client_message_id) return;
+      if (![200, 201].includes(status) || value.pending?.client_message_id !== payload.client_message_id) return;
       if (JSON.stringify({ text: value.text.trim(), attachments: value.refs }) === value.pending.content) { value = { text: "", refs: [], pending: null }; chips.clear(); }
       else value = { ...value, pending: null };
       persist();

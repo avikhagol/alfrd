@@ -26,11 +26,11 @@ from alfrd.runtime import scheduler
 
 
 def test_watch_settings_merge_per_key_and_are_validated():
-    assert chat.merge_settings({})["watch"] == {"interval_seconds": 300, "stall_seconds": 1800,
+    assert chat.merge_settings({})["watch"] == {"enabled": True, "interval_seconds": 300, "stall_seconds": 1800,
                                                 "wake_orchestrator": False, "max_checks": 3}
     assert chat.merge_settings({"watch": {"interval_seconds": 0}})["watch"]["stall_seconds"] == 1800
     for bad in ({"interval_seconds": 10}, {"interval_seconds": -1}, {"stall_seconds": 5}, {"max_checks": True},
-                {"wake_orchestrator": "yes"}, {"every": 60}):
+                {"wake_orchestrator": "yes"}, {"enabled": 1}, {"every": 60}):
         with pytest.raises(ExecutionError, match="chat.watch"):
             chat.merge_settings({"watch": bad})
 
@@ -94,7 +94,7 @@ def check_with_live_runner(project, sid, monkeypatch, **kwargs):
     store = chat.session(project, sid)
     with monkeypatch.context() as patch:
         patch.setattr(type(chat._plan_folder(store)), "runner_alive", lambda self: True)
-        return chat.check(project, sid, spawn=False, **kwargs)[0]
+        return chat.check(project, sid, spawn=False, periodic=True, **kwargs)[0]
 
 
 def test_stall_with_wake_off_never_adds_an_agent_call(project, monkeypatch):
@@ -233,3 +233,61 @@ def test_a_stall_check_cannot_answer_a_decision_that_went_to_the_user(project):
     run(project, sid)
     d = store.decision("r0001.a.api")
     assert d["status"] == "pending" and d["needs"] == "user" and "decided_by" not in d
+
+
+def test_periodic_check_is_silent_when_completely_idle_and_wakes_for_work(project):
+    fake(project, plan=plan(task("a")), a=result())
+    sid = chat.create_session(project)["id"]
+    store = chat.session(project, sid)
+    before = chat.session_state(project, sid)
+    assert chat.check(project, periodic=True, spawn=False) == []
+    after = chat.session_state(project, sid)
+    assert after["rev"] == before["rev"] and after["messages"] == before["messages"]
+    assert after["check"] is None and not (store.dir / "check.json").exists()
+    say(project, sid, "do a")
+    [report] = chat.check(project, sid, periodic=True, spawn=False)
+    assert report["findings"][0]["kind"] == "runner_resumed"
+    run(project, sid)
+    before = chat.session_state(project, sid)
+    assert chat.check(project, sid, periodic=True, spawn=False) == []
+    after = chat.session_state(project, sid)
+    assert after["rev"] == before["rev"] and after["check"] == before["check"]
+    assert after["messages"] == before["messages"]
+
+
+@pytest.mark.parametrize("activity", ["runner", "task", "decision", "start", "delay", "unit", "run"])
+def test_periodic_check_does_not_treat_pending_or_scheduled_work_as_idle(project, monkeypatch, activity):
+    sid = chat.create_session(project)["id"]
+    store = chat.session(project, sid)
+    folder = chat._plan_folder(store)
+    if activity == "runner":
+        monkeypatch.setattr(type(folder), "runner_alive", lambda self: True)
+    elif activity == "task":
+        monkeypatch.setattr(type(store), "tasks", lambda self: [{"status": "queued"}])
+    elif activity == "decision":
+        monkeypatch.setattr(type(store), "decisions", lambda self: [{"status": "pending"}])
+    elif activity == "run":
+        state = folder.load()
+        state["status"] = "running"
+        folder.save(state)
+    elif activity == "unit":
+        folder.save_unit({"id": "future", "status": "retrying"})
+    else:
+        state = folder.load()
+        state.update({"start_at": "2099-01-01T00:00:00+00:00"} if activity == "start"
+                     else {"waiting": [{"kind": "delay"}]})
+        folder.save(state)
+    [report] = chat.check(project, sid, periodic=True, spawn=False)
+    assert report["session"] == sid
+
+
+def test_disabled_periodic_check_leaves_active_work_untouched_but_manual_check_works(project):
+    fake(project, plan=plan(task("a")), a=result())
+    sid = chat.create_session(project)["id"]
+    say(project, sid, "do a")
+    configure(project, watch={"enabled": False})
+    before = chat.session_state(project, sid)
+    assert chat.check(project, sid, periodic=True, spawn=False) == []
+    assert chat.session_state(project, sid)["rev"] == before["rev"]
+    [report] = chat.check(project, sid, spawn=False)
+    assert report["next_at"] is None and report["findings"][0]["kind"] == "runner_resumed"

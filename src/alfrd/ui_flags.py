@@ -71,6 +71,8 @@ FLAGS: tuple[Flag, ...] = (
     _f("ui.rows_per_page", "browser", "int", 25, "Rows per page", "Default table page size."),
     _f("ui.theme", "browser", "str", "obsidian-orbit", "Theme", "Selected Studio theme."),
     _f("ui.inspect", "browser", "bool", False, "Inspect panel", "Remember whether the Chat inspector is open."),
+    _f("chat.watch.enabled", "project", "bool", True, "Periodic chat checker",
+       "Superuser only: recover interrupted chat work periodically. Completely idle chats stay silent."),
     _f("chat.final_summary", "project", "bool", False, "Final summary", "Ask the configured agent for a final summary per request."),
     _f("chat.native_skills", "project", "bool", True, "Native skills", "Use an adapter's native skills when supported."),
     _f("chat.native_plugins", "project", "bool", True, "Native plugins", "Use an adapter's native plugins when supported."),

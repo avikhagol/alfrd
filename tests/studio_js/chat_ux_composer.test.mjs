@@ -5,6 +5,7 @@ import { autogrow, bindComposer, composerHtml } from "../../src/alfrd/web/js/com
 import { mountComposerDraft } from "../../src/alfrd/web/js/components/composer_draft.js";
 import { sessionDraft } from "../../src/alfrd/web/js/data/chat_draft.js";
 import { server } from "../../src/alfrd/web/js/data/server.js";
+import { icon } from "../../src/alfrd/web/js/utils/dom.js";
 
 const store = new Map();
 globalThis.sessionStorage = { getItem: (k) => store.get(k), setItem: (k, v) => store.set(k, v) };
@@ -71,16 +72,16 @@ test("unknown commands and mentions cannot dispatch; no /benchmark or /inspect",
   m.type("/benchmark"); m.key("Escape"); m.key("Enter"); assert.equal(m.calls.send, 0); assert.match(m.calls.errors.at(-1), /Unknown command \/benchmark/);
   m.type("/inspect"); m.key("Escape"); m.key("Enter"); assert.match(m.calls.errors.at(-1), /Unknown command \/inspect/);
   m.type("@nobody hi"); m.key("Enter"); assert.equal(m.calls.send, 0); assert.match(m.calls.errors.at(-1), /Unknown agent @nobody/);
-  assert.match(m.el("#chat-target").textContent, /Unknown agent/);
+  assert.match(m.c.input.placeholder, /Unknown agent/);
   m.type(" /literal"); m.key("Enter"); assert.equal(m.calls.send, 1, "leading space sends literal slash text");
 });
 
 test("target hint names the recipient", () => {
   const m = mount();
-  assert.equal(m.el("#chat-target").textContent, "To orchestrator @claude");
-  m.type("hi"); assert.equal(m.el("#chat-target").textContent, "To orchestrator @claude");
-  m.type("@sonnet do it"); assert.equal(m.el("#chat-target").textContent, "To @sonnet directly");
-  m.type(""); assert.equal(m.el("#chat-target").textContent, "To orchestrator @claude");
+  assert.match(m.c.input.placeholder, /^To orchestrator @claude;/);
+  m.type("hi"); assert.match(m.c.input.placeholder, /^To orchestrator @claude;/);
+  m.type("@sonnet do it"); assert.match(m.c.input.placeholder, /^To @sonnet directly;/);
+  m.type(""); assert.match(m.c.input.placeholder, /^To orchestrator @claude;/);
 });
 
 test("keyboard cannot bypass a disabled Send", () => {
@@ -91,11 +92,12 @@ test("keyboard cannot bypass a disabled Send", () => {
 });
 
 test("textarea auto-grows to min(240px, 40dvh) and scrolls beyond", () => {
-  const t = new El(); globalThis.innerHeight = 900;
+  const t = new El(); t.value = "content"; globalThis.innerHeight = 900;
   t.scrollHeight = 100; autogrow(t); assert.equal(t.style.height, "100px"); assert.equal(t.style.overflowY, "hidden");
   t.scrollHeight = 600; autogrow(t); assert.equal(t.style.height, "240px"); assert.equal(t.style.overflowY, "auto");
   globalThis.innerHeight = 400; autogrow(t); assert.equal(t.style.height, "160px");
   globalThis.visualViewport = { height: 300 }; autogrow(t); assert.equal(t.style.height, "120px");
+  t.value = ""; autogrow(t); assert.equal(t.style.height, ""); assert.equal(t.style.overflowY, "hidden");
   delete globalThis.visualViewport; delete globalThis.innerHeight;
   const m = mount(); m.c.input.scrollHeight = 77; m.type("a\nb\nc"); assert.equal(m.c.input.style.height, "77px");
   m.c.input.scrollHeight = 55; m.c.refresh(); assert.equal(m.c.input.style.height, "55px");
@@ -122,12 +124,22 @@ test("Retry appears for failed sends and reuses the submit path", () => {
   m.el("#chat-send-error").textContent = ""; m.c.refresh(); assert.equal(m.el("#chat-retry").hidden, true);
 });
 
-test("markup: helper, placeholder, Stop/Send ids keep the caller prefix, empty note regions", () => {
+test("markup: single line, placeholder helper and icon-only schedule/attach in row order", () => {
   for (const id of ["chat", "cd"]) {
     const html = composerHtml(id, { attachments: true });
-    for (const part of [`id="${id}-input"`, `id="${id}-send"`, `id="${id}-stop"`, `id="${id}-target"`, `id="${id}-mentions"`, `id="${id}-send-error"`, `id="${id}-send-reason"`]) assert.ok(html.includes(part), part);
-    assert.match(html, /Enter sends · Shift\+Enter adds a line/); assert.match(html, /Ask the orchestrator, @agent, or \/help/);
-    assert.match(html, /Attach images/);
+    for (const part of [`id="${id}-input"`, `id="${id}-send"`, `id="${id}-stop"`, `id="${id}-mentions"`, `id="${id}-send-error"`, `id="${id}-send-reason"`]) assert.ok(html.includes(part), part);
+    assert.match(html, /rows="1" placeholder="To orchestrate/);
+    assert.doesNotMatch(html, /chat-composer-info|chat-target|chat-hint|Images are resized/);
+    for (const [suffix, label] of [["schedule-toggle", "Schedule messages"], ["attach", "Attach images"]]) {
+      const button = html.match(new RegExp(`<button[^>]*id="${id}-${suffix}"[^>]*>([\\s\\S]*?)</button>`));
+      assert.ok(button); assert.ok(button[0].includes(`title="${label}"`)); assert.ok(button[0].includes(`aria-label="${label}"`));
+      assert.doesNotMatch(button[1], /Schedule messages|Attach images/);
+    }
+    assert.ok(html.indexOf(`${id}-input`) < html.indexOf(`${id}-schedule-toggle`));
+    assert.ok(html.indexOf(`${id}-schedule-toggle`) < html.indexOf(`${id}-attach"`));
+    assert.ok(html.indexOf(`${id}-attach"`) < html.indexOf(`${id}-send"`));
+    assert.match(html, /class="chat-schedule"[^>]*hidden/);
+    assert.ok(html.includes(icon("image")));
   }
   assert.doesNotMatch(composerHtml("chat"), /attach-tray/);
 });

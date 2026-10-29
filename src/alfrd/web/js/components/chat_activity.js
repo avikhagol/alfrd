@@ -85,7 +85,8 @@ export function mountActivity(box, o) {
       setText($(".chat-island-avatar", el), owner.replace(/^@/, "").slice(0, 2).toUpperCase());
       setText($("[data-owner]", el), [o.agentName?.(owner) || owner, `@${owner}`, task.role || task.task?.role, task.model || task.attempts.at(-1)?.model].filter(Boolean).join(" · "));
       const status = statusIcon(task.status, statusInfo(task.status).label), statusEl = $("[data-task-status]", el);
-      if (statusEl.innerHTML !== status) statusEl.innerHTML = status;
+      // Compare source markup: the browser expands SVG self-closing paths in innerHTML.
+      if (island.statusHtml !== status) { statusEl.innerHTML = status; island.statusHtml = status; }
       const steps = stepsHtml(currentSteps(req, task.row), rid(), state().blockers) || "Step — / Not reported", stepEl = $(".chat-island-step", el);
       if (stepEl.innerHTML !== steps) stepEl.innerHTML = steps;
       const deps = Array.isArray(task.dependencies) ? task.dependencies : [task.dependencies];

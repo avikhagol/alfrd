@@ -47,13 +47,14 @@ test("reload restores accepted refs, text and the content-bound retry ID, not in
   assert.equal(restored.chips.size, 1); assert.equal(restored.beginSend().client_message_id, payload.client_message_id);
 });
 
-test("only 201 clears the sent content; a later edit survives its response", () => {
-  for (const status of [200, 400, 409, 422, 500]) {
+test("201 and a confirmed 200 replay clear the sent content; a later edit survives its response", () => {
+  for (const status of [400, 409, 422, 500]) {
     const d = sessionDraft("status", String(status)); d.edit("draft", [ref]);
     const p = d.beginSend(); d.accepted(status, p); d.finish();
     assert.equal(d.read().text, "draft"); assert.deepEqual(d.read().refs, [ref]);
     assert.equal(d.beginSend().client_message_id, p.client_message_id); d.finish();
   }
+  const replay = sessionDraft("status", "200"); replay.edit("recorded", [ref]); const replayPayload = replay.beginSend(); replay.accepted(200, replayPayload); replay.finish(); assert.equal(replay.read().text, ""); assert.deepEqual(replay.read().refs, []);
   const d = sessionDraft("status", "201"); d.edit("sent", []); const p = d.beginSend();
   d.accepted(201, p); d.finish(); assert.equal(d.read().text, "");
   d.edit("first", []); const q = d.beginSend(); d.edit("new edit", []);
@@ -61,7 +62,7 @@ test("only 201 clears the sent content; a later edit survives its response", () 
   assert.notEqual(d.beginSend().client_message_id, q.client_message_id); d.finish();
 });
 
-test("mounted sends allow image-only, lock both surfaces, preserve network failure and replay, clear on 201", async () => {
+test("mounted sends allow image-only, lock both surfaces, preserve network failure and clear on confirmed replay", async () => {
   const a = mount(), b = mount("cd"), errors = [];
   a.c.destroy(); a.c = mountComposerDraft(a.root, "chat", { settings, onError: (s) => errors.push(s) });
   a.c.select("send / project", "s / one"); b.c.select("send / project", "s / one"); await tick();
@@ -75,11 +76,14 @@ test("mounted sends allow image-only, lock both surfaces, preserve network failu
   assert.equal(request.init.headers["X-CSRF-Token"], "csrf");
   const payload = JSON.parse(request.init.body); assert.equal(payload.text, ""); assert.deepEqual(payload.attachments, [ref]);
   resolve({ ok: true, status, json: async () => ({ replayed: true }) }); await pending;
-  assert.deepEqual(d.read().refs, [ref]); assert.match(errors.at(-1), /already recorded/);
-  server.request = async () => { throw new Error("network lost"); };
+  assert.deepEqual(d.read().refs, []); assert.deepEqual(errors, []);
+  d.chips.set(ref, { id: ref, ref, status: "done" }); d.sync();
+  let retryId;
+  server.request = async (_url, init) => { if (init?.body) retryId = JSON.parse(init.body).client_message_id; throw new Error("network lost"); };
   await assert.rejects(a.c.send(), /network lost/); assert.equal(d.busy(), false);
   server.request = async (_url, init) => {
-    assert.equal(JSON.parse(init.body).client_message_id, payload.client_message_id);
+    if (!init?.body) return { ok: true, json: async () => ({}) };
+    assert.equal(JSON.parse(init.body).client_message_id, retryId);
     return { ok: true, status: 201, json: async () => ({}) };
   };
   await a.c.send(); assert.deepEqual(d.read().refs, []);

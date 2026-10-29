@@ -120,6 +120,7 @@ def ui_flags_get():
 def _project_flag_values(view: dict) -> dict:
     """The project flags live in the project's alfrd.yaml ``chat:`` block (``chat.settings_view``)."""
     values = {"chat.final_summary": view["final_summary"], "chat.saved_skills": bool(view["skill_selection"]["enabled"])}
+    values["chat.watch.enabled"] = view["watch"]["enabled"]
     for name, agent in view["agents"].items():
         if f"chat.agents.{name}.lean" in ui_flags.BY_KEY and agent.get("lean") is not None:
             values[f"chat.agents.{name}.lean"] = bool(agent["lean"])
@@ -185,6 +186,8 @@ def ui_flags_save():
         for key, value in changes.items():
             if key == "chat.final_summary":
                 block["final_summary"] = value
+            elif key == "chat.watch.enabled":
+                block["watch"] = {**(block.get("watch") or {}), "enabled": value}
             elif key == "chat.saved_skills":
                 block["skill_selection"] = {**(block.get("skill_selection") or {}), "enabled": value}
             elif not (key.startswith("chat.agents.") and key.endswith(".lean")):

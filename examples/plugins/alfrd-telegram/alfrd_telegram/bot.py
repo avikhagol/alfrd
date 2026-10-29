@@ -19,15 +19,18 @@ from alfrd.api import status
 from alfrd.runtime import scheduler
 
 from . import view
+from .chat_control import ChatControl
 from .view import esc
 
 VERSION = "0.3.0"
 HELP = (
     "🤖 <b>ALFRD commands</b>\n" + view.RULE + "\n\n"
     "📊 <b>Status</b>\n"
-    "/status — your remembered project and targets\n"
-    "/status last — same as /status\n"
-    "/status new — pick a project, then targets\n"
+    "/new — create and activate a chat session\n"
+    "/resume_chat (or /resume-chat) — choose a recent session\n"
+    "Plain text goes to the active session orchestrator.\n"
+    "/status — menu: session, tasks, logs, pipeline, switch session\n"
+    "/status last — remembered pipeline targets\n"
     "/status NAME — pick targets in project NAME\n"
     "/status latest — most recently active project and target; keeps your choice\n"
     "/status more — the next 5 entries\n\n"
@@ -45,16 +48,18 @@ HELP = (
     "💡 Tap a list number or reply with it to pick one.\n"
     "For several targets, reply <code>1 3</code> or <code>1,3</code>; <b>All</b> picks every target "
     "across all pages.\n"
-    "While a list is open, number replies select from it. Reply <code>more</code> for the next 5.\n"
+    "Without an active chat, number replies select from an open list; <code>more</code> shows the next 5.\n"
+    "With an active chat, use list buttons; all plain text goes to the orchestrator.\n"
     "Pause and resume ask for Yes/No before changing anything.\n"
     "🏁 When an agent loop ends, its final handoff is posted here."
 )
 #: Telegram's ``/`` menu (setMyCommands).
-MENU = [("status", "Status of your targets"), ("log", "Pick a target and step: last log lines"),
+MENU = [("new", "Create a chat session"), ("resume_chat", "Choose a recent chat session"),
+        ("status", "Session, tasks, logs and pipeline menu"), ("log", "Pick a target and step: last log lines"),
         ("runs", "Recent plans"), ("handoff", "Latest agent-loop handoff"),
         ("pause", "Pause the plan (asks first)"), ("resume", "Resume the plan (asks first)"),
         ("whoareyou", "Machine and user this bot runs on"), ("help", "All commands")]
-NO_PROJECT = "📂 No project selected. Send /status new to pick one."
+NO_PROJECT = "📂 No project selected. Send /status to pick one."
 COMMANDS = ("/status", "/runs", "/log", "/logs", "/handoff", "/pause", "/resume")
 TERMINAL = ("finished", "failed", "cancelled", "interrupted")
 #: Seconds between checks for ended agent loops, and the most messages one handoff may take.
@@ -131,7 +136,7 @@ class Plans:
         return None
 
 
-class Bot:
+class Bot(ChatControl):
     def __init__(self, route: Mapping[str, Any], plans, *, log: Callable = print, state: Path | None = None):
         from alfrd.chat_notifications import Changes
 
@@ -146,6 +151,9 @@ class Bot:
         # Kept in ``state`` across restarts: the selected project and its tracked targets (row keys).
         self.state = Path(state) if state else None
         self.selected, self.tracked = None, []
+        self.active_chat = None
+        self.chat_cursors = {}
+        self.chat_buttons = {}
         # Open list: {"kind": "project"|"target"|"log-target"|"log-step", "items": [(value, label, note)],
         # "page", "project"; log-step also "row" and "label"}
         self.picker = None
@@ -163,15 +171,26 @@ class Bot:
         if isinstance(data, dict) and isinstance(data.get("project"), str):
             self.selected = data["project"]
             self.tracked = [k for k in data.get("targets") or [] if isinstance(k, str)]
+        if isinstance(data, dict):
+            active = data.get("active_chat")
+            if isinstance(active, dict) and all(isinstance(active.get(k), str) for k in ("project", "session")):
+                self.active_chat = active
+            cursors = data.get("chat_cursors")
+            if isinstance(cursors, dict):
+                self.chat_cursors = {k: v for k, v in cursors.items() if isinstance(v, int) and v >= 0}
 
     def remember(self, project, keys):
         self.selected, self.tracked = project, list(keys)
+        self.save_state()
+
+    def save_state(self):
         if self.state is None:
             return
         try:
             self.state.parent.mkdir(parents=True, exist_ok=True)
             temp = self.state.with_suffix(".tmp")
-            temp.write_text(json.dumps({"project": project, "targets": self.tracked}))
+            temp.write_text(json.dumps({"project": self.selected, "targets": self.tracked,
+                                        "active_chat": self.active_chat, "chat_cursors": self.chat_cursors}))
             temp.replace(self.state)
         except OSError as exc:
             self.log(f"Could not save the /status selection ({type(exc).__name__}).")
@@ -219,7 +238,7 @@ class Bot:
             matches = exact or prefix
             if len(matches) != 1:
                 raise ValueError(f"🔍 {'Several' if matches else 'No'} projects match {esc(repr(selector))}. "
-                                 "Send /status new to pick from the list.")
+                                 "Send /status to pick from the list.")
             if matches[0] != self.selected:
                 self.remember(matches[0], [])
         elif self.selected not in projects:
@@ -243,15 +262,18 @@ class Bot:
 
     def status_command(self, args):
         word = args[0].lower() if args else ""
+        if not args:
+            self.picker = self.view = None
+            return self.status_menu()
+        if word == "new":
+            return self.send("Use /status and choose Pipeline / targets.")
         if word == "more":
             return self.more()
         if self.picker and self.answer(args):
             return None
         if len(args) > 1:
-            return self.send("ℹ️ Use /status, /status last, /status new, /status latest, /status more "
+            return self.send("ℹ️ Use /status, /status last, /status latest, /status more "
                              "or /status NAME.")
-        if word == "new":
-            return self.pick_project()
         if word == "latest":
             return self.latest()
         if word not in ("", "last"):
@@ -493,6 +515,7 @@ class Bot:
     def checked_watch(self):
         """:meth:`watch` and :meth:`flush`, whose failures are logged: only a getUpdates error may stop the bot."""
         try:
+            self.relay_chat()
             self.watch()
         except notifiers.TelegramError as exc:
             self.log(f"Telegram reply failed ({self.reason(exc)}).")
@@ -542,23 +565,30 @@ class Bot:
 
     # -- commands -------------------------------------------------------------
 
-    def command(self, text):
+    def command(self, text, message_id=None):
         words = text.split()
         if not words:
             return
         if not words[0].startswith("/"):
+            if self.active_chat:
+                self.guarded(lambda: self.chat_prompt(text, message_id))
+                return
             # A bare reply answers the open list ("2", "1 3", "all", "more").
             if [w.lower() for w in words] == ["more"] and (self.picker or self.view):
                 self.guarded(self.more)
                 return
             if self.picker:
                 self.guarded(lambda: self.answer(words) or self.send(
-                    "🔢 Reply with a number from the list, or send /status new."))
+                    "🔢 Reply with a number from the list, or send /status."))
                 return
             self.send("🤔 Unknown command. Use /help.")
             return
         command = words[0].split("@")[0].lower()
         args = words[1:]
+        if command in ("/new", "/resume-chat", "/resume_chat"):
+            self.picker = self.view = None
+            self.guarded(self.new_chat if command == "/new" else self.resume_chats)
+            return
         if command == "/help" or command == "/start":
             self.send(HELP)
             return
@@ -624,9 +654,16 @@ class Bot:
         # Acknowledge every callback in the authorized chat, including stale ones.
         self.call("answerCallbackQuery", {"callback_query_id": query["id"]})
         choice, _, key = str(query.get("data", "")).partition(":")
+        if choice == "chat":
+            action = self.chat_buttons.get(key)
+            if action is None:
+                self.send("This menu expired. Send /status or /resume_chat.")
+            else:
+                self.guarded(action)
+            return
         if choice == "pick":
             if self.picker is None and not (key == "more" and self.view):
-                self.send("⌛ This list expired. Send /status new.")
+                self.send("⌛ This list expired. Send /status.")
             else:
                 self.guarded(self.more if key == "more" else lambda: self.answer([key]))
             return
@@ -656,7 +693,7 @@ class Bot:
         if query:
             self.callback(query)
         elif isinstance(message.get("text"), str):
-            self.command(message["text"])
+            self.command(message["text"], message.get("message_id"))
 
     def poll(self):
         updates = self.call("getUpdates", {

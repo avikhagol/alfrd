@@ -230,6 +230,14 @@ the oldest is this many minutes old; `0` sends right away); `mute_when_active`
 wait in the plugin data folder (`plugins/telegram/outbox-*.jsonl`); the next
 notification or the plugin's Bot service sends them when due.
 
+The optional bot also provides `/new`, `/resume_chat` (alias `/resume-chat`) and
+a `/status` menu for Studio chat sessions, task progress and log tails. Plain
+messages go to the active session orchestrator, with acknowledgements and
+chunked replies. Commands and callbacks accept only the configured numeric
+chat ID. These interactive replies are separate from notification routes and
+are not held or muted by notification settings. See the
+[Telegram command reference](../examples/plugins/alfrd-telegram/README.md#commands).
+
 With the `alfrd-telegram` plugin installed, leave out `token` and `chat_id`: the
 route then uses the values saved in Settings → Plugins → Telegram, so you paste
 the token once, in the Studio:

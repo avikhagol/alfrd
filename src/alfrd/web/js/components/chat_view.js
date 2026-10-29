@@ -1,3 +1,4 @@
+import { viewerFor, renderViewer, fileObject } from "./viewers.js";
 import { mountPanelResize } from './panel_resize.js';
 // Chat section (#/chat/<session>?p=<project>): sessions, transcript, composer with @agent
 // autocomplete, task graph (graph_view.js, read-only), task detail with Cancel/Retry, decisions,
@@ -11,6 +12,7 @@ import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { mountComposerDraft } from "./composer_draft.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
+import { bindChatTitle } from "./chat_title.js";
 import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
 import { messageHtml as sharedMessageHtml } from "./chat_message.js";
@@ -19,7 +21,7 @@ import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
 import { createGoalsTab } from "./goals_tab.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
-  parseMention, promotable, requestProgress, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
+  parseMention, promotable, requestProgress, requestTotals, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
 } from "../data/chat.js";
 
 import { chatProjects } from "../data/chat_projects.js";
@@ -78,6 +80,7 @@ export function leave() {
   goals.stop();
   clearInterval(slowTimer); clearInterval(clock); slowTimer = clock = 0;
   act?.stop();
+  draft?.suspend?.();
 }
 
 export function render(el, ctx) {
@@ -159,7 +162,7 @@ function mount(el, ctx, p) {
       <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
       <section class="chat-activity" id="chat-activity" aria-label="Running now" hidden></section>
       <p class="chat-stop-status muted small" role="status"></p>
-      ${composerHtml("chat", { rows: 1, attachments: true })}
+      ${composerHtml("chat", { attachments: true })}
     </section>
     <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks"><div class="chat-inspector-resize"></div><div class="chat-inspector-content">
       <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-request-scope"></div><div id="chat-insp-tabs">${tabsHtml()}</div></section>
@@ -321,7 +324,7 @@ function drawSessions() {
       <label class="sr-only" for="chat-rename-input">Chat name</label><input class="input sm" id="chat-rename-input" name="title" maxlength="120" value="${esc(s.title)}" required>
       <button type="submit" class="icon-btn sm" aria-label="Save the name" title="Save (Enter)">${icon("check")}</button><button type="button" class="icon-btn sm" data-chat="rename-cancel" aria-label="Keep the old name" title="Cancel (Esc)">${icon("close")}</button></form></li>`
     : `<li class="chat-session-item"><a href="${esc(routeHash(`chat/${s.id}`, S.project, ctxRef.state.selectedTarget))}" class="chat-session${s.id === S.sid ? " on" : ""}" ${s.id === S.sid ? 'aria-current="page"' : ""} data-sid="${esc(s.id)}">
-    <b title="${esc(s.title)}">${esc(s.title)}</b>${s.plan_status === "running" ? '<span class="chat-running" role="img" aria-label="Running" title="Running"></span>' : ""}</a></li>`).join("") || `<li class="muted small" role="status">${query ? `No sessions match “${esc(query)}”.` : "No sessions need you."} <button type="button" class="btn sm" data-chat="clear-filters">Clear filters</button></li>`));
+    <b title="${esc(s.title)}">${esc(s.title)}</b>${s.schedule ? `<span class="badge" title="${esc(s.schedule.run_at || s.schedule.error || "Schedule")}">${s.schedule.queued_count || 0} queued</span>` : ""}${s.plan_status === "running" ? '<span class="chat-running" role="img" aria-label="Running" title="Running"></span>' : ""}</a></li>`).join("") || `<li class="muted small" role="status">${query ? `No sessions match “${esc(query)}”.` : "No sessions need you."} <button type="button" class="btn sm" data-chat="clear-filters">Clear filters</button></li>`));
   if (S.renaming) { const input = $("#chat-rename-input", box); if (input && document.activeElement !== input) { input.focus(); input.select(); } }
 }
 
@@ -382,15 +385,39 @@ function setCollapsed(on) {
 function drawHead(ctx) {
   const live = ctx.state.liveStatus?.state || "off";
   const s = S.sessions?.find((x) => x.id === S.sid);
+  const titleInput = $("#chat-title-input", host);
+  // Live metadata updates must not replace an in-progress title draft or its cursor.
+  if (titleInput?.dataset.sid === S.sid && (document.activeElement === titleInput || titleInput.dataset.saving)) { drawCheckStatus(); return; }
   if (!changed("head", [s?.title, s?.active_requests, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) { drawCheckStatus(); return; }
   const focused = $("#chat-head", host).contains(document.activeElement) ? document.activeElement.dataset.chat : null;
   const flowing = ["live", "polling"].includes(live);
-  $("#chat-head", host).innerHTML = `<div class="chat-head-title"><button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${esc(s?.title || (S.sid ? S.sid : "No session"))}</h3>
-    <button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>${s ? `<details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests ? "disabled" : ""}>${icon("trash")} Delete</button></div></details>` : ""}</div>
+  $("#chat-head", host).innerHTML = `<div class="chat-head-title"><button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${s ? `<input id="chat-title-input" class="chat-title-input" data-sid="${esc(s.id)}" aria-label="Rename chat" title="Rename chat (Enter to save, Escape to cancel)" maxlength="120" value="${esc(s.title)}">` : esc(S.sid || "No session")}</h3>
+    <button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>${s ? `<details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests || s.schedule ? 'disabled title="Cancel the schedule before deleting this session"' : ""}>${icon("trash")} Delete</button></div></details>` : ""}</div>
     <div class="chat-head-status"><span class="chat-live tone-${flowing ? "ok" : "warn"}" role="status" title="${esc([flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected", ctx.state.liveStatus?.detail, S.data?.plan ? `runner ${S.data.plan.runner_alive ? "active" : "idle"} (plan ${S.data.plan.id})` : ""].filter(Boolean).join(" · "))}"><span class="sr-only">${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}${S.data?.plan ? `, runner ${S.data.plan.runner_alive ? "active" : "idle"}` : ""}</span></span>
     ${S.sid ? `<span class="muted small" id="chat-check-status"></span><button type="button" class="icon-btn sm" data-chat="check" aria-label="${S.checking === `${S.project}/${S.sid}` ? "Checking" : "Check for interrupted work and resume it; paused runners stay paused"}" aria-busy="${S.checking === `${S.project}/${S.sid}`}" ${S.checking === `${S.project}/${S.sid}` ? "disabled" : ""} aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${icon(S.checking === `${S.project}/${S.sid}` ? "sync" : "check")}</button>` : ""}</div>
     ${S.settingsError ? `<p class="callout fail small chat-wide" role="alert">Chat settings: ${esc(S.settingsError)} — fix the <code>chat:</code> block in <a href="${esc(routeHash("config", S.project, ctx.state.selectedTarget))}">Settings</a>.</p>` : ""}`;
   drawCheckStatus();
+  if (s) {
+    const project = S.project, sid = s.id;
+    bindChatTitle($("#chat-title-input", host), {
+      save: async (title) => {
+        const { session } = await post(project, `/sessions/${encodeURIComponent(sid)}`, { title }, "PATCH");
+        if (S.project === project) {
+          const row = S.sessions?.find((x) => x.id === sid);
+          if (row) row.title = session.title;
+          if (S.sid === sid && S.data?.session) S.data.session.title = session.title;
+          S.keys.head = null; S.keys.sessions = null;
+        }
+        return session.title;
+      },
+      report: (message) => ctx.toast(message, "fail"),
+      settled: () => {
+        if (S.project !== project) return;
+        ctx.update();
+        loadSessions();
+      },
+    });
+  }
   if (focused) $(`[data-chat="${CSS.escape(focused)}"]`, $("#chat-head", host))?.focus();
 }
 
@@ -475,18 +502,25 @@ function drawLog() {
 function drawProgress(ctx) {
   const box = $("#chat-progress", host);
   if (!box) return;
-  const req = activeRequest(S.data);
+  const req = (S.data?.requests || []).find((r) => r.id === scope.request(S.data));
   const pr = requestProgress(S.data, req);
   const u = S.data?.usage;
   const warned = req ? costWarnings(S.data, req.id) : [];
   const promo = server.session?.mutations_enabled ? promotable(S.data) : null;
-  const html = !pr ? `<h3 id="chat-progress-h">Progress</h3><p class="muted small">No request yet.</p>`
+  const totals = requestTotals(S.data);
+  const html = scope.isAll() ? `<h3 id="chat-progress-h">All requests</h3>
+      <p class="small">${totals.count} request${totals.count === 1 ? "" : "s"}${totals.ongoing ? ` · ${totals.ongoing} ongoing` : ""}</p>
+      <p class="small" data-tokens="all">Total tokens: in ${totals.usage.input_tokens ?? "—"} · out ${totals.usage.output_tokens ?? "—"}</p>
+      <p class="small">Total cost: ${money(totals.usage.total_cost_usd)}</p>
+      <p class="small">Total run time: ${duration(totals.seconds)}${totals.ongoing ? " (ongoing)" : ""}</p>
+      <p class="muted small">${esc(tokenLine(totals.usage) || "no usage reported yet")}</p>`
+    : !pr ? `<h3 id="chat-progress-h">Progress</h3><p class="muted small">No request yet.</p>`
     : `<h3 id="chat-progress-h">Request ${esc(pr.id)} <span class="badge tone-${statusInfo(pr.status === "summarizing" ? "running" : pr.status).tone}"><span>${esc(pr.status.replace("_", " "))}</span></span></h3>
       <p class="small chat-req-text" title="${esc(pr.text)}">${esc(pr.text)}</p>
       ${pr.total ? `<div class="chat-bar" role="progressbar" aria-label="Tasks done" aria-valuemin="0" aria-valuemax="${pr.total}" aria-valuenow="${pr.done}" aria-valuetext="${pr.done} of ${pr.total} tasks done"><i style="width:${Math.round((pr.done / pr.total) * 100)}%"></i></div>
         <p class="small">${pr.done}/${pr.total} done${pr.running ? ` · ${pr.running} running` : ""}${pr.failed ? ` · ${pr.failed} failed or stopped` : ""}</p>` : `<p class="muted small">${pr.mode === "direct" ? "Direct message" : "Planning…"}</p>`}
       ${meter("Cost", pr.cost, pr.maxCost, pr.costRatio, money(req?.usage?.total_cost_usd), pr.maxCost ? money(pr.maxCost) : "no limit", pr.tone)}
-      ${meter("Time", pr.seconds, pr.maxSeconds, pr.timeRatio, duration(pr.seconds), pr.maxSeconds ? duration(pr.maxSeconds) : "no limit", pr.tone)}
+      ${meter("Time", pr.seconds, pr.maxSeconds, pr.timeRatio, duration(pr.seconds) + (pr.ongoing ? " (ongoing)" : ""), pr.maxSeconds ? duration(pr.maxSeconds) : "no limit", pr.tone)}
       <p class="muted small" data-tokens="request">${esc(tokenLine(req?.usage) || "no tokens reported yet")}</p>
       <p class="muted small">${pr.calls} orchestrator call${pr.calls === 1 ? "" : "s"}${S.data?.settings?.orchestrator_model ? ` (${esc(S.data.settings.orchestrator_model)}, escalation ${esc(S.data.settings.escalation_model || "agent model")})` : ""}${req?.usage?.total_cost_usd == null ? " · cost not reported by these agents" : ""}</p>
       ${warned.length ? `<p class="small"><span class="badge tone-warn" role="status">${icon("alert")}<span>${warned.length} task${warned.length === 1 ? "" : "s"} over the ${money(S.data?.settings?.warn_task_cost_usd)} warning</span></span></p>` : ""}
@@ -532,11 +566,11 @@ function drawTask(ctx) {
   const t = S.data?.tasks?.find((x) => x.row === S.task);
   if (!changed("task", [t, S.open.get(S.task)])) return;
   box.hidden = !t;
-  if (!t) { box.innerHTML = ""; return; }
+  if (!t) { box.innerHTML = ""; delete box.dataset.html; return; }
   const task = t.task || {}, info = statusInfo(t.status), b = task.budget || {};
   const open = S.open.get(t.row);
   box.tabIndex = -1;
-  box.innerHTML = `<div class="row gap"><h3 class="grow">${esc(task.title || t.row)}</h3><button type="button" class="icon-btn sm" data-chat="close-task" aria-label="Close task details">${icon("close")}</button></div>
+  const html = `<div class="row gap"><h3 class="grow">${esc(task.title || t.row)}</h3><button type="button" class="icon-btn sm" data-chat="close-task" aria-label="Close task details">${icon("close")}</button></div>
     <p><span class="badge tone-${info.tone}">${icon(info.icon)}<span>${esc(info.label)}</span></span> <span class="small">@${esc(t.owner)} · ${esc(agentName(t.owner))}</span> <span class="muted small mono">${esc(t.row)}</span></p>
     ${task.role ? `<p class="small muted">Role: ${esc(task.role)}</p>` : ""}
     ${task.description ? `<p class="small chat-text">${esc(task.description)}</p>` : ""}
@@ -558,6 +592,7 @@ function drawTask(ctx) {
       ${canRetry(t) ? `<button type="button" class="btn sm" data-task-act="retry" data-row="${esc(t.row)}">${icon("reset")} Retry</button>` : ""}
       <button type="button" class="btn sm" data-transcript="${esc(t.row)}" aria-expanded="${Boolean(open)}">${icon(open ? "fold" : "unfold")} ${open ? "Hide" : "Full"} transcript</button>
     </div>${open ? transcriptHtml(t.row) : ""}`;
+  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
 }
 
 // --- actions ---------------------------------------------------------------------
@@ -604,10 +639,20 @@ async function viewArtifact(ref) {
     info = page; text += page.content ?? ""; offset = page.offset + page.length; eof = page.eof;
   };
   try { await more(); } catch (error) { ctx.toast(`Artifact: ${error.status === 409 ? "the file changed since this version was recorded" : error.message}`, "fail"); return; }
+  const viewer = /\.(md|markdown)$/i.test(info.path) ? viewerFor(info.path, "text/markdown") : null;
+  const markdown = viewer && viewer.id !== "text";
   ctx.modal(`<header class="modal-h"><h2 class="mono">${esc(info.path)}</h2><span class="muted small mono">${esc(String(info.sha256).slice(0, 12))} · ${Math.ceil(info.size / 1024)} KiB</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b"><pre class="log log-full" id="chat-art"></pre><button type="button" class="btn sm" id="chat-art-more" hidden>Load more</button></div>`, (root) => {
-    const show = () => { $("#chat-art", root).textContent = text; $("#chat-art-more", root).hidden = eof; };
-    $("#chat-art-more", root).onclick = async () => { try { await more(); show(); } catch (error) { ctx.toast(error.message, "fail"); } };
+    <div class="modal-b">${markdown ? '<div class="viewer viewer-full" id="chat-art"></div>' : '<pre class="log log-full" id="chat-art"></pre>'}<button type="button" class="btn sm" id="chat-art-more" hidden>Load more</button></div>`, (root) => {
+    const show = async () => {
+      const el = $("#chat-art", root);
+      el.textContent = text; $("#chat-art-more", root).hidden = eof;
+      // Render the verified artifact bytes, including any pages already loaded.
+      if (markdown) {
+        try { await renderViewer(viewer, fileObject(S.project, info.path, { text, mime: "text/markdown" }), el); }
+        catch (error) { el.textContent = text; ctx.toast(error.message, "warn"); }
+      }
+    };
+    $("#chat-art-more", root).onclick = async () => { try { await more(); await show(); } catch (error) { ctx.toast(error.message, "fail"); } };
     show();
   }, "full");
 }
@@ -615,7 +660,7 @@ async function viewArtifact(ref) {
 async function send() {
   const input = $("#chat-input", host);
   const mention = parseMention(input.value.trim(), agents());
-  if (mention?.error) { S.sendError = mention.error; draw(ctxRef); return; }
+  if (mention?.error && $(`#chat-form`, host).dataset?.scheduled !== "true") { S.sendError = mention.error; draw(ctxRef); return; }
   S.sendError = "";
   try {
     if (await draft.send()) { composer?.close(); loadSession(); loadSessions(); }
@@ -640,7 +685,7 @@ const bound = new WeakSet(); // the view element outlives mounts (project switch
 
 function bind(el) {
   // The composer's own elements are new on every mount, so it is bound every time.
-  draft = mountComposerDraft(el, "chat", { settings: () => S.data?.settings || S.settings, blocked: () => !!S.settingsError, onError: (m) => { S.sendError = m; $("#chat-send-error", el).textContent = m; } });
+  draft = mountComposerDraft(el, "chat", { settings: () => S.data?.settings || S.settings, createSession: newSession, blocked: () => !!S.settingsError, onError: (m) => { S.sendError = m; $("#chat-send-error", el).textContent = m; } });
   composer = bindComposer(el, "chat", { agents, orchestrator, send, stopState: stop.state, onStop: stop.stop, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { draft.edit(text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
   if (bound.has(el)) return;
   bound.add(el);

@@ -119,7 +119,7 @@ h5 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px
 
 .ic { width: 16px; height: 16px; flex: none; }
 .ic.big { width: 28px; height: 28px; color: var(--accent-text); }
-.spin { animation: spin 1.2s linear infinite; }
+.spin { display: inline-block; transform-box: fill-box; transform-origin: center; animation: spin 1.2s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .logo { width: 34px; height: 34px; flex: none; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }

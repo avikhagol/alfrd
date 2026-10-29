@@ -39,6 +39,21 @@ test("G6 renders the D3 legend and preserves descriptive status labels and owner
   assert.match(world.innerHTML, /title="a · @codex · Waits for b"/);
 });
 
+test("revision-only updates retain running graph markup without restarting SVG animations", () => {
+  const { graph, world } = mounted();
+  let html = "", writes = 0;
+  Object.defineProperty(world, "innerHTML", { get: () => html, set(value) { html = value; writes++; } });
+  const m = model(1);
+  Object.assign(m.nodes[0], { status: "running", st: "running", label: "Running" });
+  graph.update(m);
+  assert.match(html, /data-status="running"/);
+  graph.update({ ...m, rev: 2 });
+  assert.equal(writes, 1, "a newer revision with identical markup leaves the DOM untouched");
+  graph.update({ ...m, rev: 3, nodes: [{ ...m.nodes[0], status: "done", st: "done", label: "Done" }] });
+  assert.equal(writes, 2);
+  assert.match(html, /data-status="done"/);
+});
+
 test("G6 arrows pan without selection; node focus selects, Enter opens, Escape restores pan", () => {
   globalThis.CSS = { escape: (s) => s };
   const selected = [], opened = [];

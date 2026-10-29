@@ -303,7 +303,7 @@ export async function saveSection(scope, { changes, expected, project, post }) {
 // --- Preferences: one form, three sections (Browser, Project, Machine), each saved alone -------------------------
 
 const SET_BROWSER = ["ui.live_updates", "ui.experimental_chat", "ui.browser_notifications", "ui.rows_per_page"];
-const SET_PROJECT = (f) => f.key === "chat.final_summary" || f.key === "chat.saved_skills" || /^chat\.agents\.\w+\.lean$/.test(f.key);
+const SET_PROJECT = (f) => f.key === "chat.watch.enabled" || f.key === "chat.final_summary" || f.key === "chat.saved_skills" || /^chat\.agents\.\w+\.lean$/.test(f.key);
 
 async function mountForm(ctx, app, root) {
   const host = $("#set-form", root);

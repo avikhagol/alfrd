@@ -64,7 +64,18 @@ def test_studio_rename_and_delete_endpoints(project, tmp_path, monkeypatch):
     assert client.patch(f"{url}/{sid}", json={"title": "Renamed"}).status_code == 403  # CSRF
     renamed = client.patch(f"{url}/{sid}", json={"title": "Renamed"}, headers=headers)
     assert renamed.status_code == 200 and renamed.get_json()["session"]["title"] == "Renamed"
-    assert client.patch(f"{url}/{sid}", json={"title": ""}, headers=headers).status_code == 400
+    for title in ("", " \n\t "):
+        assert client.patch(f"{url}/{sid}", json={"title": title}, headers=headers).status_code == 400
+        assert chat.session(project, sid).load()["title"] == "Renamed"
+    title = "x" * chat.TITLE_MAX
+    capped = client.patch(f"{url}/{sid}", json={"title": "  " + "x" * 300 + "  "}, headers=headers)
+    assert capped.status_code == 200 and capped.get_json()["session"]["title"] == title
+    # Both reload endpoints and a fresh storage read see the durable explicit name.
+    assert client.get(url).get_json()["sessions"][0]["title"] == title
+    assert client.get(f"{url}/{sid}").get_json()["session"]["title"] == title
+    assert chat.session(project, sid).load()["title"] == title
+    missing = client.patch(f"{url}/20260101-000000-abcdef", json={"title": "Missing"}, headers=headers)
+    assert missing.status_code == 404
     assert client.get(url).get_json()["sessions"][0]["id"] == sid
     say(project, sid, "@codex busy")
     assert client.delete(f"{url}/{sid}", headers=headers).status_code == 409

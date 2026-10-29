@@ -21,7 +21,7 @@ function mounted(opts = {}) {
       getBoundingClientRect: () => ({ width: 1000, height: 600, left: 0, top: 0 }),
       querySelector: () => null, querySelectorAll: () => [], contains: () => false, focus() {} };
   };
-  const elements = new Map([".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom", "[data-gv-menu]", "[data-gv-box]"].map((s) => [s, element()]));
+  const elements = new Map([".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom", "[data-gv-menu]", "[data-gv-box]", "[data-gv-layout]"].map((s) => [s, element()]));
   const host = element(); host.querySelector = (s) => elements.get(s);
   let focused = null;
   elements.get(".world").querySelector = (s) => ({ setAttribute() {}, focus() { focused = s; } });
@@ -426,4 +426,39 @@ test("request scope lists newest creation first without changing selection or so
   assert.equal(scope.request(state), null);
   assert.deepEqual(options().filter(([, selected]) => selected), [["all", true]]);
   assert.deepEqual(requests.map((r) => r.id), ["r0009", "r10", "r0011", "r0012"]);
+});
+
+
+test("layout toggle defaults to spread out, persists reloads and preserves viewport and live updates", () => {
+  const tasks = (ids) => { const m = model(ids); m.nodes.forEach((n) => { n.request = "r1"; }); return m; };
+  const saved = new Map();
+  globalThis.localStorage = { getItem: (k) => saved.get(k) ?? null, setItem: (k, v) => saved.set(k, v) };
+  try {
+    const r = mounted({ groups: true });
+    r.graph.update(tasks(["a", "b"])); r.tick();
+    assert.match(r.host.innerHTML, /title="Switch to linear layout" aria-label="Switch to linear layout"/);
+    const positions = () => [...r.world.innerHTML.matchAll(/data-key="[^"]+"[^>]*style="left:([\d.]+)px;top:([\d.]+)px/g)].map((m) => m.slice(1).map(Number));
+    assert.equal(positions()[0][1], positions()[1][1]);
+    clickNode(r, "a");
+    r.canvas.fire("wheel", { deltaX: 72, deltaY: 43 });
+    const viewport = r.world.style.transform;
+    const toggle = () => r.host.fire("click", { target: { closest: (s) => s === "[data-gv]" ? { dataset: { gv: "layout" } } : null } });
+    toggle(); r.tick();
+    assert.equal(r.world.style.transform, viewport);
+    assert.notEqual(positions()[0][1], positions()[1][1]);
+    assert.deepEqual(r.graph.selection(), ["a"]);
+    r.graph.update({ ...tasks(["a", "b", "c"]), rev: 2 }); r.tick();
+    assert.equal(r.world.style.transform, viewport);
+    assert.equal(new Set(positions().map((p) => p[1])).size, 3);
+    const reloaded = mounted({ groups: true });
+    assert.match(reloaded.host.innerHTML, /title="Switch to spread out layout" aria-label="Switch to spread out layout"/);
+    reloaded.graph.update(tasks(["a", "b"])); reloaded.tick();
+    assert.match(reloaded.live.textContent, /^$/);
+    const tops = [...reloaded.world.innerHTML.matchAll(/data-key="[^"]+"[^>]*style="left:[\d.]+px;top:([\d.]+)px/g)].map((m) => m[1]);
+    assert.equal(new Set(tops).size, 2);
+    toggle(); r.tick();
+    assert.equal(r.world.style.transform, viewport);
+    assert.equal(new Set(positions().map((p) => p[1])).size, 1);
+    assert.match(r.live.textContent, /Spread out layout/);
+  } finally { delete globalThis.localStorage; }
 });

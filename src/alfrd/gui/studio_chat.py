@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Response, jsonify, request
+from flask import Response, current_app, jsonify, request
 
 from alfrd import attachments as att
 from alfrd import chat, mailbox
@@ -28,6 +28,8 @@ _ATTACHMENT_STATUS = {"unsupported_type": 415, "too_large": 413, "too_many": 413
 
 
 def _fail(error: Exception):
+    if isinstance(error, chat.ScheduleConflictError):
+        return jsonify(error={"code": 409, "message": str(error), "reason": error.reason}, **error.state), 409
     if isinstance(error, att.AttachmentError):
         return _json_error(error, _ATTACHMENT_STATUS.get(error.code, 400), reason=error.code)
     if isinstance(error, mailbox.MailboxError):
@@ -164,9 +166,13 @@ def chat_session_state(project_name: str, session_id: str):
     """Messages, requests, tasks with statuses, graph (nodes, edges, Mermaid), blockers, decisions and usage."""
     try:
         _recover_mailbox_delivery(chat.session(_project_root(project_name), session_id))
-        return jsonify(chat.session_state(_project_root(project_name), session_id,
-                                          messages=request.args.get("messages", default=500, type=int),
-                                          since_rev=request.args.get("since_rev", default=None, type=int)))
+        out = chat.session_state(_project_root(project_name), session_id,
+                                 messages=request.args.get("messages", default=500, type=int),
+                                 since_rev=request.args.get("since_rev", default=None, type=int))
+        if not out.get("unchanged"):
+            out["schedule_service"] = chat.schedule_state(_project_root(project_name), session_id,
+                                                         available=_schedule_available())["schedule_service"]
+        return jsonify(out)
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 
@@ -204,7 +210,9 @@ def chat_message(project_name: str, session_id: str):
     try:
         out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""),
                                 attachments=payload.get("attachments"),
-                                client_message_id=payload.get("client_message_id"))
+                                client_message_id=payload.get("client_message_id"),
+                                schedule_id=payload.get("schedule_id"),
+                                expected_schedule_revision=payload.get("expected_schedule_revision"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
@@ -430,4 +438,54 @@ def mailbox_action(project_name, session_id, request_id, message_id, operation):
         _poke(project_name)
         return jsonify(out)
     except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+_SCHEDULE = _BASE + "/sessions/<session_id>/schedule"
+
+
+def _schedule_available():
+    return current_app.config.get("RUNTIME_MUTATIONS_ENABLED", True)
+
+
+@studio_api.route(_SCHEDULE, methods=["GET", "POST"])
+def chat_schedule_state(project_name, session_id):
+    try:
+        root = _project_root(project_name)
+        if request.method == "GET":
+            return jsonify(chat.schedule_state(root, session_id, available=_schedule_available()))
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        out = chat.create_schedule(root, session_id, run_at=payload.get("run_at"), timezone=payload.get("timezone"),
+                                   client_schedule_id=payload.get("client_schedule_id"),
+                                   expected_schedule_revision=payload.get("expected_schedule_revision"), spawn=_schedule_available())
+        _poke(project_name)
+        return jsonify(out), 200 if out.get("replayed") else 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.patch(_SCHEDULE + "/<schedule_id>")
+@studio_api.route(_SCHEDULE + "/<schedule_id>/items/<item_id>", methods=["PATCH", "DELETE"])
+@studio_api.post(_SCHEDULE + "/<schedule_id>/<action>")
+def chat_schedule_update(project_name, session_id, schedule_id, item_id=None, action=None):
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        if item_id:
+            action = "remove" if request.method == "DELETE" else "edit"
+        elif request.method == "PATCH":
+            action = "time"
+        elif action not in ("run", "cancel"):
+            raise LookupError("unknown schedule action")
+        out = chat.mutate_schedule(_project_root(project_name), session_id, schedule_id, action,
+                                  expected_schedule_revision=payload.get("expected_schedule_revision"),
+                                  operation_id=payload.get("operation_id"), item_id=item_id, text=payload.get("text"),
+                                  attachments=payload.get("attachments"), run_at=payload.get("run_at"),
+                                  timezone=payload.get("timezone"), spawn=_schedule_available())
+        _poke(project_name)
+        return jsonify(out), 202 if action == "run" else 200
+    except Exception as error:
         return _fail(error)

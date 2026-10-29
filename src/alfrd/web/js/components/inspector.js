@@ -103,6 +103,7 @@ export function createRequestScope() {
   let choice = "current";
   return {
     select(value) { choice = value; },
+    isAll() { return choice === "all"; },
     request(state) { return choice === "all" ? null : choice === "current" ? activeRequest(state)?.id || null : choice; },
     html(state) {
       const current = activeRequest(state);

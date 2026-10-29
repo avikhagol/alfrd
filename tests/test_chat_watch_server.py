@@ -15,10 +15,9 @@ from alfrd.manifest import ManifestError, parse_manifest
 from tests.test_chat_orchestration import project  # noqa: F401 - fixture
 
 
-def test_disabled_watch_starts_no_thread(monkeypatch, tmp_path):
-    service = SimpleNamespace(list_projects=lambda: [SimpleNamespace(identifier="p", root_path=tmp_path)])
-    monkeypatch.setattr(chat, "settings", lambda root: {"watch": {"interval_seconds": 0}})
-    monkeypatch.setattr(cli.threading, "Thread", lambda **kw: pytest.fail("disabled watch started a thread"))
+def test_watch_starts_no_thread_without_projects(monkeypatch):
+    service = SimpleNamespace(list_projects=lambda: [])
+    monkeypatch.setattr(cli.threading, "Thread", lambda **kw: pytest.fail("empty watch started a thread"))
     assert cli._chat_watch_later(service, None, threading.Event(), spawn=True) is None
 
 
@@ -28,7 +27,7 @@ def test_manifest_accepts_watch_and_delegation_and_rejects_invalid_values():
     for value in (0, 30, 300):
         parse_manifest({"name": "chat", "chat": {"watch": {"interval_seconds": value}}})
     for watch in ({"interval_seconds": 29}, {"interval_seconds": True}, {"stall_seconds": 59},
-                  {"max_checks": -1}, {"wake_orchestrator": "yes"}, {"typo": 1}):
+                  {"max_checks": -1}, {"wake_orchestrator": "yes"}, {"enabled": "yes"}, {"typo": 1}):
         with pytest.raises(ManifestError, match="chat"):
             parse_manifest({"name": "chat", "chat": {"watch": watch}})
     with pytest.raises(ManifestError, match="delegate_decisions"):
@@ -58,8 +57,8 @@ def test_watch_respects_project_intervals_scope_and_survives_failure(monkeypatch
             assert seconds > 0
             clock[0] += seconds
 
-    def check(root, *, spawn):
-        assert spawn is False
+    def check(root, *, spawn, periodic):
+        assert spawn is False and periodic is True
         checks.append((root, clock[0]))
         if len(checks) == 1:
             raise OSError("temporary failure")
@@ -119,3 +118,39 @@ def test_studio_check_endpoint_csrf_and_missing_session(project, tmp_path, monke
     assert report["session"] == sid and report["findings"] == []
     assert client.get(url).get_json()["check"] == report
     assert client.post(url.replace(sid, "missing") + "/check", json={}, headers=headers).status_code == 404
+
+
+def test_checker_cli_toggle_preserves_interval(project):
+    runner = CliRunner()
+    for option, enabled in (("--disabled", False), ("--enabled", True)):
+        result = runner.invoke(cli.alfrd_cli, ["su", "checker", "--root", str(project), option])
+        assert result.exit_code == 0, result.output
+        assert chat.settings(project)["watch"]["enabled"] is enabled
+        assert chat.settings(project)["watch"]["interval_seconds"] == 300
+
+
+def test_watch_can_enable_a_project_that_started_disabled(monkeypatch, tmp_path):
+    service = SimpleNamespace(list_projects=lambda: [SimpleNamespace(identifier="p", root_path=tmp_path)])
+    clock, checks, targets = [0], [], []
+    monkeypatch.setattr(chat, "settings", lambda root: {"watch": {"enabled": clock[0] >= 30, "interval_seconds": 300}})
+    monkeypatch.setattr(chat, "check", lambda *args, **kwargs: checks.append((clock[0], kwargs)))
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+
+    class Thread:
+        def __init__(self, **kwargs):
+            targets.append(kwargs["target"])
+
+        def start(self):
+            pass
+
+    class Stopped:
+        def is_set(self):
+            return clock[0] >= 60
+
+        def wait(self, seconds):
+            clock[0] += seconds
+
+    monkeypatch.setattr(cli.threading, "Thread", Thread)
+    cli._chat_watch_later(service, None, Stopped(), spawn=False)
+    targets[0]()
+    assert checks == [(30, {"spawn": False, "periodic": True})]

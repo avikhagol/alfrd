@@ -22,6 +22,9 @@
 .chat-sessions-collapsed .chat-nav-toggle { display: inline-flex; }
 .chat-session.on { border-color: var(--accent); background: var(--accent-wash, var(--subtle)); }
 .chat-session:focus-visible, .chat-msg button:focus-visible, .chat-mentions li:focus-visible { outline: 2px solid var(--chat-focus, var(--focus)); outline-offset: 2px; }
+.chat-title-input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid transparent; border-radius: var(--r-sm); padding: 2px 4px; background: transparent; color: inherit; font: inherit; text-overflow: ellipsis; cursor: text; }
+.chat-title-input:hover { border-color: var(--border); }
+.chat-title-input:focus { outline: 2px solid var(--chat-focus, var(--focus)); outline-offset: -2px; background: var(--surface); }
 .chat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .chat-head h3 { margin: 0; font-size: var(--chat-title-size); line-height: var(--chat-title-leading); overflow-wrap: anywhere; }
 .chat-wide { flex-basis: 100%; margin: 0; }
@@ -236,7 +239,7 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .status-icon[data-status="blocked"] .ic { color: var(--status-blocked); }
 .status-icon[data-status="queued"] .ic { color: var(--status-queued); }
 .status-icon[data-status="cancelled"] .ic { color: var(--status-cancelled); }
-.status-icon[data-status="running"] .ic { animation: status-spin 1.2s linear infinite; }
+.status-icon[data-status="running"] .ic { display: block; transform-box: fill-box; transform-origin: center; animation: status-spin 1.2s linear infinite; }
 @keyframes status-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .status-icon[data-status="running"] .ic { animation: none; } }
 
@@ -302,18 +305,3 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .chat-live { display: inline-block; flex: none; width: 7px; height: 7px; margin: 0 6px; border-radius: 50%; background: var(--chat-warning); }
 .chat-live.tone-ok { background: var(--chat-success); }
 .chat .chat-log { border: 0; background: transparent; padding: 8px 4px; }
-
-/* Composer squeezes to one line while idle and empty; it opens up on focus, text or attachments. */
-:is(.chat, .chat-dock) .chat-composer { gap: var(--chat-space-2); padding: var(--chat-space-3) var(--chat-space-4); padding-bottom: calc(var(--chat-space-3) + env(safe-area-inset-bottom, 0px)); }
-:is(.chat, .chat-dock) .chat-composer .chat-input-wrap textarea { min-height: calc(var(--chat-body-leading) + 2 * var(--chat-space-2)); padding: var(--chat-space-2) var(--chat-space-3); }
-:is(.chat, .chat-dock) .chat-composer:focus-within .chat-input-wrap textarea { min-height: calc(2 * var(--chat-body-leading) + 2 * var(--chat-space-2)); }
-:is(.chat, .chat-dock) .chat-composer:not(:focus-within) .chat-hint, :is(.chat, .chat-dock) .chat-composer:not(:focus-within) [data-attach-hint] { display: none; }
-:is(.chat, .chat-dock) .chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) {
-  flex-direction: row; flex-wrap: nowrap; align-items: center; padding-block: var(--chat-space-1);
-}
-.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) > .chat-input-wrap { flex: 1 1 auto; min-width: 0; order: 1; }
-.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) > .attach-tray { flex: none; order: 0; }
-.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) > .chat-composer-bar { flex: none; order: 2; }
-.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) :is(.chat-composer-info, .chat-target) { display: none; }
-.chat-composer:not(:focus-within):not(:has(textarea:not(:placeholder-shown))):not(:has([data-attach-chips]:not(:empty))):not(:has(.chat-composer-note:not(:empty))) .attach-actions > label.btn { width: 32px; padding-inline: 7px; overflow: hidden; white-space: nowrap; justify-content: flex-start; }
-:is(.chat, .chat-dock) .chat-composer .chat-composer-bar .chat-composer-info p.chat-target { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

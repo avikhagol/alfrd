@@ -314,7 +314,14 @@ class AlfrdWatcher(Watcher):
         for folder in base.iterdir() if base.is_dir() else []:
             try:
                 stat = (folder / "session.json").stat()
-                metadata[folder.name] = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                signatures = [(stat.st_ino, stat.st_size, stat.st_mtime_ns)]
+                for name in ("schedule.json", "rev.json"):
+                    try:
+                        extra = (folder / name).stat()
+                        signatures.append((extra.st_ino, extra.st_size, extra.st_mtime_ns))
+                    except FileNotFoundError:
+                        signatures.append(None)
+                metadata[folder.name] = tuple(signatures)
             except (FileNotFoundError, NotADirectoryError):
                 continue
         previous = getattr(self, "_session_metadata", None)

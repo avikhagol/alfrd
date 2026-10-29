@@ -3,7 +3,7 @@ import { stepsHtml } from "./chat_steps.js";
 // arrow markers and CSS from canvas.js / studio.css): the chat task graph (read-only) and the
 // New-project canvas (editable draft). Select with a background drag; hold Space or use Pan to navigate. Ctrl/Cmd+wheel or +/- to zoom, 0 fits.
 // Keyboard: arrows move between nodes (pan without selection), Enter opens one; editable: N adds, C connects, Delete removes.
-import { $, $$, esc, icon } from "../utils/dom.js";
+import { $, $$, esc, icon, storage } from "../utils/dom.js";
 import { edgePath, NODE_H } from "./canvas.js";
 import { layoutGraph } from "../data/chat.js";
 import { createGraphGroups, renderGraphGroups, createGraphUpdates } from "./graph_groups.js";
@@ -12,6 +12,7 @@ import { statusIcon, STATUS_ICON_STATES } from "./status_icons.js";
 
 const TONES = ["ok", "fail", "run", "idle", "ready"];
 let seq = 0;
+const LAYOUT_KEY = "ui:graph.layout";
 
 /** Mount on `host`. opts: {label, editable, empty, onSelect(id), onOpen(id), onConnect(from, to) → problem|null,
  *  onDisconnect(from, to), onDelete(id), onAdd(), groups: true|group[]}. With groups:true, use
@@ -20,12 +21,19 @@ let seq = 0;
 export function mountGraph(host, opts = {}) {
   const id = `gv${++seq}`;
   let groups = opts.groups ? createGraphGroups() : null;
+  let layout = storage.get(LAYOUT_KEY) === "linear" ? "linear" : "spread";
+  const layoutButton = () => {
+    const label = `Switch to ${layout === "spread" ? "linear" : "spread out"} layout`;
+    return `<button type="button" class="icon-btn sm" data-gv="layout" title="${label}" aria-label="${label}">${icon(layout === "spread" ? "list" : "columns")}</button>`;
+  };
   const view = { zoom: 1, x: 0, y: 0, fitted: false, model: { nodes: [], edges: [] }, selected: null, L: null, link: null };
+  let worldHtml;
   host.innerHTML = `<div class="gv">
     <div class="gv-tools" role="toolbar" aria-label="${esc(opts.label || "Graph")} controls">
       ${opts.editable ? `<button type="button" class="btn sm" data-gv="add" aria-keyshortcuts="N">${icon("plus")} Add step</button><button type="button" class="btn sm" data-gv="connect" aria-keyshortcuts="C">${icon("link")} Connect</button>` : ""}
       ${opts.editable ? "" : `<button type="button" class="btn sm" data-gv-mode="select" aria-pressed="true">Select</button><button type="button" class="btn sm" data-gv-mode="pan" aria-pressed="false">Pan</button>`}
       <span class="grow"></span>
+      <span data-gv-layout>${layoutButton()}</span>
       <button type="button" class="icon-btn sm" data-gv="out" aria-label="Zoom out">${icon("minus")}</button><span class="gv-zoom muted small tabular" aria-live="off">100%</span>
       <button type="button" class="icon-btn sm" data-gv="in" aria-label="Zoom in">${icon("plus")}</button>
       <button type="button" class="icon-btn sm" data-gv="fit" aria-label="Fit to view" aria-keyshortcuts="0">${icon("fit")}</button>
@@ -90,8 +98,8 @@ export function mountGraph(host, opts = {}) {
   function draw() {
     const { nodes, edges } = view.model;
     const L = (view.L = groups
-      ? groups.layout(nodes, edges, Array.isArray(opts.groups) ? opts.groups : view.model.groups, { h: NODE_H })
-      : layoutGraph(nodes, edges, { h: NODE_H }));
+      ? groups.layout(nodes, edges, Array.isArray(opts.groups) ? opts.groups : view.model.groups, { h: NODE_H, layout })
+      : layoutGraph(nodes, edges, { h: NODE_H, layout }));
     if (nodes.some((n) => n.steps?.length)) L.height += 52;
     $(".gv-empty", host).hidden = Boolean(nodes.length);
     $(".gv-empty", host).textContent = opts.empty || "Nothing to show yet.";
@@ -102,7 +110,7 @@ export function mountGraph(host, opts = {}) {
       return `<path d="${d}" class="edge e-${tone}${hl}${e.kind === "delegated" ? " e-deleg" : e.kind === "planned" ? " e-planned" : ""}" marker-end="url(#${id}-ar-${tone})"><title>${esc(e.from)} → ${esc(e.to)}</title></path>${opts.editable
         ? `<path d="${d}" class="edge-hit" data-from="${esc(e.from)}" data-to="${esc(e.to)}"><title>${esc(e.to)} waits for ${esc(e.from)} (click to disconnect)</title></path>` : ""}`;
     }).join("");
-    world.innerHTML = `<svg class="edges" width="${L.width}" height="${L.height}" aria-hidden="true"><defs>${TONES.map((k) => `<marker id="${id}-ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ar ar-${k}"/></marker>`).join("")}</defs>${groups ? renderGraphGroups(L.lanes) : ""}${paths}<path class="edge e-link" data-gv-link d=""/></svg>`
+    const html = `<svg class="edges" width="${L.width}" height="${L.height}" aria-hidden="true"><defs>${TONES.map((k) => `<marker id="${id}-ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ar ar-${k}"/></marker>`).join("")}</defs>${groups ? renderGraphGroups(L.lanes) : ""}${paths}<path class="edge e-link" data-gv-link d=""/></svg>`
       + nodes.map((n) => {
         const p = L.pos[n.id], sel = selection.has(n.id);
         return `<div class="node st-${esc(n.st)}${sel ? " sel" : ""}${n.orch ? " gv-orch" : ""}" data-key="${esc(n.id)}" role="button" tabindex="${n.id === (view.selected || order()[0]) ? 0 : -1}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px"
@@ -113,6 +121,8 @@ export function mountGraph(host, opts = {}) {
           <div class="node-b"><span class="small muted grow gv-sub">${esc(n.sub || "")}</span><span class="badge tone-${esc(n.tone)}">${n.status ? statusIcon(n.status, n.label) : `${icon(n.icon || "info")}<span>${esc(n.label)}</span>`}</span></div>
         </div>${opts.editable || !n.steps?.length ? "" : `<div id="${id}-${esc(n.id)}-steps" class="small" style="position:absolute;left:${p.x}px;top:${p.y + NODE_H}px;width:${p.w}px;max-height:52px;overflow:auto">${stepsHtml(n.steps, n.request)}</div>`}${opts.editable ? "" : `<button type="button" class="icon-btn sm gv-overflow" data-gv-menu-for="${esc(n.id)}" aria-label="Actions for ${esc(n.title)}" aria-haspopup="menu" style="left:${p.x + p.w - 32}px;top:${p.y + 4}px">⋯</button>`}`;
       }).join("");
+    // Revision-only updates must not replace running SVGs and restart their animations.
+    if (worldHtml !== html) { world.innerHTML = html; worldHtml = html; }
     if (!view.fitted) requestAnimationFrame(() => { if (!view.fitted) fit(); });
     apply();
   }
@@ -149,6 +159,15 @@ export function mountGraph(host, opts = {}) {
     if (a === "in") zoomBy(1.15); else if (a === "out") zoomBy(1 / 1.15); else if (a === "fit") fit();
     else if (a === "add") opts.onAdd?.();
     else if (a === "connect") startConnect();
+    else if (a === "layout") {
+      layout = layout === "spread" ? "linear" : "spread";
+      storage.set(LAYOUT_KEY, layout);
+      $("[data-gv-layout]", host).innerHTML = layoutButton();
+      view.fitted = true; // A layout switch preserves pan/zoom, including a pending initial fit.
+      draw();
+      $("[data-gv=layout]", host)?.focus({ preventScroll: true });
+      say(`${layout === "spread" ? "Spread out" : "Linear"} layout.`);
+    }
   });
   function startConnect() {
     if (!view.selected) { say("Select the step that runs first, then press C."); return; }

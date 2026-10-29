@@ -94,6 +94,35 @@ test("island DOM, bounded shared polling, disclosure persistence and narrow layo
   assert.match(await page.locator("#activity .chat-island-metrics").first().innerText(), /\$0\.000/);
   assert.equal(await page.locator('#activity [data-mail-jump="question"]').count(), 2);
   assert.equal(await page.evaluate(() => calls.length), 1, "both mounts coalesce to one baseline read");
+  await page.evaluate(() => {
+    window.savedSpinner = document.querySelector('#activity [data-status="running"] .ic');
+    window.savedSpin = savedSpinner.getAnimations()[0];
+    if (!savedSpin) throw new Error('Running status must be animated');
+    api.kick();
+  });
+  await page.waitForTimeout(250);
+  assert.ok(await page.evaluate(() => savedSpinner === document.querySelector('#activity [data-status="running"] .ic')
+    && savedSpin === savedSpinner.getAnimations()[0]), "unchanged status retains its SVG and animation across polling redraws");
+  const centres = await page.evaluate(async () => {
+    const panel = document.querySelector('#activity');
+    panel.style.cssText = 'height:200px;overflow:auto';
+    const row = savedSpinner.closest('header');
+    const offset = () => {
+      const s = savedSpinner.getBoundingClientRect(), r = row.getBoundingClientRect();
+      return [s.x + s.width / 2 - r.x, s.y + s.height / 2 - r.y];
+    };
+    const points = [];
+    for (const top of [0, 70, 10, 90, 0]) {
+      panel.scrollTop = top;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      points.push({ offset: offset(), scroll: panel.scrollTop });
+    }
+    panel.style.cssText = '';
+    return points;
+  });
+  assert.ok(centres.some((p) => p.scroll > 0), "the details panel actually scrolled");
+  assert.ok(centres.every((p) => p.offset.every((v, i) => Math.abs(v - centres[0].offset[i]) < 0.1)),
+    `spinner stays centred in its scrolling row: ${JSON.stringify(centres)}`);
   await page.locator("#activity .chat-output > summary").first().click();
   await page.locator("#activity select").first().selectOption("400");
   await page.waitForTimeout(250);

@@ -30,6 +30,7 @@ chat:
     max_tasks: 20
     max_replans: 3            # orchestrator wake-ups for blockers; past it, blockers go to the user
   watch:                      # scheduled checks (chat.check): recovery after a crash or reboot
+    enabled: true             # superuser project toggle; keeps the configured interval when switched off
     interval_seconds: 300     # how often (0: never); a dead runner with tasks left is resumed
     stall_seconds: 1800       # a request whose tasks all ended, idle this long, is finished in code
     wake_orchestrator: false  # a stall may wake the orchestrator ...
@@ -55,10 +56,29 @@ chat:
 `alfrd serve` checks each project in its scope at `chat.watch.interval_seconds`
 (default 300 seconds). The serving process starts one daemon thread and stops it
 with the server; the debug reloader's parent does not start another watcher.
-Each project is checked once on startup, then at its own interval. An interval of
-0 disables scheduled checks; otherwise it must be at least 30 seconds. Interval
-changes take effect within 30 seconds while a watcher is running. If every scoped
-project starts with checks off, restart the server after enabling them.
+Each enabled project is due once on startup, then at its own interval. An interval of
+0 also disables scheduled checks; otherwise it must be at least 30 seconds. Toggle and
+interval changes take effect within 30 seconds, including when all projects started disabled.
+
+The project toggle is `chat.watch.enabled` (boolean, default `true`), stored in the active
+`alfrd.yaml` alongside the other chat settings and saved through manifest history. In Studio,
+select the project, then Settings → Preferences → Project → **Periodic chat checker**.
+Only the existing superuser context (a browser on the server machine, with CSRF protection)
+can save it; remote and browser-only sessions are refused. The local OS owner can also use:
+
+```sh
+alfrd su checker --root /absolute/project/path --disabled
+alfrd su checker --root /absolute/project/path --enabled
+```
+
+API: `POST /api/studio/ui-flags` with
+`{scope: "project", project: "<id>", changes: {"chat.watch.enabled": false}, expected_revision: <revision>}`.
+Read the project revision from `GET /api/studio/ui-flags?project=<id>`; stale saves return 409.
+
+Completely idle sessions are skipped on periodic ticks: no active request/run or live runner,
+nonterminal tasks or units, pending decisions, or scheduled starts/delays. A skipped tick writes
+no check report, revision, chat message, or event. Activity is reconsidered on the next tick.
+Recovery for active work is unchanged.
 
 A check delivers resolved mailbox replies, resumes a dead runner with work left
 (preserving pause/cancel), and completes a request whose tasks have all ended and
@@ -81,8 +101,10 @@ In Studio, the chat header shows the last and next check times. **Check now**
 runs the same recovery check and reports its findings, including when there are
 no issues. Settings → Agent chat → **Scheduled checks** edits the interval and
 stall period, **Wake the orchestrator when a request stalls**, and the maximum
-orchestrator checks per request. Every check saves `.alfrd/chat/<sid>/check.json`; session state
-includes it as `check`. Only checks with findings add a `chat.check` event.
+orchestrator checks per request. Each performed check saves `.alfrd/chat/<sid>/check.json`;
+session state includes it as `check`. Only checks with findings add a `chat.check` event.
+Manual **Check now** and `alfrd chat check` remain available even when periodic checks are off,
+and return a report for idle sessions too.
 
 To check without a running server:
 
@@ -436,3 +458,44 @@ the version history and the changed-on-disk guard.
 
 Chat plans are not workflow runs: `list_plans` leaves them out unless asked
 (`include_chat=True`), so the Runs view is unchanged.
+
+## Scheduled chat batches
+
+Each chat session can have one open, one-shot schedule. Its durable queue lives in
+`.alfrd/chat/<session>/schedule.json`. Sending while it is open adds an item without
+creating a transcript message or executable plan row. Editing and removal use a
+schedule-specific revision and idempotent operation IDs. Terminal batches and
+removed items remain available for replay protection.
+
+Under `/api/studio/projects/<project>/chat/sessions/<session>`:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET / POST | `/schedule` | Read state / create an empty schedule |
+| PATCH | `/schedule/<id>` | Change its UTC instant and display timezone |
+| PATCH / DELETE | `/schedule/<id>/items/<item>` | Edit / remove a queued item |
+| POST | `/schedule/<id>/run` | Run now, or retry a validation error |
+| POST | `/schedule/<id>/cancel` | Cancel without executing pending items |
+
+Creation needs `client_schedule_id`, `run_at` with an explicit offset, `timezone`
+(IANA), and `expected_schedule_revision`. Other mutations need `operation_id`
+and `expected_schedule_revision`. `/messages` accepts `schedule_id` and
+`expected_schedule_revision`; a stale explicit target returns 409 and never falls
+through to ordinary execution. A 201/200 queued response has `queued: true` and
+null `request`/`task`. Conflicts return fresh schedule state.
+
+Studio's independent one-second worker sweeps the current scoped project catalogue
+immediately on startup. All overdue items become **one orchestrated request**,
+including leading `@mentions`, with a single initial plan row. Active requests in
+the same session and manual pause/cancel controls hold the batch; editing remains
+available while waiting. Empty due batches expire. Non-loopback execution policy
+holds schedules without creating executable rows.
+
+A session file lock protects mutations and dispatch. A `dispatching` journal freezes
+the prompt, item attachments, settings, bounds and skills before submission. The
+request is reserved as `preparing`; recovery finds it by schedule ID, repairs only
+missing message/task/prompt/CSV artifacts, and preserves progressed rows. CSV
+publication follows all launch inputs. Repeated startup sweeps reuse that request.
+This guarantees one durable request per batch, subject to the runner's existing
+external-process recovery semantics. Studio must be running; missed deadlines are
+caught up when it returns, without an age cutoff. Runtime bounds start at dispatch.

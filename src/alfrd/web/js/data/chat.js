@@ -17,7 +17,7 @@ export const DEFAULTS = {
   orchestrator: "claude", orchestrator_model: "sonnet", escalation_model: "opus", final_summary: false, warn_task_cost_usd: null,
   delegate_decisions: "off", concurrency: 2, history_messages: 8,
   bounds: { max_depth: 2, max_retries: 1, max_cost_usd: 5, max_seconds: 7200, max_tasks: 20, max_replans: 3 },
-  watch: { interval_seconds: 300, stall_seconds: 1800, wake_orchestrator: false, max_checks: 3 },
+  watch: { enabled: true, interval_seconds: 300, stall_seconds: 1800, wake_orchestrator: false, max_checks: 3 },
   agents: {
     claude: { label: "Claude (Opus)", entrypoint: "claude", model: "opus", roles: ["orchestration"], lean: true },
     sonnet: { label: "Claude (Sonnet)", entrypoint: "claude", model: "sonnet", roles: ["test planning", "verification", "failure analysis"], lean: true },
@@ -117,7 +117,7 @@ export function graphModel(graph, agents = {}, request = null, requests = []) {
 }
 
 /** Top-down layered layout (longest dependency path); positions in canvas units. */
-export function layoutGraph(nodes, edges, { w = 260, h = 128, gapX = 36, gapY = 56 } = {}) {
+export function layoutGraph(nodes, edges, { w = 260, h = 128, gapX = 36, gapY = 56, layout = "spread" } = {}) {
   const deps = Object.fromEntries(nodes.map((n) => [n.id, []]));
   edges.forEach((e) => { if (e.to in deps && e.from in deps) deps[e.to].push(e.from); });
   const level = {};
@@ -134,6 +134,7 @@ export function layoutGraph(nodes, edges, { w = 260, h = 128, gapX = 36, gapY = 
     .forEach((n) => { level[n.id] = Math.max(0, ...nodes.filter((m) => m.request === n.request && m.kind !== "summary").map((m) => level[m.id] + 1)); });
   const rows = [];
   nodes.forEach((n) => (rows[level[n.id]] ||= []).push(n.id));
+  if (layout === "linear") rows.splice(0, rows.length, ...rows.flat().map((id) => [id]));
   const widest = Math.max(1, ...rows.map((r) => r?.length || 0));
   const width = widest * w + (widest - 1) * gapX;
   const pos = {};
@@ -297,6 +298,31 @@ export function createRequestStop({ state, context, cancel, refresh, changed = (
   return api;
 }
 
+/** Request wall time, rounded once for both the individual and combined views. */
+export function requestTiming(req, now = Date.now()) {
+  const ongoing = REQUEST_ACTIVE.includes(req?.status) && !req?.finished;
+  const started = Number.isFinite(req?.created_ts) ? req.created_ts * 1000 : Date.parse(req?.created);
+  const ended = req?.finished ? Date.parse(req.finished) : ongoing ? now : NaN;
+  return { ongoing, seconds: Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, Math.round((ended - started) / 1000)) : 0 };
+}
+
+/** Sum the same per-request records shown in the individual scope. Unknown fields stay unknown. */
+export function requestTotals(state, now = Date.now()) {
+  const requests = state?.requests || [];
+  const usage = Object.fromEntries(["input_tokens", "input_uncached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens", "total_cost_usd"].map((key) => [key, null]));
+  let seconds = 0, ongoing = 0;
+  for (const req of requests) {
+    const timing = requestTiming(req, now);
+    seconds += timing.seconds;
+    ongoing += Number(timing.ongoing);
+    for (const key of Object.keys(usage)) {
+      const value = key === "input_uncached_tokens" ? tokenReport(req.usage).fresh : req.usage?.[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) usage[key] = (usage[key] ?? 0) + value;
+    }
+  }
+  return { count: requests.length, seconds, ongoing, usage };
+}
+
 /** Progress and budget use of one request: task counts, cost and time against its bounds. */
 export function requestProgress(state, req, now = Date.now()) {
   if (!req) return null;
@@ -304,16 +330,14 @@ export function requestProgress(state, req, now = Date.now()) {
   const count = (...s) => tasks.filter((t) => s.includes(t.status)).length;
   const bounds = req.bounds || state?.settings?.bounds || {};
   const cost = Number(req.usage?.total_cost_usd) || 0;
-  const started = Number(req.created_ts) ? req.created_ts * 1000 : Date.parse(req.created);
-  const ended = req.finished ? Date.parse(req.finished) : now;
-  const seconds = Number.isFinite(started) ? Math.max(0, Math.round((ended - started) / 1000)) : 0;
+  const { seconds, ongoing } = requestTiming(req, now);
   const ratio = (v, max) => (Number(max) > 0 ? Math.min(1, v / Number(max)) : 0);
   const worst = Math.max(ratio(cost, bounds.max_cost_usd), ratio(seconds, bounds.max_seconds));
   return {
     id: req.id, status: req.status, mode: req.mode, text: req.text,
     total: tasks.length, done: count("done"), failed: count("failed", "blocked", "stopped", "cancelled"), running: count("running"),
     cost, maxCost: Number(bounds.max_cost_usd) || null, costRatio: ratio(cost, bounds.max_cost_usd),
-    seconds, maxSeconds: Number(bounds.max_seconds) || null, timeRatio: ratio(seconds, bounds.max_seconds),
+    seconds, ongoing, maxSeconds: Number(bounds.max_seconds) || null, timeRatio: ratio(seconds, bounds.max_seconds),
     tokens: (Number(req.usage?.input_tokens) || 0) + (Number(req.usage?.output_tokens) || 0),
     calls: Number(req.orchestrator_calls) || 0,
     tone: worst >= 1 ? "fail" : worst >= 0.8 ? "warn" : "ok",
@@ -391,7 +415,7 @@ export function chatBlock(s) {
   // chat.watch: only the keys that differ from the defaults (a block without it keeps the defaults)
   const watch = Object.fromEntries(Object.entries(s.watch || {})
     .filter(([k, v]) => k in DEFAULTS.watch && v !== "" && v != null)
-    .map(([k, v]) => [k, k === "wake_orchestrator" ? Boolean(v) : Number(v)])
+    .map(([k, v]) => [k, ["enabled", "wake_orchestrator"].includes(k) ? Boolean(v) : Number(v)])
     .filter(([k, v]) => v !== DEFAULTS.watch[k]));
   return { orchestrator: s.orchestrator, orchestrator_model: model(s.orchestrator_model), escalation_model: model(s.escalation_model),
     final_summary: Boolean(s.final_summary), warn_task_cost_usd: warn, concurrency: Number(s.concurrency),
@@ -425,6 +449,7 @@ export function chatProblems(s, personas = []) {
   if (b.max_replans != null && !int(b.max_replans, 0)) errors.push("max_replans: a whole number ≥ 0.");
   for (const k of ["max_cost_usd", "max_seconds"]) if (!(Number(b[k]) > 0)) errors.push(`${k}: a positive number.`);
   const wt = s.watch || {};
+  if ("enabled" in wt && typeof wt.enabled !== "boolean") errors.push("Periodic chat checker: true or false.");
   if ("wake_orchestrator" in wt && typeof wt.wake_orchestrator !== "boolean") errors.push("Wake the orchestrator: true or false.");
   if (wt.interval_seconds != null && (!int(wt.interval_seconds, 0) || (Number(wt.interval_seconds) > 0 && Number(wt.interval_seconds) < 30))) errors.push("Check interval: 0 (off) or at least 30 seconds.");
   if (wt.stall_seconds != null && !int(wt.stall_seconds, 60)) errors.push("Stall after: a whole number of seconds ≥ 60.");

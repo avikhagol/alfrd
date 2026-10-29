@@ -3,11 +3,13 @@
 // Enter/Tab inserts the pick, Esc closes). Commands (/setup, /help, /new, /graph) run here and are never sent.
 import { $, esc, icon } from "../utils/dom.js";
 import { agentOptions, applyMention, mentionAt, parseMention, parseSlash, slashAt, slashOptions } from "../data/chat.js";
-import { attachmentTrayHtml, mountAttachmentTray, bindAttachmentPaste } from "./attach_tray.js";
+import { attachmentButtonHtml, attachmentTrayHtml, mountAttachmentTray, bindAttachmentPaste } from "./attach_tray.js";
 
 /** Grow `textarea` to its content, capped at min(240px, 40dvh); beyond that it scrolls internally. */
 export function autogrow(textarea) {
   if (!textarea?.style) return;
+  // Placeholder wrapping must never make an empty composer taller than its one row.
+  if (!textarea.value) { textarea.style.height = ""; textarea.style.overflowY = "hidden"; return; }
   const view = globalThis.visualViewport?.height || globalThis.innerHeight || 800;
   const cap = Math.round(Math.min(240, view * 0.4));
   textarea.style.height = "auto";
@@ -17,22 +19,22 @@ export function autogrow(textarea) {
 }
 
 /** The form's HTML; ids start with `id` (e.g. "chat" → #chat-input, #chat-mentions, #chat-send, #chat-stop …). */
-export function composerHtml(id, { rows = 2, attachments = false } = {}) {
+export function composerHtml(id, { attachments = false } = {}) {
   return `<form class="chat-composer" id="${id}-form" autocomplete="off">
+    <div class="chat-composer-row">
     <div class="chat-input-wrap">
       <label class="sr-only" for="${id}-input">Message</label>
-      <textarea id="${id}-input" class="input" rows="${rows}" placeholder="Ask the orchestrator, @agent, or /help" role="combobox"
-        aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-mentions" aria-describedby="${id}-target ${id}-hint ${id}-send-reason ${id}-send-error${attachments ? ` ${id}-image-warning` : ""}"></textarea>
+      <textarea id="${id}-input" class="input" rows="1" placeholder="To orchestrate, type a message; @agent for direct, /help for commands" title="Enter sends · Shift+Enter adds a line" role="combobox"
+        aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-mentions" aria-describedby="${id}-send-reason ${id}-send-error${attachments ? ` ${id}-image-warning` : ""}"></textarea>
       <ul id="${id}-mentions" class="chat-mentions" role="listbox" aria-label="Agents and commands" hidden></ul>
     </div>
-    ${attachments ? attachmentTrayHtml(id) + `<p id="${id}-image-warning" class="chat-composer-note warn-t small" role="status"></p>` : ""}
-    <div class="chat-composer-bar">
-      <div class="chat-composer-info"><p id="${id}-target" class="chat-target small"></p><p id="${id}-hint" class="chat-hint muted small">Enter sends · Shift+Enter adds a line</p></div>
-      <div class="chat-composer-actions">
-        <button type="button" class="btn sm chat-stop" id="${id}-stop" hidden>${icon("stop")} <span data-stop-label>Stop request</span></button>
-        <button type="submit" class="btn primary sm chat-send" id="${id}-send">${icon("play")} <span data-send-label>Send</span></button>
-      </div>
+    <button type="button" class="icon-btn chat-schedule-toggle" id="${id}-schedule-toggle" title="Schedule messages" aria-label="Schedule messages" aria-pressed="false" aria-expanded="false" aria-controls="${id}-schedule"><span aria-hidden="true">◷</span></button>
+    ${attachments ? attachmentButtonHtml(id) : ""}
+    <button type="button" class="btn sm chat-stop" id="${id}-stop" hidden>${icon("stop")} <span data-stop-label>Stop request</span></button>
+    <button type="submit" class="btn primary sm chat-send" id="${id}-send">${icon("play")} <span data-send-label>Send</span></button>
     </div>
+    <div class="chat-schedule" id="${id}-schedule" hidden></div>
+    ${attachments ? attachmentTrayHtml(id) + `<p id="${id}-image-warning" class="chat-composer-note warn-t small" role="status"></p>` : ""}
     <p id="${id}-send-reason" class="chat-composer-note muted small" role="status"></p>
     <div class="chat-error-row"><p id="${id}-send-error" class="chat-composer-note fail-t small" role="alert"></p><button type="button" class="btn sm" id="${id}-retry" hidden>Retry</button></div>
   </form>`;
@@ -45,10 +47,11 @@ export function composerHtml(id, { rows = 2, attachments = false } = {}) {
 export function bindComposer(root, id, { agents, orchestrator, send, onDraft = () => {}, where = "chat", onCommand = () => {}, onError = () => {}, stopState = null, onStop = () => {} }) {
   let menu = { at: null, items: [], active: 0, slash: false };
   const input = $(`#${id}-input`, root), list = $(`#${id}-mentions`, root), form = $(`#${id}-form`, root);
-  const target = $(`#${id}-target`, root), stop = $(`#${id}-stop`, root), retry = $(`#${id}-retry`, root);
+  const stop = $(`#${id}-stop`, root), retry = $(`#${id}-retry`, root);
   const composing = (e) => e.isComposing || e.keyCode === 229;
   const route = () => {
     const text = input.value;
+    if (form.dataset?.scheduled === "true" && text[0] !== "/") return "Queued for one orchestrator plan; @mentions are preferences";
     if (text[0] === "/") return "Command: runs here, not sent";
     const m = parseMention(text.trim(), agents());
     if (m?.error) return m.error;
@@ -58,7 +61,7 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   };
   const refresh = () => {
     autogrow(input);
-    if (target) target.textContent = route();
+    input.placeholder = `${route() || "To orchestrate"}; @agent for direct, /help for commands`;
     if (stop) {
       const s = stopState?.() || {};
       stop.hidden = !s.visible;
@@ -94,7 +97,7 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
     if (sl?.error) { onError(sl.error); return; }
     if (sl) { run(sl.cmd, sl.args); return; }
     const m = parseMention(input.value.trim(), agents());
-    if (m?.error) { onError(m.error); return; }
+    if (m?.error && form.dataset?.scheduled !== "true") { onError(m.error); return; }
     if ($(`#${id}-send`, root)?.disabled) return; // empty, uploading or sending: the keyboard cannot bypass the button
     send();
   };

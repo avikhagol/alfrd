@@ -26,7 +26,7 @@ def events(folder):
 # -- EventLog ----------------------------------------------------------------
 
 def test_kinds_and_prefix_matching():
-    assert len(EVENT_KINDS) == 37  # includes six durable chat notification kinds
+    assert len(EVENT_KINDS) == 48  # includes eleven durable chat schedule transitions
     assert {"approval.needed", "permission.needed", "request.failed", "task.failed",
             "request.cancelled", "request.stopped"} <= EVENT_KINDS
     assert kind_matches("plan.*", "plan.failed") and kind_matches("review.pending", "review.pending")

@@ -32,12 +32,14 @@ function decodeImage(file) {
   });
 }
 
+export function attachmentButtonHtml(id) {
+  return `<button type="button" class="icon-btn chat-attach" id="${esc(id)}-attach" title="Attach images" aria-label="Attach images">${icon("image")}</button>`;
+}
+
 export function attachmentTrayHtml(id) {
   return `<section class="attach-tray" id="${esc(id)}-attachments" aria-label="Attachments">
     <div class="attach-chips" data-attach-chips aria-live="polite"></div>
-    <div class="attach-actions"><label class="btn sm" for="${esc(id)}-file">${icon("paperclip")} Attach images</label>
-      <input id="${esc(id)}-file" type="file" accept="image/png,image/jpeg,image/webp" multiple class="sr-only">
-      <span class="muted small" data-attach-hint>Images are resized to 2000 px and cleaned of metadata.</span></div>
+    <input id="${esc(id)}-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
     <p class="fail small chat-composer-note" data-attach-reason role="status"></p>
   </section>`;
 }
@@ -67,6 +69,9 @@ export function mountAttachmentTray(root, { id = "chat", uploadUrl = "S/attachme
   const tray = root.querySelector(`#${id}-attachments`) || root;
   const chipsEl = tray.querySelector("[data-attach-chips]");
   const fileInput = tray.querySelector(`#${id}-file`);
+  const attach = root.querySelector(`#${id}-attach`);
+  const openFiles = () => fileInput?.click();
+  attach?.addEventListener("click", openFiles);
   const reason = tray.querySelector("[data-attach-reason]");
   let serial = 0, disposed = false;
   const active = () => [...chips.values()].some((chip) => chip.status === "uploading");
@@ -98,7 +103,7 @@ export function mountAttachmentTray(root, { id = "chat", uploadUrl = "S/attachme
   };
   tray.addEventListener("click", onClick);
   update(false);
-  return { refresh: () => update(false), add, onFiles, refs, isUploading: active, getState: () => [...chips.values()], remove: (chipId) => { chips.delete(chipId); update(); }, destroy: () => { disposed = true; tray.removeEventListener("click", onClick); fileInput?.removeEventListener("change", onFileChange); } };
+  return { refresh: () => update(false), add, onFiles, refs, isUploading: active, getState: () => [...chips.values()], remove: (chipId) => { chips.delete(chipId); update(); }, destroy: () => { disposed = true; tray.removeEventListener("click", onClick); attach?.removeEventListener("click", openFiles); fileInput?.removeEventListener("change", onFileChange); } };
 }
 
 export function bindAttachmentPaste(input, tray) {

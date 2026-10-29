@@ -74,6 +74,17 @@ def _session(chat, Mailbox, root, name, project):
                 continue
             add(f"state:{state}:{req.get('finished', '')}", f"request.{state if state != 'done' else 'finished'}",
                 f"Request {'finished' if state == 'done' else state}", req.get("error") or req.get("summary") or req.get("title") or rid)
+    for batch in store.load_schedule()["batches"]:
+        state = batch["status"]
+        if state not in ("waiting", "submitted", "error"):
+            continue
+        transition = state + (":" + batch.get("updated_at", "") if state == "error" else "")
+        out.append({"notification_id": f"{store.id}:schedule:{batch['id']}:{transition}",
+                    "kind": "chat.schedule." + state, "title": f"Schedule {state}",
+                    "body": batch.get("error") or batch.get("hold_reason") or f"Sent together as {batch.get('request_id')}",
+                    "link": "/studio/#/chat/" + quote(store.id, safe="") + "?" + urlencode({"p": project or str(root)}),
+                    "plan": store.plan_id, "request": batch.get("request_id"), "session": store.id,
+                    "project": project or str(root), "status": state})
     return out
 
 

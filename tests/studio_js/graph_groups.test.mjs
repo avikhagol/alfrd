@@ -38,8 +38,9 @@ test("project canvas unchanged without opts.groups", () => {
   assert.equal(world.innerHTML, before);
 });
 
-test("a new lane does not move existing lanes", () => {
-  const groups = createGraphGroups();
+test("linear lanes remain fixed width as other lanes grow", () => {
+  const base = createGraphGroups();
+  const groups = { layout: (nodes, edges, groups) => base.layout(nodes, edges, groups, { layout: "linear" }) };
   const before = groups.layout(model.nodes, model.edges, model.groups);
   const after = groups.layout([node("d", "r3"), ...model.nodes], model.edges,
     [{ id: "r3", title: "Third", nodes: ["d"] }, ...model.groups].reverse());
@@ -98,4 +99,43 @@ test("mounted graph appends lanes across updates and accepts explicit opts.group
   assert.match(html, /data-graph-group="chosen"/);
   assert.doesNotMatch(html, /data-graph-group="r[12]"/);
   assert.match(html, /3 nodes/);
+});
+
+
+test("spread-out request lanes preserve global depth, fit wide rows and keep edges downward", () => {
+  const nodes = [node("join", "r2"), node("a", "r1"), node("b", "r1"), node("c", "r2"), node("end", "r2")];
+  const edges = [{ from: "a", to: "join" }, { from: "b", to: "join" }, { from: "join", to: "end" }, { from: "a", to: "end" }];
+  const L = createGraphGroups().layout(nodes, edges);
+  assert.equal(L.pos.a.y, L.pos.b.y);
+  assert.equal(L.pos.a.y, L.pos.c.y);
+  assert.ok(L.pos.b.x >= L.pos.a.x + L.pos.a.w);
+  for (const e of edges) assert.ok(L.pos[e.to].y > L.pos[e.from].y);
+  for (const lane of L.lanes) for (const n of nodes.filter((n) => n.request === lane.id)) {
+    assert.ok(L.pos[n.id].x >= lane.x);
+    assert.ok(L.pos[n.id].x + L.pos[n.id].w <= lane.x + lane.width);
+    assert.ok(L.pos[n.id].y + 128 <= lane.height);
+  }
+  assert.ok(L.lanes[1].x >= L.lanes[0].x + L.lanes[0].width);
+  assert.ok(L.width >= L.lanes[1].x + L.lanes[1].width);
+});
+
+test("pure layout uses longest path with joins, a chain, empty graphs and linear mode", () => {
+  const nodes = ["end", "join", "a", "b", "mid"].map((id) => node(id));
+  const edges = [{ from: "a", to: "mid" }, { from: "mid", to: "join" }, { from: "b", to: "join" }, { from: "join", to: "end" }];
+  const L = layoutGraph(nodes, edges);
+  assert.equal(L.pos.a.y, L.pos.b.y);
+  assert.notEqual(L.pos.a.x, L.pos.b.x);
+  assert.equal(L.pos.join.y, 2 * (128 + 56));
+  for (const e of edges) assert.ok(L.pos[e.to].y > L.pos[e.from].y);
+  const linear = layoutGraph(nodes, edges, { layout: "linear" });
+  assert.equal(new Set(Object.values(linear.pos).map((p) => p.x)).size, 1);
+  assert.equal(new Set(Object.values(linear.pos).map((p) => p.y)).size, nodes.length);
+  assert.deepEqual(layoutGraph([], []).pos, {});
+  const wide = layoutGraph(Array.from({ length: 12 }, (_, i) => node(`wide${i}`)), []);
+  assert.ok(wide.width > 1000);
+  assert.equal(new Set(Object.values(wide.pos).map((p) => p.y)).size, 1);
+  for (const p of Object.values(wide.pos)) assert.ok(p.x >= 0 && p.x + p.w <= wide.width);
+  const chain = layoutGraph(nodes.slice(0, 2), [{ from: "join", to: "end" }]);
+  assert.equal(chain.pos.join.x, chain.pos.end.x);
+  assert.ok(chain.pos.end.y > chain.pos.join.y);
 });

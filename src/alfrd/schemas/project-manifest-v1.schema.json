@@ -285,6 +285,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "enabled": {"type": "boolean", "default": true},
             "interval_seconds": {
               "type": "integer",
               "anyOf": [{"const": 0}, {"minimum": 30}]

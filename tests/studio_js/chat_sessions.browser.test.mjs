@@ -157,6 +157,52 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
     assert.deepEqual(errors, []);
   });
 
+  await t.test("header title: focus/click edits, Enter/blur save, Escape/empty revert, failures restore", async () => {
+    const { page, errors } = await open(1440); t.after(() => page.close());
+    const title = page.getByRole("textbox", { name: "Rename chat", exact: true });
+    await title.focus();
+    assert.equal(await title.evaluate((el) => el === document.activeElement), true);
+    assert.equal(await title.getAttribute("maxlength"), "120");
+    assert.equal(await title.evaluate((el) => getComputedStyle(el).outlineStyle), "solid");
+    await title.fill("  Release notes  ");
+    // A live header status change must retain the draft element and cursor.
+    await title.evaluate((el) => { window.titleElement = el; el.setSelectionRange(4, 4); ctx.state.liveStatus.state = "polling"; ctx.update(); });
+    assert.equal(await title.evaluate((el) => el === window.titleElement && el.selectionStart === 4), true);
+    await title.press("Enter");
+    await page.locator('.chat-session[data-sid="a"]', { hasText: "Release notes" }).waitFor();
+    assert.equal(await title.inputValue(), "Release notes");
+    assert.equal(await page.evaluate(() => mutations.length), 1);
+    await title.click(); await title.fill("Discard"); await title.press("Escape");
+    assert.equal(await title.inputValue(), "Release notes");
+    await title.focus(); await title.fill(" \t "); await title.press("Enter");
+    assert.equal(await title.inputValue(), "Release notes");
+    assert.equal(await page.evaluate(() => mutations.length), 1);
+    await title.click(); await title.fill("Blur saved"); await page.locator("#chat-input").focus();
+    await page.locator('.chat-session[data-sid="a"]', { hasText: "Blur saved" }).waitFor();
+    assert.equal(await title.inputValue(), "Blur saved");
+    assert.equal(await page.evaluate(() => mutations.length), 2);
+    // Enter immediately followed by blur must issue only one request while saving.
+    await page.evaluate(async () => {
+      const { server } = await import("/js/data/server.js");
+      const mutate = server.mutate;
+      server.mutate = (...args) => new Promise((resolve) => { window.finishRename = () => resolve(mutate(...args)); });
+    });
+    await title.focus(); await title.fill("Pending"); await title.press("Enter");
+    assert.equal(await title.getAttribute("aria-busy"), "true");
+    await page.evaluate(() => ctx.update());
+    await page.evaluate(() => finishRename());
+    await page.locator('.chat-session[data-sid="a"]', { hasText: "Pending" }).waitFor();
+    assert.equal(await page.evaluate(() => mutations.length), 3);
+    await page.evaluate(async () => {
+      const { server } = await import("/js/data/server.js");
+      server.mutate = async () => { throw new Error("Offline"); };
+    });
+    await title.focus(); await title.fill("Failed"); await title.press("Enter");
+    await page.waitForFunction(() => window.lastToast === "Rename failed: Offline");
+    assert.equal(await title.inputValue(), "Pending");
+    assert.deepEqual(errors, []);
+  });
+
   await t.test("delete: confirm, open the next chat; busy chats can't be deleted", async () => {
     const { page, errors } = await open(1440); t.after(() => page.close());
     await page.evaluate(() => { ctx.state.chatSession = "c"; ctx.update(); });
