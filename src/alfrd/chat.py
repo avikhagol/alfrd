@@ -2863,7 +2863,12 @@ def _wake_for_stall(store: Session, conf, req, findings, idle: float) -> bool:
         return False
     blockers = [d["id"] for d in store.decisions() if d.get("request") == req["id"]
                 and d.get("status") == "pending" and d.get("needs") == "orchestrator"]
-    rec = _task_rec(req, f"{req['id']}.check-{count + 1}", "check", conf["orchestrator"], blockers=blockers)
+    # A plan call that has not started yet must land first: the check's reply is validated against the
+    # request's task graph, so running beside it would reject (or duplicate) tasks the plan is about to add.
+    # A plan row already running (possibly hung) is not waited on, so a real stall can still be checked.
+    waits = [r["row"] for r in recs if r.get("kind") in ("plan", "repair", "replan") and r.get("status") == "queued"]
+    rec = _task_rec(req, f"{req['id']}.check-{count + 1}", "check", conf["orchestrator"], blockers=blockers,
+                    depends_rows=waits)
     lines = ["# ALFRD chat: a request is stalled", "", f"Request {req['id']} has been idle for {idle:.0f} seconds.",
              "Findings: " + json.dumps(findings, ensure_ascii=False), "", "Stalled tasks / current rows:"]
     lines += [f"- {r.get('row')} [{r.get('status')}] @{r.get('owner')}: "
