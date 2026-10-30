@@ -11,8 +11,9 @@ export function subscribeActivity(project, sid, listener, options = {}) {
 function createActivity(project, sid) {
   const subs = new Set(), cache = new Map();
   const url = `/api/studio/projects/${encodeURIComponent(project)}/chat/sessions/${encodeURIComponent(sid)}/activity`;
+  let telemetry = {};
   let timer, inflight = false, again = false, stopped = false, unsupported = false, stale = false, at = 0;
-  const snapshot = () => ({ items: [...cache.values()], stale, unsupported, at });
+  const snapshot = () => ({ items: [...cache.values()], stale, unsupported, at, telemetry });
   const wants = () => [...subs].filter((s) => s.visible?.() !== false);
   const visible = () => !document.hidden && wants().length;
   const onVisibility = () => { if (!document.hidden) kick(); };
@@ -23,6 +24,7 @@ function createActivity(project, sid) {
     if (!res.ok) throw new Error("Activity unavailable");
     const body = await res.json();
     if (!stopped) {
+      for (const key of ["requests", "tasks"]) telemetry[key] = { ...telemetry[key], ...body.telemetry?.[key] };
       const incoming = body.items || body.running || [];
       // A disappearance from the running snapshot needs one final explicit read.
       if (!query.units) for (const [key, old] of cache) if (old.status === "running" && !incoming.some((r) => (r.unit || r.row) === key)) cache.set(key, { ...old, finalPending: true });

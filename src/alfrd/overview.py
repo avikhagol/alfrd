@@ -47,6 +47,8 @@ def _current_hash(root: Path, rel: str) -> str | None:
 
 
 def _files(root: Path, tasks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    from alfrd.chat import output_display_path, outputs_of  # lazy: alfrd.chat is large and imports this module
+
     found: dict[tuple[str, str | None], dict[str, Any]] = {}
 
     def add(rel: str, sha: str | None, row: str, expected: bool = False) -> None:
@@ -64,8 +66,10 @@ def _files(root: Path, tasks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 continue
             recorded.add(rel)
             add(rel, sha, rec["row"])
-        for rel in (rec.get("task") or {}).get("expected_outputs") or []:
-            rel = str(rel)
+        for output in outputs_of(root, rec):
+            rel = output_display_path(root, output).rstrip("/")
+            if Path(rel).is_absolute():
+                continue  # outside the project (an extra writable folder): no project-relative ref to show
             if rel not in recorded:
                 add(rel, None, rec["row"], expected=True)
     files = []
@@ -81,6 +85,7 @@ def _files(root: Path, tasks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 entry["ref"] = proto.format_ref(rel, actual)
             with_stat = proto.confined(root, rel).stat()
             entry["bytes"] = with_stat.st_size
+            entry["current_ref"] = proto.format_ref(rel, actual)
         media = mimetypes.guess_type(rel)[0]
         if media:
             entry["media_type"] = media

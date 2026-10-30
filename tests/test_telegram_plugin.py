@@ -229,7 +229,7 @@ def test_expired_confirmation_and_project_switch(bot, monkeypatch):
 
 def test_read_commands_project_defaults_and_html(bot):
     b, api, _, _ = bot
-    for command in ("/help", "/status", "1", "/runs", "/log target step"):
+    for command in ("/help", "/status p", "1", "/runs", "/log target step"):
         message(b, command)
     texts = [plain(p["text"]) for p in sent(api)]
     assert "ALFRD commands" in texts[0] and "/whoareyou" in texts[0]
@@ -245,7 +245,7 @@ def test_read_commands_project_defaults_and_html(bot):
     assert b.selected == "q" and b.plans.roots[-1] == "/fake/other"
     b.selected = None
     message(b, "/runs")
-    assert "/status new" in sent(api)[-1]["text"]
+    assert "/status" in sent(api)[-1]["text"]
 
 
 def test_poll_offset_and_long_timeout(bot):
@@ -264,7 +264,7 @@ def test_poll_offset_and_long_timeout(bot):
 def test_errors_and_replies_never_disclose_token(bot, monkeypatch):
     b, api, logs, _ = bot
     b.plans.error = RuntimeError(f"private URL /bot{TOKEN}/")
-    message(b, "/status")
+    message(b, "/status last")
     assert "Could not read" in sent(api)[-1]["text"]
     b.plans.error = None
     message(b, "/pause")
@@ -305,7 +305,7 @@ def test_real_plan_backend_status_runs_log_and_control(bot, project, tmp_path, m
     folder = scheduler.create_plan(project)
     spawned = []
     monkeypatch.setattr(scheduler, "spawn_runner", lambda f: spawned.append(f.id))
-    message(b, "/status")  # one project with one target: its card straight away
+    message(b, "/status last")  # one project with one target: its card straight away
     assert plain(sent(api)[-1]["text"]) == ("📁 proj · 🎯 T1\n⏳ preprocess_fitsidi (next)\n" + RULE
                                             + "\n\n⏳ Next\n  • preprocess_fitsidi\n  • fits_to_ms\n  • avica_avg")
     message(b, "/runs")
@@ -326,7 +326,7 @@ def test_real_plan_backend_status_runs_log_and_control(bot, project, tmp_path, m
     assert plain(sent(api)[-1]["text"]).startswith("📜 Logs · T1 · pick a step  (1–3 of 3)\n\n1. avica_avg")
     message(b, "2")
     assert "📜 proj · 🎯 T1 / fits_to_ms" in plain(sent(api)[-1]["text"])
-    message(b, "/status")
+    message(b, "/status last")
     card = plain(sent(api)[-1]["text"])
     assert card.startswith("📁 proj · 🎯 T1\n🏁 done") and "✅ Finished\n  • preprocess_fitsidi  " in card
     assert "Running" not in card
@@ -422,7 +422,7 @@ def test_status_picks_project_then_targets_and_remembers_them(bot, tmp_path):
     state = tmp_path / "status.json"
     b = module.Bot(ROUTE, b.plans, state=state)
     b.plans.items["q"] = {"name": "Quiet", "root": "/fake/quiet"}  # no runs: listed last
-    message(b, "/status")
+    message(b, "/status last")
     picker = sent(api)[-1]
     assert plain(picker["text"]) == ("📂 Select project  (1–2 of 2)\n\n1. Project  ·  "
                                      + module.view.ago("2026-10-09T11:05:00Z")
@@ -438,15 +438,16 @@ def test_status_picks_project_then_targets_and_remembers_them(bot, tmp_path):
     assert cards.startswith(T1_CARD + "\n\n")  # most recently active first, whatever the reply order
     assert cards.endswith("📁 Project · 🎯 T2\n❌ s2 (failed)\n" + RULE
                           + "\n\n✅ Finished\n  • s1  10s\n\n❌ Failed\n  • s2  40s\n  • s3  blocked")
-    assert json.loads(state.read_text()) == {"project": "p", "targets": ["r2", "r1"]}
+    assert json.loads(state.read_text()) == {"project": "p", "targets": ["r2", "r1"],
+                                                   "active_chat": None, "chat_cursors": {}}
     again = module.Bot(ROUTE, b.plans, state=state)  # a restarted bot remembers
     message(again, "/status last")
     assert texts(api)[-1] == cards
     message(again, "/status")
-    assert texts(api)[-1] == cards
+    assert texts(api)[-1] == "📊 Status menu"
 
 
-def test_status_latest_new_and_name_selection(bot):
+def test_status_latest_menu_and_name_selection(bot):
     b, api, _, _ = bot
     b.plans.items["q"] = {"name": "Quiet", "root": "/fake/quiet"}
     message(b, "/status last")
@@ -460,7 +461,7 @@ def test_status_latest_new_and_name_selection(bot):
     assert "No projects match 'nope'" in texts(api)[-1]
     message(b, "/status 9")  # the target list is still open: numbers answer it
     assert texts(api)[-1] == "🔢 Pick a number from 1 to 3."
-    message(b, "/status new")
+    b.pick_project()
     assert texts(api)[-1].startswith("📂 Select project")
     message(b, "3")
     assert texts(api)[-1] == "🔢 Pick a number from 1 to 2."
@@ -470,7 +471,7 @@ def test_status_latest_new_and_name_selection(bot):
     message(b, "all")
     assert b.selected == "p" and b.tracked == ["r1", "r2", "r0"]  # most recently active first
     callback(b, "pick:1")
-    assert texts(api)[-1] == "⌛ This list expired. Send /status new."
+    assert texts(api)[-1] == "⌛ This list expired. Send /status."
     message(b, "/status extra words")
     assert texts(api)[-1].startswith("ℹ️ Use /status")
 
@@ -478,7 +479,7 @@ def test_status_latest_new_and_name_selection(bot):
 def test_lists_and_cards_page_by_five(bot):
     b, api, _, _ = bot
     b.plans.rows = [{**T0, "row": f"r{i}", "target": f"T{i}"} for i in range(7)]
-    message(b, "/status")
+    message(b, "/status last")
     first = sent(api)[-1]
     text = plain(first["text"])
     assert text.startswith("🎯 Select targets in Project  (1–5 of 7)") and text.endswith(
@@ -493,7 +494,7 @@ def test_lists_and_cards_page_by_five(bot):
     assert b.tracked == ["r6", "r0"]
     message(b, "all")  # no list open any more
     assert texts(api)[-1] == "🤔 Unknown command. Use /help."
-    message(b, "/status new")
+    b.pick_project()
     message(b, "all")
     page = texts(api)[-1]
     assert page.count(RULE) == 5 and page.endswith("📄 Targets 1–5 of 7 · /status more for the next 5.")
@@ -508,7 +509,7 @@ def test_card_for_a_target_missing_from_the_latest_plan(bot, tmp_path):
     state = tmp_path / "status.json"
     state.write_text(json.dumps({"project": "p", "targets": ["gone", "r1"]}))
     b = module.Bot(ROUTE, b.plans, state=state)
-    message(b, "/status")
+    message(b, "/status last")
     assert texts(api)[-1] == T1_CARD + "\n\n📁 Project · 🎯 gone\n" + RULE + "\nNot in the latest plan (plan-1)."
     state.write_text("not json")
     assert module.Bot(ROUTE, b.plans, state=state).selected is None

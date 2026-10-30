@@ -22,6 +22,161 @@ from alfrd.mailbox_cli import cli as mailbox_cli
 alfrd_cli.add_typer(mailbox_cli, name="mailbox")
 
 
+skills_cli = typer.Typer(help="Manage the global skills library.")
+alfrd_cli.add_typer(skills_cli, name="skills")
+
+
+@skills_cli.command("add")
+def skills_add(path: Path, global_library: bool = typer.Option(False, "--global"),
+               skill_id: Optional[str] = typer.Option(None, "--id")):
+    """Copy a skill directory (or SKILL.md) into the global library, without activating it."""
+    from alfrd.skills import add_global_skill
+    import json
+
+    if not global_library:
+        raise typer.BadParameter("specify --global; project skills can be created directly in skills/<id>")
+    try:
+        result = add_global_skill(path, id=skill_id)
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(json.dumps(result))
+
+
+def _skill_scope(project, global_library, activations=()):
+    if activations and not project:
+        raise typer.BadParameter("--activate requires an explicit --project PATH, including for --global")
+    if bool(project) == global_library and not (activations and project and global_library):
+        raise typer.BadParameter('Specify exactly one of --project PATH or --global')
+    return Path(project).resolve() if project else Path.cwd(), 'global' if global_library else 'project'
+
+
+def _activate_skill(root, result, scopes):
+    if not scopes:
+        return
+    from alfrd.skills import activation_state, save_activations
+    try:
+        state = activation_state(root)
+        additions = [{'source': result['origin'], 'id': result['id'], 'scope': scope} for scope in scopes]
+        save_activations(root, {'version':1, 'activations':state['activations']+additions}, base_hash=state['hash'])
+    except (ValueError, OSError) as exc:
+        typer.echo(f'Skill saved; activation was not saved: {exc}', err=True)
+        raise typer.Exit(1) from exc
+
+
+def _skill_draft(content, file):
+    import tempfile
+    if file:
+        return (sys.stdin.read() if str(file) == '-' else file.read_text(encoding='utf-8')), None
+    fd, name = tempfile.mkstemp(prefix='alfrd-skill-', suffix='.md')
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        stream.write(content)
+    editor = os.environ.get('VISUAL') or os.environ.get('EDITOR')
+    if not editor:
+        raise typer.BadParameter(f'Set EDITOR or use --file; draft retained at {name}')
+    import shlex
+    try:
+        subprocess.run([*shlex.split(editor), name], check=True)
+        return Path(name).read_text(encoding='utf-8'), Path(name)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise typer.BadParameter(f'Editor failed; draft retained at {name}') from exc
+
+
+@skills_cli.command('new')
+def skills_new(skill_id: str, project: Optional[Path] = typer.Option(None, '--project'),
+               global_library: bool = typer.Option(False, '--global'),
+               name: Optional[str] = typer.Option(None, '--name'), description: str = typer.Option('Describe when to use this skill.', '--description'),
+               file: Optional[Path] = typer.Option(None, '--file'),
+               activate: list[str] = typer.Option([], '--activate')):
+    """Create validated guidance, without activation. --file - reads stdin."""
+    import json
+    from alfrd.skills import create_skill
+    root, origin = _skill_scope(project, global_library, activate)
+    content = f'---\nname: {json.dumps(name or skill_id)}\ndescription: {json.dumps(description)}\n---\n# Instructions\n\nDescribe the action and expected result.\n'
+    content, draft = _skill_draft(content, file)
+    try:
+        result = create_skill(root, skill_id, content, origin=origin)
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(f'{exc}' + (f'; draft retained at {draft}' if draft else '')) from exc
+    if draft:
+        draft.unlink()
+    typer.echo(json.dumps(result))
+    _activate_skill(root, result, activate)
+
+
+@skills_cli.command('edit')
+def skills_edit(skill_id: str, project: Optional[Path] = typer.Option(None, '--project'),
+                global_library: bool = typer.Option(False, '--global'), origin: str = typer.Option('project', '--origin'),
+                file: Optional[Path] = typer.Option(None, '--file')):
+    """Edit SKILL.md using EDITOR or --file, preserving supporting files."""
+    import json
+    from alfrd.skills import read_skill_document, save_skill_document
+    root, scope = _skill_scope(project, global_library)
+    if scope == 'global':
+        origin = scope
+    draft = None
+    try:
+        opened = read_skill_document(root, skill_id, origin)
+        if not opened['editable']:
+            raise ValueError(opened['read_only_reason'])
+        content, draft = _skill_draft(opened['content'], file)
+        result = save_skill_document(root, skill_id, content, origin=origin, base_revision=opened['revision'])
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(f'{exc}' + (f'; draft retained at {draft}' if draft else '')) from exc
+    if draft:
+        draft.unlink()
+    typer.echo(json.dumps(result))
+
+
+@skills_cli.command('import')
+def skills_import(url: Optional[str] = typer.Argument(None), project: Optional[Path] = typer.Option(None, '--project'),
+                  global_library: bool = typer.Option(False, '--global'), skill_id: Optional[str] = typer.Option(None, '--id'),
+                  preview_only: bool = typer.Option(False, '--preview-only'), json_output: bool = typer.Option(False, '--json'),
+                  yes: bool = typer.Option(False, '--yes'), confirm: Optional[str] = typer.Option(None, '--confirm'),
+                  from_skill: Optional[str] = typer.Option(None, '--from'),
+                  activate: list[str] = typer.Option([], '--activate')):
+    """Fetch and review public HTTPS guidance; --yes explicitly confirms after preview."""
+    import json
+    from alfrd.skill_imports import prepare_skill_import, commit_skill_import, persist_cli_preview, restore_cli_preview
+    from alfrd.skills import read_skill_document
+    root, origin = _skill_scope(project, global_library, activate)
+    owner = f'cli:{os.getuid()}'
+    try:
+        if from_skill:
+            source_origin, source_id = from_skill.split(':', 1)
+            url = read_skill_document(root, source_id, source_origin).get('provenance', {}).get('source_url')
+            if not url:
+                raise ValueError('No valid provenance; enter a URL manually')
+        if confirm:
+            if url or preview_only or not skill_id:
+                raise ValueError('--confirm requires --id and no URL/--preview-only')
+            restore_cli_preview(root, confirm, owner=owner)
+            result = commit_skill_import(root, confirm, origin, skill_id, owner=owner)
+            persist_cli_preview(confirm, owner=owner)
+            typer.echo(json.dumps(result))
+            _activate_skill(root, result, activate)
+            return
+        if not url:
+            raise ValueError('Provide a public HTTPS URL')
+        preview = prepare_skill_import(root, url, owner=owner)
+        persist_cli_preview(preview['token'], owner=owner)
+        typer.echo(json.dumps(preview, indent=None if json_output else 2))
+        if preview_only:
+            return
+        if not yes:
+            if not sys.stdin.isatty():
+                raise ValueError('Noninteractive imports need --preview-only or explicit --yes')
+            if not typer.confirm('Save this reviewed skill?'):
+                return
+        result = commit_skill_import(root, preview['token'], origin, skill_id or preview['proposed_id'], owner=owner)
+        persist_cli_preview(preview['token'], owner=owner)
+        typer.echo(json.dumps(result))
+        _activate_skill(root, result, activate)
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+
+
 try:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
@@ -262,6 +417,9 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         _start_plugin_services(database)
     _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
+    if serving:
+        _chat_watch_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
+        _chat_schedule_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
     restart = threading.Event()
     browser_thread = None
     if not no_browser and (loopback or host in {"0.0.0.0", "::"}) and serving:
@@ -340,6 +498,85 @@ def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
             print(f"Plan reconcile skipped: {error}")
 
     threading.Thread(target=work, name="alfrd-plan-reconcile", daemon=True).start()
+
+
+def _chat_schedule_later(service, scope, stopped: threading.Event, *, spawn: bool):
+    """Independent one-second clock, including a startup catch-up and dynamic catalogue scope."""
+    from alfrd import chat
+
+    def work():
+        while not stopped.is_set():
+            try:
+                roots = {Path(p.root_path).resolve() for p in service.list_projects()
+                         if not scope or p.identifier in scope}
+                for root in roots:
+                    if stopped.is_set():
+                        break
+                    for result in chat.dispatch_due_schedules(root, spawn=spawn):
+                        if result.get("error"):
+                            print(f"Chat schedule skipped ({root}): {result['error']}")
+            except Exception as error:
+                print(f"Chat schedule sweep failed: {error}")
+            stopped.wait(1)
+
+    thread = threading.Thread(target=work, name="alfrd-chat-schedule", daemon=True)
+    thread.start()
+    return thread
+
+
+def _chat_watch_later(service, scope, stopped: threading.Event, *, spawn: bool):
+    """Check scoped projects until the server stops.
+
+    Settings are re-read within 30 seconds, including projects initially disabled.
+    """
+    from alfrd import chat
+
+    roots = {}
+    try:
+        projects = service.list_projects()
+    except Exception as error:  # noqa: BLE001 - catalogue recovery must not block serving
+        print(f"Chat checks not started: {error}")
+        return None
+    for item in projects:
+        if scope and item.identifier not in scope:
+            continue
+        root = Path(item.root_path)
+        try:
+            roots[root] = chat.settings(root)["watch"]["interval_seconds"]
+        except Exception as error:  # noqa: BLE001 - one project's settings must not stop the server
+            print(f"Chat check skipped ({root}): {error}")
+    if not roots:
+        return None
+
+    def work() -> None:
+        import time
+
+        last = {}
+        while not stopped.is_set():
+            delay = 30.0
+            for root in roots:
+                if stopped.is_set():
+                    break
+                try:
+                    watch = chat.settings(root)["watch"]
+                    interval = watch["interval_seconds"]
+                    if not watch.get("enabled", True) or not interval:
+                        continue
+                    now = time.monotonic()
+                    remaining = last.get(root, now - interval) + interval - now
+                    if remaining <= 0:
+                        # Advance even if checking fails; retry on the next scheduled interval.
+                        last[root] = now
+                        chat.check(root, spawn=spawn, periodic=True)
+                        remaining = interval
+                    delay = min(delay, remaining)
+                except Exception as error:  # noqa: BLE001 - a failed check must not kill the watcher
+                    print(f"Chat check skipped ({root}): {error}")
+            stopped.wait(delay)
+
+    thread = threading.Thread(target=work, name="alfrd-chat-watch", daemon=True)
+    thread.start()
+    return thread
 
 
 @alfrd_cli.command()
@@ -1531,6 +1768,18 @@ def su_set(assignments: list[str] = typer.Argument(..., help="key=value, e.g. fe
         print(f"{key} = {superuser.flat()[key]}")
 
 
+@su_cli.command("checker")
+def su_checker(enabled: bool = typer.Option(..., "--enabled/--disabled", help="Enable or disable periodic chat recovery."),
+               root: str = _ROOT_OPT):
+    """Set this project's periodic checker (local OS owner, as with other su commands)."""
+    from alfrd import chat
+
+    view = _chat_call(chat.settings_view, root)
+    block = {**view["block"], "watch": {**(view["block"].get("watch") or {}), "enabled": enabled}}
+    _chat_call(chat.save_settings, root, block, base_hash=view["hash"])
+    print(f"chat.watch.enabled = {str(enabled).lower()}")
+
+
 @su_cli.command("reset")
 def su_reset(yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation.")):
     """Remove the superuser file: every setting back to its default."""
@@ -1614,7 +1863,9 @@ def chat_list(root: str = _ROOT_OPT):
     from alfrd import chat
 
     for item in _chat_call(chat.list_sessions, Path(root).resolve()):
-        print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}")
+        schedule = item.get("schedule")
+        pending = f" · {schedule.get('queued_count', 0)} queued · {schedule.get('run_at', '')}" if schedule else ""
+        print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}{pending}")
 
 
 @chat_cli.command("rename")
@@ -1644,6 +1895,9 @@ def chat_send(session: str, text: str, root: str = _ROOT_OPT):
     from alfrd import chat
 
     out = _chat_call(chat.post_message, Path(root).resolve(), session, text)
+    if out.get("queued"):
+        print(f"Queued {out['item']['id']} for {out['schedule']['run_at']}")
+        return
     print(f"{out['request']['id']}: {out['request']['mode']} → {out['task']['row']}")
 
 
@@ -1658,6 +1912,12 @@ def chat_show(session: str, json_out: bool = typer.Option(False, "--json"), root
     if json_out:
         print(_json.dumps(state, indent=2, default=str))
         return
+    if state.get("schedule"):
+        batch = state["schedule"]
+        print(f"schedule {batch['id']}: {batch['status']} · {batch['run_at']} ({batch['timezone']})")
+        for item in batch["items"]:
+            if not item.get("removed_at"):
+                print(f"  queued {item['id']}: {item['text']}")
     for m in state["messages"]:
         print(f"[{m['role']}{'/' + m['agent'] if m.get('agent') else ''}] {m['text']}")
     for t in state["tasks"]:
@@ -1676,6 +1936,24 @@ def chat_probe(root: str = _ROOT_OPT):
     from alfrd import chat
 
     print(_json.dumps(_chat_call(chat.probe, Path(root).resolve()), indent=2))
+
+
+@chat_cli.command("check")
+def chat_check(session: str | None = typer.Option(None, "--session", help="Check one session (default: all)."),
+               json_out: bool = typer.Option(False, "--json"), root: str = _ROOT_OPT):
+    """Recover interrupted chat work without an agent call; suitable for cron/systemd."""
+    import json as _json
+
+    from alfrd import chat
+
+    reports = _chat_call(chat.check, Path(root).resolve(), session)
+    if json_out:
+        print(_json.dumps(reports, indent=2))
+        return
+    for report in reports:
+        print(f"{report['session']}: " + ("; ".join(f["text"] for f in report["findings"]) or "No issues found."))
+    if not reports:
+        print("No chat sessions found.")
 
 
 @chat_cli.command("decide")

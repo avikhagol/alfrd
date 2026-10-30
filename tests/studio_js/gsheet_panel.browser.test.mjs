@@ -8,7 +8,7 @@ const read = path => readFile(new URL(`../../${path}`, import.meta.url), "utf8")
 const moduleURL = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 
 test("Google Sheet panel: Chromium keyboard, sanitization, AA text and narrow layout", { skip: !chromium }, async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, ...(process.env.ALFRD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.ALFRD_CHROMIUM_EXECUTABLE } : {}) });
   try {
     const projectUI = moduleURL(await read("examples/plugins/alfrd-gsheet/alfrd_gsheet/web/project_ui.js"));
     const source = moduleURL((await read("examples/plugins/alfrd-gsheet/alfrd_gsheet/web/index.js")).replace('"./project_ui.js"', `"${projectUI}"`));

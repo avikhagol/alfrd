@@ -8,7 +8,7 @@ globalThis.requestAnimationFrame = (fn) => frames.push(fn);
 const { mountGraph } = await import("../../src/alfrd/web/js/components/graph_view.js");
 const model = (rev, ids = ["a"]) => ({ ...(rev === undefined ? {} : { rev }),
   nodes: ids.map((id) => ({ id, request: id, title: id, st: "queued", label: "Queued", tone: "muted" })), edges: [] });
-function mounted(groups = true) {
+function mounted(groups = true, opts = {}) {
   frames = [];
   const element = () => {
     const listeners = new Map();
@@ -21,10 +21,60 @@ function mounted(groups = true) {
   };
   const elements = new Map([".gv-canvas", ".world", "[data-gv-live]", ".gv-empty", ".gv-zoom"].map((s) => [s, element()]));
   const host = element(); host.querySelector = (s) => elements.get(s);
-  const graph = mountGraph(host, { groups });
-  return { graph, canvas: elements.get(".gv-canvas"), world: elements.get(".world"),
+  const graph = mountGraph(host, { groups, ...opts });
+  return { graph, host, canvas: elements.get(".gv-canvas"), world: elements.get(".world"),
     tick: () => { const pending = frames; frames = []; pending.forEach((fn) => fn()); } };
 }
+
+test("G6 renders the D3 legend and preserves descriptive status labels and owner hints", () => {
+  const { graph, host, world } = mounted();
+  for (const state of ["done", "running", "failed", "blocked", "queued", "cancelled"]) {
+    assert.ok(host.innerHTML.includes(`data-status="${state}"`));
+  }
+  const m = model(1);
+  Object.assign(m.nodes[0], { status: "blocked", label: "Blocked (dependency failed)", sub: "@codex", hint: "Waits for b" });
+  graph.update(m);
+  assert.match(world.innerHTML, /data-status="blocked"/);
+  assert.match(world.innerHTML, /class="status-label">Blocked \(dependency failed\)/);
+  assert.match(world.innerHTML, /title="a · @codex · Waits for b"/);
+});
+
+test("revision-only updates retain running graph markup without restarting SVG animations", () => {
+  const { graph, world } = mounted();
+  let html = "", writes = 0;
+  Object.defineProperty(world, "innerHTML", { get: () => html, set(value) { html = value; writes++; } });
+  const m = model(1);
+  Object.assign(m.nodes[0], { status: "running", st: "running", label: "Running" });
+  graph.update(m);
+  assert.match(html, /data-status="running"/);
+  graph.update({ ...m, rev: 2 });
+  assert.equal(writes, 1, "a newer revision with identical markup leaves the DOM untouched");
+  graph.update({ ...m, rev: 3, nodes: [{ ...m.nodes[0], status: "done", st: "done", label: "Done" }] });
+  assert.equal(writes, 2);
+  assert.match(html, /data-status="done"/);
+});
+
+test("G6 arrows pan without selection; node focus selects, Enter opens, Escape restores pan", () => {
+  globalThis.CSS = { escape: (s) => s };
+  const selected = [], opened = [];
+  const { graph, canvas, world, tick } = mounted(true, { onSelect: (id) => selected.push(id), onOpen: (id) => opened.push(id) });
+  graph.update(model(1, ["a", "b"])); tick();
+  const initial = world.style.transform;
+  const key = (k) => canvas.fire("keydown", { key: k, stopPropagation() {} });
+  key("ArrowRight");
+  assert.notEqual(world.style.transform, initial);
+  assert.deepEqual(selected, []);
+  const panned = world.style.transform;
+  canvas.fire("focusin", { target: { closest: () => ({ dataset: { key: "a" } }) } });
+  key("ArrowRight");
+  assert.deepEqual(selected, ["a", "b"]);
+  key("Enter");
+  assert.deepEqual(opened, ["b"]);
+  assert.equal(world.style.transform, panned);
+  key("Escape"); key("ArrowDown");
+  assert.equal(selected.at(-1), null);
+  assert.notEqual(world.style.transform, panned);
+});
 
 test("pan and zoom survive status, node, lane and empty graph re-renders", () => {
   for (const groups of [false, true]) {

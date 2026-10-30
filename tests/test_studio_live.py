@@ -124,7 +124,9 @@ def test_hub_initial_scan_discovers_once_and_retains_start_cursor(tree, monkeypa
     collect = avica_layout.collect_studio_files
 
     def counting(*args, **kwargs):
-        calls.append(kwargs)
+        # A leaked hub's snapshot probe passes read=False; only this test's calls count.
+        if kwargs.get("read") is not False:
+            calls.append(kwargs)
         return collect(*args, **kwargs)
 
     monkeypatch.setattr(avica_layout, "collect_studio_files", counting)
@@ -322,7 +324,11 @@ def test_file_watcher_sees_runtime_db(tmp_path):
     assert w.check()["type"] == "runtime"
 
 
-def test_hub_runs_watchers_only_while_used(tree):
+def test_hub_runs_watchers_only_while_used(tree, monkeypatch):
+    # This test exercises background polling, subscriptions and leases. Keep
+    # its poll interval deterministic on slow filesystems; adaptive backoff is
+    # checked separately in test_watcher_versions_events_and_adapts.
+    monkeypatch.setattr("alfrd.studio_live.Watcher.next_delay", lambda self, now=None: self.interval)
     hub = LiveHub(lambda name: tree if name == "p" else None, interval=0.2, idle=0.2, lease=0.5)
     sub, hello = hub.subscribe(["p", "missing"])
     assert set(hello) == {"p"} and hello["p"]["version"] == 0
@@ -444,7 +450,7 @@ def test_full_scan_endpoint_reuses_discovery_for_initial_baseline(served, monkey
 
 
 def test_event_stream_hello_tree_and_ping(served):
-    _, client, name, tree = served
+    app, client, name, tree = served
     res = client.get("/api/studio/events", query_string={"projects": f"{name},not-in-scope"}, buffered=False)
     assert res.mimetype == "text/event-stream"
     chunks = iter(res.response)
@@ -454,6 +460,10 @@ def test_event_stream_hello_tree_and_ping(served):
     hello = json.loads(text.split("event: hello\ndata: ", 1)[1].split("\n\n", 1)[0])
     assert set(hello["state"]) == {name, "@runtime"}
     _bump(tree / META, "\n")
+    # Exercise SSE delivery without waiting for adaptive polling's slow-tree
+    # backoff (up to 60s). Studio writes use this same wakeup; background polling
+    # and its delay calculation are covered by the watcher/hub tests above.
+    app.extensions["alfrd_live"].poke(name)
     seen = ""
     deadline = time.time() + 5
     while "event: tree" not in seen and time.time() < deadline:
@@ -474,3 +484,40 @@ def test_changes_poll_and_live_off(served, tmp_path):
     app.extensions.pop("alfrd_live").stop_all()
     assert client.get("/api/studio/events").status_code == 404
     assert client.get("/api/studio/session").get_json()["live"]["enabled"] is False
+
+
+def test_idle_session_membership_rename_and_removal_invalidate_without_plan(tmp_path):
+    from alfrd.studio_live import AlfrdWatcher
+    folder = tmp_path / ".alfrd" / "chat" / "idle"
+    folder.mkdir(parents=True)
+    meta = folder / "session.json"
+    meta.write_text('{"id":"idle","title":"One"}')
+    w = AlfrdWatcher("project-a", tmp_path, lambda *args: None)
+    assert w.probe() == []  # initial baseline produces no storm
+    meta.write_text('{"id":"idle","title":"Renamed"}')
+    expected = {"kind": "chat.session.changed", "plan": "chat-idle", "project": "project-a"}
+    assert w.probe() == [expected]
+    assert w.probe() == []
+    shutil.rmtree(folder)
+    assert w.probe() == [expected]
+    folder.mkdir()
+    meta.write_text('{"id":"idle","title":"Recreated"}')
+    assert w.probe() == [expected]
+    (folder.parent / ".DS_Store").write_text("")  # a stray file is not a session
+    assert w.probe() == []
+
+
+def test_session_metadata_invalidation_uses_existing_versioned_history(tmp_path):
+    from alfrd.studio_live import AlfrdWatcher
+    published = []
+    w = AlfrdWatcher("p", tmp_path, published.append)
+    assert w.check() is None
+    folder = tmp_path / ".alfrd" / "chat" / "idle"
+    folder.mkdir(parents=True)
+    (folder / "session.json").write_text('{"id":"idle"}')
+    event = w.check()
+    assert event["type"] == "alfrd" and event["version"] == 1
+    assert event["events"][0]["plan"] == "chat-idle"
+    assert published == [event]
+    assert w.since(w.epoch, 0) == ([event], False)
+    assert w.since("expired-cursor", 0) == ([], True)

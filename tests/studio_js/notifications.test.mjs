@@ -87,6 +87,7 @@ test("app route selects the linked project before opening its run and deduplicat
     switchProject: (p) => { calls.push(["project", p]); state.selectedProject = p; },
     chooseTarget: () => null, storage: { get: () => ({}) }, rememberTarget() {}, unsaved: () => [],
     VIEWS: [{ id: "overview", mod: {} }, { id: "workflow", mod: {} }], scheduleRender() {}, plansAvailable: () => true,
+    skillsCanLeave: () => true,
     shown: () => true, chatOn: () => false, // superuser section filter (app.js): nothing hidden here
     openLinkedRun: async (_, ...args) => { assert.equal(state.selectedProject, "p"); calls.push(["run", ...args]); },
   };
@@ -108,4 +109,30 @@ test("missing deep-linked runs show the existing message and refresh can return 
     await openLinkedRun(ctx, "missing", "gone"); assert.match(toasts[0], /This run is no longer available/);
     await loadPlan(ctx, "missing"); assert.deepEqual(asked, ["gone", null]);
   } finally { server.planStatus = original; forgetPlan("missing"); }
+});
+
+
+test("chat attention uses semantic copy, deduplicates, and respects browser preference", async () => {
+  const original = server.notificationRoutes, toasts = [];
+  server.notificationRoutes = async () => ({ routes: [] });
+  FakeNotification.permission = "granted";
+  await setBrowserNotifications(true); await flush();
+  const before = FakeNotification.sent.length;
+  const event = { notification_id: "decision-unique", kind: "approval.needed", title: "Approval needed",
+    body: "Publish preview. Approval abc123", plan: "chat-run", link: "/studio/#/chat/session?p=p" };
+  try {
+    const ctx = { toast: (...args) => toasts.push(args) };
+    await handleNotifications(ctx, "p", [event, event, { kind: "plan.finished", notification_suppressed: true }]);
+    await handleNotifications(ctx, "p", [event]);
+    assert.equal(toasts.length, 1); assert.equal(toasts[0][2].sticky, true);
+    assert.equal(FakeNotification.sent.length, before + 1);
+    const n = FakeNotification.sent.at(-1);
+    assert.equal(n.title, "Approval needed"); assert.equal(n.options.body, event.body);
+    n.onclick(); assert.equal(window.location.hash, "#/chat/session?p=p");
+    await setBrowserNotifications(false); await flush();
+    await handleNotifications(ctx, "p", [{ ...event, kind: "decision.needed", notification_id: "another" }]);
+    assert.equal(FakeNotification.sent.length, before + 1);
+    await handleNotifications(ctx, "p", [{ kind: "request.finished", status: "needs_decision" }]);
+    assert.equal(toasts.length, 2);
+  } finally { server.notificationRoutes = original; }
 });

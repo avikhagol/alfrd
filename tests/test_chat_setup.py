@@ -473,3 +473,26 @@ def test_saved_skills_injected_for_plan_repair_task_and_summary(project):
     run(project, sid)
     assert [c["kind"] for c in calls(project)] == ["plan", "repair", "task", "summary"]
     assert all(c["prompt"].count("SHARED-SNAPSHOT-CONTENT") == 1 for c in calls(project))
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_codex_selected_skill_exposure_reaches_launch_workspace(project, enabled):
+    from test_skills import write_skill
+
+    source = write_skill(project, "skills", "review", "---\nname: review\ndescription: check diffs\n---\nbody")
+    configure(project, agents={"codex": {"skills": enabled, "lean": True}},
+              skill_selection={"enabled": True, "selected_ids": ["review"]})
+    fake(project, t1=result())
+    sid = chat.create_session(project)["id"]
+    say(project, sid, "@codex work")
+    run(project, sid)
+    units = scheduler.Runner(project, f"chat-{sid}").folder.units()
+    unit, = [u for u in units if u.get("row") == "r0001.t1"]
+    destination = project / ".agents/skills/alfrd-review"
+    assert destination.is_symlink() is enabled
+    if enabled:
+        assert destination.resolve() == source.parent
+        assert unit["skill_delivery"][0]["delivery"] == "native"
+    else:
+        assert unit["skill_delivery"] == []
+    assert "Use skill review for check diffs" in calls(project)[0]["prompt"]

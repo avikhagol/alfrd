@@ -1,3 +1,4 @@
+import { attemptLabel, bindTextTools, textFindHtml, textToolsHtml } from "../utils/text_find.js";
 // Shared log rendering: collapsible log files that load on open, scroll inside
 // a fixed-height box, and a small expand button that opens any log (or any
 // inline log snippet) full-screen in a modal.
@@ -203,7 +204,6 @@ async function fill(ctx, d) {
 
 /** Full-screen text. `meta` = {unit, attempt, latest} labels which attempt the text is (see attemptLabel). */
 export async function openFull(ctx, title, text, sub = "", live = null, meta = null) {
-  const { attemptLabel, bindTextTools, textFindHtml, textToolsHtml } = await import("./viewers.js");
   const key = live ? keyOf(live.project, live.rel) : "";
   ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(title)}</h2>${sub ? `<span class="muted small mono trunc">${esc(sub)}</span>` : ""}<span class="grow"></span>
       ${textToolsHtml(attemptLabel(meta || {}))}

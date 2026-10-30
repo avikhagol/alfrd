@@ -42,6 +42,15 @@
         "unit_id": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "on_behalf_of": {
+          "const": "user"
+        },
+        "delegated": {
+          "enum": [
+            "setting",
+            "user"
+          ]
         }
       },
       "required": [
@@ -101,7 +110,24 @@
             }
           }
         }
-      ]
+      ],
+      "dependentSchemas": {
+        "on_behalf_of": {
+          "properties": {
+            "kind": {
+              "const": "orchestrator"
+            }
+          },
+          "required": [
+            "delegated"
+          ]
+        },
+        "delegated": {
+          "required": [
+            "on_behalf_of"
+          ]
+        }
+      }
     },
     "at": {
       "type": "string",

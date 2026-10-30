@@ -14,10 +14,10 @@ Studio API:
   reply (``alfrd.orchestration/1``, see :mod:`alfrd.orchestration`) is validated
   and turned into task rows. An invalid plan gets one repair row, then an error.
 * an LLM is woken only for: a new message (plan), a blocker that names the
-  orchestrator (replan), and once per finished request for the final summary
+  orchestrator (replan), an opt-in bounded stall check, and once per finished request for the final summary
   when ``chat.final_summary`` is on (default off: the answer is built in code from
   the task results). Plan and summary calls use ``chat.orchestrator_model``
-  (default sonnet); a repair of an invalid plan and a replan use
+  (default sonnet); a repair of an invalid plan, replan and stall check use
   ``chat.escalation_model`` (default opus). Waiting, completion, dependencies and
   retries are code.
 * each task's prompt holds its own task, its dependencies' result summaries and
@@ -49,9 +49,10 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -72,9 +73,9 @@ KIND_COLUMN = "KIND"
 REQUEST_COLUMN = "REQUEST"
 DEPTH_COLUMN = "DEPTH"
 EXTRA_COLUMNS = (KIND_COLUMN, REQUEST_COLUMN, DEPTH_COLUMN, pc.DEPENDS_COLUMN, pc.RETRIES_COLUMN, pc.SECONDS_COLUMN)
-ORCHESTRATOR_KINDS = ("plan", "repair", "replan", "summary")
+ORCHESTRATOR_KINDS = ("plan", "repair", "replan", "check", "summary")
 TERMINAL = ("done", "failed", "cancelled", "blocked", "stopped")
-REQUEST_ACTIVE = ("planning", "running", "needs_decision", "summarizing")
+REQUEST_ACTIVE = ("preparing", "planning", "running", "needs_decision", "summarizing")
 AGENT_KEY = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SESSION_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 MAX_MESSAGE = 20000
@@ -87,12 +88,19 @@ DEFAULTS: dict[str, Any] = {
     "escalation_model": "opus",
     "skill_selection": {"enabled": False, "selected_ids": []},
     "final_summary": False,       # the final answer is built in code from the task results
+    # Blockers that would ask the user go to the orchestrator instead: "off", "questions" (not access
+    # grants) or "all" (it may also grant the access a task asks for). Mailbox-linked approvals stay with the user.
+    "delegate_decisions": "off",
     "warn_task_cost_usd": None,   # a task costing more is flagged (budget.warning), not stopped
     "concurrency": 2,
     "history_messages": 8,
     # max_replans: orchestrator wake-ups for blockers per request; past it, blockers go to the user.
     "bounds": {"max_depth": 2, "max_retries": 1, "max_cost_usd": 5.0, "max_seconds": 7200, "max_tasks": 20,
                "max_replans": 3},
+    # Scheduled checks (chat.check): every interval_seconds (0: never) a dead runner with work left
+    # is resumed and a request stalled for stall_seconds is finished or handed on. wake_orchestrator lets a
+    # stall wake the orchestrator, at most max_checks times per request.
+    "watch": {"enabled": True, "interval_seconds": 300, "stall_seconds": 1800, "wake_orchestrator": False, "max_checks": 3},
     # Editable presets: which agent does what. Roles are words for the orchestrator, not capabilities.
     "agents": {
         "claude": {"label": "Claude (Opus)", "entrypoint": "claude", "model": "opus", "roles": ["orchestration"], "lean": True},
@@ -177,11 +185,12 @@ PRESETS: dict[str, dict[str, Any]] = {
 ROLE_WORDS = ["orchestration", "research", "image generation", "design", "development", "test planning",
               "verification", "failure analysis", "writing"]
 AGENT_FIELDS = {"label", "entrypoint", "cmd", "model", "adapter", "roles", "persona", "timeout", "lean", "env",
-                "fallback", "model_option"}
+                "fallback", "model_option", "skills", "plugins", "mcp"}
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SETTING_KEYS = ("orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd",
-                "concurrency", "history_messages", "skill_selection")
-ESCALATED_KINDS = ("repair", "replan")
+                "concurrency", "history_messages", "skill_selection", "delegate_decisions")
+DELEGATE_MODES = ("off", "questions", "all")
+ESCALATED_KINDS = ("repair", "replan", "check")
 
 
 def now_iso() -> str:
@@ -212,7 +221,7 @@ def settings(root: str | Path) -> dict[str, Any]:
 def merge_settings(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise ExecutionError("chat must be a mapping")
-    unknown = set(raw) - {*SETTING_KEYS, "bounds", "agents"}
+    unknown = set(raw) - {*SETTING_KEYS, "bounds", "watch", "agents"}
     if unknown:
         raise ExecutionError(f"chat: unknown setting(s) {', '.join(sorted(unknown))}")
     out = json.loads(json.dumps(DEFAULTS))
@@ -227,6 +236,10 @@ def merge_settings(raw: Any) -> dict[str, Any]:
     if not isinstance(bounds, Mapping) or set(bounds) - set(DEFAULTS["bounds"]):
         raise ExecutionError(f"chat.bounds accepts {', '.join(DEFAULTS['bounds'])}")
     out["bounds"].update(bounds)
+    watch = raw.get("watch") or {}
+    if not isinstance(watch, Mapping) or set(watch) - set(DEFAULTS["watch"]):
+        raise ExecutionError(f"chat.watch accepts {', '.join(DEFAULTS['watch'])}")
+    out["watch"].update(watch)
     agents = raw.get("agents") or {}
     if not isinstance(agents, Mapping):
         raise ExecutionError("chat.agents must map agent keys to settings")
@@ -252,6 +265,11 @@ def merge_settings(raw: Any) -> dict[str, Any]:
                 raise ExecutionError(f"chat.agents.{key}.{name} must be a nonempty string")
         if agent.get("lean") is not None and not isinstance(agent["lean"], bool):
             raise ExecutionError(f"chat.agents.{key}.lean must be true or false")
+        try:
+            from alfrd.agent_io import startup_options
+            startup_options(agent)
+        except ValueError as exc:
+            raise ExecutionError(f"chat.agents.{key}: {exc}") from exc
         env = agent.get("env")
         if env is not None:
             if not isinstance(env, Mapping):
@@ -281,6 +299,8 @@ def merge_settings(raw: Any) -> dict[str, Any]:
         raise ExecutionError(f"chat.orchestrator {out['orchestrator']!r} is not a chat agent ({', '.join(out['agents'])})")
     if not isinstance(out["final_summary"], bool):
         raise ExecutionError("chat.final_summary must be true or false")
+    if out["delegate_decisions"] not in DELEGATE_MODES:
+        raise ExecutionError(f"chat.delegate_decisions must be one of {', '.join(DELEGATE_MODES)}")
     for key in ("orchestrator_model", "escalation_model"):
         if out[key] is not None and (not isinstance(out[key], str) or not out[key].strip()):
             raise ExecutionError(f"chat.{key} must be a model name or null (the orchestrator agent's own model)")
@@ -298,6 +318,15 @@ def merge_settings(raw: Any) -> dict[str, Any]:
         if isinstance(b[key], bool) or not isinstance(b[key], (int, float)) or b[key] <= 0:
             raise ExecutionError(f"chat.bounds.{key} must be a positive number")
     b["max_retries"] = min(b["max_retries"], 5)
+    w = out["watch"]
+    for key, low in (("interval_seconds", 0), ("stall_seconds", 60), ("max_checks", 0)):
+        if isinstance(w[key], bool) or not isinstance(w[key], int) or w[key] < low:
+            raise ExecutionError(f"chat.watch.{key} must be an integer ≥ {low}")
+    if 0 < w["interval_seconds"] < 30:
+        raise ExecutionError("chat.watch.interval_seconds must be 0 (off) or at least 30")
+    for key in ("enabled", "wake_orchestrator"):
+        if not isinstance(w[key], bool):
+            raise ExecutionError(f"chat.watch.{key} must be true or false")
     return out
 
 
@@ -335,7 +364,7 @@ def execution_config(root: str | Path, session: str) -> ExecutionConfig:
             "output_capture": entry.get("output_capture", "file") if entry.get("output_file") else "stdout",
             "human_review": False,
         }
-        for field in ("model", "adapter", "timeout", "lean", "model_option"):
+        for field in ("model", "adapter", "timeout", "lean", "model_option", "skills", "plugins", "mcp"):
             if agent.get(field) is not None:
                 spec[field] = agent[field]
         if agent.get("env"):
@@ -372,6 +401,30 @@ class Session:
     @property
     def session_file(self) -> Path:
         return self.dir / "session.json"
+
+    @property
+    def schedule_file(self) -> Path:
+        return self.dir / "schedule.json"
+
+    def load_schedule(self) -> dict[str, Any]:
+        if not self.schedule_file.exists():
+            return {"schema_version": 1, "revision": 0, "current_id": None, "batches": [], "operations": {}}
+        try:
+            data = json.loads(self.schedule_file.read_text())
+            if (data["schema_version"] != 1 or not isinstance(data["batches"], list)
+                    or not isinstance(data["revision"], int) or data["revision"] < 0
+                    or not isinstance(data["operations"], dict)
+                    or (data["current_id"] is not None and not any(b["id"] == data["current_id"] for b in data["batches"]))):
+                raise ValueError("invalid schema")
+            return data
+        except (ValueError, KeyError, TypeError) as error:
+            raise ValueError(f"Invalid schedule file: {error}") from error
+
+    def save_schedule(self, data: dict[str, Any]) -> None:
+        data["revision"] += 1
+        _write(self.schedule_file, data)
+        self.bump_rev()
+        server_event(self, "chat.session.changed", schedule_revision=data["revision"])
 
     @property
     def messages_file(self) -> Path:
@@ -426,6 +479,8 @@ class Session:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             held[key] = [handle, 0]
             try:
+                if self.session_file.exists():
+                    _repair_title(self)
                 yield
             finally:
                 del held[key]
@@ -440,13 +495,16 @@ class Session:
         """Monotonic change counter of the session (0 before the first change); see ``bump_rev``."""
         data = _read(self.rev_file)
         rev = data.get("rev") if isinstance(data, dict) else None
-        return rev if isinstance(rev, int) and rev > 0 else 0
+        base = rev if isinstance(rev, int) and rev > 0 else 0
+        schedule = _read(self.schedule_file) or {}
+        projected = data.get("schedule_revision", 0) if isinstance(data, dict) else 0
+        return base + max(0, int(schedule.get("revision", 0)) - projected)
 
     def bump_rev(self) -> int:
         """Advance ``rev`` by one. Only ever done under ``lock()``; the file is replaced atomically."""
         with self.lock():
             rev = self.rev + 1
-            _write(self.rev_file, {"rev": rev})
+            _write(self.rev_file, {"rev": rev, **({"schedule_revision": self.load_schedule()["revision"]} if self.schedule_file.exists() else {})})
             return rev
 
     def load(self) -> dict[str, Any]:
@@ -580,11 +638,22 @@ def create_session(root: str | Path, title: str | None = None) -> dict[str, Any]
         "runner": {}, "history": [{"at": created, "event": "chat session created"}], "chat": {"session": sid},
     })
     folder.set_control("run")
-    data = {"id": sid, "title": (str(title).strip()[:120] if title else "") or f"Chat {created[:16].replace('T', ' ')}",
+    data = {"id": sid, "title": (str(title).strip()[:120] if title else "") or "New chat",
+            "title_source": "explicit" if title and str(title).strip() else "placeholder",
             "created": created, "plan": store.plan_id}
     _write(store.session_file, data)
     _write_graph(store)
     return data
+
+
+def _session_attention(store):
+    from alfrd.mailbox import Mailbox
+
+    requests, decisions = store.requests(), store.decisions()
+    pending = sum(Mailbox(store.root, store.id, r["id"]).summary()["pending_user"] for r in requests)
+    pending += sum(d.get("status") == "pending" and d.get("needs") == "user"
+                   and not d.get("mailbox_message_id") for d in decisions)
+    return {"pending_user": pending, "active_requests": sum(r.get("status") in REQUEST_ACTIVE for r in requests)}
 
 
 def list_sessions(root: str | Path) -> list[dict[str, Any]]:
@@ -596,9 +665,10 @@ def list_sessions(root: str | Path) -> list[dict[str, Any]]:
             continue
         store = Session(Path(root).resolve(), data["id"])
         last = store.messages(1)
-        requests = store.requests()
+        attention = _session_attention(store)
         out.append({**data, "messages": len(store.messages()), "last_message": last[0] if last else None,
-                    "active_requests": sum(r.get("status") in REQUEST_ACTIVE for r in requests),
+                    **attention,
+                    "schedule": _schedule_summary(store),
                     "plan_status": (_read(_plan_folder(store).plan_file) or {}).get("status")})
     return out
 
@@ -615,6 +685,7 @@ def rename_session(root: str | Path, sid: str, title: Any) -> dict[str, Any]:
     with store.lock():
         data = store.load()
         data["title"] = text
+        data["title_source"] = "explicit"
         _write(store.session_file, data)
         store.bump_rev()
     return data
@@ -632,6 +703,8 @@ def delete_session(root: str | Path, sid: str) -> dict[str, Any]:
     folder = _plan_folder(store)
     with store.lock():
         data = store.load()
+        if store.load_schedule().get("current_id"):
+            raise PermissionError("cancel the pending schedule before deleting this session")
         active = [r["id"] for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
         if active:
             raise PermissionError(f"chat {data.get('title') or sid!r} still has active requests "
@@ -742,7 +815,54 @@ def _replay(store: Session, message: dict[str, Any]) -> dict[str, Any]:
     return {"message": message, "request": req, "task": store.task(rows[0]) if rows else None, "replayed": True}
 
 
-def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
+def _prompt_title(text: str, agents) -> str:
+    text = unicodedata.normalize("NFC", text)
+    mention = _MENTION.match(text)
+    if mention and mention.group(1).lower() in agents:
+        text = mention.group(2)
+    text = re.sub(r"(?<!\S)@([A-Za-z0-9][A-Za-z0-9_-]{0,39})(?=\s|$)",
+                  lambda m: "@" + m.group(1).lower() if m.group(1).lower() in agents else m.group(0), text)
+    text = " ".join("".join(c for c in text if not unicodedata.category(c).startswith("C") or c.isspace()).split())
+    if not text:
+        return "Image conversation"
+    if len(text) <= 48:
+        return text
+    head = text[:47]
+    if not text[47].isspace() and " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip() + "…"
+
+
+def _repair_title(store, agents=None):
+    """Under the session lock, repair from the first durable user message only."""
+    data = store.load()
+    source = data.get("title_source")
+    if source is None:
+        old = f"Chat {str(data.get('created', ''))[:16].replace('T', ' ')}"
+        source = "placeholder" if data.get("title") == old else "explicit"
+    if source != "placeholder":
+        if "title_source" not in data:
+            data["title_source"] = source
+            _write(store.session_file, data)
+        return
+    try:
+        with store.messages_file.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(message, dict) and message.get("role") == "user":
+                    data.update(title=_prompt_title(message.get("text", ""), agents or settings(store.root)["agents"]), title_source="prompt")
+                    _write(store.session_file, data)
+                    store.bump_rev()
+                    server_event(store, "chat.session.changed")
+                    return
+    except FileNotFoundError:
+        pass
+
+
+def _post_message_immediate(root: str | Path, sid: str, text: str, *, spawn: bool = True,
                  attachments: list[str] | None = None, client_message_id: str | None = None) -> dict[str, Any]:
     """Store a user message and start its request: ``@agent …`` → one task, else one orchestrator plan call.
 
@@ -761,6 +881,7 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
             for old in store.messages():
                 if old.get("client_message_id") == cid:
                     if old.get("text") == text and [a["ref"] for a in old.get("attachments") or []] == [a["ref"] for a in images]:
+                        _repair_title(store)
                         return _replay(store, old)
                     raise DuplicateMessageError(f"client_message_id {cid!r} was already used with different content")
     if not text and not images:
@@ -788,9 +909,11 @@ def post_message(root: str | Path, sid: str, text: str, *, spawn: bool = True,
             for old in store.messages():
                 if old.get("client_message_id") == cid:
                     if old.get("text") == text and [a["ref"] for a in old.get("attachments") or []] == [a["ref"] for a in images]:
+                        _repair_title(store)
                         return _replay(store, old)
                     raise DuplicateMessageError(f"client_message_id {cid!r} was already used with different content")
         message = store.add_message("user", text, request=rid, attachments=images or None, client_message_id=cid)
+        _repair_title(store, conf["agents"])
         req: dict[str, Any] = {"id": rid, "message": message["id"], "text": text, "created": now_iso(),
                                "created_ts": time.time(), "bounds": _bounds(conf), "status": "planning",
                                "mailbox_protocol": "alfrd.mailbox/2",
@@ -1054,6 +1177,10 @@ def plan_prompt(store: Session, conf: Mapping[str, Any], req: Mapping[str, Any])
         "## What each agent can reach",
         *[f"- `{key}`: {_reach(conf, key, project_access(store.root))}" for key in usable(conf)],
         "Give a task that touches folders outside these to an agent that reaches them; otherwise it will block.",
+        "Give each expected output as an absolute path (a relative one is taken from the project root "
+        f"{store.root.resolve()}); ALFRD fixes these paths when it adds the task and checks exactly them. "
+        "Each must be inside the project or a folder these agents may write, otherwise the plan is refused; "
+        "a trailing \"/\" means a folder.",
         "",
         "## Bounds for this request",
         f"- at most {b['max_tasks']} tasks; delegation depth {b['max_depth']} (your tasks are depth 1)",
@@ -1102,6 +1229,12 @@ def replan_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any
     summary = (rec.get("result") or {}).get("summary")
     if summary:
         lines += ["", f"The task's own summary: {_clip(summary, 1500)}"]
+    lines += moved_output_lines(store, store.request(rec["request"]).get("tasks") or [rec["row"]])
+    delegated = [d for d in decisions if d.get("delegated")]
+    if delegated:
+        lines += ["", "The user delegated " + ", ".join(f"`{d['id']}`" for d in delegated) + " to you: decide "
+                  "them yourself, as the user would, with one of their options (an option that grants access "
+                  "grants exactly that to this task). The user sees what you chose."]
     lines += mailbox_digest(store, rec["request"])
     lines += ["", "Agents: " + ", ".join(f"`{a}`" for a in usable(conf)), "",
               "Decide with one fenced ```json block: "
@@ -1109,7 +1242,8 @@ def replan_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any
               "\"choice\": \"<one option>\" or \"answer\": \"<text>\" or \"reassign\": \"<agent>\" or \"cancel\": true}], "
               "\"tasks\": [ ...optional new tasks... ]}}. "
               "Choosing an option only re-runs the same task with the same agent and access: if that cannot work, "
-              "reassign it to an agent that can do it, or cancel it. You cannot grant folders or commands. "
+              "reassign it to an agent that can do it, or cancel it. You cannot grant folders or commands "
+              "beyond a delegated decision's grant option. "
               "If a person must decide, reply with only a \"message\"; ALFRD then asks the user."]
     return "\n".join(lines) + "\n"
 
@@ -1125,6 +1259,8 @@ def summary_prompt(store: Session, req: Mapping[str, Any]) -> str:
         lines.append(f"- `{task.get('id', row)}` [{rec.get('status')}] {rec.get('owner')} — {_clip(task.get('title'), 120)}: "
                      f"{_clip(res.get('summary') or rec.get('error') or '(no summary)', 1200)}")
         lines += [f"  - {ref}" for ref in (res.get("artifacts") or [])[:8]]
+        lines += [f"  - output {o['id']}: {_output_line(o)}" + _moved_note(o) for o in task_outputs(store, rec)[:8]]
+    lines += moved_output_lines(store, req["tasks"])
     lines += mailbox_digest(store, req["id"])
     lines += ["", "Write the final answer for the user in Markdown: what was done, what failed or is open, "
               "where the results are. Optionally wrap it as a fenced ```json block "
@@ -1146,6 +1282,11 @@ def task_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any])
         if persona.get("instructions"):
             lines += ["", f"## Persona: {persona.get('label')}", persona["instructions"]]
     lines += ["", "## Your task", "```json", json.dumps(task, indent=2, ensure_ascii=False), "```"]
+    lines += output_lines(task_outputs(store, rec))
+    if str(rec.get("error") or "").startswith("expected output(s) missing:"):
+        lines += ["", "## Previous attempt: missing expected outputs", rec["error"]]
+    elif str(rec.get("error") or "").startswith("output change(s) refused:"):
+        lines += ["", "## Previous attempt: output changes refused (the paths above still apply)", rec["error"]]
     if task.get("inputs"):
         lines += ["", "## Inputs (artifact references: <path>@<sha256>)",
                   "Read a referenced file at its path (relative to the project root) and check its sha256, or fetch "
@@ -1160,7 +1301,9 @@ def task_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any])
             lines.append(f"- `{(dep.get('task') or {}).get('id', dep['row'])}` ({dep['owner']}, {dep.get('status')}): "
                          f"{_clip(res.get('summary'), 2000)}")
             lines += [f"  - artifact: {ref}" for ref in res.get("artifacts") or []]
-    decided = [store.decision(d) for d in rec.get("decisions") or [] if (store.decisions_dir / f"{d}.json").exists()]
+            lines += [f"  - output {o['id']}: {_output_line(o)}" + (f" (rev {o['rev']}, moved)" if int(o.get("rev") or 1) > 1 else "")
+                      for o in task_outputs(store, dep)]
+    decided =[store.decision(d) for d in rec.get("decisions") or [] if (store.decisions_dir / f"{d}.json").exists()]
     latest: dict[str, Mapping[str, Any]] = {}
     for d in decided:  # only the current answer per blocker; cancelled ones are gone
         if d.get("status") == "resolved":
@@ -1173,6 +1316,8 @@ def task_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any])
             lines.append(f"- {_clip(d.get('question') or d.get('reason'), 600)} → {answer} (by {d.get('decided_by')})")
     lines += ["", *access_lines(store, conf, rec)]
     left = int(conf["bounds"]["max_depth"]) - int(rec.get("depth") or 1)
+    moved = {"outputs_changed": [{"output": "o1", "to": "/absolute/new/path", "reason": "why it is there"}]} \
+        if task_outputs(store, rec) else {}
     lines += ["", "## When you finish",
               "End your reply with one fenced ```json block:", "```json", json.dumps({
                   "protocol": proto.PROTOCOL, "kind": "result", "result": {
@@ -1180,8 +1325,14 @@ def task_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any])
                       "artifacts": ["relative/path/of/each/file/you/made/or/changed"],
                       "blockers": [{"id": "b1", "reason": "…", "question": "…", "options": ["…"], "needs": "user | orchestrator",
                                     "kind": "permission | input | other",
-                                    "requires": {"folders": ["/absolute/folder"], "bash_commands": ["tool *"]}}]}},
+                                    "requires": {"folders": ["/absolute/folder"], "bash_commands": ["tool *"]}}],
+                      **moved}},
                   indent=2), "```",
+              *(["Only if an expected output had to go to another path: name it in \"outputs_changed\" (absolute "
+                 "path inside your writable folders), or as soon as you know send mailbox code OUT with payload "
+                 "{\"output\": \"o1\", \"to\": \"/absolute/new/path\", \"reason\": \"…\"}. ALFRD checks the "
+                 "new path instead and tells dependent tasks."]
+                if moved else []),
               "Blockers only with status blocked. If you were denied a folder or a command, exit blocked with "
               "\"kind\": \"permission\" and \"requires\" naming exactly what you need: ALFRD asks the user and "
               "re-launches you with it (an approval cannot reach a session that is already running). " + (
@@ -1225,7 +1376,7 @@ def prepare_launch(runner, spec, unit: Mapping[str, Any]) -> str | None:
         _write_prompt(store, row, (store.tasks_dir / row / "prompt.md").read_text(encoding="utf-8"))
     # Freeze selection across retries, reassignments and settings/file edits. Legacy requests
     # without a snapshot remain off; never resolve the current selection at launch.
-    section = saved_skills.snapshot_prompt(store.request(rec["request"]).get("skill_snapshot"))
+    section = saved_skills.snapshot_prompt(saved_skills.launch_snapshot(store.request(rec["request"]).get("skill_snapshot"), rec))
     if section:
         prompt_path = store.tasks_dir / row / "prompt.md"
         text = prompt_path.read_text(encoding="utf-8")
@@ -1257,6 +1408,8 @@ def on_launched(runner, unit: Mapping[str, Any]) -> None:
 def recover(runner) -> None:
     """Hand finished units an earlier runner did not pass to the chat (it died in between)."""
     store = _store_of(runner)
+    with store.lock():
+        _recover_scheduled_dispatch(store)
     for unit in runner.folder.units():
         if unit.get("status") == "running":
             continue
@@ -1311,7 +1464,9 @@ def request_usage(store: Session, req: Mapping[str, Any], units: list[Mapping[st
 def before_schedule(runner) -> None:
     """Stop requests over their cost or wall-clock bound (every tick; only reads files)."""
     store = _store_of(runner)
-    requests = [r for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
+    with store.lock():
+        _recover_scheduled_dispatch(store)
+    requests = [r for r in store.requests() if r.get("status") in REQUEST_ACTIVE and r.get("status") != "preparing"]
     if not requests:
         return
     units = runner.folder.units()
@@ -1396,7 +1551,7 @@ def on_finalized(runner, unit: dict[str, Any]) -> None:
             _row_failed(runner, store, conf, req, rec, unit, unit.get("error") or unit.get("status"))
         else:
             text = _response(runner, unit)
-            if rec["kind"] in ("plan", "repair", "replan"):
+            if rec["kind"] in ("plan", "repair", "replan", "check"):
                 _plan_reply(runner, store, conf, req, rec, unit, text)
             elif rec["kind"] == "summary":
                 message = text
@@ -1535,6 +1690,9 @@ def _row_failed(runner, store: Session, conf, req, rec, unit, error) -> None:
     if rec["kind"] in ("plan", "repair"):
         store.add_message("system", f"The orchestrator could not plan this request: {rec['error']}", request=req["id"], kind="error")
         _finish_request(runner, store, req, "failed", error=rec["error"])
+    elif rec["kind"] == "check":
+        store.add_message("system", f"The stall check failed: {rec['error']}. Please review the request.",
+                          request=req["id"], kind="error")
     elif rec["kind"] == "replan":
         _escalate(runner, store, req, rec.get("blockers") or [])
     elif rec["kind"] == "task" and req.get("mode") == "direct":
@@ -1553,9 +1711,11 @@ def _plan_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
         if env["kind"] != "plan":
             raise proto.ProtocolError([f"expected \"kind\": \"plan\", got {env['kind']!r}"])
         tasks = env.get("tasks") or []
-        errors = proto.check_graph(tasks, agents=usable(conf), known=known_tasks if rec["kind"] == "replan" else ())
-        if rec["kind"] == "replan":
+        errors = proto.check_graph(tasks, agents=usable(conf), known=known_tasks if rec["kind"] in ("replan", "check") else ())
+        if rec["kind"] in ("replan", "check"):
             errors += [f"task id {t['id']!r} is already used in this request" for t in tasks if t["id"] in known_tasks]
+        folders = project_access(store.root).get("folders") or []
+        errors += [e for t in tasks for e in output_errors(store.root, t, folders)]
         total = len(req["tasks"]) + len(tasks)
         if total > int(req["bounds"]["max_tasks"]):
             errors.append(f"at most {req['bounds']['max_tasks']} tasks per request (this would make {total})")
@@ -1570,6 +1730,10 @@ def _plan_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
         store.save_task(rec)
         _event(runner, "task.finished", unit=unit, task=rec["row"], request=req["id"], task_kind=rec["kind"],
                owner=rec["owner"], status="failed", error=rec["error"])
+        if rec["kind"] == "check":
+            store.add_message("system", f"The stall check returned an invalid plan: {exc}. Please review the request.",
+                              request=req["id"], kind="error")
+            return
         if rec["kind"] in ("plan", "replan") and not req.get("repair_used"):
             req["repair_used"] = True
             req["orchestrator_calls"] = int(req.get("orchestrator_calls") or 0) + 1
@@ -1598,7 +1762,9 @@ def _plan_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
     if tasks:  # before the decisions: a cancel below must not finish the request under its new tasks
         _add_tasks(runner, store, conf, req, tasks, depth=1, parent=None, prefix=req["id"], planned_by=rec["row"])
     for decision in env.get("decisions") or []:
-        if decision["id"] in pending:
+        current = store.decision(decision["id"]) if decision["id"] in pending else {}
+        # Only what is still the orchestrator's: another row may have decided it, or it went back to the user.
+        if current.get("status") == "pending" and current.get("needs") == "orchestrator":
             try:
                 _resolve(runner, store, store.request(req["id"]), decision["id"], decision.get("choice"),
                          decision.get("answer"), "orchestrator",
@@ -1624,7 +1790,8 @@ def _add_tasks(runner, store: Session, conf, req, tasks: list[Mapping[str, Any]]
     for task in tasks:
         deps = [rows.get(d) or by_id.get(d) for d in task.get("depends_on") or []]
         rec = _task_rec(req, rows[task["id"]], "task", task["owner"], task=task, depth=depth, parent=parent,
-                        depends_rows=[d for d in deps if d], **({"planned_by": planned_by} if planned_by else {}))
+                        depends_rows=[d for d in deps if d], outputs=output_records(store.root, task.get("expected_outputs")),
+                        **({"planned_by": planned_by} if planned_by else {}))
         recs.append(rec)
         req["rows"].append(rec["row"])
         req["tasks"].append(rec["row"])
@@ -1647,6 +1814,8 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
                 raise proto.ProtocolError([f"expected \"kind\": \"result\", got {env['kind']!r}"])
             sub = env["result"].get("tasks") or []
             errors = proto.check_graph(sub, agents=usable(conf)) if sub else []
+            folders = project_access(store.root).get("folders") or []
+            errors += [e for t in sub for e in output_errors(store.root, t, folders)]
             if errors:
                 raise proto.ProtocolError(errors)
             for blocker in env["result"].get("blockers", []):
@@ -1670,6 +1839,11 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
     if result["status"] == "failed":
         _invalid_result(runner, store, conf, req, rec, unit, f"the agent reported failure: {_clip(result['summary'], 500)}")
         return
+    problems = _change_outputs(runner, store, req, rec, unit,
+                               _with_out_mail(store, req, rec, unit, result.get("outputs_changed") or []))
+    if problems:
+        _invalid_result(runner, store, conf, req, rec, unit, "output change(s) refused:\n" + "\n".join(f"- {p}" for p in problems))
+        return
     if result["status"] == "blocked":
         blockers = result.get("blockers") or []
         signature = launch_signature(store, conf, rec)
@@ -1687,21 +1861,34 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
                 while (store.decisions_dir / f"{base}.{n}.json").exists():
                     n += 1
                 did = f"{base}.{n}"
-            permission = is_permission_blocker(blocker)
-            if mid and permission and not (blocker.get("kind") == "permission" or blocker.get("requires")):
-                permission = False  # a mailbox permission_request approves an action (action_hash): keep that flow
-            elif permission:
-                mid = None  # sandbox access: a mailbox approval cannot widen the next launch; decide it here
+            permission = sandbox = is_permission_blocker(blocker)
+            mailbox_question = _mailbox_question(store, req["id"], mid) if mid else None
+            human_only = bool(mid) and not mailbox_question  # an action-hash approval (PRM) is involved
+            if mid and blocker.get("requires"):
+                mid = mailbox_question = None  # sandbox access: a mailbox reply cannot widen the next launch; grant it here
+            elif mid:
+                permission = False  # linked mail uses its own ASK/PRM semantics, not sandbox grant options
             options, actions = _decision_options(store, conf, rec, blocker, permission)
             # The orchestrator cannot change an agent's sandbox, and a repeat would only loop: ask the user.
             needs = "user" if permission or repeat else (blocker.get("needs") or "user")
+            # The user handed decisions of this kind to the orchestrator (chat.delegate_decisions);
+            # a repeat still goes to the user: deciding it again would only loop.
+            if mailbox_question:
+                options = [o["id"] for o in mailbox_question["payload"]["options"]]
+            delegated = needs == "user" and not repeat and not human_only and (not mid or mailbox_question) \
+                and _delegable(conf, sandbox)
+            if mid and not mailbox_question:
+                needs = "user"  # action-hash approvals always require a person
+            if delegated:
+                needs = "orchestrator"
             store.save_decision({"id": did, "request": req["id"], "task": rec["row"], "blocker": blocker["id"],
                                  "reason": blocker["reason"], "question": blocker.get("question") or blocker["reason"],
                                  "options": options, "needs": needs, "status": "pending", "created": now_iso(),
-                                 "kind": "permission" if permission else (blocker.get("kind") or "other"),
+                                 "kind": "question" if mailbox_question else ("permission" if permission else (blocker.get("kind") or "other")),
                                  "signature": signature, **({"actions": actions} if actions else {}),
                                  **({"requires": blocker["requires"]} if blocker.get("requires") else {}),
                                  **({"repeat": rec["last_block"]["count"]} if repeat else {}),
+                                 **({"delegated": "setting"} if delegated else {}),
                                  **({"mailbox_message_id": mid} if mid else {})})
             ids.append(did)
         rec.update(status="needs_decision", decisions=list(dict.fromkeys([*rec.get("decisions", []), *ids])))
@@ -1722,10 +1909,10 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
         if to_user:
             _escalate(runner, store, req, to_user)
         return
-    missing = missing_outputs(store.root, (rec.get("task") or {}).get("expected_outputs"))
+    missing = missing_task_outputs(task_outputs(store, rec))
     if missing:
         _invalid_result(runner, store, conf, req, rec, unit,
-                        "expected output(s) missing: " + ", ".join(missing[:10]) + (" …" if len(missing) > 10 else ""))
+                        missing_output_error(missing, effective_access(store, rec).get("folders") or []))
         return
     rec.update(status="done", error=None)
     store.save_task(rec)
@@ -1751,6 +1938,202 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
                           agent=rec["owner"], request=req["id"], task=rec["row"], artifacts=record["artifacts"])
 
 
+def _expected_outputs(root: str | Path, expected):
+    """Share path parsing and resolution between prompts and validation."""
+    base = Path(root).resolve()
+    for item in expected or []:
+        rel = str((item or {}).get("path") or "").strip() if isinstance(item, Mapping) else str(item or "").strip()
+        if rel:
+            description = item.get("description") if isinstance(item, Mapping) else None
+            yield rel, (base / rel).resolve(), description
+
+
+def output_records(root: str | Path, expected) -> list[dict[str, Any]]:
+    """Expected outputs frozen as absolute paths (``o1``, ``o2``, … in plan order). Stored on the task
+    record when it is planned; prompts and the missing-output check use these, never the plan's text again."""
+    return [{"id": f"o{n}", "path": str(target), "folder": rel.endswith("/"), "written": rel,
+             **({"description": desc} if desc else {}), "rev": 1, "history": []}
+            for n, (rel, target, desc) in enumerate(_expected_outputs(root, expected), 1)]
+
+
+def _writable(root: str | Path, path: str | Path, folders: Iterable[str]) -> bool:
+    """Inside the project or a writable folder, and not one of those roots itself: a root always
+    exists, so an output "at" the project or a folder would pass the missing-output check unwritten."""
+    target = Path(path).resolve()
+    bases = [Path(root).resolve(), *(Path(f).resolve() for f in folders)]
+    return target not in bases and any(base in target.parents for base in bases)
+
+
+def output_errors(root: str | Path, task: Mapping[str, Any], folders: Iterable[str]) -> list[str]:
+    """Plan errors for expected outputs a task could not write: outside the project and its writable folders."""
+    folders = list(folders)
+    return [f"task {task.get('id')!r}: expected output {o['written']!r} resolves to {o['path']}, outside the project "
+            f"({Path(root).resolve()}) and the folders agents may write, or is one of those folders itself" + (f" ({', '.join(folders[:6])})" if folders else "")
+            for o in output_records(root, task.get("expected_outputs")) if not _writable(root, o["path"], folders)]
+
+
+def task_outputs(store: Session, rec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The task's frozen outputs; records made before outputs were frozen derive them from the plan."""
+    return outputs_of(store.root, rec)
+
+
+def outputs_of(root: str | Path, rec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if "outputs" in rec:
+        return list(rec.get("outputs") or [])
+    return output_records(root, (rec.get("task") or {}).get("expected_outputs"))
+
+
+def _with_out_mail(store: Session, req, rec, unit, changes: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The result's ``outputs_changed`` plus the OUT mail this attempt sent about other outputs (the last
+    mail per output wins; the result wins over mail). Mail from an earlier attempt is not applied again."""
+    from alfrd.mailbox import Mailbox
+    task_id = (rec.get("task") or {}).get("id")
+    box = Mailbox(store.root, store.id, req["id"])
+    with box.locked():
+        mail = {m["payload"]["output"]: {**m["payload"], "mail": m["id"]} for m in box.messages
+                if m.get("code") == "OUT" and isinstance(m.get("payload"), Mapping) and m["payload"].get("output")
+                and m["sender"].get("task_id") == task_id and m["sender"].get("unit_id") == unit.get("id")}
+    named = {c.get("output") for c in changes}
+    return [*changes, *(c for out, c in mail.items() if out not in named)]
+
+
+def _change_outputs(runner, store: Session, req, rec, unit, changes: list[Mapping[str, Any]]) -> list[str]:
+    """Apply a result's ``outputs_changed`` to the frozen outputs: all of them, or none when one is refused.
+
+    A new path must be absolute and inside the task's writable folders (an agent could not have written
+    elsewhere). Each change bumps the output's ``rev`` and keeps the old path in its ``history``."""
+    if not changes:
+        return []
+    outputs = task_outputs(store, rec)
+    by_id = {o["id"]: o for o in outputs}
+    folders = effective_access(store, rec).get("folders") or []
+    problems, moves, seen = [], [], set()
+    for change in changes:
+        to = str(change.get("to") or "").strip()
+        out = by_id.get(change.get("output"))
+        if change.get("output") in seen:
+            problems.append(f"{change.get('output')}: changed twice in one result")
+        elif out is None:
+            problems.append(f"{change.get('output')}: no such expected output (this task has "
+                            f"{', '.join(by_id) or 'none'})")
+        elif not Path(to).is_absolute():
+            problems.append(f"{out['id']}: {to!r} is not an absolute path")
+        elif not _writable(store.root, to, folders):
+            problems.append(f"{out['id']}: {to} is outside the project and this task's writable folders (or is one of those folders itself)")
+        elif Path(to).resolve() == Path(out["path"]).resolve():
+            problems.append(f"{out['id']}: {to} is already its path")
+        else:
+            seen.add(out["id"])
+            moves.append((out, to, _clip(change.get("reason"), 1000), change.get("mail")))
+    # One file must not stand in for two outputs: after the moves, every output needs its own path.
+    final = {o["id"]: str(Path(o["path"]).resolve()) for o in outputs}
+    final.update({out["id"]: str(Path(to).resolve()) for out, to, _, _ in moves})
+    for out, to, _, _ in moves:
+        clash = sorted(i for i, p in final.items() if i != out["id"] and p == final[out["id"]])
+        if clash:
+            problems.append(f"{out['id']}: {to} would also be the path of {', '.join(clash)}")
+    if problems:
+        return problems
+    for out, to, reason, mail in moves:
+        old = out["path"] + ("/" if out.get("folder") else "")
+        out["history"] = [*out.get("history", []), {"rev": out.get("rev", 1), "path": out["path"], "at": now_iso(),
+                                                     "by": rec["owner"], "unit": unit.get("id"),
+                                                     **({"reason": reason} if reason else {}),
+                                                     **({"mailbox_message_id": mail} if mail else {})}]
+        out.update(path=str(Path(to).resolve()), folder=to.endswith("/") or bool(out.get("folder")),
+                   rev=int(out.get("rev") or 1) + 1)
+        new = out["path"] + ("/" if out["folder"] else "")
+        store.add_message("system", f"@{rec['owner']} moved output {out['id']} of {rec['row']}: {old} → {new}"
+                          + (f" ({reason})" if reason else ""), request=req["id"], kind="output_changed",
+                          task=rec["row"], output=out["id"])
+        _event(runner, "task.output_changed", unit=unit, task=rec["row"], request=req["id"], output=out["id"],
+               rev=out["rev"], **{"from": old, "to": new}, **({"reason": reason} if reason else {}),
+               **({"mailbox_message_id": mail} if mail else {}))
+    rec["outputs"] = outputs
+    store.save_task(rec)
+    return []
+
+
+def _output_line(o: Mapping[str, Any]) -> str:
+    return f"`{o['path']}{'/' if o.get('folder') else ''}`"
+
+
+def output_lines(outputs: list[Mapping[str, Any]]) -> list[str]:
+    if not outputs:
+        return []
+    return ["", "## Expected outputs (absolute paths)",
+            "ALFRD checks these exact absolute paths; write them there even if you also edit another repo.",
+            *[f"- {o['id']}: {_output_line(o)}" + (f" — {o['description']}" if o.get("description") else "")
+              for o in outputs]]
+
+
+def _moved_note(o: Mapping[str, Any]) -> str:
+    return f" (rev {o.get('rev')}, moved)" if int(o.get("rev") or 1) > 1 else ""
+
+
+def output_display_path(root: str | Path, o: Mapping[str, Any]) -> str:
+    """Project-relative when the output is inside the project (a trailing "/" marks a folder), else absolute."""
+    path, base = Path(o["path"]), Path(root).resolve()
+    shown = path.relative_to(base).as_posix() if base in path.parents else str(path)
+    return shown + ("/" if o.get("folder") else "")
+
+
+def moved_output_lines(store: Session, rows: Iterable[str]) -> list[str]:
+    """The outputs of these tasks an agent moved (old → current path), for orchestrator prompts and summaries."""
+    lines = []
+    for row in rows:
+        rec = store.task(row) or {}
+        for o in task_outputs(store, rec) if rec else []:
+            if int(o.get("rev") or 1) > 1 and o.get("history"):
+                last = o["history"][-1]
+                lines.append(f"- `{row}` {o['id']}: `{last['path']}{'/' if o.get('folder') else ''}` → {_output_line(o)} "
+                             f"(rev {o['rev']}, by @{last.get('by')})" + (f": {_clip(last['reason'], 300)}" if last.get("reason") else ""))
+    return ["", "## Outputs moved in this request", "Use the current paths; the old ones are no longer checked.", *lines] if lines else []
+
+
+def expected_output_lines(root: str | Path, expected) -> list[str]:
+    return output_lines(output_records(root, expected))
+
+
+def missing_task_outputs(outputs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Frozen outputs not on disk (a folder output must be a directory)."""
+    missing = []
+    for o in outputs:
+        path = Path(o["path"])
+        try:
+            ok = path.is_dir() if o.get("folder") else path.exists()
+        except OSError:
+            ok = False
+        if not ok:
+            missing.append(dict(o))
+    return missing
+
+
+def missing_output_error(missing: list[Mapping[str, Any]], folders: list[str]) -> str:
+    """Probe only the matching relative location in each extra writable root; never search recursively."""
+    lines = ["expected output(s) missing:"]
+    for o in missing:
+        lines.append(f"- {o['path']}{'/' if o.get('folder') else ''}")
+        rel = str(o.get("written") or "")
+        if not rel or Path(rel).is_absolute() or int(o.get("rev") or 1) > 1:
+            continue
+        target = Path(o["path"])
+        found = set()
+        for folder in folders:
+            base = Path(folder).resolve()
+            candidate = (base / rel).resolve()
+            if candidate == target or not candidate.is_relative_to(base):
+                continue
+            try:
+                exists = candidate.is_dir() if o.get("folder") else candidate.exists()
+            except OSError:
+                continue
+            if exists and candidate not in found:
+                lines.append(f"  Same relative path exists under another writable root: {candidate}")
+                found.add(candidate)
+    return "\n".join(lines)
+
+
 def missing_outputs(root: str | Path, expected) -> list[str]:
     """Expected output paths (project-relative; a trailing "/" means a folder) that do not exist.
 
@@ -1758,11 +2141,7 @@ def missing_outputs(root: str | Path, expected) -> list[str]:
     producing its files becomes a failed attempt (retried within the task's bound)."""
     base = Path(root).resolve()
     missing = []
-    for item in expected or []:
-        rel = str((item or {}).get("path") or "").strip() if isinstance(item, Mapping) else str(item or "").strip()
-        if not rel:
-            continue
-        target = (base / rel).resolve()
+    for rel, target, _ in _expected_outputs(base, expected):
         inside = target == base or base in target.parents
         ok = inside and (target.is_dir() if rel.endswith("/") else target.exists())
         if not ok:
@@ -1851,6 +2230,18 @@ _PATH_IN_TEXT = re.compile(r"(?<![\w.~])(/[^\s'\"`()\[\],;<>]+)")
 _REASSIGN_TEXT = re.compile(r"\b(?:re-?assign|re-?dispatch|hand)\b.*?\bto\s+@?([a-z0-9][a-z0-9_-]{0,39})\b", re.IGNORECASE)
 _CANCEL_TEXT = re.compile(r"^\s*cancel\b", re.IGNORECASE)
 GRANT_KEYS = ("folders", "bash_commands")
+
+
+def _mailbox_question(store: Session, request: str, mid: str) -> dict[str, Any] | None:
+    from alfrd.mailbox import Mailbox, USER
+    message = Mailbox(store.root, store.id, request).status(mid, USER)["message"]
+    return message if message["kind"] == "question" and message["recipient"] == USER else None
+
+
+def _delegable(conf: Mapping[str, Any], permission: bool) -> bool:
+    """A blocker the user lets the orchestrator decide (``chat.delegate_decisions``)."""
+    mode = conf.get("delegate_decisions") or "off"
+    return mode == "all" or (mode == "questions" and not permission)
 
 
 def is_permission_blocker(blocker: Mapping[str, Any]) -> bool:
@@ -2118,7 +2509,9 @@ def _resolve(runner, store: Session, req, did: str, choice: str | None, answer: 
         box = Mailbox(store.root, store.id, req["id"])
         actor = {"kind": by}
         original = box.status(d["mailbox_message_id"], {"kind": "user"})["message"]
-        if original["recipient"]["kind"] != by:
+        if original["recipient"]["kind"] != by and not (
+                by == "orchestrator" and d.get("delegated") and not d.get("repeat")
+                and original["kind"] == "question" and original["recipient"] == {"kind": "user"}):
             return d  # orchestrator cannot resolve a user-directed approval
         permission = original["kind"] == "permission_request"
         box.reply(original["id"], actor, {"idempotency_key": "decision:" + did,
@@ -2134,8 +2527,8 @@ def _resolve(runner, store: Session, req, did: str, choice: str | None, answer: 
     rec = store.task(d["task"])
     act = dict((d.get("actions") or {}).get(choice) or {}) if choice else {}
     act.update({k: v for k, v in (action or {}).items() if k in ("reassign", "cancel") and v})
-    if act.get("grant") and by != "user":
-        return d  # stays pending: the caller escalates it to the user
+    if act.get("grant") and by != "user" and not d.get("delegated"):
+        return d  # stays pending: the caller escalates it to the user (unless the user delegated it)
     if act.get("reassign") and (act["reassign"] not in usable(conf) or act["reassign"] == rec["owner"]):
         raise ValueError(f"cannot reassign to {act['reassign']!r}: not another chat agent ({', '.join(conf['agents'])})")
     if d.get("kind") == "permission" and d.get("repeat") and not act and d.get("signature") \
@@ -2151,6 +2544,12 @@ def _resolve(runner, store: Session, req, did: str, choice: str | None, answer: 
     d.update(status="resolved", choice=choice, answer=answer, decided_by=by, resolved=now_iso(),
              **({"action": act} if act else {}))
     store.save_decision(d)
+    if by == "orchestrator" and d.get("delegated"):  # the user handed it over: tell them what was chosen
+        store.add_message("system", f"The orchestrator decided for you on {d['task']}: "
+                          f"{_clip(d.get('question') or d.get('reason'), 300)} → "
+                          + " — ".join(x for x in (choice, answer, act.get("reassign") and f"reassign to @{act['reassign']}",
+                                                   act.get("cancel") and "cancel") if x),
+                          request=req["id"], kind="delegated_decision", task=d["task"], decision=did)
     cells = _cells(runner, store)
     if act.get("cancel"):
         _apply_cancel(runner, store, conf, req, rec, f"cancelled by decision {did}")
@@ -2251,9 +2650,12 @@ def _code_summary(store: Session, req: Mapping[str, Any]) -> str:
                      f"{rec.get('status')})" + (f": {_clip(text, 300)}" if text else ""))
         files += [str(ref).split("@")[0] for ref in res.get("artifacts") or []
                   if "/handoffs/" not in str(ref)]  # the archived reply is not a result file
+        if rec.get("status") == "done":
+            files += [output_display_path(store.root, o) for o in task_outputs(store, rec)]
     files = list(dict.fromkeys(files))
     if files:
         lines += ["", "Files: " + ", ".join(f"`{f}`" for f in files[:12]) + (" …" if len(files) > 12 else "")]
+    lines += moved_output_lines(store, req["tasks"])
     return "\n".join(lines)
 
 
@@ -2327,6 +2729,11 @@ def process_mailbox(store: Session, *, runner=None) -> bool:
                                 answer=reply["answer"], decided_by=state["reply"]["sender"]["kind"], resolved=now_iso(),
                                 mailbox_delivery_pending=True)
                 store.save_decision(decision)
+                if decision.get("delegated") and decision["decided_by"] == "orchestrator":
+                    store.add_message("system", f"The orchestrator decided for you on {decision['task']}: "
+                                      f"{decision.get('question') or decision.get('reason')} → "
+                                      f"{reply['answer'] or reply['choice_id']}", request=req["id"],
+                                      decision=decision["id"], kind="delegated_decision")
             if rec["status"] == "needs_decision" and not any(store.decision(d)["status"] == "pending" for d in rec.get("decisions", [])):
                 if runner:
                     runner.set_cells({(rec["row"], rec["owner"]): pc.TODO}, only_if={(rec["row"], rec["owner"]): {pc.WAITING}})
@@ -2388,6 +2795,224 @@ def decide(root: str | Path, sid: str, did: str, *, choice: str | None = None, a
                           request=req["id"], decision=did)
     resume(store, spawn=spawn)
     return decision
+
+
+def delegate_decision(root: str | Path, sid: str, did: str, *, spawn: bool = True) -> dict[str, Any]:
+    """The user hands one pending decision to the orchestrator: a replan call decides it (within
+    ``bounds.max_replans``; past that it comes back to the user). It may choose any of its options."""
+    store = session(root, sid)
+    with store.lock():
+        d = store.decision(did)
+        if d.get("status") != "pending":
+            raise ValueError(f"decision {did} is {d.get('status')}")
+        if d.get("mailbox_message_id") and not _mailbox_question(store, d["request"], d["mailbox_message_id"]):
+            raise ValueError(f"decision {did} answers an agent's mailbox approval; only you can reply to it")
+        if d.get("repeat"):
+            raise ValueError(f"decision {did} is a repeated blocker; the orchestrator would only re-run it unchanged")
+        if d.get("needs") == "orchestrator":
+            return d
+        req = store.request(d["request"])
+        if req.get("status") not in REQUEST_ACTIVE:
+            raise ValueError(f"request {req['id']} is {req.get('status')}")
+        d.update(needs="orchestrator", delegated="user")
+        store.save_decision(d)
+        if req.get("status") == "needs_decision" and not any(
+                (x := store.decision(o)).get("status") == "pending" and x.get("needs") == "user"
+                for r in req["rows"] for o in (store.task(r) or {}).get("decisions") or []
+                if (store.decisions_dir / f"{o}.json").exists()):
+            req["status"] = "running"
+            store.save_request(req)
+        store.add_message("user", f"Let the orchestrator decide for {d['task']}: {_clip(d.get('question') or d.get('reason'), 300)}",
+                          request=req["id"], decision=did)
+        _wake_for_blockers(_Offline(store), store, settings(store.root), store.request(req["id"]),
+                           store.task(d["task"]), [did])
+        _write_graph(store)
+    resume(store, spawn=spawn)
+    return store.decision(did)
+
+
+# ---------------------------------------------------------------------------
+# Scheduled checks (chat.watch): code recovery first, optional bounded orchestrator wake-up
+
+
+def _idle_seconds(store: Session, req: Mapping[str, Any], now: float, *, units: bool = False) -> float:
+    """Seconds since the request or any of its rows last changed (file times). With ``units``, its attempts
+    and the logs they write count too: an agent still producing output is working, not stalled."""
+    paths = [store.requests_dir / f"{req['id']}.json", *(store.tasks_dir / r / "task.json" for r in req.get("rows") or [])]
+    if units:
+        plan = _plan_folder(store)
+        for u in plan.units():
+            if u.get("row") in set(req.get("rows") or []):
+                paths.append(plan.units_dir / f"{u['id']}.json")
+                if u.get("log"):
+                    paths += [Path(u["log"]), Path(u["log"]).with_suffix(".events.jsonl")]
+    times = [p.stat().st_mtime for p in paths if p.exists()]
+    return now - max(times) if times else 0.0
+
+
+def _wake_for_stall(store: Session, conf, req, findings, idle: float) -> bool:
+    """Queue one bounded plan call; never duplicate a pending check or decide for the user."""
+    recs = [store.task(r) or {} for r in req["rows"]]
+    if any(r.get("kind") == "check" and r.get("status") not in TERMINAL for r in recs):
+        return False
+    count = int(req.get("checks") or 0)
+    limit = conf["watch"]["max_checks"]
+    if count >= limit:
+        findings.append({"kind": "check_limit_reached", "request": req["id"],
+                         "text": f"Request {req['id']} reached max_checks ({limit}); please review the stalled work."})
+        return False
+    blockers = [d["id"] for d in store.decisions() if d.get("request") == req["id"]
+                and d.get("status") == "pending" and d.get("needs") == "orchestrator"]
+    # A plan call that has not started yet must land first: the check's reply is validated against the
+    # request's task graph, so running beside it would reject (or duplicate) tasks the plan is about to add.
+    # A plan row already running (possibly hung) is not waited on, so a real stall can still be checked.
+    waits = [r["row"] for r in recs if r.get("kind") in ("plan", "repair", "replan") and r.get("status") == "queued"]
+    rec = _task_rec(req, f"{req['id']}.check-{count + 1}", "check", conf["orchestrator"], blockers=blockers,
+                    depends_rows=waits)
+    lines = ["# ALFRD chat: a request is stalled", "", f"Request {req['id']} has been idle for {idle:.0f} seconds.",
+             "Findings: " + json.dumps(findings, ensure_ascii=False), "", "Stalled tasks / current rows:"]
+    lines += [f"- {r.get('row')} [{r.get('status')}] @{r.get('owner')}: "
+              f"{_clip((r.get('task') or {}).get('title') or r.get('error'), 500)}" for r in recs
+              if r.get("status") not in TERMINAL]
+    lines += ["", "Recover this request with a normal plan envelope (decisions, optional NEW tasks, message). "
+              "Existing task ids cannot be reused. You may answer only these orchestrator decisions: "
+              + json.dumps([store.decision(d) for d in blockers], ensure_ascii=False),
+              "User decisions and access approvals still belong to the user.", "", plan_prompt(store, conf, req)]
+    req["checks"] = count + 1
+    req["orchestrator_calls"] = int(req.get("orchestrator_calls") or 0) + 1
+    req["rows"].append(rec["row"])
+    store.save_request(req)
+    _write_prompt(store, rec["row"], "\n".join(lines))
+    _add_rows(store, [rec], conf)
+    server_event(store, "task.created", task=rec["row"], request=req["id"], task_kind="check", owner=rec["owner"])
+    store.add_message("system", f"Woke the orchestrator to check stalled request {req['id']} ({count + 1}/{limit}).",
+                      request=req["id"], kind="orchestrator_woken")
+    findings.append({"kind": "orchestrator_woken", "request": req["id"], "row": rec["row"],
+                     "text": f"The orchestrator was woken for stalled request {req['id']} ({count + 1}/{limit})."})
+    _write_graph(store, conf)
+    return True
+
+
+def check(root: str | Path, sid: str | None = None, *, spawn: bool = True, now: float | None = None,
+          periodic: bool = False) -> list[dict[str, Any]]:
+    """One scheduled check of a chat session (every session when ``sid`` is None).
+
+    Per session with active requests: replay resolved mail (``process_mailbox``); a dead runner with work
+    left is resumed (unless the plan is paused or cancelled); a request whose rows all ended, with no pending
+    decision, idle for ``watch.stall_seconds``, is finished as the runner would have. A running unit whose
+    process is gone while the runner lives is reported (the runner adopts it). With wake_orchestrator,
+    stalled requests also queue a bounded check plan call after code recovery. Writes
+    ``<session>/check.json`` (``{at, next_at, runner_alive, findings}``) and, when something was found, a
+    ``chat.check`` event. Returns one report per session checked. Periodic calls respect
+    ``watch.enabled`` and skip completely idle sessions without writing status or revision.
+    Manual calls still return a report even when periodic checking is disabled."""
+    from alfrd.runtime import scheduler
+
+    base = Path(root).resolve()
+    conf = settings(base)
+    watch = conf["watch"]
+    if periodic and not watch["enabled"]:
+        return []
+    now = time.time() if now is None else now
+    if sid is None:
+        folder = base / CHAT_DIR
+        ids = sorted(p.name for p in folder.iterdir() if SESSION_ID.match(p.name)) if folder.is_dir() else []
+    else:
+        ids = [sid]
+    reports = []
+    for one in ids:
+        try:
+            store = session(base, one)
+        except LookupError:
+            if sid is not None:
+                raise
+            continue
+        previous = _read(store.dir / "check.json") or {}
+        findings: list[dict[str, Any]] = []
+        active = [r for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
+        plan = _plan_folder(store)
+        alive = plan.runner_alive()
+        if periodic and not active and not alive:
+            # Include pending decisions, detached queued work and delayed starts/retries.
+            # Active requests always take the original recovery path, even if they finish this tick.
+            with store.lock():
+                state = plan.load()
+                pending = (state.get("status") in scheduler.ACTIVE
+                           or any(t.get("status") not in TERMINAL for t in store.tasks())
+                           or any(d.get("status") == "pending" for d in store.decisions())
+                           or any(u.get("status") in ("running", "queued", "pending", "retrying") for u in plan.units())
+                           or state.get("start_at")
+                           or any(w.get("kind") in ("start", "delay") for w in state.get("waiting") or []))
+                if not pending:
+                    continue
+        if active:
+            if process_mailbox(store):
+                findings.append({"kind": "mailbox", "text": "Resolved mail was delivered to waiting tasks."})
+            with store.lock():
+                for old in active:
+                    req = store.request(old["id"])
+                    recs = [store.task(r) or {} for r in req.get("rows") or []]
+                    if req.get("status") not in REQUEST_ACTIVE or any(r.get("status") not in TERMINAL for r in recs) \
+                            or _idle_seconds(store, req, now) < watch["stall_seconds"]:
+                        continue
+                    _check_request(_Offline(store), store, conf, req["id"])
+                    after = store.request(req["id"])
+                    if after.get("status") != req.get("status"):
+                        findings.append({"kind": "request_finished" if after.get("status") not in REQUEST_ACTIVE
+                                         else "request_summarizing", "request": req["id"], "status": after.get("status"),
+                                         "text": f"Request {req['id']} had nothing left to run; it is now {after.get('status')}."})
+            active = [r for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
+            waiting = {"needs_decision"} | set(TERMINAL)
+            work = [rec["row"] for req in active for rec in (store.task(r) or {} for r in req.get("rows") or [])
+                    if rec.get("row") and rec.get("status") not in waiting]
+            if work and not alive:
+                control = plan.control()
+                if control in ("pause", "cancel"):
+                    findings.append({"kind": "runner_held", "control": control, "rows": work,
+                                     "text": f"The runner is not running and the session is {control}d; not resumed."})
+                else:
+                    resume(store, spawn=spawn)
+                    findings.append({"kind": "runner_resumed", "rows": work, "spawned": spawn,
+                                     "text": f"The runner was not running with {len(work)} task(s) left; resumed."})
+            elif alive:
+                for unit in plan.units():
+                    path = plan.units_dir / f"{unit.get('id')}.json"
+                    if unit.get("status") == "running" and path.exists() \
+                            and now - path.stat().st_mtime >= watch["stall_seconds"] \
+                            and not scheduler.pid_alive(unit.get("pid"), unit.get("proc_start"), unit.get("host"), base):
+                        findings.append({"kind": "unit_orphaned", "unit": unit.get("id"), "row": unit.get("row"),
+                                         "text": f"Unit {unit.get('id')} is marked running but its process is gone."})
+            if watch["wake_orchestrator"] and plan.control() not in ("pause", "cancel"):
+                queued = False
+                with store.lock():
+                    for old in active:
+                        req = store.request(old["id"])
+                        rows = set(req.get("rows") or [])
+                        idle = _idle_seconds(store, req, now, units=True)
+                        orphaned = any(f["kind"] == "unit_orphaned" and f.get("row") in rows for f in findings)
+                        resumed_before = any(f["kind"] == "runner_resumed" and rows.intersection(f.get("rows") or [])
+                                             for f in previous.get("findings") or [])
+                        nonterminal = any((store.task(r) or {}).get("status") not in waiting
+                                          for r in rows)
+                        if req.get("status") in REQUEST_ACTIVE and nonterminal and (orphaned or (
+                                idle >= watch["stall_seconds"] and (alive or resumed_before))):
+                            queued = _wake_for_stall(store, conf, req, findings, idle) or queued
+                if queued:
+                    resume(store, spawn=spawn)
+        at = datetime.fromtimestamp(now, timezone.utc)
+        interval = watch["interval_seconds"] if watch["enabled"] else 0
+        report = {"session": store.id, "at": at.isoformat(timespec="seconds"),
+                  "next_at": (at + timedelta(seconds=interval)).isoformat(timespec="seconds") if interval else None,
+                  "runner_alive": alive, "active_requests": len(active), "findings": findings}
+        with store.lock():
+            _write(store.dir / "check.json", report)
+            store.bump_rev()
+        if findings:
+            server_event(store, "chat.check", "; ".join(f["text"] for f in findings),
+                         findings=[{k: v for k, v in f.items() if k != "text"} for f in findings])
+        reports.append(report)
+    dispatch_due_schedules(root, sid, spawn=spawn)
+    return reports
 
 
 class TaskConflict(Exception):
@@ -2624,17 +3249,14 @@ def _topological(tasks: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return out
 
 
-def _promoted_prompt(rec: Mapping[str, Any], deps: list[str]) -> str:
+def _promoted_prompt(root: Path, rec: Mapping[str, Any], deps: list[str]) -> str:
     task = rec.get("task") or {}
     lines = [f"# {task.get('title') or rec['row']}", ""]
     if task.get("description"):
         lines += [str(task["description"]).strip(), ""]
     if task.get("acceptance_criteria"):
         lines += ["## Acceptance criteria", *[f"- {c}" for c in task["acceptance_criteria"]], ""]
-    outputs = [o if isinstance(o, str) else f"{o.get('path')}" + (f" — {o['description']}" if o.get("description") else "")
-               for o in task.get("expected_outputs") or []]
-    if outputs:
-        lines += ["## Expected outputs (project-relative)", *[f"- {o}" for o in outputs], ""]
+    lines += output_lines(rec["outputs"] if "outputs" in rec else output_records(root, task.get("expected_outputs"))) + [""]
     inputs = [i if isinstance(i, str) else i.get("ref") for i in task.get("inputs") or []]
     if inputs:
         lines += ["## Inputs", *[f"- {str(i).split('@')[0]}" for i in inputs if i], ""]
@@ -2739,12 +3361,12 @@ def promotion(root: str | Path, sid: str, rid: str) -> dict[str, Any]:
             entry_def = next((e for e in (merged_manifest(store.root).get("entrypoint") or []) if isinstance(e, Mapping) and e.get("name") == name), None) \
                 or {"name": name, **(builtin or {})}
             spec["output_capture"] = entry_def.get("output_capture", "file") if entry_def.get("output_file") else "stdout"
-        for key in ("model", "adapter", "timeout", "lean", "model_option", "env"):
+        for key in ("model", "adapter", "timeout", "lean", "model_option", "env", "skills", "plugins", "mcp"):
             if agent.get(key) is not None:
                 spec[key] = agent[key]
-        outputs = [o if isinstance(o, str) else o.get("path") for o in task.get("expected_outputs") or []]
+        outputs = [output_display_path(store.root, o) for o in task_outputs(store, rec)]
         if outputs:
-            spec["outputs"] = [o for o in outputs if o]
+            spec["outputs"] = outputs
         defs[step_id] = spec
         if isinstance(items, list):
             items.append(step_id)
@@ -2752,7 +3374,7 @@ def promotion(root: str | Path, sid: str, rid: str) -> dict[str, Any]:
             items[step_id] = {}
         steps.append({"id": step_id, "task": rec["row"], "label": spec["label"], "owner": rec["owner"],
                       "entrypoint": spec.get("entrypoint"), "model": spec.get("model"), "depends_on": deps,
-                      "prompt_file": prompt, "prompt": _promoted_prompt(rec, deps), "status": rec.get("status")})
+                      "prompt_file": prompt, "prompt": _promoted_prompt(store.root, rec, deps), "status": rec.get("status")})
     errors = workflow_dependency_errors(new)
     if errors:
         raise ValueError("the promoted steps do not fit the workflow: " + "; ".join(errors))
@@ -2801,7 +3423,7 @@ def _node_id(row: str) -> str:
     return "n_" + re.sub(r"[^A-Za-z0-9_]", "_", row)
 
 
-ORCHESTRATOR_TITLES = {"plan": "Plan", "repair": "Repair", "replan": "Replan", "summary": "Summary"}
+ORCHESTRATOR_TITLES = {"check": "Check", "plan": "Plan", "repair": "Repair", "replan": "Replan", "summary": "Summary"}
 
 
 def _planner_row(recs: Mapping[str, Mapping[str, Any]], rec: Mapping[str, Any]) -> str | None:
@@ -2949,8 +3571,10 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
                  "mailbox": Mailbox(store.root, sid, r["id"]).summary()} for r in store.requests()]
     plan = _read(folder.plan_file) or {}
     return {
+        **schedule_state(store.root, sid),
         "session": store.load(), "messages": store.messages(messages), "requests": requests, "tasks": tasks,
         "graph": graph(store, conf), "decisions": decisions,
+        "check": _read(store.dir / "check.json"),
         "blockers": [d for d in decisions if d.get("status") == "pending"],
         "usage": {**agent_totals(units), "turns": len(units),
                   "orchestrator_calls": sum(int(r.get("orchestrator_calls") or 0) for r in requests)},
@@ -3483,3 +4107,392 @@ __all__ = [
     "session_state", "settings", "settings_view", "strip_ansi", "tail_log",
     "transcript", "transcript_part",
 ]
+# ---------------------------------------------------------------------------
+# Durable, one-shot session schedules. All writers hold the session file lock.
+
+def _schedule_now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+MAX_SCHEDULE_ITEMS = 50
+MAX_SCHEDULE_PROMPT = MAX_MESSAGE
+SCHEDULE_OPEN = ("scheduled", "waiting", "error", "dispatching")
+
+
+class ScheduleConflictError(PermissionError):
+    def __init__(self, reason, store):
+        super().__init__(reason)
+        self.reason = reason
+        self.state = schedule_state(store.root, store.id)
+
+
+def _schedule_current(data):
+    return next((b for b in data["batches"] if b["id"] == data.get("current_id")), None)
+
+
+def schedule_state(root, sid, *, available=True):
+    store = session(root, sid)
+    data = store.load_schedule()
+    current = _schedule_current(data)
+    terminal = next((b for b in reversed(data["batches"]) if b["status"] not in SCHEDULE_OPEN), None)
+    def public(batch):
+        if batch is None:
+            return None
+        result = dict(batch)
+        if batch.get("dispatch"):
+            result["dispatch"] = {k: v for k, v in batch["dispatch"].items() if k not in ("conf", "skill_snapshot")}
+        return result
+    return {"schedule": public(current), "last_schedule": public(terminal), "schedule_revision": data["revision"],
+            "rev": store.rev, "server_now": _schedule_now(),
+            "schedule_service": {"available": available, "reason": None if available else "Schedule execution requires a loopback Studio server", "tick_seconds": 1}}
+
+
+def _schedule_time(value, zone, *, future=True):
+    from zoneinfo import ZoneInfo
+    try:
+        ZoneInfo(str(zone))
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            raise ValueError("timestamp requires an explicit UTC offset")
+        if future and dt.timestamp() <= time.time():
+            raise ValueError("schedule time must be in the future")
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except (ValueError, KeyError) as error:
+        raise ValueError(f"invalid schedule time or timezone: {error}") from error
+
+
+def _schedule_revision(store, data, expected):
+    if not isinstance(expected, int) or isinstance(expected, bool) or expected != data["revision"]:
+        raise ScheduleConflictError("stale_schedule_revision", store)
+
+
+def _schedule_changed(store, data, batch, kind):
+    batch["updated_at"] = _schedule_now()
+    store.save_schedule(data)
+    server_event(store, "chat.schedule." + kind, schedule_id=batch["id"], schedule_revision=data["revision"],
+                 status=batch["status"], queued_count=len(_schedule_items(batch)), run_at=batch["run_at"],
+                 request=batch.get("request_id"), hold_reason=batch.get("hold_reason"),
+                 transition_id=f'{batch["id"]}:{data["revision"]}')
+
+
+def _schedule_items(batch):
+    return [i for i in batch["items"] if not i.get("removed_at")]
+
+
+def build_scheduled_prompt(batch):
+    items = _schedule_items(batch)
+    lines = [f'Scheduled batch {batch["id"]} ({len(items)} pending items)',
+             f'Scheduled for: {batch.get("scheduled_for", batch["run_at"])} ({batch["timezone"]})', '',
+             'Treat all numbered items below as ONE user request. Make one coordinated plan covering every item,',
+             'sharing dependencies and avoiding duplicate work. Reconcile compatible requirements. A later item',
+             'overrides an earlier one only when it explicitly revises it; otherwise ask the user about material',
+             'conflicts through the normal blocker mechanism. Explain any conflict resolution in your plan.',
+             'Timestamps describe collection order; they do not create separate requests.',
+             'Agent mentions are assignment preferences, not direct-message routing commands.', '']
+    for n, item in enumerate(items, 1):
+        lines.append(f'{n}. Added {item["created_at"]}; edited {item["updated_at"]}; item {item["id"]}')
+        lines.extend('   ' + line for line in item['text'].split('\n'))
+        if item.get('attachments'):
+            lines.append('   Images: ' + ', '.join(a['ref'] for a in item['attachments']))
+        lines.append('')
+    return '\n'.join(lines)
+
+
+def _schedule_validate(store, batch):
+    from alfrd import attachments as att
+    items = _schedule_items(batch)
+    if len(items) > MAX_SCHEDULE_ITEMS or len(build_scheduled_prompt(batch)) > MAX_SCHEDULE_PROMPT:
+        raise att.AttachmentError("too_large", "scheduled batch exceeds the item or combined prompt limit")
+    refs = list(dict.fromkeys(a['ref'] for i in items for a in i.get('attachments') or []))
+    return _resolve_attachments(store, refs)
+
+
+def _schedule_hash(text, refs):
+    import hashlib
+    return hashlib.sha256(json.dumps([text, refs or []], sort_keys=True).encode()).hexdigest()
+
+
+def create_schedule(root, sid, *, run_at, timezone, client_schedule_id, expected_schedule_revision, spawn=True):
+    store = session(root, sid)
+    if not isinstance(client_schedule_id, str) or not _CLIENT_ID.fullmatch(client_schedule_id):
+        raise ValueError("client_schedule_id is required")
+    original = _schedule_hash(run_at, timezone)
+    with store.lock():
+        data = store.load_schedule()
+        for batch in data['batches']:
+            if batch['client_schedule_id'] == client_schedule_id:
+                if batch['original_payload_hash'] != original:
+                    raise ScheduleConflictError("schedule_id_reused", store)
+                return {**schedule_state(root, sid), "replayed": True}
+        if not spawn:
+            raise ScheduleConflictError("schedule_service_disabled", store)
+        _recover_scheduled_dispatch(store)
+        data = store.load_schedule()
+        _schedule_revision(store, data, expected_schedule_revision)
+        if data['current_id']:
+            raise ScheduleConflictError("schedule_already_open", store)
+        run_at = _schedule_time(run_at, timezone)
+        batch = {'id': 'sch_' + uuid.uuid4().hex, 'client_schedule_id': client_schedule_id,
+                 'original_payload_hash': original, 'status': 'scheduled', 'run_at': run_at, 'scheduled_for': run_at, 'timezone': timezone,
+                 'created_at': _schedule_now(), 'updated_at': _schedule_now(), 'trigger': 'time', 'items': [],
+                 'waiting_on_requests': [], 'hold_reason': None, 'dispatch': None, 'request_id': None, 'error': None}
+        data['batches'].append(batch)
+        data['current_id'] = batch['id']
+        _schedule_changed(store, data, batch, 'created')
+        return schedule_state(root, sid)
+
+
+def enqueue_message(store, text, images, cid, schedule_id=None, expected=None):
+    data = store.load_schedule()
+    # Replay immutable original payloads, including tombstones and terminal batches.
+    payload_hash = _schedule_hash(text, [a['ref'] for a in images])
+    if cid:
+        for batch in data['batches']:
+            for item in batch['items']:
+                if item.get('client_message_id') == cid:
+                    if item['original_payload_hash'] != payload_hash:
+                        raise ScheduleConflictError('message_id_reused', store)
+                    return {**schedule_state(store.root, store.id), 'queued': True, 'item': item, 'request': None, 'task': None, 'replayed': True}
+        if any(m.get('client_message_id') == cid for m in store.messages()):
+            raise ScheduleConflictError('message_id_reused', store)
+    batch = _schedule_current(data)
+    if schedule_id and (not batch or batch['id'] != schedule_id):
+        raise ScheduleConflictError('schedule_no_longer_open', store)
+    if not batch:
+        return None
+    if batch['status'] == 'dispatching':
+        raise ScheduleConflictError('schedule_dispatching', store)
+    if expected is not None:
+        _schedule_revision(store, data, expected)
+    if not text and not images:
+        raise ValueError('message is empty')
+    item = {'id': 'qi_' + uuid.uuid4().hex, 'client_message_id': cid, 'original_payload_hash': payload_hash,
+            'created_at': _schedule_now(), 'updated_at': _schedule_now(), 'version': 1, 'text': text, 'attachments': images,
+            'removed_at': None}
+    batch['items'].append(item)
+    _schedule_validate(store, batch)
+    _schedule_changed(store, data, batch, 'item_added')
+    return {**schedule_state(store.root, store.id), 'queued': True, 'item': item, 'request': None, 'task': None}
+
+
+def post_message(root, sid, text, *, spawn=True, attachments=None, client_message_id=None,
+                 schedule_id=None, expected_schedule_revision=None):
+    store = session(root, sid)
+    cid = str(client_message_id).strip() if client_message_id else None
+    if cid and (not _CLIENT_ID.fullmatch(cid) or cid.startswith('schedule.')):
+        raise ValueError('invalid or reserved client_message_id')
+    with store.lock():
+        _recover_scheduled_dispatch(store)
+        images = _resolve_attachments(store, attachments)
+        if cid:
+            for old in store.messages():
+                if old.get("client_message_id") == cid:
+                    if old.get("text") == str(text or "").strip() and [a["ref"] for a in old.get("attachments") or []] == [a["ref"] for a in images]:
+                        return _replay(store, old)
+                    raise ScheduleConflictError("message_id_reused", store)
+        out = enqueue_message(store, str(text or '').strip(), images, cid, schedule_id, expected_schedule_revision)
+        if out is not None:
+            return out
+        return _post_message_immediate(root, sid, text, spawn=spawn, attachments=attachments, client_message_id=cid)
+
+
+def mutate_schedule(root, sid, schedule_id, action, *, expected_schedule_revision, operation_id,
+                    item_id=None, text=None, attachments=None, run_at=None, timezone=None, spawn=True):
+    store = session(root, sid)
+    if not isinstance(operation_id, str) or not _CLIENT_ID.fullmatch(operation_id):
+        raise ValueError('operation_id is required')
+    signature = _schedule_hash(action, [schedule_id, item_id, text, attachments, run_at, timezone])
+    with store.lock():
+        data = store.load_schedule()
+        receipt = data['operations'].get(operation_id)
+        if receipt:
+            if receipt['signature'] != signature:
+                raise ScheduleConflictError('operation_id_reused', store)
+            return {**schedule_state(root, sid), 'replayed': True}
+        batch = next((b for b in data['batches'] if b['id'] == schedule_id), None)
+        if not batch:
+            raise LookupError('unknown schedule')
+        _schedule_revision(store, data, expected_schedule_revision)
+        if batch['status'] not in ('scheduled', 'waiting', 'error'):
+            raise ScheduleConflictError('schedule_no_longer_editable', store)
+        if action in ('edit', 'remove'):
+            item = next((i for i in batch['items'] if i['id'] == item_id and not i.get('removed_at')), None)
+            if item is None:
+                raise LookupError('unknown queued item')
+            if action == 'remove':
+                item['removed_at'] = _schedule_now()
+            else:
+                images = _resolve_attachments(store, attachments)
+                if not str(text or '').strip() and not images:
+                    raise ValueError('message is empty')
+                item.update(text=str(text or '').strip(), attachments=images, updated_at=_schedule_now(), version=item['version'] + 1)
+            _schedule_validate(store, batch)
+            kind = 'item_updated' if action == 'edit' else 'item_removed'
+        elif action == 'time':
+            batch.update(run_at=_schedule_time(run_at, timezone), scheduled_for=_schedule_time(run_at, timezone), timezone=timezone, status='scheduled',
+                         hold_reason=None, waiting_on_requests=[], error=None, trigger='time')
+            kind = 'changed'
+        elif action == 'cancel':
+            batch['status'] = 'cancelled'
+            data['current_id'] = None
+            kind = 'cancelled'
+        elif action == 'run':
+            if not spawn:
+                raise ScheduleConflictError('schedule_service_disabled', store)
+            if not _schedule_items(batch):
+                raise ValueError('cannot run an empty schedule')
+            batch.update(run_at=_schedule_now(), trigger='run_now', status='scheduled', error=None)
+            kind = 'changed'
+        else:
+            raise ValueError('unknown schedule action')
+        data['operations'][operation_id] = {'signature': signature}
+        _schedule_changed(store, data, batch, kind)
+    if action == 'run':
+        dispatch_due_schedules(root, sid, spawn=spawn)
+    return schedule_state(root, sid)
+
+
+def _prepare_scheduled_dispatch(store, data, batch, now):
+    conf = settings(store.root)
+    if conf['orchestrator'] not in usable(conf):
+        raise PermissionError('orchestrator is not an allowed agent')
+    images = _schedule_validate(store, batch)
+    batch.update(status='dispatching', hold_reason=None, waiting_on_requests=[], error=None,
+                 dispatch={'token': uuid.uuid4().hex, 'text': build_scheduled_prompt(batch), 'attachments': images,
+                           'items': _schedule_items(batch), 'bounds': _bounds(conf), 'conf': conf,
+                           'skill_snapshot': saved_skills.snapshot_selection(store.root, conf.get('skill_selection')),
+                           'actual_at': datetime.fromtimestamp(now, timezone.utc).isoformat(),
+                           'lateness_seconds': max(0, now - datetime.fromisoformat(batch.get('scheduled_for', batch['run_at']).replace('Z', '+00:00')).timestamp())})
+    _schedule_changed(store, data, batch, 'dispatching')
+
+
+def _ensure_request_rows(store, req, batch):
+    snapshot = batch['dispatch']
+    conf = snapshot['conf']
+    rid = req['id']
+    row = rid + '.plan'
+    _ensure_columns(store, conf)
+    if req['status'] != 'preparing':
+        return
+    # Trim only an incomplete trailing JSONL append before adding the synthetic message.
+    if store.messages_file.exists():
+        raw = store.messages_file.read_bytes()
+        if raw and not raw.endswith(b'\n'):
+            tail = raw.rsplit(b'\n', 1)[-1]
+            try:
+                json.loads(tail)
+            except ValueError:
+                raw = raw[:len(raw) - len(tail)]
+            else:
+                raw += b'\n'
+            pc.atomic_write(store.messages_file, raw.decode('utf-8'))
+    cid = 'schedule.' + batch['id']
+    message = next((m for m in store.messages() if m.get('client_message_id') == cid), None)
+    if message is None:
+        message = store.add_message('user', snapshot['text'], request=rid,
+                                    attachments=snapshot['attachments'] or None, client_message_id=cid)
+    req['message'] = message['id']
+    _repair_title(store, conf['agents'])
+    rec = store.task(row) or _task_rec(req, row, 'plan', conf['orchestrator'])
+    if not store.task(row):
+        store.save_task(rec)
+    if not (store.tasks_dir / row / 'prompt.md').exists():
+        _write_prompt(store, row, plan_prompt(store, conf, req))
+    _write_graph(store, conf)
+    # Persist a fully prepared request before making its row executable.
+    req['status'] = 'planning'
+    store.save_request(req)
+    _publish_scheduled_row(store, req, rec, conf)
+
+
+def _publish_scheduled_row(store, req, rec, conf):
+    if _table(store, conf).row(rec['row']) is None:
+        _add_rows(store, [rec], conf)
+
+
+def _recover_scheduled_dispatch(store):
+    data = store.load_schedule()
+    recovered = []
+    for batch in data['batches']:
+        if batch['status'] != 'dispatching':
+            continue
+        snap = batch['dispatch']
+        req = next((r for r in store.requests() if r.get('schedule_id') == batch['id']), None)
+        if req is None:
+            rid = f"r{max((int(r['id'][1:]) for r in store.requests()), default=0) + 1:04d}"
+            req = {'id': rid, 'text': snap['text'], 'created': snap['actual_at'], 'created_ts': datetime.fromisoformat(snap['actual_at']).timestamp(),
+                   'bounds': snap['bounds'], 'status': 'preparing', 'mode': 'orchestrated', 'agent': snap['conf']['orchestrator'],
+                   'mailbox_protocol': 'alfrd.mailbox/2', 'skill_snapshot': snap['skill_snapshot'],
+                   'rows': [rid + '.plan'], 'tasks': [], 'repair_used': False, 'summaries': 0, 'replans': 0,
+                   'orchestrator_calls': 1, 'finished': None, 'error': None, 'schedule_id': batch['id'],
+                   'dispatch_token': snap['token'], 'scheduled_for': batch.get('scheduled_for', batch['run_at']),
+                   'dispatched_at': snap['actual_at'], 'lateness_seconds': snap['lateness_seconds'], 'schedule_trigger': batch['trigger'],
+                   'scheduled_batch': {k: v for k, v in batch.items() if k != 'dispatch'}}
+            store.save_request(req)
+        _ensure_request_rows(store, req, batch)
+        # A crash after status=planning, before CSV publication still needs its row.
+        rec = store.task(req['id'] + '.plan')
+        if rec:
+            _publish_scheduled_row(store, req, rec, snap['conf'])
+        batch.update(status='submitted', request_id=req['id'])
+        data['current_id'] = None
+        _schedule_changed(store, data, batch, 'submitted')
+        server_event(store, 'task.created', task=req['id'] + '.plan', request=req['id'], task_kind='plan', owner=req['agent'])
+        recovered.append(req['id'])
+    return recovered
+
+
+def dispatch_due_schedules(root, sid=None, *, now=None, spawn=True):
+    instant = time.time() if now is None else (now.timestamp() if isinstance(now, datetime) else float(now))
+    root = Path(root).resolve()
+    ids = [sid] if sid else [p.parent.name for p in (root / CHAT_DIR).glob('*/session.json')]
+    results = []
+    for session_id in ids:
+        try:
+            store = session(root, session_id)
+            launch = False
+            with store.lock():
+                if spawn:
+                    launch = bool(_recover_scheduled_dispatch(store))
+                data = store.load_schedule()
+                batch = _schedule_current(data)
+                if batch and batch['status'] != 'dispatching' and batch['status'] != 'error' and datetime.fromisoformat(batch['run_at'].replace('Z', '+00:00')).timestamp() <= instant:
+                    active = [r['id'] for r in store.requests() if r.get('status') in REQUEST_ACTIVE]
+                    plan = _read(_plan_folder(store).plan_file) or {}
+                    reason = 'schedule_service_disabled' if not spawn else 'active_requests' if active else 'workflow_resume' if (plan.get('status') in ('paused', 'cancelled') or _plan_folder(store).control() in ('pause', 'cancel')) else None
+                    if reason:
+                        if (batch.get('hold_reason'), batch.get('waiting_on_requests')) != (reason, active):
+                            batch.update(status='waiting', hold_reason=reason, waiting_on_requests=active)
+                            _schedule_changed(store, data, batch, 'waiting')
+                    elif not _schedule_items(batch):
+                        batch['status'] = 'expired_empty'
+                        data['current_id'] = None
+                        _schedule_changed(store, data, batch, 'expired_empty')
+                    else:
+                        try:
+                            _prepare_scheduled_dispatch(store, data, batch, instant)
+                        except (ValueError, PermissionError, LookupError, ExecutionError) as error:
+                            batch.update(status='error', error=str(error))
+                            _schedule_changed(store, data, batch, 'failed')
+                        else:
+                            launch = bool(_recover_scheduled_dispatch(store)) or launch
+                # Recovery can finish a submission whose runner was never launched.
+                if spawn and not launch and not batch:
+                    launch = any(r.get('schedule_id') and r.get('status') in REQUEST_ACTIVE for r in store.requests()) and not _plan_folder(store).runner_alive()
+            if launch and spawn:
+                plan = _read(_plan_folder(store).plan_file) or {}
+                if plan.get('status') not in ('paused', 'cancelled') and _plan_folder(store).control() not in ('pause', 'cancel'):
+                    resume(store, spawn=True)
+            results.append(schedule_state(root, session_id, available=spawn))
+        except Exception as error:  # isolate bad sessions; an uncompleted journal remains claimed
+            results.append({'session': session_id, 'error': str(error)})
+    return results
+
+
+def _schedule_summary(store):
+    try:
+        batch = _schedule_current(store.load_schedule())
+        return {"schedule_id": batch["id"], "status": batch["status"], "run_at": batch["run_at"],
+                "queued_count": len(_schedule_items(batch)), "hold_reason": batch.get("hold_reason")} if batch else None
+    except ValueError as error:
+        return {"status": "error", "error": str(error)}

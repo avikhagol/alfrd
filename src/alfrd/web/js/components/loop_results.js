@@ -1,3 +1,4 @@
+import { refreshHTML } from "../utils/refresh.js";
 import { $, on, esc, icon, elapsed } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { loopResults, pollLoopResults } from "../data/loop_results.js";
@@ -54,7 +55,7 @@ export function mount(el, ctx) {
 
 export function render(el, ctx, projects) {
   clearTimeout(timer);
-  el.innerHTML = projects.map((project) => {
+  refreshHTML(el, projects.map((project) => {
     const tree = ctx.state.trees[project];
     if (ctx.state.mode !== "server" || tree.provider !== "server") return `<div class="card"><h2>Agent-loop results</h2><p class="muted">Connect with <code>alfrd serve</code> to see turns and replies.</p><button class="link-btn" data-classic-results>CSV results / collections</button></div>`;
     let entry = cache.get(project);
@@ -70,7 +71,7 @@ export function render(el, ctx, projects) {
       <p class="muted small mono">Run ${esc(p.id)} · ${esc(p.start_at ? "Scheduled" : RUN_STATUS[p.status] || p.status)}${entry.loading ? " · refreshing" : ""}</p>
       <div class="kpis"><div><span>Done turns</span><b>${summary.done} / ${summary.total}</b></div><div><span>Archived replies</span><b>${summary.replies}</b><small>${summary.turns.length} attempts</small></div><div><span>Waiting for you</span><b>${summary.waiting}</b><small>Responses or review</small></div><div><span>Elapsed turn time</span><b>${elapsed(summary.seconds)}</b><small>Includes waiting · ${summary.failed} failed or blocked turns</small></div></div>
       <div class="loop-result-table"><table class="tbl"><thead><tr><th>Iteration</th><th>Agent / model</th><th>Status</th><th>Elapsed</th><th>Response</th></tr></thead><tbody>${summary.turns.map((h) => `<tr><td>${esc(h.iteration_label || h.iteration)}</td><td>${esc(h.agent || "—")}<div class="muted small">${esc(h.model || h.requested_model || "Default model")}</div></td><td>${esc(phases[h.phase] || h.phase || h.status)}${h.error ? `<div class="fail-t small">${esc(h.error)}</div>` : ""}</td><td>${h.seconds == null ? "—" : elapsed(h.seconds)}</td><td>${h.response_bytes ? `<button class="link-btn" data-loop-handoffs="${esc(project)}" data-loop-unit="${esc(h.id)}">Read archived reply</button><div class="mono small muted">${esc(h.artifact?.path || "Awaiting publication")}</div>` : "No reply yet"}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No turns have started.</td></tr>'}</tbody></table></div>`}</div>`;
-  }).join("");
+  }).join(""));
   const busy = projects.filter((p) => pollLoopResults(cache.get(p)?.status, cache.get(p)?.handoffs));
   const poll = () => {
     if (!busy.some((p) => pollLoopResults(cache.get(p)?.status, cache.get(p)?.handoffs))) return;

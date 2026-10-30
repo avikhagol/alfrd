@@ -1,4 +1,5 @@
 """Versioned mailbox records, per-request pinning and v2 metadata contracts."""
+# ruff: noqa: F811 - imported pytest fixtures are taken by name
 import json
 from pathlib import Path
 
@@ -82,9 +83,10 @@ def test_code_table_and_defaults(box, code):
         message = box.reply(parent["id"], USER, answer())["message"]
         assert message["category"] == "question" and message["priority"] == "urgent"
     else:
+        info_payload = {"output": "o1", "to": "/abs/new/path"} if code == "OUT" else {}  # OUT requires both
         data = permission(code=code) if code == "PRM" else question(
             kind=row["kind"], code=code,
-            payload={} if row["kind"] == "info" else question()["payload"])
+            payload=info_payload if row["kind"] == "info" else question()["payload"])
         message = box.send(AGENT, data)["message"]
         assert message["category"] == row["category"]
         assert message["priority"] == row["priority"]
@@ -161,3 +163,59 @@ def test_v2_schema_rejects_code_kind_and_category_conflicts(box):
     for changed in ({"code": "NTE"}, {"category": "note"}):
         with pytest.raises(ValidationError):
             schema("agent_message", "v2").validate({**message, **changed})
+
+
+@pytest.mark.parametrize("v1", [False, True])
+def test_orchestrator_reply_requires_delegation_and_records_actor(box, v1):
+    if v1:
+        box = legacy(box)
+    mail = box.send(AGENT, question())["message"]
+    actor = {"kind": "orchestrator"}
+    with pytest.raises(MailboxError, match="not been delegated"):
+        box.reply(mail["id"], actor, answer())
+    decision = {"id": "r0001.a.q", "request": box.run_id, "mailbox_message_id": mail["id"],
+                "needs": "orchestrator", "delegated": "user", "status": "pending"}
+    box.session.save_decision({**decision, "repeat": 2})
+    with pytest.raises(MailboxError, match="not been delegated"):
+        box.reply(mail["id"], actor, answer())
+    box.session.save_decision(decision)
+    reply = box.reply(mail["id"], actor, answer())["message"]
+    assert reply["sender"] == {**actor, "on_behalf_of": "user", "delegated": "user"}
+    assert box.reply(mail["id"], actor, answer())["message"] == reply
+    event = json.loads((box.dir / "events.jsonl").read_text().splitlines()[-1])
+    assert event["actor"] == reply["sender"]
+    delivered = box.status(mail["id"], AGENT)["reply"]
+    assert delivered["id"] == reply["id"] and delivered["sender"] == reply["sender"]
+    assert delivered["payload"] == reply["payload"]
+
+
+@pytest.mark.parametrize("recipient", [USER, {"kind": "orchestrator"}])
+def test_orchestrator_cannot_approve_action_hash_even_if_delegated(box, recipient):
+    mail = box.send(AGENT, permission(recipient=recipient))["message"]
+    box.session.save_decision({"id": "r0001.a.p", "request": box.run_id,
+                              "mailbox_message_id": mail["id"], "needs": "orchestrator", "delegated": "setting"})
+    with pytest.raises(MailboxError, match="require a human"):
+        box.reply(mail["id"], {"kind": "orchestrator"},
+                  answer(outcome="approve", answer=None, action_hash=mail["payload"]["action_hash"]))
+    assert box.status(mail["id"], USER)["state"] == "pending"
+
+
+def test_a_permission_request_to_the_orchestrator_is_answered_by_the_user(box):
+    # The orchestrator may never approve an action hash, so the person must be able to.
+    mail = box.send(AGENT, permission(recipient={"kind": "orchestrator"}))["message"]
+    approve = answer(outcome="approve", answer=None, action_hash=mail["payload"]["action_hash"])
+    reply = box.reply(mail["id"], USER, approve)["message"]
+    assert reply["sender"] == USER and box.status(mail["id"], USER)["state"] == "resolved"
+    other = box.send(AGENT, question(key="q2", recipient={"kind": "orchestrator"}))["message"]
+    with pytest.raises(MailboxError, match="addressed recipient"):
+        box.reply(other["id"], USER, answer())  # only approvals widen to the person, not questions
+
+
+def test_a_caller_cannot_claim_to_act_on_behalf_of_the_user(box):
+    mail = box.send(AGENT, question(recipient={"kind": "orchestrator"}))["message"]
+    forged = {"kind": "orchestrator", "on_behalf_of": "user", "delegated": "user"}
+    reply = box.reply(mail["id"], forged, answer())["message"]
+    assert reply["sender"] == {"kind": "orchestrator"}
+    mine = box.send(AGENT, question(key="q2"))["message"]  # addressed to the user, never delegated
+    with pytest.raises(MailboxError, match="not been delegated"):
+        box.reply(mine["id"], forged, answer())

@@ -5,6 +5,7 @@
 // alfrd.yaml (POST chat/settings, conflict-guarded by its hash). Lazy: loaded by /setup.
 import { $, esc, icon, routeHash } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { mountSkills } from "./skills_settings.js";
 import {
   AGENT_KEY, assignRole, backendOf, chatBlock, chatProblems, mergeChat, freeKey, modelHints, probeBadge, roleOwner, roleWords, setupSummary,
 } from "../data/chat.js";
@@ -61,13 +62,15 @@ export async function openSetup(ctx, project, o = {}) {
         <button type="button" class="btn sm" data-su="add">${icon("plus")} Add agent</button></div>
         <p class="muted small" id="su-new-desc"></p></fieldset>` : ""}
       <p id="su-note" class="muted small" role="status"></p>
-      <h3>Bounds per request</h3><p class="small">${esc(`${b.max_tasks ?? "?"} tasks · depth ${b.max_depth ?? "?"} · ${b.max_retries ?? "?"} retries · $${b.max_cost_usd ?? "?"} · ${b.max_seconds ?? "?"} s · ${s.concurrency ?? "?"} at once`)}
+      <div data-skills-settings></div><h3>Bounds per request</h3><p class="small">${esc(`${b.max_tasks ?? "?"} tasks · depth ${b.max_depth ?? "?"} · ${b.max_retries ?? "?"} retries · $${b.max_cost_usd ?? "?"} · ${b.max_seconds ?? "?"} s · ${s.concurrency ?? "?"} at once`)}
         · <a href="${esc(routeHash("config", project, ctx.state.selectedTarget))}" data-close>Advanced: Settings → Agent chat</a></p>
       <div id="su-errors" role="alert" class="fail-t small"></div>
     </div>
     <footer class="modal-f row gap"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn primary" id="su-save">${icon("save")} Save</button></footer>`, (root, close) => {
     root.setAttribute("aria-labelledby", "su-h");
+    const skills = mountSkills(project, $("[data-skills-settings]", root), s, ctx);
     const draw = () => {
+      skills.refresh();
       $("#su-roles", root).innerHTML = rolesHtml();
       $("#su-agents", root).innerHTML = Object.entries(s.agents).map(([k, a]) => agentHtml(k, a)).join("");
     };
@@ -127,6 +130,7 @@ export async function openSetup(ctx, project, o = {}) {
       const errs = $("#su-errors", root);
       const personas = Object.values(s.agents).map((a) => a.persona).filter(Boolean);
       const problems = chatProblems(s, personas);
+      if (skills.problem()) problems.push(skills.problem());
       if (problems.length) { errs.innerHTML = `<ul>${problems.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>`; return; }
       btn.disabled = true; errs.textContent = "";
       try {

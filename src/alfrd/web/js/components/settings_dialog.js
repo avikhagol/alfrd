@@ -6,6 +6,7 @@ import { notificationPanel, mountNotifications } from "./notifications.js";
 import { $, esc, icon, bytes, storage, loadUi, saveUi, resetUi, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { readPrefs, writePrefs, prefsRevision } from "../data/prefs.js";
+import { confirmPermissions } from "./permission_ui.js";
 import { tabFrame, tabRail } from "./tab_frame.js";
 
 const TABS = [
@@ -310,7 +311,7 @@ export async function saveSection(scope, { changes, expected, project, post }) {
 // --- Preferences: one form, three sections (Browser, Project, User), each saved alone -------------------------
 
 const SET_BROWSER = ["ui.live_updates", "ui.experimental_chat", "ui.browser_notifications", "ui.rows_per_page"];
-const SET_PROJECT = (f) => f.key === "chat.final_summary" || f.key === "chat.saved_skills" || /^chat\.agents\.\w+\.lean$/.test(f.key);
+const SET_PROJECT = (f) => f.key === "chat.watch.enabled" || f.key === "chat.final_summary" || f.key === "chat.saved_skills" || /^chat\.agents\.\w+\.lean$/.test(f.key);
 
 async function mountForm(ctx, app, root) {
   const host = $("#set-form", root);
@@ -371,6 +372,7 @@ async function mountForm(ctx, app, root) {
       b.disabled = true;
       try {
         const changes = changed(scope);
+        if (!confirmPermissions(changes)) { b.disabled = false; return; }
         const res = await saveSection(scope, { changes, expected: revs[scope], project, post: (path, payload) => server.mutate(path, payload) });
         if (scope === "browser") {
           if ("ui.live_updates" in changes) app.setLive(changes["ui.live_updates"]);

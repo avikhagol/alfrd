@@ -1,7 +1,8 @@
+import { refreshHTML } from "../utils/refresh.js";
 // Jobs tray (loaded on first use): every active run across projects, with Open project
 // and View log. Switching projects never stops a run or its log subscriptions.
 
-import { esc, icon, short, loadCss } from "../utils/dom.js";
+import { esc, icon, short, loadCss, routeHash } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { activeJobs } from "./plans.js";
 import { dockLog } from "./logview.js";
@@ -31,6 +32,8 @@ export function jobRows(ctx, jobs = activeJobs()) {
       name: names[i],
       root: dup ? String(ctx.state.scans?.[j.project]?.root || j.project).split("/").slice(-2).join("/") : "",
       run: s.plan.id,
+      session: s.plan.chat?.session,
+      title: s.plan.title,
       workflow: s.plan.workflow || s.loop?.workflow || "",
       status: ctx.jobLabel ? ctx.jobLabel(s) : s.plan.status,
       elapsed: elapsedOf(s),
@@ -46,13 +49,13 @@ export function openJobs(ctx) {
   loadCss("css/lazy.css");
   const draw = (root) => {
     const rows = jobRows(ctx);
-    root.querySelector("#jobs-list").innerHTML = rows.length ? rows.map((r) => `<li class="job-row">
+    refreshHTML(root.querySelector("#jobs-list"), rows.length ? rows.map((r) => `<li class="job-row">
         <div class="job-main"><b>${esc(r.name)}</b>${r.root ? ` <span class="muted small mono">${esc(r.root)}</span>` : ""}
-          <div class="muted small"><span class="mono">Run ${esc(r.run)}</span>${r.workflow ? ` · ${esc(r.workflow)}` : ""} · ${esc(r.elapsed)}</div></div>
+          <div class="muted small"><span class="mono">Run ${esc(r.title || r.run)}</span>${r.workflow ? ` · ${esc(r.workflow)}` : ""} · ${esc(r.elapsed)}</div></div>
         <span class="badge tone-${TONE[r.status] || "muted"}">${icon(r.status === "Running" ? "sync" : "hourglass")}${esc(r.status)}</span>
-        ${r.plugin ? '<button class="btn sm" data-plugin-open>Open Plugins</button>' : `<button class="btn sm" data-job-open="${esc(r.project)}">${icon("folder")} Open project</button>
+        ${r.plugin ? '<button class="btn sm" data-plugin-open>Open Plugins</button>' : `<button class="btn sm" data-job-open="${esc(r.project)}" ${r.session ? `data-job-session="${esc(r.session)}"` : ""}>${icon("folder")} ${r.session ? "Open chat" : "Open project"}</button>
         <button class="btn sm" data-job-log="${esc(r.log)}" data-job-project="${esc(r.project)}">${icon("log")} View log</button>`}</li>`).join("")
-      : '<li class="muted">No active runs.</li>';
+      : '<li class="muted">No active runs.</li>');
   };
   ctx.modal(`<header class="modal-h"><h2>${icon("play")} Jobs</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b"><p class="muted small">Runs keep going when you switch projects. View log follows it in the Log Stream without changing the open project.</p><ul class="jobs-list" id="jobs-list"></ul></div>`, (root, close) => {
@@ -63,7 +66,7 @@ export function openJobs(ctx) {
         setTimeout(() => document.querySelector('.set-tabs [data-tab="plugins"]')?.click(), 0); return;
       }
       const open = e.target.closest("[data-job-open]");
-      if (open) { close(); ctx.openRun(open.dataset.jobOpen); return; }
+      if (open) { close(); if (open.dataset.jobSession) location.hash = routeHash(`chat/${open.dataset.jobSession}`, open.dataset.jobOpen); else ctx.openRun(open.dataset.jobOpen); return; }
       const log = e.target.closest("[data-job-log]");
       if (log) { close(); dockLog(ctx, log.dataset.jobProject, log.dataset.jobLog); }
     });

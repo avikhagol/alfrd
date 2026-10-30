@@ -15,8 +15,8 @@ export const STATUS_ICONS = {
 export const STATUS_ICON_STATES = Object.keys(STATUS_ICONS);
 
 // Icon and label markup for one state. Unknown states fall back to a neutral info glyph and the raw name.
-export function statusIcon(state) {
+export function statusIcon(state, label) {
   const known = STATUS_ICON_STATES.includes(state);
   const meta = known ? STATUS_ICONS[state] : { icon: "info", label: String(state || "Unknown") };
-  return `<span class="status-icon" data-status="${known ? state : "unknown"}">${icon(meta.icon)}<span class="status-label">${esc(meta.label)}</span></span>`;
+  return `<span class="status-icon" data-status="${known ? state : "unknown"}">${icon(meta.icon)}<span class="status-label">${esc(label || meta.label)}</span></span>`;
 }

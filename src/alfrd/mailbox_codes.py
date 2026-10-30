@@ -18,6 +18,8 @@ CODES = {
     "BLK": {"kind": "info", "category": "blocker", "priority": "urgent", "meaning": "Cannot proceed {needs?}"},
     "DEP": {"kind": "info", "category": "coordination", "priority": "normal", "meaning": "Note to a sibling or dependent task"},
     "CLM": {"kind": "info", "category": "coordination", "priority": "high", "meaning": "Claims a shared path {path}"},
+    "OUT": {"kind": "info", "category": "coordination", "priority": "high",
+            "meaning": "An expected output moved {output, to, from?, reason?}"},
     "ASK": {"kind": "question", "category": "question", "priority": "high", "meaning": "Question for the user"},
     "ASO": {"kind": "question", "category": "question", "priority": "high", "meaning": "Question for the orchestrator"},
     "PRM": {"kind": "permission_request", "category": "permission", "priority": "urgent", "meaning": "Approval for an exact action"},

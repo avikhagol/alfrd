@@ -1,6 +1,6 @@
 ---
 name: alfrd
-description: Drive ALFRD (plan CSVs, targets, alfrd.yaml, AVICA runs, agent loops, Studio API, notifications, plugins/themes) from an agent with the fewest tokens. Use when a folder has alfrd.yaml / alfrd.plan.csv / .alfrd/, or the user asks to run, monitor, debug or configure ALFRD or AVICA pipeline steps or Claude/Codex agent loops.
+description: Operate ALFRD pipeline plans, agent loops, Studio, notifications and plugins. Use when asked to run, monitor, debug or configure ALFRD/AVICA projects; route chat-agent protocol work to the focused companion skills.
 compatibility: Requires the alfrd CLI (Python >= 3.10) on PATH; runs and plan state are Linux-first. HTTP calls need a running alfrd serve.
 metadata:
   alfrd-version: "0.3.1.1"
@@ -16,6 +16,21 @@ compact, versioned JSON form made for you. Prefer it over reading files.
 
 `-C DIR` (`--root`) is the project folder (holds `alfrd.yaml`); default `.`.
 `[PLAN]` defaults to the latest plan.
+
+## Chat-agent skills
+
+Load the focused skill for the current task:
+
+- [verification-checklist](../verification-checklist/SKILL.md): acceptance checks and completion evidence.
+- [plan-json-author](../plan-json-author/SKILL.md): orchestrator plans, repairs and replans.
+- [mailbox-protocol](../mailbox-protocol/SKILL.md): compact mail, questions, progress and exact-action approval.
+- [blocker-reporting](../blocker-reporting/SKILL.md): input/access decisions and continuation IDs.
+- [failure-triage](../failure-triage/SKILL.md): chat-task retries, fallback and recovery.
+- [artifact-handoff](../artifact-handoff/SKILL.md): input hashes, provenance and moved outputs.
+
+These are saved-skill guidance, not permission grants. Selection injects the
+chosen SKILL.md; open linked references only when needed. For pipeline cell
+operations, use the compact commands below.
 
 ## Token rules (read first)
 

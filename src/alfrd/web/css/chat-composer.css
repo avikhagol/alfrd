@@ -1,0 +1,78 @@
+/* Composer: compact input row with schedule, attachments and Send/Stop. Owns .chat-composer,
+   textarea, hints/listbox, attachment tray, Send/Stop and composer errors. Dock adjusts host size, never textarea internals. */
+:is(.chat, .chat-dock) .chat-composer {
+  display: flex; flex-direction: column; gap: var(--chat-space-3);
+  padding: var(--chat-space-2) var(--chat-space-3); padding-bottom: calc(var(--chat-space-2) + env(safe-area-inset-bottom, 0px));
+  background: var(--chat-surface); border: 1px solid var(--chat-border); border-radius: var(--chat-radius-composer);
+  box-sizing: border-box; position: relative;
+}
+:is(.chat, .chat-dock) .chat-composer:focus-within { border-color: var(--chat-action); }
+:is(.chat, .chat-dock) .chat-composer .chat-input-wrap { position: relative; }
+:is(.chat, .chat-dock) .chat-composer .chat-input-wrap textarea {
+  display: block; width: 100%; box-sizing: border-box; resize: none; overflow-y: hidden;
+  min-height: calc(var(--chat-body-leading) + 2 * var(--chat-space-2)); max-height: min(240px, 40dvh);
+  padding: var(--chat-space-2) var(--chat-space-3); background: transparent; border: 0; border-radius: var(--chat-radius-control);
+  color: var(--chat-text); font: var(--chat-body-size)/var(--chat-body-leading) var(--chat-sans);
+}
+:is(.chat, .chat-dock) .chat-composer .chat-input-wrap textarea:focus-visible { outline: 2px solid var(--chat-focus); outline-offset: 2px; }
+:is(.chat, .chat-dock) .chat-composer .chat-input-wrap textarea::placeholder { color: var(--chat-muted); }
+
+/* Empty status/error regions take no vertical band. */
+:is(.chat, .chat-dock) .chat-composer .chat-composer-note { margin: 0; font-size: var(--chat-meta-size); line-height: var(--chat-meta-leading); overflow-wrap: anywhere; }
+:is(.chat, .chat-dock) .chat-composer .chat-composer-note:empty { display: none; }
+:is(.chat, .chat-dock) .chat-composer .chat-composer-note[role="alert"] { color: var(--chat-error); }
+.chat-composer .chat-error-row { display: flex; align-items: center; gap: var(--chat-space-3); flex-wrap: wrap; }
+.chat-composer .chat-error-row:not(:has(:not([hidden]):not(:empty))) { display: none; }
+.chat-composer .chat-error-row [hidden] { display: none; }
+
+/* Attachment tray */
+:is(.chat, .chat-dock) .chat-composer .attach-tray { display: flex; flex-direction: column; gap: var(--chat-space-2); }
+:is(.chat, .chat-dock) .chat-composer .attach-chips { display: flex; flex-wrap: wrap; gap: var(--chat-space-2); }
+:is(.chat, .chat-dock) .chat-composer .attach-chips:empty { display: none; }
+:is(.chat, .chat-dock) .chat-composer .attach-chip { display: inline-flex; align-items: center; gap: var(--chat-space-2); max-width: 100%; padding: var(--chat-space-1) var(--chat-space-3);
+  background: var(--chat-surface-2); border: 1px solid var(--chat-border); border-radius: var(--chat-radius-pill); font-size: var(--chat-meta-size); }
+:is(.chat, .chat-dock) .chat-composer .attach-error { border-color: var(--chat-error-border); background: var(--chat-error-bg); }
+:is(.chat, .chat-dock) .chat-composer .attach-error { flex-wrap: wrap; border-radius: var(--chat-radius-card); }
+:is(.chat, .chat-dock) .chat-composer .attach-error > span { flex: 1 1 100%; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+:is(.chat, .chat-dock) .chat-composer .attach-error p { margin: 0; }
+
+.chat-composer .attach-tray:not(:has([data-attach-chips]:not(:empty))):not(:has([data-attach-reason]:not(:empty))) { display: none; }
+
+/* Keep the input and primary controls on one row, including while focused and in the dock. */
+.chat-composer-row { display: flex; align-items: flex-end; gap: var(--chat-space-2); min-width: 0; }
+.chat-composer-row .chat-input-wrap { flex: 1 1 0; min-width: 0; }
+.chat-composer-row > button { flex: 0 0 auto; }
+.chat-composer-row > [hidden], .chat-composer .chat-schedule[hidden] { display: none; }
+.chat-composer-row .icon-btn { width: 34px; height: 34px; padding: 6px; }
+.chat-composer .chat-schedule-toggle[aria-pressed="true"] { color: var(--chat-action); background: var(--chat-hover); box-shadow: inset 0 0 0 1px var(--chat-action); }
+.chat-composer .chat-send, .chat-composer .chat-stop { min-height: 34px; padding-inline: var(--chat-space-3); border-radius: var(--chat-radius-control); font-size: var(--chat-control-size); }
+.chat-composer .chat-send:not(:disabled) { background: var(--chat-action); color: var(--chat-on-action); border-color: transparent; }
+.chat-composer .chat-send:disabled, .chat-composer .chat-stop:disabled { opacity: .55; cursor: not-allowed; }
+.chat-composer button:focus-visible { outline: 2px solid var(--chat-focus); outline-offset: 2px; }
+
+/* Hint listbox */
+:is(.chat, .chat-dock) .chat-mentions { position: absolute; left: 0; bottom: 100%; margin: 0 0 var(--chat-space-1); padding: var(--chat-space-1); list-style: none; min-width: 280px; max-width: 100%; max-height: min(240px, 40dvh); overflow: auto;
+  background: var(--chat-surface-2); border: 1px solid var(--chat-border-strong); border-radius: var(--chat-radius-card); z-index: 5; box-sizing: border-box; }
+:is(.chat, .chat-dock) .chat-mentions[hidden] { display: none; }
+:is(.chat, .chat-dock) .chat-mentions li { display: flex; flex-wrap: wrap; gap: var(--chat-space-2); align-items: baseline; padding: var(--chat-space-2) var(--chat-space-3); border-radius: var(--chat-radius-control); cursor: pointer; }
+:is(.chat, .chat-dock) .chat-mentions li.on, :is(.chat, .chat-dock) .chat-mentions li:hover { background: var(--chat-hover); }
+:is(.chat, .chat-dock) .chat-mentions li[aria-selected="true"] { outline: 1px solid var(--chat-action); }
+
+/* Touch: 44px targets and a keyboard-safe bottom inset on phones and coarse pointers. */
+@media (pointer: coarse), (max-width: 640px) {
+  .chat-composer .chat-send, .chat-composer .chat-stop, .chat-composer .chat-error-row .btn { min-height: 44px; min-width: 44px; }
+  .chat-composer .attach-chip .icon-btn { min-width: 44px; min-height: 44px; }
+  .chat-composer-row .icon-btn { min-width: 44px; min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .chat-composer * { transition: none !important; animation: none !important; } }
+
+.chat-schedule { min-width:0; max-height:min(360px, 40dvh); overflow:auto; border-top:1px solid var(--chat-border); padding-top:var(--chat-space-2); }
+.chat-schedule:empty { display:none; }
+.chat-schedule-items { max-height:220px; overflow:auto; padding-left:24px; margin:8px 0; }
+.chat-schedule-items li { padding:6px 0; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
+.chat-schedule-items p { white-space:pre-wrap; margin:3px 0; }
+.chat-schedule-status { font-size:12px; font-weight:600; }
+.chat-schedule dialog { max-width:min(440px,90vw); color:inherit; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:20px; }
+.chat-schedule dialog label { display:block; margin-bottom:10px; }
+.chat-schedule dialog input, .chat-schedule dialog select { display:block; width:100%; }
+.chat-schedule [data-editor] textarea { width:100%; min-height:80px; }

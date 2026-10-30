@@ -48,3 +48,14 @@ test("picker filter, keys and type-to-jump", () => {
   assert.equal(typeahead(items, 0, "t-"), 2);
   assert.equal(typeahead(items, 0, "z"), null);
 });
+
+
+test("header keeps Search and global Jobs without redundant Chat controls", async () => {
+  const { readFile } = await import('node:fs/promises');
+  const app = await readFile(new URL('../../src/alfrd/web/js/app.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(app, /chat-inbox|btn-chat-dock/);
+  assert.match(app, /id="btn-palette"/);
+  assert.match(app, /id="btn-jobs"/);
+  assert.match(app, /Alt\+Shift\+A/);
+  assert.match(app, /data-inbox-count/);
+});

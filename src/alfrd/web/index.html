@@ -18,14 +18,20 @@
   <link rel="alternate icon" href="assets/favicon.ico" sizes="16x16 32x32 48x48">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" sizes="180x180">
   <link rel="manifest" href="assets/site.webmanifest">
+  <link rel="stylesheet" href="css/loading.css">
   <link rel="stylesheet" href="css/studio.css">
   <link rel="stylesheet" href="theme.css">
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
-  <div id="app" class="app">
-    <p class="boot">Loading…</p>
+  <div id="app" class="app" data-sidebar="collapsed">
+    <header class="topbar" aria-hidden="true"><div class="brand"><h1>alfrd</h1></div><div class="skeleton-block outline-picker"></div></header>
+    <nav class="rail" id="workspace-rail" aria-hidden="true"><div class="skeleton-block"></div><div class="skeleton-block"></div><div class="skeleton-block"></div></nav>
+    <main id="main"><div class="loading-layout" aria-busy="true" aria-label="Loading workspace"><span class="sr-only" role="status">Loading workspace…</span><div class="outline-sessions" aria-hidden="true"><div class="skeleton-block"></div><div class="skeleton-block"></div><div class="skeleton-block"></div></div><div class="outline-conversation" aria-hidden="true"><div class="outline-heading skeleton-block"></div><div class="outline-messages"><div class="skeleton-block"></div><div class="skeleton-block"></div><div class="skeleton-block"></div></div><div class="outline-composer skeleton-block"></div></div><div class="outline-details" aria-hidden="true"><div class="skeleton-block"></div><div class="skeleton-block"></div></div></div></main>
+    <footer class="footbar" aria-hidden="true"><div class="skeleton-block outline-picker"></div></footer>
   </div>
+  <template id="loading-outline"><div class="loading-layout" aria-busy="true" aria-label="Loading workspace"><span class="sr-only" role="status">Loading workspace…</span><div class="outline-sessions" aria-hidden="true"><div class="skeleton-block"></div><div class="skeleton-block"></div><div class="skeleton-block"></div></div><div class="outline-conversation" aria-hidden="true"><div class="outline-heading skeleton-block"></div><div class="outline-messages"><div class="skeleton-block"></div><div class="skeleton-block"></div><div class="skeleton-block"></div></div><div class="outline-composer skeleton-block"></div></div><div class="outline-details" aria-hidden="true"><div class="skeleton-block"></div><div class="skeleton-block"></div></div></div></template>
+  <script src="js/loading-shell.js"></script>
   <div id="modal-host" hidden></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <noscript><p class="fatal">ALFRD Studio needs JavaScript (ES modules). It runs entirely in your browser; no data is uploaded.</p></noscript>

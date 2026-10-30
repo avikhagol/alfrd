@@ -2,6 +2,8 @@
 // browser preference. Docked beside the conversation above 1280 px, an overlay at or below it.
 // Alt+Shift+I toggles, Escape closes and focus goes back to where it was. A background update
 // (events, polling, a task changing) never opens it. No DOM lookups at import: Node tests load this alone.
+import { activeRequest } from "../data/chat.js";
+import { esc } from "../utils/dom.js";
 import { empty } from "./state_view.js";
 import { DEFAULTS, readPrefs, writePrefs } from "../data/prefs.js";
 
@@ -12,14 +14,14 @@ const FALLBACK_KEY = "alfrd-studio:chat.inspector";
 
 export const TABS = Object.freeze([
   { id: "graph", label: "Graph", title: "No task graph yet", next: "Tasks appear here when the orchestrator plans a request." },
-  { id: "files", label: "Files", title: "No files yet", next: "Files an agent reads or writes for this request are listed here." },
-  { id: "goals", label: "Goals", title: "No goals yet", next: "The goals of a request show here once it has been planned." },
+  { id: "files", label: "Files", title: "File browsing is unavailable", next: "Use artifact links in messages." },
+  { id: "goals", label: "Goals", title: "Goal browsing is unavailable", next: "Review the recorded request in messages." },
 ]);
 
 /** "docked" above 1280 px, otherwise "overlay". */
 export const layout = (width) => (width >= DOCK_MIN ? "docked" : "overlay");
 
-/** A tab's F2 empty state (shared state_view markup); placeholders until the tabs get their data. */
+/** A tab's F2 state; deferred tabs explain the available alternative. */
 export function placeholderHtml(id) {
   const tab = TABS.find((t) => t.id === id) || TABS[0];
   return empty(tab.title, tab.next);
@@ -94,4 +96,22 @@ export function createInspector({ chat, button, panel, store = prefsStore(), wid
     },
   };
   return api;
+}
+
+/** Current follows activity; explicit choices persist. */
+export function createRequestScope() {
+  let choice = "current";
+  return {
+    select(value) { choice = value; },
+    isAll() { return choice === "all"; },
+    request(state) { return choice === "all" ? null : choice === "current" ? activeRequest(state)?.id || null : choice; },
+    html(state) {
+      const current = activeRequest(state);
+      const options = [["all", "All requests"], ["current", `Current request: ${current?.text || current?.id || "None"}`],
+        ...(state?.requests || []).slice().reverse().map((r) => [r.id, `${r.id}: ${r.text || "Request"}`])];
+      if (!options.some(([id]) => id === choice)) options.push([choice, `${choice} (unavailable)`]);
+      return `<label>Request scope <select data-request-scope aria-label="Request scope" style="max-width:100%">${options.map(([id, text]) =>
+        `<option value="${esc(id)}"${choice === id ? " selected" : ""}>${esc(String(text).replace(/\s+/g, " ").slice(0, 100))}</option>`).join("")}</select></label>`;
+    },
+  };
 }

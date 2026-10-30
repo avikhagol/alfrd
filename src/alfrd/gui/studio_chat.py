@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Response, jsonify, request
+from flask import Response, current_app, jsonify, request
 
 from alfrd import attachments as att
 from alfrd import chat, mailbox
@@ -28,6 +28,10 @@ _ATTACHMENT_STATUS = {"unsupported_type": 415, "too_large": 413, "too_many": 413
 
 
 def _fail(error: Exception):
+    if isinstance(error, saved_skills.SkillError):
+        return jsonify(error={"code": error.status, "message": str(error), "reason": error.reason, **error.details}), error.status
+    if isinstance(error, chat.ScheduleConflictError):
+        return jsonify(error={"code": 409, "message": str(error), "reason": error.reason}, **error.state), 409
     if isinstance(error, att.AttachmentError):
         return _json_error(error, _ATTACHMENT_STATUS.get(error.code, 400), reason=error.code)
     if isinstance(error, mailbox.MailboxError):
@@ -36,6 +40,8 @@ def _fail(error: Exception):
         return _json_error(error, error.status)
     if isinstance(error, LookupError):
         return _json_error(error, 404)
+    if isinstance(error, OSError) and not isinstance(error, PermissionError):
+        return _json_error(ValueError('Skill filesystem operation was denied or unavailable'), 403, reason='filesystem_denied')
     if isinstance(error, PermissionError):
         return _json_error(error, 409)
     if isinstance(error, (ExecutionError, ValueError)):
@@ -95,18 +101,171 @@ def chat_skills(project_name: str):
     try:
         root = _project_root(project_name)
         entries = {str(e["name"]): e for e in merged_manifest(root).get("entrypoint") or [] if isinstance(e, dict) and e.get("name")}
-        specs = {key: {"argv": chat._agent_argv(agent, key, entries), "adapter": agent.get("adapter"),
-                       "model": agent.get("model"), "model_option": agent.get("model_option"),
-                       "lean": agent.get("lean", False)}
-                 for key, agent in chat.settings(root)["agents"].items()}
+        specs = {}
+        for key, agent in chat.settings(root)["agents"].items():
+            name = agent.get("entrypoint") or key
+            entry = {} if agent.get("cmd") else (entries.get(name) or chat.BUILTIN_ENTRYPOINTS.get(name) or {})
+            specs[key] = {**entry, "argv": chat._agent_argv(agent, key, entries),
+                          **{k: agent[k] for k in ("model", "adapter", "model_option", "lean", "skills", "plugins", "mcp")
+                             if agent.get(k) is not None}}
         return jsonify(skills=saved_skills.discover_skills(root), agents=saved_skills.agent_view(specs))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/skills/inventory")
+def chat_skill_inventory(project_name: str):
+    """Read-only metadata and provider delivery policy; never creates native skill links."""
+    try:
+        root = _project_root(project_name)
+        return jsonify(skills=saved_skills.skill_inventory(root, chat.settings(root).get("skill_selection")), project_path=str(root), global_path=str(saved_skills.global_skills_root()))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/skills/preview")
+def chat_skill_preview(project_name: str):
+    """Bounded plain text from the same safe discovery roots; never accepts a file path."""
+    try:
+        return jsonify(saved_skills.preview(_project_root(project_name), request.args.get("id"), request.args.get("origin")))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+def _skill_payload(allowed, limit=512*1024):
+    if request.content_length is not None and request.content_length > limit:
+        raise saved_skills.SkillError('manifest_too_large', 'Request exceeds size limit', 413)
+    raw = request.stream.read(limit+1)
+    if len(raw) > limit:
+        raise saved_skills.SkillError('manifest_too_large', 'Request exceeds size limit', 413)
+    import json
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise ValueError('Send a JSON object') from None
+    if not isinstance(value, dict) or set(value)-set(allowed):
+        raise ValueError('Unexpected skill request fields')
+    return value
+
+
+def _skill_owner():
+    from flask import session
+    import secrets
+    if 'skill_import_owner' not in session:
+        session['skill_import_owner'] = secrets.token_urlsafe(32)
+    return session['skill_import_owner']
+
+
+@studio_api.post(_BASE + '/skills/validate')
+def chat_skill_validate(project_name):
+    try:
+        _project_root(project_name)
+        content = _skill_payload(['content']).get('content')
+        fields = saved_skills.validate_skill_document(content)
+        import yaml
+        match = saved_skills._FRONT.match(content)
+        node = yaml.compose(match.group(1), Loader=yaml.SafeLoader)
+        spans = {}
+        for key, value in node.value:
+            if key.value in ('name', 'description'):
+                # Browser string offsets are UTF-16 code units, including astral characters.
+                spans[key.value] = [len(content[:match.start(1)+mark.index].encode('utf-16-le'))//2
+                                    for mark in (value.start_mark, value.end_mark)]
+        return jsonify(fields=fields, scalar_spans=spans)
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.put(_BASE + '/skills/content')
+def chat_skill_content(project_name):
+    try:
+        p = _skill_payload(['origin', 'id', 'content', 'base_revision'])
+        result = saved_skills.save_skill_document(_project_root(project_name), p.get('id'), p.get('content'), origin=p.get('origin'), base_revision=p.get('base_revision'))
+        _poke(project_name)
+        return jsonify(result)
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/create')
+def chat_skill_create(project_name):
+    try:
+        p = _skill_payload(['origin', 'id', 'content'])
+        result = saved_skills.create_skill(_project_root(project_name), p.get('id'), p.get('content'), origin=p.get('origin'))
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/copy')
+def chat_skill_copy(project_name):
+    try:
+        p = _skill_payload(['source_origin', 'source_id', 'base_revision', 'target_origin', 'id'])
+        result = saved_skills.copy_skill(_project_root(project_name), p.get('source_id'), source_origin=p.get('source_origin'), id=p.get('id'), target_origin=p.get('target_origin'), base_revision=p.get('base_revision'))
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/imports/preview')
+def chat_skill_import_preview(project_name):
+    from alfrd.skill_imports import prepare_skill_import
+    try:
+        p = _skill_payload(['url'], 8192)
+        return jsonify(prepare_skill_import(_project_root(project_name), p.get('url'), owner=_skill_owner()))
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/imports/confirm')
+def chat_skill_import_confirm(project_name):
+    from alfrd.skill_imports import commit_skill_import
+    try:
+        p = _skill_payload(['token', 'origin', 'id'], 8192)
+        result = commit_skill_import(_project_root(project_name), p.get('token'), p.get('origin'), p.get('id'), owner=_skill_owner())
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.delete(_BASE + '/skills/imports/<token>')
+def chat_skill_import_discard(project_name, token):
+    from alfrd.skill_imports import discard_skill_import
+    try:
+        return jsonify(discard_skill_import(_project_root(project_name), token, owner=_skill_owner()))
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.route(_BASE + "/skills/activations", methods=["GET", "PUT"])
+def chat_skill_activations(project_name: str):
+    """Project-owned activation state, guarded against stale modal saves."""
+    try:
+        root = _project_root(project_name)
+        conf = chat.settings(root)
+        if request.method == "PUT":
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict) or "base_hash" not in payload:
+                raise ValueError("send version, activations and base_hash")
+            saved_skills.save_activations(root, {k: payload.get(k) for k in ("version", "activations")},
+                                          base_hash=payload["base_hash"])
+            _poke(project_name)
+        roles = [role for agent in conf["agents"].values() for role in agent.get("roles", [])]
+        return jsonify(saved_skills.activation_state(root, conf.get("skill_selection"), roles=roles))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 
 
 @studio_api.get(_BASE + "/sessions")
 def chat_sessions(project_name: str):
-    return jsonify(sessions=chat.list_sessions(_project_root(project_name)))
+    try:
+        root = _project_root(project_name)
+        return jsonify(sessions=chat.list_sessions(root))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
 
 
 @studio_api.post(_BASE + "/sessions")
@@ -148,11 +307,26 @@ def chat_session_state(project_name: str, session_id: str):
     """Messages, requests, tasks with statuses, graph (nodes, edges, Mermaid), blockers, decisions and usage."""
     try:
         _recover_mailbox_delivery(chat.session(_project_root(project_name), session_id))
-        return jsonify(chat.session_state(_project_root(project_name), session_id,
-                                          messages=request.args.get("messages", default=500, type=int),
-                                          since_rev=request.args.get("since_rev", default=None, type=int)))
+        out = chat.session_state(_project_root(project_name), session_id,
+                                 messages=request.args.get("messages", default=500, type=int),
+                                 since_rev=request.args.get("since_rev", default=None, type=int))
+        if not out.get("unchanged"):
+            out["schedule_service"] = chat.schedule_state(_project_root(project_name), session_id,
+                                                         available=_schedule_available())["schedule_service"]
+        return jsonify(out)
     except Exception as error:  # noqa: BLE001
         return _fail(error)
+
+
+@studio_api.post(_BASE + "/sessions/<session_id>/check")
+def chat_session_check(project_name: str, session_id: str):
+    """Check and recover this session; returns the durable report and its findings."""
+    try:
+        [report] = chat.check(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    _poke(project_name)
+    return jsonify(report)
 
 
 @studio_api.get(_BASE + "/sessions/<session_id>/activity")
@@ -177,7 +351,9 @@ def chat_message(project_name: str, session_id: str):
     try:
         out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""),
                                 attachments=payload.get("attachments"),
-                                client_message_id=payload.get("client_message_id"))
+                                client_message_id=payload.get("client_message_id"),
+                                schedule_id=payload.get("schedule_id"),
+                                expected_schedule_revision=payload.get("expected_schedule_revision"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
@@ -221,8 +397,11 @@ def chat_attachment_content(project_name: str, session_id: str, ref: str):
 def chat_decision(project_name: str, session_id: str, decision_id: str):
     payload = request.get_json(silent=True) or {}
     try:
-        decision = chat.decide(_project_root(project_name), session_id, decision_id,
-                               choice=payload.get("choice"), answer=payload.get("answer"))
+        if payload.get("delegate") is True:  # "let the orchestrator decide"
+            decision = chat.delegate_decision(_project_root(project_name), session_id, decision_id)
+        else:
+            decision = chat.decide(_project_root(project_name), session_id, decision_id,
+                                   choice=payload.get("choice"), answer=payload.get("answer"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
@@ -400,4 +579,54 @@ def mailbox_action(project_name, session_id, request_id, message_id, operation):
         _poke(project_name)
         return jsonify(out)
     except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+_SCHEDULE = _BASE + "/sessions/<session_id>/schedule"
+
+
+def _schedule_available():
+    return current_app.config.get("RUNTIME_MUTATIONS_ENABLED", True)
+
+
+@studio_api.route(_SCHEDULE, methods=["GET", "POST"])
+def chat_schedule_state(project_name, session_id):
+    try:
+        root = _project_root(project_name)
+        if request.method == "GET":
+            return jsonify(chat.schedule_state(root, session_id, available=_schedule_available()))
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        out = chat.create_schedule(root, session_id, run_at=payload.get("run_at"), timezone=payload.get("timezone"),
+                                   client_schedule_id=payload.get("client_schedule_id"),
+                                   expected_schedule_revision=payload.get("expected_schedule_revision"), spawn=_schedule_available())
+        _poke(project_name)
+        return jsonify(out), 200 if out.get("replayed") else 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.patch(_SCHEDULE + "/<schedule_id>")
+@studio_api.route(_SCHEDULE + "/<schedule_id>/items/<item_id>", methods=["PATCH", "DELETE"])
+@studio_api.post(_SCHEDULE + "/<schedule_id>/<action>")
+def chat_schedule_update(project_name, session_id, schedule_id, item_id=None, action=None):
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        if item_id:
+            action = "remove" if request.method == "DELETE" else "edit"
+        elif request.method == "PATCH":
+            action = "time"
+        elif action not in ("run", "cancel"):
+            raise LookupError("unknown schedule action")
+        out = chat.mutate_schedule(_project_root(project_name), session_id, schedule_id, action,
+                                  expected_schedule_revision=payload.get("expected_schedule_revision"),
+                                  operation_id=payload.get("operation_id"), item_id=item_id, text=payload.get("text"),
+                                  attachments=payload.get("attachments"), run_at=payload.get("run_at"),
+                                  timezone=payload.get("timezone"), spawn=_schedule_available())
+        _poke(project_name)
+        return jsonify(out), 202 if action == "run" else 200
+    except Exception as error:
         return _fail(error)

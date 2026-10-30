@@ -34,6 +34,12 @@ limits:
   chat_allowed_agents: []    # new chat work only for these agents (empty: all)
 ```
 
+The per-project periodic chat checker toggle lives in the project's `alfrd.yaml`, rather than
+this machine file. Select a project, then Settings → Preferences → Project → **Periodic chat
+checker**, or use `alfrd su checker --root /absolute/project/path --disabled` (or `--enabled`).
+It defaults to `chat.watch.enabled: true` and uses the same loopback + CSRF superuser boundary.
+See [Scheduled recovery checks](orchestration.md#scheduled-recovery-checks) for the API and idle behavior.
+
 ## How the settings combine
 
 - **Command-line flags** stay stronger. `--experimental-features` turns experimental features on for

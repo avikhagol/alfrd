@@ -19,7 +19,7 @@ from functools import lru_cache
 import fcntl
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
-from alfrd.mailbox_codes import defaults
+from alfrd.mailbox_codes import defaults, PRIORITIES
 
 PROTOCOL_V1 = "alfrd.mailbox/1"
 PROTOCOL = "alfrd.mailbox/2"
@@ -53,9 +53,33 @@ def action_hash(payload):
                                                for k in ("action", "target", "arguments", "scope")}).encode()).hexdigest()
 
 
-@lru_cache(maxsize=4)
-def _validator(name, version="v1"):
+def _specialize_discriminator(schema, field, selected, allowed):
+    if selected in allowed:
+        schema["properties"][field] = {"const": selected}
+        rules = []
+        for rule in schema.get("allOf", []):
+            branch = rule.get("if", {}).get("properties", {}).get(field, {}).get("const")
+            condition = {"properties": {field: {"const": branch}}}
+            if branch and rule.get("if") in (condition, {**condition, "required": [field]}) and set(rule) == {"if", "then"}:
+                if branch == selected:
+                    rules.append(rule["then"])
+            else:
+                rules.append(rule)
+        schema["allOf"] = rules
+
+
+@lru_cache(maxsize=128)
+def _validator(name, version="v1", kind=None, sender=None, recipient=None, actor=None, code=None):
     schema = json.loads((Path(__file__).parent / "schemas" / f"{name}.{version}.json").read_text())
+    # Compile known kind discriminators once during a cold JSONL replay.
+    # Every other constraint remains; each specialized schema binds its kind
+    # with const, so it cannot validate a different branch by mistake.
+    if name == "agent_message":
+        _specialize_discriminator(schema, "kind", kind, ("info", "question", "permission_request", "reply"))
+        _specialize_discriminator(schema, "code", code, schema["properties"].get("code", {}).get("enum", ()))
+    for field, selected in (("sender", sender), ("recipient", recipient), ("actor", actor)):
+        if field in schema.get("properties", {}):
+            _specialize_discriminator(schema["properties"][field], "kind", selected, ("agent", "user", "orchestrator"))
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
@@ -64,7 +88,12 @@ def validate(name, value):
     if protocol not in (PROTOCOL_V1, PROTOCOL):
         raise MailboxError("unsupported mailbox protocol")
     try:
-        _validator(name, "v2" if protocol == PROTOCOL else "v1").validate(value)
+        kind = value.get("kind")
+        actors = [value.get(field) for field in ("sender", "recipient", "actor")]
+        actor_kinds = [a.get("kind") if isinstance(a, dict) and isinstance(a.get("kind"), str) else None for a in actors]
+        code = value.get("code")
+        _validator(name, "v2" if protocol == PROTOCOL else "v1", kind if isinstance(kind, str) else None,
+                   *actor_kinds, code=code if isinstance(code, str) else None).validate(value)
     except ValidationError as exc:
         field = ".".join(str(part) for part in exc.absolute_path) or "<root>"
         kind = value.get("kind", name) if isinstance(value, dict) else name
@@ -327,7 +356,9 @@ class Mailbox:
 
     def pending(self, actor=USER):
         with self.locked():
-            return {"messages": self._pending(actor), "cursor": self._cursor()}
+            return {"messages": sorted(self._pending(actor), key=lambda m: (
+                m["kind"] != "permission_request", -PRIORITIES.index(m["priority"]), m["seq"])),
+                "cursor": self._cursor()}
 
     def _stamp(self):
         stamp = []
@@ -378,9 +409,26 @@ class Mailbox:
         allowed = {"idempotency_key", "expected_version", "outcome", "choice_id", "answer", "action_hash"}
         if not isinstance(payload, dict) or set(payload) - allowed:
             raise MailboxError("invalid reply fields")
+        # The audit fields are store-owned: set below from a stored delegation, never taken from the caller.
+        actor = {k: v for k, v in actor.items() if k not in ("on_behalf_of", "delegated")}
         with self.locked():
             original = self._find(mid)
-            if not matches(original["recipient"], actor):
+            if actor.get("kind") == "orchestrator":
+                if original["kind"] == "permission_request" or payload.get("action_hash") is not None:
+                    raise MailboxError("action-hash approvals require a human", 403)
+                if original["recipient"] == USER:
+                    delegated = next((d for d in self.session.decisions()
+                                      if d.get("request") == self.run_id and d.get("mailbox_message_id") == mid
+                                      and d.get("delegated") and not d.get("repeat")
+                                      and d.get("needs") == "orchestrator"), None)
+                    if not delegated or original["kind"] != "question":
+                        raise MailboxError("question has not been delegated by the user", 403)
+                    actor = {**actor, "on_behalf_of": "user", "delegated": delegated["delegated"]}
+            # A person may answer any approval: the orchestrator never can, so one addressed to it would wait forever.
+            if not matches(original["recipient"], actor) and not (
+                    actor.get("kind") == "orchestrator" and actor.get("on_behalf_of") == "user"
+                    and original["recipient"] == USER) and not (
+                    actor == USER and original["kind"] == "permission_request"):
                 raise MailboxError("only the addressed recipient may reply", 403)
             if original["kind"] not in ("question", "permission_request"):
                 raise MailboxError("message cannot be resolved")
@@ -400,7 +448,8 @@ class Mailbox:
             if state["state"] == "resolved" and existing and existing["sender"] == actor and existing["idempotency_key"] == payload.get("idempotency_key") and existing["payload"] == body:
                 return {"message": existing, "resolution": state, "delivery": "recorded"}
             if state["state"] != "pending" or payload.get("expected_version", 1) != state["version"]:
-                raise MailboxError("request is no longer pending or version is stale", 409, **state)
+                raise MailboxError("Answered elsewhere" if state["state"] == "resolved" else
+                                   "request is no longer pending or version is stale", 409, **state)
             message, _ = self._put(actor, {"recipient": original["sender"], "kind": "reply", "subject": original["subject"],
                                           "body": body["answer"] or body["choice_id"] or body["outcome"], "reply_to": mid,
                                           "correlation_id": original["correlation_id"], "idempotency_key": payload.get("idempotency_key"),

@@ -1,3 +1,4 @@
+import { currentSteps } from "./chat_steps.js";
 // Project chat, pure helpers (no DOM): @-mentions, the task graph for the canvas, decisions,
 // task actions, progress and budget. Used by components/chat_view.js and components/chat_settings.js.
 // The server is the authority (alfrd/chat.py); these mirror its rules so the UI can explain them early.
@@ -14,8 +15,9 @@ export const staleState = (applied, incoming) => !!incoming?.unchanged || incomi
 /** Mirrors chat.DEFAULTS (the presets the chat: block edits). */
 export const DEFAULTS = {
   orchestrator: "claude", orchestrator_model: "sonnet", escalation_model: "opus", final_summary: false, warn_task_cost_usd: null,
-  concurrency: 2, history_messages: 8,
+  delegate_decisions: "off", concurrency: 2, history_messages: 8,
   bounds: { max_depth: 2, max_retries: 1, max_cost_usd: 5, max_seconds: 7200, max_tasks: 20, max_replans: 3 },
+  watch: { enabled: true, interval_seconds: 300, stall_seconds: 1800, wake_orchestrator: false, max_checks: 3 },
   agents: {
     claude: { label: "Claude (Opus)", entrypoint: "claude", model: "opus", roles: ["orchestration"], lean: true },
     sonnet: { label: "Claude (Sonnet)", entrypoint: "claude", model: "sonnet", roles: ["test planning", "verification", "failure analysis"], lean: true },
@@ -89,22 +91,23 @@ export function edgeTone(from, to) {
   return "idle";
 }
 
-export const ORCH_KIND = { plan: "Plan", repair: "Repair", replan: "Replan", summary: "Summary" };
+export const ORCH_KIND = { plan: "Plan", repair: "Repair", replan: "Replan", check: "Check", summary: "Summary" };
 
 /** The session graph ({nodes, edges}) as canvas nodes: owner label, status, dependency hint. `request` filters.
  *  Orchestrator rows (kind plan/repair/replan/summary) are nodes too (`orch`); `planned` edges link them to their tasks. */
-export function graphModel(graph, agents = {}, request = null) {
+export function graphModel(graph, agents = {}, request = null, requests = []) {
   const nodes = (graph?.nodes || []).filter((n) => !request || n.request === request);
   const ids = new Set(nodes.map((n) => n.id));
   const status = Object.fromEntries(nodes.map((n) => [n.id, n.status]));
   const edges = (graph?.edges || []).filter((e) => ids.has(e.from) && ids.has(e.to))
     .map((e) => ({ ...e, tone: ["delegated", "planned"].includes(e.kind) ? "idle" : edgeTone(status[e.from], status[e.to]) }));
   return {
+    rev: graph?.rev, groups: (graph?.groups || []).filter((g) => !request || g.id === request),
     nodes: nodes.map((n) => {
       const info = statusInfo(n.status), orch = Boolean(n.kind && n.kind !== "task");
       const deps = edges.filter((e) => e.to === n.id && e.kind === "depends_on").map((e) => e.from);
       const made = edges.filter((e) => e.from === n.id && e.kind === "planned").length;
-      return { id: n.id, request: n.request, title: n.title || (orch ? `${ORCH_KIND[n.kind] || n.kind} ${n.request || ""}`.trim() : n.id),
+      return { id: n.id, request: n.request, steps: currentSteps(requests.find((r) => r.id === n.request), n.id), title: n.title || (orch ? `${ORCH_KIND[n.kind] || n.kind} ${n.request || ""}`.trim() : n.id),
         sub: `@${n.owner} · ${agents[n.owner]?.label || n.owner}`, status: n.status, ...info,
         ...(orch ? { orch: true, kind: n.kind, badge: "Orchestrator", nodeIcon: "graph", hint: made ? `Planned ${made} task${made === 1 ? "" : "s"}` : `${ORCH_KIND[n.kind] || n.kind} call` }
           : { hint: deps.length ? `Waits for ${deps.join(", ")}` : "No dependencies" }) };
@@ -114,7 +117,7 @@ export function graphModel(graph, agents = {}, request = null) {
 }
 
 /** Top-down layered layout (longest dependency path); positions in canvas units. */
-export function layoutGraph(nodes, edges, { w = 260, h = 128, gapX = 36, gapY = 56 } = {}) {
+export function layoutGraph(nodes, edges, { w = 260, h = 128, gapX = 36, gapY = 56, layout = "spread" } = {}) {
   const deps = Object.fromEntries(nodes.map((n) => [n.id, []]));
   edges.forEach((e) => { if (e.to in deps && e.from in deps) deps[e.to].push(e.from); });
   const level = {};
@@ -131,6 +134,7 @@ export function layoutGraph(nodes, edges, { w = 260, h = 128, gapX = 36, gapY = 
     .forEach((n) => { level[n.id] = Math.max(0, ...nodes.filter((m) => m.request === n.request && m.kind !== "summary").map((m) => level[m.id] + 1)); });
   const rows = [];
   nodes.forEach((n) => (rows[level[n.id]] ||= []).push(n.id));
+  if (layout === "linear") rows.splice(0, rows.length, ...rows.flat().map((id) => [id]));
   const widest = Math.max(1, ...rows.map((r) => r?.length || 0));
   const width = widest * w + (widest - 1) * gapX;
   const pos = {};
@@ -151,11 +155,19 @@ export function timeline(state) {
   return [...msgs, ...results].map((m, i) => [m, i]).sort(([a, i], [b, j]) => (a.at && b.at && a.at !== b.at ? (a.at < b.at ? -1 : 1) : i - j)).map(([m]) => m);
 }
 
+/** A task's expected outputs as ALFRD froze them (absolute path, rev, earlier paths); tasks
+ * planned before outputs were frozen fall back to the plan's paths. */
+export function taskOutputs(t) {
+  if (Array.isArray(t?.outputs)) return t.outputs;
+  return (t?.task?.expected_outputs || []).map((o, i) => ({ id: `o${i + 1}`, path: typeof o === "string" ? o : o?.path,
+    description: typeof o === "string" ? "" : o?.description || "", rev: 1, history: [] })).filter((o) => o.path);
+}
+
 /** Public chat copy. Only complete, recognizable protocol envelopes are interpreted;
  * user JSON and ordinary code examples always remain untouched. Originals stay in details. */
 export function presentMessage(message, task) {
   const m = message || {}, original = String(m.text || "");
-  const identity = m.role === "user" ? "You" : m.role === "system" ? "ALFRD" : m.agent || "ALFRD";
+  const identity = m.role === "user" ? "You" : m.kind === "delegated_decision" ? "Orchestrator · decided for you" : m.kind === "output_changed" ? "ALFRD · output moved" : m.role === "system" ? "ALFRD" : m.agent || "ALFRD";
   if (m.role !== "assistant") return { ...m, identity, text: original };
   let text = original, envelope = null, prefix = "";
   const fences = [...original.matchAll(/(?:^|\n)```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g)];
@@ -248,6 +260,69 @@ export function activeRequest(state) {
   return [...list].reverse().find((r) => REQUEST_ACTIVE.includes(r.status)) || list[list.length - 1] || null;
 }
 
+/** Host-owned Stop: freeze the confirmation set; retries never absorb new tasks. */
+export function createRequestStop({ state, context, cancel, refresh, changed = () => {}, report = () => {}, confirm = (text) => globalThis.confirm(text) }) {
+  let stopping = false, retry = null;
+  const eligible = (s, id) => (s?.tasks || []).filter((t) => t.request === id && canCancel(t));
+  const same = (a, b) => a.project === b.project && a.sid === b.sid;
+  const api = {
+    state() {
+      const req = activeRequest(state()), tasks = req && eligible(state(), req.id);
+      const visible = Boolean(req && REQUEST_ACTIVE.includes(req.status));
+      return { visible, disabled: stopping || !tasks?.length, label: stopping ? "Stopping…" : retry && same(retry, context()) && retry.request === req?.id ? "Retry Stop" : "Stop request",
+        reason: visible && !tasks?.length ? "Planning cannot be stopped yet" : "" };
+    },
+    async stop() {
+      if (stopping) return;
+      const req = activeRequest(state()), ctx = { ...context() };
+      if (!req || !REQUEST_ACTIVE.includes(req.status)) return;
+      const ids = retry && same(retry, ctx) && retry.request === req.id ? [...retry.ids] : eligible(state(), req.id).map((t) => t.row);
+      if (!ids.length) return;
+      stopping = true; changed();
+      let stopped = 0; const failed = [];
+      try {
+        if (!await confirm(`Cancel ${ids.length} queued or running tasks in request ${req.id}? Completed work is kept.\n\nTasks: ${ids.join(", ")}`)) return;
+        for (const id of ids) {
+          try {
+            const fresh = await refresh();
+            if (fresh === false || !same(ctx, context()) || !eligible(state(), req.id).some((t) => t.row === id)) { failed.push(id); continue; }
+            await cancel(id, ctx, eligible(state(), req.id).find((t) => t.row === id)); stopped++;
+          } catch { failed.push(id); }
+        }
+        retry = failed.length ? { ...ctx, request: req.id, ids: failed } : null;
+        report(`Stopped ${stopped} of ${ids.length} tasks.${failed.length ? ` ${failed.length} couldn't be stopped.` : ""}`, failed.length ? "warn" : "ok");
+        await refresh();
+      } finally { stopping = false; changed(); }
+    },
+  };
+  return api;
+}
+
+/** Request wall time, rounded once for both the individual and combined views. */
+export function requestTiming(req, now = Date.now()) {
+  const ongoing = REQUEST_ACTIVE.includes(req?.status) && !req?.finished;
+  const started = Number.isFinite(req?.created_ts) ? req.created_ts * 1000 : Date.parse(req?.created);
+  const ended = req?.finished ? Date.parse(req.finished) : ongoing ? now : NaN;
+  return { ongoing, seconds: Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, Math.round((ended - started) / 1000)) : 0 };
+}
+
+/** Sum the same per-request records shown in the individual scope. Unknown fields stay unknown. */
+export function requestTotals(state, now = Date.now()) {
+  const requests = state?.requests || [];
+  const usage = Object.fromEntries(["input_tokens", "input_uncached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens", "total_cost_usd"].map((key) => [key, null]));
+  let seconds = 0, ongoing = 0;
+  for (const req of requests) {
+    const timing = requestTiming(req, now);
+    seconds += timing.seconds;
+    ongoing += Number(timing.ongoing);
+    for (const key of Object.keys(usage)) {
+      const value = key === "input_uncached_tokens" ? tokenReport(req.usage).fresh : req.usage?.[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) usage[key] = (usage[key] ?? 0) + value;
+    }
+  }
+  return { count: requests.length, seconds, ongoing, usage };
+}
+
 /** Progress and budget use of one request: task counts, cost and time against its bounds. */
 export function requestProgress(state, req, now = Date.now()) {
   if (!req) return null;
@@ -255,16 +330,14 @@ export function requestProgress(state, req, now = Date.now()) {
   const count = (...s) => tasks.filter((t) => s.includes(t.status)).length;
   const bounds = req.bounds || state?.settings?.bounds || {};
   const cost = Number(req.usage?.total_cost_usd) || 0;
-  const started = Number(req.created_ts) ? req.created_ts * 1000 : Date.parse(req.created);
-  const ended = req.finished ? Date.parse(req.finished) : now;
-  const seconds = Number.isFinite(started) ? Math.max(0, Math.round((ended - started) / 1000)) : 0;
+  const { seconds, ongoing } = requestTiming(req, now);
   const ratio = (v, max) => (Number(max) > 0 ? Math.min(1, v / Number(max)) : 0);
   const worst = Math.max(ratio(cost, bounds.max_cost_usd), ratio(seconds, bounds.max_seconds));
   return {
     id: req.id, status: req.status, mode: req.mode, text: req.text,
     total: tasks.length, done: count("done"), failed: count("failed", "blocked", "stopped", "cancelled"), running: count("running"),
     cost, maxCost: Number(bounds.max_cost_usd) || null, costRatio: ratio(cost, bounds.max_cost_usd),
-    seconds, maxSeconds: Number(bounds.max_seconds) || null, timeRatio: ratio(seconds, bounds.max_seconds),
+    seconds, ongoing, maxSeconds: Number(bounds.max_seconds) || null, timeRatio: ratio(seconds, bounds.max_seconds),
     tokens: (Number(req.usage?.input_tokens) || 0) + (Number(req.usage?.output_tokens) || 0),
     calls: Number(req.orchestrator_calls) || 0,
     tone: worst >= 1 ? "fail" : worst >= 0.8 ? "warn" : "ok",
@@ -304,8 +377,8 @@ export function duration(s) {
 
 // --- chat: settings (Settings → Agent chat) --------------------------------------------
 
-const AGENT_FIELDS = ["label", "entrypoint", "cmd", "model", "adapter", "roles", "persona", "timeout", "lean", "env", "fallback"];
-const SETTING_KEYS = ["orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd", "concurrency", "history_messages"];
+const AGENT_FIELDS = ["label", "entrypoint", "cmd", "model", "adapter", "roles", "persona", "timeout", "lean", "env", "fallback", "model_option", "skills", "plugins", "mcp"];
+const SETTING_KEYS = ["orchestrator", "orchestrator_model", "escalation_model", "final_summary", "warn_task_cost_usd", "concurrency", "history_messages", "skill_selection", "delegate_decisions"];
 
 /** The effective chat settings of a `chat:` block (presets merged under it, `agent: null` removes one). */
 export function mergeChat(raw = {}) {
@@ -313,6 +386,7 @@ export function mergeChat(raw = {}) {
   const r = raw && typeof raw === "object" ? raw : {};
   for (const k of SETTING_KEYS) if (k in r) out[k] = r[k];
   Object.assign(out.bounds, r.bounds || {});
+  Object.assign(out.watch, r.watch || {});
   for (const [key, a] of Object.entries(r.agents || {})) {
     if (a == null) delete out.agents[key];
     else out.agents[key] = { ...(out.agents[key] || {}), ...a };
@@ -338,9 +412,17 @@ export function chatBlock(s) {
   }
   const model = (v) => (String(v ?? "").trim() || null); // empty: the orchestrator agent's own model
   const warn = Number(s.warn_task_cost_usd) > 0 ? Number(s.warn_task_cost_usd) : null;
+  // chat.watch: only the keys that differ from the defaults (a block without it keeps the defaults)
+  const watch = Object.fromEntries(Object.entries(s.watch || {})
+    .filter(([k, v]) => k in DEFAULTS.watch && v !== "" && v != null)
+    .map(([k, v]) => [k, ["enabled", "wake_orchestrator"].includes(k) ? Boolean(v) : Number(v)])
+    .filter(([k, v]) => v !== DEFAULTS.watch[k]));
   return { orchestrator: s.orchestrator, orchestrator_model: model(s.orchestrator_model), escalation_model: model(s.escalation_model),
     final_summary: Boolean(s.final_summary), warn_task_cost_usd: warn, concurrency: Number(s.concurrency),
-    history_messages: Number(s.history_messages), bounds: { ...s.bounds }, agents };
+    history_messages: Number(s.history_messages),
+    ...(s.delegate_decisions && s.delegate_decisions !== "off" ? { delegate_decisions: s.delegate_decisions } : {}),
+    ...(s.skill_selection ? { skill_selection: s.skill_selection } : {}), bounds: { ...s.bounds },
+    ...(Object.keys(watch).length ? { watch } : {}), agents };
 }
 
 /** Problems with effective settings (mirrors chat.merge_settings); `personas` are the project's persona keys. */
@@ -357,14 +439,21 @@ export function chatProblems(s, personas = []) {
     if (a.fallback && (a.fallback === key || !keys.includes(a.fallback))) errors.push(`@${key}: the fallback must be another agent.`);
   }
   if (!keys.includes(s.orchestrator)) errors.push(`The orchestrator must be one of the agents (${keys.map((k) => `@${k}`).join(", ") || "none"}).`);
-  const int = (v, low) => Number.isInteger(Number(v)) && Number(v) >= low && v !== "" && v !== null;
+  const int = (v, low) => typeof v !== "boolean" && Number.isInteger(Number(v)) && Number(v) >= low && v !== "" && v !== null;
   if (!int(s.concurrency, 1)) errors.push("Concurrency: a whole number ≥ 1.");
   if (!int(s.history_messages, 0)) errors.push("History messages: a whole number ≥ 0.");
+  if (s.delegate_decisions && !["off", "questions", "all"].includes(s.delegate_decisions)) errors.push("Let the orchestrator decide: off, questions or all.");
   const b = s.bounds || {};
   for (const k of ["max_depth", "max_tasks"]) if (!int(b[k], 1)) errors.push(`${k}: a whole number ≥ 1.`);
   if (!int(b.max_retries, 0) || Number(b.max_retries) > 5) errors.push("max_retries: a whole number from 0 to 5.");
   if (b.max_replans != null && !int(b.max_replans, 0)) errors.push("max_replans: a whole number ≥ 0.");
   for (const k of ["max_cost_usd", "max_seconds"]) if (!(Number(b[k]) > 0)) errors.push(`${k}: a positive number.`);
+  const wt = s.watch || {};
+  if ("enabled" in wt && typeof wt.enabled !== "boolean") errors.push("Periodic chat checker: true or false.");
+  if ("wake_orchestrator" in wt && typeof wt.wake_orchestrator !== "boolean") errors.push("Wake the orchestrator: true or false.");
+  if (wt.interval_seconds != null && (!int(wt.interval_seconds, 0) || (Number(wt.interval_seconds) > 0 && Number(wt.interval_seconds) < 30))) errors.push("Check interval: 0 (off) or at least 30 seconds.");
+  if (wt.stall_seconds != null && !int(wt.stall_seconds, 60)) errors.push("Stall after: a whole number of seconds ≥ 60.");
+  if ("max_checks" in wt && !int(wt.max_checks, 0)) errors.push("Orchestrator checks per request: a whole number ≥ 0.");
   const w = s.warn_task_cost_usd;
   if (w != null && w !== "" && !(Number(w) > 0)) errors.push("Task cost warning: a positive number (empty: no warning).");
   return errors;
@@ -483,4 +572,14 @@ export function setupSummary(s) {
   const roles = roleWords(s.agents).map((r) => `${r} → @${roleOwner(s.agents, r)}`);
   const fb = Object.entries(s.agents).filter(([, a]) => a.fallback).map(([k, a]) => `@${k} falls back to @${a.fallback}`);
   return [`Setup saved: orchestrator @${s.orchestrator} (${s.orchestrator_model || s.agents[s.orchestrator]?.model || "agent model"})`, ...roles, ...fb].join(", ");
+}
+/** Scheduled check timestamps are offset-aware; tolerate sessions checked before this feature. */
+export function checkStatus(report, now = Date.now()) {
+  const at = Date.parse(report?.at || "");
+  if (!Number.isFinite(at)) return "Not checked yet";
+  const minutes = Math.max(0, Math.floor((now - at) / 60000));
+  const age = minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} hr ago`;
+  const next = Date.parse(report?.next_at || "");
+  const due = !Number.isFinite(next) ? "scheduled checks off" : next <= now ? "next check due" : `next in ${Math.ceil((next - now) / 60000)} min`;
+  return `Checked ${age} · ${due}`;
 }

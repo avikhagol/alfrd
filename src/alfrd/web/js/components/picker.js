@@ -35,6 +35,7 @@ export function typeahead(items, index, typed) {
  */
 export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "Nothing to choose", action = () => null }) {
   const valEl = trigger.querySelector(".picker-val");
+  let pending = null;
   let items = [], value = null, typed = "", typedAt = 0, refresh;
   trigger.setAttribute("aria-haspopup", "listbox");
   trigger.setAttribute("aria-expanded", "false");
@@ -62,6 +63,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
     openPop = null;
     refresh = null;
     trigger.setAttribute("aria-expanded", "false");
+    if (pending) { const next = pending; pending = null; apply(...next); }
     if (focus) trigger.focus();
   }
 
@@ -100,6 +102,7 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
       paint(false); list.scrollTop = top;
     };
     const choose = (it) => {
+      if (pending) pending[1] = it?.value ?? value; // the deliberate choice wins over a background selection
       close(true);
       if (it && it.value !== value) { value = it.value; fit(); onChange(it.value); }
     };
@@ -151,13 +154,17 @@ export function mountPicker(trigger, { label, onChange, filterAt = 8, empty = "N
   let frame = 0;
   window.addEventListener("resize", () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(fit); });
 
-  return {
-    set(next, selected) {
+  const apply = (next, selected) => {
       items = next;
       value = selected;
       trigger.disabled = !items.length && !action();
       fit();
       refresh?.();
+  };
+  return {
+    set(next, selected) {
+      if (openPop?.trigger === trigger) { pending = [next, selected]; return; }
+      apply(next, selected);
     },
     open,
     close: () => close(false),

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 EVENT_KINDS: frozenset[str] = frozenset({
+    'chat.schedule.created', 'chat.schedule.changed', 'chat.schedule.item_added', 'chat.schedule.item_updated', 'chat.schedule.item_removed', 'chat.schedule.waiting', 'chat.schedule.dispatching', 'chat.schedule.submitted', 'chat.schedule.cancelled', 'chat.schedule.expired_empty', 'chat.schedule.failed',
     "plan.started", "plan.finished", "plan.failed", "plan.cancelled", "plan.interrupted",
     "turn.started", "turn.finished", "turn.failed", "turn.retrying", "turn.fallback_model", "turn.idle",
     "review.pending", "review.approved", "review.rejected",
@@ -21,8 +22,12 @@ EVENT_KINDS: frozenset[str] = frozenset({
     # chat orchestration (alfrd.chat): one session's plan carries these too
     "task.created", "task.started", "task.finished", "task.blocked",
     "decision.needed", "decision.resolved", "request.finished", "budget.exceeded",
+    # Durable chat notification projections (also recognized in route patterns).
+    "approval.needed", "permission.needed", "request.failed", "task.failed", "request.cancelled", "request.stopped",
     # a chat row hit a usage/rate/quota limit and moved to its owner's fallback agent
     "task.fallback", "task.reassigned", "task.access_granted", "task.stuck",
+    # an agent wrote an expected output to another path (result "outputs_changed")
+    "task.output_changed",
     # a turn or chat task cost more than its warning budget (execution.warn_turn_cost_usd, chat.warn_task_cost_usd)
     "budget.warning",
 })

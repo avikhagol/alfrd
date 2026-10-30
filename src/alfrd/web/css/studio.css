@@ -119,7 +119,7 @@ h5 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px
 
 .ic { width: 16px; height: 16px; flex: none; }
 .ic.big { width: 28px; height: 28px; color: var(--accent-text); }
-.spin { animation: spin 1.2s linear infinite; }
+.spin { display: inline-block; transform-box: fill-box; transform-origin: center; animation: spin 1.2s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .logo { width: 34px; height: 34px; flex: none; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -213,8 +213,8 @@ body.console-open .view { padding-bottom: calc(var(--console-h, 280px) + 10px); 
 .icon-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: var(--r); border: 1px solid transparent; background: transparent; color: var(--text-2); cursor: pointer; flex: none; }
 .icon-btn:hover { background: var(--subtle); color: var(--text); }
 .icon-btn.on { background: var(--accent-bg); color: var(--accent-text); border-color: var(--accent-border); }
-.icon-btn.sm { width: 26px; height: 26px; }
-.icon-btn.xs { width: 22px; height: 22px; }
+.icon-btn.sm { width: 30px; height: 30px; }
+.icon-btn.xs { width: 30px; height: 30px; }
 .icon-btn.xs .ic { width: 13px; height: 13px; }
 .icon-btn.open .ic { transform: rotate(90deg); }
 .icon-btn .ic { transition: transform .15s; }
@@ -368,8 +368,7 @@ span.count { cursor: default; }
 .mini-bar i { display: block; height: 100%; background: var(--ok); border-radius: 3px; }
 .path { max-width: 280px; }
 .path .trunc { max-width: 240px; color: var(--text-2); }
-.path .icon-btn { visibility: hidden; margin-left: 2px; vertical-align: middle; }
-tr:hover .path .icon-btn { visibility: visible; }
+.path .icon-btn { margin-left: 2px; vertical-align: middle; }
 .prog { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 70px; }
 .prog b { font-size: 12px; font-variant-numeric: tabular-nums; }
 .bar { display: block; width: 70px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
@@ -1060,6 +1059,8 @@ summary:focus-visible, pre:focus-visible, [role=tab]:focus-visible { outline: 2p
 .rail-foot { margin-top: auto; display: flex; justify-content: flex-start; padding: 4px 4px 0; }
 .rail-toggle { width: 44px; height: 44px; }
 .rail a span, .rail-label { min-width: 0; }
+.rail a[data-view="chat"] { position: relative; }
+.rail [data-inbox-count] { position: absolute; top: 1px; right: 1px; font-size: 10px; padding: 1px 4px; max-width: 42px; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 1279px) { .rail-head, .rail-foot { display: none; } }
 @media (min-width: 1280px) {
   .app[data-sidebar="collapsed"] { --rail: 64px; }
@@ -1140,3 +1141,33 @@ body.wf-compact #view-workflow .wf-main:not(.insp-cfg) { grid-template-columns: 
 body.wf-compact #view-workflow .wf-main:not(.insp-cfg) .inspector { display: none; }
 body.wf-compact:has(#view-workflow:not([hidden])) :is(.footbar, .dock-strip, .console) { display: none; }
 #conn-notice { margin: 8px 12px 0; }
+
+/* Touch controls stay usable even when their visual variant is compact. */
+@media (pointer: coarse) {
+  button, .btn, .icon-btn { min-width: 44px !important; min-height: 44px !important; }
+}
+
+/* Text viewers reserve one toolbar row so Find never moves the log viewport. */
+.modal.full:has([data-text-find]) .modal-b { flex-direction: column; padding-top: 52px; position: relative; }
+.text-find { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; align-items: center; gap: 6px; height: 30px; }
+.text-find[hidden] { display: none; }
+.text-find .input { flex: 1; width: 0; }
+.text-find .btn { flex: none; height: 28px; padding: 0 8px; }
+.text-find [data-text-count] { flex: none; min-width: 4ch; text-align: center; white-space: nowrap; }
+::highlight(text-find) { background: var(--accent); color: var(--on-accent); }
+@media (max-width: 700px) {
+  .modal.full:has([data-text-find]) .modal-h { flex-wrap: wrap; gap: 6px; padding: 10px 12px; }
+  .modal.full:has([data-text-find]) .modal-h > .trunc { max-width: 100%; }
+  .modal.full:has([data-text-find]) [data-log-dock] { font-size: 0; gap: 0; padding: 0 8px; }
+}
+
+/* Panel boundaries share one accessible interaction; the hit area stays outside actions. */
+.panel-resize { position: absolute; z-index: 4; top: 0; bottom: 0; right: -6px; width: 12px; cursor: col-resize; touch-action: none; }
+.panel-resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; background: transparent; }
+.panel-resize:hover::after, .panel-resize:focus-visible::after { background: var(--accent); }
+.panel-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.panel-resize-right { right: auto; left: -6px; }
+.panel-resize[hidden] { display: none; }
+.rail { position: relative; }
+@media (min-width: 1280px) { .app[data-sidebar="expanded"] { --rail: var(--nav-width, 240px); } }
+@media (forced-colors: active) { .panel-resize::after { background: CanvasText; } .panel-resize:focus-visible { outline-color: Highlight; } }

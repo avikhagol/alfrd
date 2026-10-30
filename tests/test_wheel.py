@@ -92,6 +92,7 @@ def test_built_wheel_contains_resources_metadata_and_no_core_shadow(built_wheel:
         metadata = archive.read(metadata_name).decode()
 
     assert EXPECTED_WHEEL_PATHS <= names
+    assert not any(name.startswith("alfrd/web/assets/defaults/.alfrd/") for name in names)
     assert "alfrd/core.py" not in names
     assert f"Version: {VERSION}" in metadata
     assert "Requires-Python: >=3.10" in metadata
@@ -99,6 +100,7 @@ def test_built_wheel_contains_resources_metadata_and_no_core_shadow(built_wheel:
     source_distribution = next(built_wheel.parent.glob(f"alfrd-{VERSION}.tar.gz"))
     with tarfile.open(source_distribution) as archive:
         source_names = set(archive.getnames())
+    assert not any("/src/alfrd/web/assets/defaults/.alfrd/" in name for name in source_names)
     for expected in EXPECTED_WHEEL_PATHS:
         assert any(name.endswith(f"/src/{expected}") for name in source_names), expected
 
@@ -107,7 +109,7 @@ def test_wheel_installs_and_public_imports_and_cli_work_outside_checkout(
     built_wheel: Path, tmp_path: Path
 ):
     environment = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=not UV).create(environment)
+    venv.EnvBuilder(with_pip=not UV, symlinks=(os.name != "nt")).create(environment)
     bin_dir = environment / ("Scripts" if os.name == "nt" else "bin")
     python = bin_dir / ("python.exe" if os.name == "nt" else "python")
     alfrd_command = bin_dir / ("alfrd.exe" if os.name == "nt" else "alfrd")

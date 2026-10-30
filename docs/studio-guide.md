@@ -316,10 +316,17 @@ in [orchestration.md](orchestration.md).
   `.alfrd/chat/` and its plan in `.alfrd/plans/chat-<id>/` (messages, tasks, logs, mailbox) for good; it
   is refused while a request is still active, so cancel its tasks first. The sidebar button next to
   **New** folds the list away (remembered in this browser); **Chats** in the header brings it back. On a
-  phone **Chats** opens the list as an overlay.
+  phone **Chats** opens a modal list with trapped focus; Escape returns to Chats. **Search sessions**
+  filters local title, ID and available preview, together with **Needs me**, without changing the
+  selected conversation or its draft. Failed renames keep the typed name for another save.
 - **Composer:** Enter sends, Shift+Enter adds a line. A message that starts with `@agent` goes
   straight to that agent (no orchestrator call); typing `@` at the start lists the configured agents
-  with their labels and roles (arrows, Enter or Tab to pick, Esc to close). Global shortcuts stay off
+  with their labels and roles (arrows, Enter or Tab inserts a hint; submit again to execute a slash
+  command; Esc closes hints first). IME composition never sends. The input grows with the draft.
+  Send stays separate from **Stop request** while work runs. Stop confirms a concrete request and
+  task list, keeps completed work and draft text, and reports partial failures; **Retry Stop** only
+  retries that list. Each cancellation requires a fresh conversation snapshot; a failed refresh
+  leaves the task untouched for retry. During planning it explains when no task can yet be stopped. Global shortcuts stay off
   while you type. A leading `/` opens the commands: `/setup` (who does what, with which model:
   orchestrator and escalation models, role → agent, model, fallback agent, availability, and **New agent**:
   a Codex / Claude Code / Antigravity agent with its own model, e.g. `@luna` on Codex `gpt-5.6-luna`, or a
@@ -344,8 +351,11 @@ in [orchestration.md](orchestration.md).
   amber at 80 % and red at the limit), tokens and orchestrator calls, plus the session totals. Cost
   shows "—" for agents whose CLI does not report it.
 - **Updates** arrive through the live event stream (the badge says *Live* or *Disconnected*);
-  nothing polls while it works. With live updates off, an active request is re-read every 15 s and
-  the refresh button re-reads it at once.
+  visible recorded activity still polls at a bounded 2 s cadence. Mailbox polls every 2 s while
+  active/pending, otherwise every 10 s; hidden views pause. With live updates off, an active request
+  is also re-read every 15 s. Refresh re-reads it at once. Inline questions and permissions preserve
+  unsent answers across updates. **Action details** exposes exact supplied arguments and action hash
+  beside Approve once / Deny. Replies use server versions; changed permissions require review again.
 
 ### Chat dock
 
@@ -354,10 +364,10 @@ dock on the right of every project view: Workflow, Results, Overview, Schedule, 
 the session you last opened (a selector switches or starts one), its transcript, the composer (same
 `@agent` completion; Enter sends, Shift+Enter adds a line) and one progress line for the active
 request: tasks done, cost against the bound, elapsed time, tokens and warning badges. **Open full**
-goes to the Chat page (graph, decisions, sessions). Open or closed and the width (drag its left edge,
+closes the dock and opens the same session on the Chat page (graph, decisions, sessions), preserving its draft. Open or closed and the width (drag its left edge,
 or arrow keys on it) are remembered in this browser. In compact workflow mode the dock stays hidden
 unless you open it by hand. Windows 900 px wide or narrower show it as an overlay on top of the view
-(Esc or the close button returns). It loads on the first open, updates from the same live event stream
+(Escape or Close returns focus to the invoker; the background is inert and Tab stays inside). It loads on the first open, updates from the same live event stream
 as the Chat page, and is a labelled landmark (`aria-expanded` on its button).
 
 Each chat session is also a run: Workflow → Runs lists it under *Chat sessions* (tasks × agents grid,
@@ -401,6 +411,141 @@ if the file changed since it was loaded you see the difference instead of overwr
 
 The draft is kept in this browser (it survives a reload) until it is created or discarded. The short
 **Quick dialog…** remains for folder, name and template only.
+
+The chat header’s check tick shows its last-check age and next scheduled check
+in its hover tooltip and accessible label. Click it to check for interrupted work.
+
+## Skills Explorer
+
+In **Chat**, open the conversation header’s **⋯ → Skills** to browse the current
+chat project’s installed skills in a centred, scrollable modal. Close it with the
+close button, Escape or a backdrop click; focus returns to the ⋯ trigger.
+Reopening starts a fresh search and preview. Switching projects closes the modal. Chat mode must be enabled in Preferences and requires `alfrd serve`.
+The explorer has no global navigation entry or standalone route, and is not
+shown in the agent-loop view: ALFRD’s saved-skill delivery is chat-specific.
+It lists global skills from `~/.alfrd/skills` plus project skills grouped by `.alfrd/skills`, `.claude/skills`, and `skills/`, including the bundled
+ALFRD skill library when installed in the project. Duplicate IDs use the first
+root in that order. Search matches names, descriptions, paths and provider policy.
+Use **Refresh skills** after editing installed files. Discovery is relative to the
+selected project root, not the server working directory or provider home folders.
+Choose the ALFRD repository project to browse its bundled `skills/` library.
+
+
+Use **New skill** to create guidance in **Current project** (the default) or the
+**Global library**. The form shows the selected project and absolute destination:
+`<registered-project>/.alfrd/skills/<id>/SKILL.md`, or
+`$ALFRD_SKILLS_DIR/<id>/SKILL.md` (default `~/.alfrd/skills`). Global saves change
+the shared library. IDs use 1–64 lowercase letters/numbers and single hyphens;
+reserved device names and existing IDs in any project discovery root are rejected.
+Creating a skill leaves it inactive. Choose its scopes and **Save activations**
+separately when you want future requests to use it.
+
+Editable cards offer **Edit**. The detail editor changes only `SKILL.md`, preserving
+supporting files. Packaged/external sources are read-only; use **Copy skill…** and
+choose a new ID or scope to customize them. The authoritative document remains in
+the textarea; Name and Description update their frontmatter scalar lines without
+rebuilding the body or unknown metadata. Malformed frontmatter disables structured
+fields until repaired. The escaped live preview never loads remote resources.
+**Save skill** requires a leading closed YAML mapping, nonempty name/description
+strings (128/2,048 UTF-8 bytes maximum), a Markdown body, frontmatter within 8 KiB,
+and a document within 65,536 bytes. Use single-line scalar metadata: duplicate keys,
+collections, block scalars, aliases, anchors, merge keys and custom tags are rejected.
+
+Saves compare a revision containing the identity, path, SHA-256 and filesystem
+identity. A stale save keeps your draft and displays the current saved text; copy
+your draft before refreshing. There is no force overwrite. ALFRD writers share a
+library lock and publish atomically with fsync; unrelated editors that ignore the
+lock can still race after the final revision check. Dirty content and activation
+drafts prompt before dismissal/navigation; Cancel keeps editing. **Cancel edit**
+restores the opened content while retaining activation selections.
+
+**Import from URL** supports public HTTPS raw `SKILL.md`, GitHub blob/folder URLs,
+and ZIP/tar.gz bundles. **Fetch preview** shows the original and resolved URL,
+pinned GitHub commit where applicable, fetched time, complete file list, byte
+sizes, manifest, digest and proposed destination. It does not install or activate
+anything. Review this information, choose the final ID/scope, then **Save skill**.
+Markdown links are not crawled. Imported instructions grant no permissions.
+Preview handles expire after ten minutes and belong to this Studio session and
+project; **Discard preview** removes them. Confirmation uses exactly the reviewed
+bytes, without another fetch, and retries are idempotent.
+
+Imports require verified HTTPS on port 443, public DNS addresses and pinned
+connections. Credentials, private/local IPs, redirects to insecure destinations,
+unsafe archive paths, links, special files and ambiguous skill roots are rejected.
+The budget is 30 seconds, eight requests, three redirects, 10 MiB downloaded and
+10 MiB expanded, with 1,000 files/2,000 archive entries. Supporting files must be
+UTF-8 text without NUL, at most 1 MiB, with `.md`, `.txt`, `.rst`, `.json`, `.yaml`,
+`.yml`, `.toml`, `.csv` or `.tsv` extensions; scripts, binaries, hidden paths and
+nested archives reject the bundle. Large GitHub repositories can exceed the
+whole-archive limit; use a raw manifest or small skill-only archive instead.
+
+Imported skills retain `.alfrd-source.json` provenance outside their instructions.
+**Locally modified** indicates changes from imported hashes. **Re-fetch source**
+opens another preview with a file comparison and installed manifest. Unchanged
+sources show **No upstream content change**. Changed content requires saving a
+new copy under another ID or scope; there is no automatic merge, replacement or
+activation transfer.
+
+Each compact skill card shows its name, a one-line description, **Global** or
+**Project** scope, a project source badge where relevant, and **Orchestrator** plus
+one badge per active role (for example **Developer**), or a muted **Inactive** badge.
+Badges reflect the current draft immediately; use **Save activations** to persist it.
+Long names and descriptions have full-text tooltips; the detail pane repeats the
+full description and path. Badges wrap on narrow screens. **About skills** expands
+header help; header badges also provide tooltips for scope and new-request semantics.
+
+The detail pane shows a delivery badge per provider. These describe policy for a
+selected skill with native skills enabled, rather than an actual launch outcome:
+Claude uses native discovery for `.claude/skills`, Codex is eligible for native
+exposure with injection fallback, and generic providers use injection. Selected
+manifests also retain prompt injection. Launch settings or exposure failures can
+change delivery; the launch unit's `skill_delivery` records Codex outcomes.
+
+Open a skill to read its escaped SKILL.md preview, absolute manifest path,
+byte size, SHA-256 and reference-file paths. Reference contents are not fetched.
+If a manifest changes between inventory and preview, a warning asks you to refresh
+the metadata. Use the scope checkboxes and **Save activations** to persist project activation state.
+Each manifest is limited to 64 KiB; a request snapshot is limited to 128 KiB total.
+
+To create and activate a skill:
+
+1. Create `skills/review/SKILL.md` in the project with YAML frontmatter and instructions:
+   ```markdown
+   ---
+   name: Review
+   description: Review changes and report concrete findings
+   ---
+   Read the changed code and check its behavior before reporting findings.
+   ```
+   Add supporting files under the same directory (for example `references/guide.md`).
+2. Keep it there for project-only use, or run `alfrd skills add --global skills/review`
+   to copy the whole bundle to the global library. A `SKILL.md` path also works.
+   Existing global IDs are never replaced; use `--id another-name` for a new copy.
+   Set `ALFRD_SKILLS_DIR` to an absolute path to override the global root.
+   Python callers can use `alfrd.skills.add_global_skill(path, global_root=...)`.
+3. In **Chat → ⋯ → Skills**, choose the Global or Project row, check **Orchestrator**
+   and/or task roles, then **Save activations**. **Cancel** discards the draft.
+   State lives in the project's `.alfrd/skills.json`, independent of other projects.
+   Changes apply to new requests; retries retain their frozen guidance.
+
+Global and project skills with the same ID remain separate rows. If both are
+active for a scope, the project copy wins and the global checkbox says Overridden.
+Custom configured and previously saved roles appear alongside suggested roles.
+Tasks without a role receive no role skills. Required prompts instruct agents to
+read the active absolute SKILL.md paths; this grants no additional filesystem access.
+Codex native discovery may still expose other installed or previously linked skills.
+
+Until the first explicit save, existing `chat.skill_selection` continues to apply
+to every launch. The modal marks this as Legacy selection and offers those skills
+checked for Orchestrator and all shown roles. Saving makes explicit scopes authoritative.
+Missing active skills appear as Unavailable and must be removed or reinstalled.
+The activation API is `GET/PUT /api/studio/projects/<project>/chat/skills/activations`;
+PUT sends `{version: 1, activations: [{id, source, scope}], base_hash}` using the hash
+from GET. Stale saves return 409. Skill installation is local CLI/Python API only.
+
+Tab reaches search, refresh and each skill. Enter or Space opens a focused skill;
+Up/Down and Home/End move between skills. Loading, empty results and request errors
+are announced; failed previews offer **Retry preview**.
 
 ## Keyboard and browser
 
@@ -516,12 +661,29 @@ Python side: `alfrd/studio_defs.py`, `alfrd/avica_layout.py`, `alfrd/gui/studio.
 Tests:
 
 ```bash
-python -m pytest -q -n auto -m "not serial"   # everything else, in parallel (about a minute)
-python -m pytest -q -m serial                 # tests that measure time or CPU, alone
-node --test tests/studio_js/*.test.mjs        # the Studio's tests only (pytest runs them too)
+rtk .venv/bin/python -m pytest -q -n 4 -m "not serial" --durations=30
+rtk .venv/bin/python -m pytest -q -m serial --durations=30
+# JS-only iteration (already included in pytest; do not repeat after a green full run):
+rtk .venv/bin/python scripts/run_studio_tests.py
 ```
 
-Add `-m "not slow and not serial"` to skip building and installing the wheel while iterating.
+Run from the repository root with its Python environment, or use
+`uv run --extra dev python -m pytest`. Plain system `pytest` can import an old
+installed ALFRD and fail collection. The Studio runner expands test paths itself,
+limits concurrent Node workers to four, and kills its process group on its
+240-second deadline. Use `--timeout` and `--concurrency` for explicit overrides,
+and pass file paths for targeted iteration. Set `ALFRD_PLAYWRIGHT` and
+`ALFRD_CHROMIUM_EXECUTABLE` to the installed Playwright module and Chromium when
+running browser acceptance checks; optional dependency skips are not browser
+validation. Pytest's Studio check inherits these settings.
+
+The two pytest commands cover the entire suite, including the Node tests once.
+Use bounded worker counts on shared machines; `-n auto` can oversubscribe them.
+While iterating, select affected files; a final full run still includes slow
+wheel and serial tests. On failure, preserve the log and rerun only the failing
+file/test after diagnosis. Wait on the actual command/session handle with a
+deadline. A `pgrep -f "node --test"` loop can match its own shell forever and does
+not establish the test runner's exit status.
 
 ## Setup forms (`quickstart:`)
 
@@ -553,3 +715,30 @@ quickstart:
 Other field settings: `label`, `help`, `placeholder`, `required`, `default` (shown when the file has no value).
 For a `key = value` file the field key is the key (`<step>.<param>` allowed); only changed values are written and other lines and comments stay. For `alfrd.yaml` the key is a dotted path, where a list segment is an index or an item's `name` (`entrypoint.claude.model`, `workflows.0.repeat.iterations`); an emptied optional field removes the key. Only the changed top-level sections are rewritten, the result must validate and load, or nothing is saved. A project's `quickstart:` overrides its template's forms one by one. API: `GET /api/studio/projects/<p>/quickstart`, `POST …/quickstart/<form>` with `{"values": {...}}` (loopback + CSRF).
 
+
+## Schedule a chat batch
+
+Choose **Schedule** below the composer, select a date/time and IANA time zone, then
+save. Studio shows the resolved UTC instant and offset. A clock-change gap is
+rejected; a time occurring twice offers both offsets. Each **Add to queue** stores
+an item on the server, shared by Chat and the dock. The queue survives reloads and
+server restarts. Edit or remove items, change the time, choose **Run now**, or
+**Cancel schedule**. Cancellation discards pending items and does not stop a running
+request. The countdown is informational; the server owns dispatch.
+
+At the deadline, the latest saved items become one orchestrator plan. Agent mentions
+are preferences in this mode. Current agent settings and saved skills apply when the
+batch is submitted. Unsaved composer text and unsaved item edits are excluded. Run
+now is disabled while an item edit is dirty. If the deadline wins, the unsaved edit
+is retained for copying and cannot change the submitted batch.
+
+If this chat already has active work, the batch waits until all its requests finish.
+A blocker or a manually paused/cancelled workflow can hold it indefinitely; resume
+that workflow explicitly. Validation errors retain an editable queue with **Retry**.
+Empty schedules expire at their deadline. After submission, cancellation or expiry,
+the composer returns to ordinary Send.
+
+**ALFRD Studio must be running. Missed schedules run when it returns.** Timing is
+best effort (roughly one-second detection while healthy). A remote/read-only Studio
+server cannot start scheduled work. The stored instant remains fixed if your display
+time zone changes.

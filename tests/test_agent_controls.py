@@ -76,10 +76,11 @@ def test_lean_startup_arguments():
     base = ["claude", "-p", "--output-format", "text"]
     assert startup_options({}) == {} and agent_command(base)[0] == tuple(base)          # default: unchanged
     lean = startup_options({"lean": True})
-    assert lean == {"mcp": "none", "plugins": False, "skills": False}
+    assert lean == {"mcp": "none", "plugins": False}
     argv = agent_command(base, "sonnet", True, startup=lean)[0]
     assert argv[:2] == ("claude", "-p")
-    for flag in ("--strict-mcp-config", "--disable-slash-commands"):
+    assert "--disable-slash-commands" not in argv
+    for flag in ("--strict-mcp-config",):
         assert argv.count(flag) == 1
     assert argv[argv.index("--setting-sources") + 1] == "project,local"
     assert "--mcp-config" not in argv and argv[argv.index("--model") + 1] == "sonnet"
@@ -115,7 +116,7 @@ def test_lean_entrypoint_option_reaches_the_step_command(tmp_path):
         "steps": {"a": {"entrypoint": "claude"}, "b": {"entrypoint": "plain"}}}))
     cfg = load_execution(tmp_path)
     lean, plain = cfg.step("a").argv, cfg.step("b").argv
-    assert "--strict-mcp-config" in lean and "tools.json" in lean and "--disable-slash-commands" in lean
+    assert "--strict-mcp-config" in lean and "tools.json" in lean and "--disable-slash-commands" not in lean
     assert not {"--strict-mcp-config", "--setting-sources", "--disable-slash-commands"} & set(plain)
     data = yaml.safe_load((tmp_path / "alfrd.yaml").read_text())
     data["entrypoint"][0]["mcp"] = "everything"

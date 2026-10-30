@@ -134,6 +134,8 @@ plugin = Plugin(
         SettingField("chat_id", "Allowed chat id", required=True, pattern=CHAT_ID,
                      help="The numeric id of your private chat with the bot (see the getUpdates step in the README)",
                      placeholder="123456789"),
+        SettingField("studio_url", "Studio URL", help="Reachable Studio base URL for chat decision links.",
+                     placeholder="https://studio.example"),
         SettingField("hold_minutes", "Digest every (minutes)", kind="number", pattern=r"[0-9]{1,4}(\.[0-9]+)?",
                      help="Empty or 0 sends notifications immediately. Otherwise, collect a digest until the oldest "
                           "notification reaches this age. Keep the Bot service running for delivery on time.",

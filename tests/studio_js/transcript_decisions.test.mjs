@@ -1,6 +1,6 @@
 // Inline decisions and the single Details disclosure (chat_thread.js, chat_mailbox.js,
 // chat_activity.js): a pending approval is on screen without opening anything, and one
-// Details per request holds the activity log, task outputs and raw protocol.
+// Details per request holds the activity log, task outputs and raw protocol; team mail is separate.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -26,7 +26,7 @@ function line(group) {
   const calls = [], host = new El("section"), top = new El("div");
   top.append(host);
   const activity = { kick() {}, stop() {}, decisionsHost: () => host, teamMailboxHost: () => "team", rawHost: () => "raw" };
-  const l = mountRequestLine(top, { mountActivity: () => activity, mountMailbox: (box, o) => { calls.push(o); return { kick() {}, stop() {} }; } });
+  const l = mountRequestLine(top, { mountActivity: () => activity, mountMailbox: (box, o) => { calls.push(o); return { kick() {}, stop() {}, jump(id) { calls.push(id); } }; } });
   return { l, calls, host, top, group };
 }
 
@@ -36,7 +36,7 @@ test("a pending permission request is visible without opening any disclosure", (
   assert.equal(calls.length, 1, "the mailbox is mounted for an open request");
   assert.equal(host.closest("details"), null, "the decisions host is outside every details element");
   assert.equal(host.children[0].parentNode.closest("details"), null);
-  assert.deepEqual([calls[0].teamBox, calls[0].rawBox], ["team", "raw"], "team messages and raw protocol go into Details");
+  assert.deepEqual([calls[0].teamBox, calls[0].rawBox], ["team", "raw"], "team messages and raw protocol use their dedicated hosts");
   const html = mailCardHtml(approval, (id) => id);
   assert.match(html, /Approval needed/);
   assert.match(html, /Run pytest/);
@@ -59,10 +59,13 @@ test("older requests read mail only once Details is opened", () => {
 test("exactly one Details disclosure per request; the permission hash and CSRF path are untouched", async () => {
   const dir = new URL("../../src/alfrd/web/js/components/", import.meta.url);
   const src = Object.fromEntries(await Promise.all(["chat_activity", "chat_mailbox", "chat_thread"].map(async (f) => [f, await readFile(new URL(`${f}.js`, dir), "utf8")])));
-  const opens = Object.values(src).join("\n").match(/<details[\s>]/g) || [];
-  assert.equal(opens.length, 1, "one <details> template across activity, mailbox and thread");
-  assert.match(src.chat_activity, /<details class="chat-details"><summary>Details<\/summary>[^`]*data-team-mailbox[^`]*data-raw-protocol/, "log, outputs, team messages and raw protocol live inside it");
+  const opens = Object.values(src).join("\n").match(/<details class="chat-details"><summary>Details<\/summary>/g) || [];
+  assert.equal(opens.length, 1, "one request Details template; output, raw, Usage and team disclosures are distinct");
+  assert.match(src.chat_activity, /data-team-mailbox><\/section><details class="chat-details"><summary>Details<\/summary>[^`]*data-raw-protocol/, "team host precedes Details; attempts and raw protocol stay inside it");
   assert.match(src.chat_activity, /chat-run-rows/);
+  assert.match(src.chat_activity, /<details class="chat-output"><summary>Recorded output<\/summary>/);
+  assert.match(src.chat_activity, /<details class="chat-raw"><summary>Raw protocol<\/summary>/);
+  assert.match(src.chat_mailbox, /<details class="chat-team"><summary data-team-title>Team messages<\/summary>/);
   assert.match(src.chat_mailbox, /action_hash: approval \? original\.payload\.action_hash : null/);
   assert.match(src.chat_mailbox, /server\.mutate\(/, "replies keep the CSRF-protected mutate path");
   assert.match(src.chat_mailbox, /idempotency_key/);
@@ -77,4 +80,17 @@ test("Details content is sanitized with DOMPurify", () => {
   assert.equal(sanitizeHtml("<img src=x onerror=alert(1)>", { isSupported: false }), "&lt;img src=x onerror=alert(1)&gt;", "no usable DOMPurify: shown as text, never as markup");
   const card = mailCardHtml({ ...approval, subject: "<script>x()</script>", body: "<img src=x onerror=1>" }, (id) => id);
   assert.doesNotMatch(card, /<script|<img/, "message text is escaped");
+});
+
+
+test("M7 waiting navigation mounts a closed request and routes its exact message for page or dock", () => {
+  for (const version of [1, 2]) {
+    const { l, calls, top } = line();
+    l.update({ id: "r0", open: false }, { mailbox_version: version });
+    l.jump("peer-id");
+    assert.equal(calls.length, 2); assert.equal(calls[1], "peer-id");
+    let stopped = false;
+    top.listeners.click[0]({ target: { closest: () => ({ dataset: { mailJump: "user-id" } }) }, stopPropagation() { stopped = true; } });
+    assert.equal(calls.at(-1), "user-id"); assert.equal(stopped, true); assert.equal(calls.length, 3);
+  }
 });

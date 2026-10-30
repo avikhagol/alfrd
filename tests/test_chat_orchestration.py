@@ -32,6 +32,7 @@ kind, task = "task", None
 if prompt.startswith("# ALFRD chat: plan this request"): kind = "plan"
 elif prompt.startswith("# ALFRD chat: fix your plan"): kind = "repair"
 elif prompt.startswith("# ALFRD chat: a task is blocked"): kind = "replan"
+elif prompt.startswith("# ALFRD chat: a request is stalled"): kind = "check"
 elif prompt.startswith("# ALFRD chat: final summary"): kind = "summary"
 else: task = re.match(r"# ALFRD task (\S+):", prompt).group(1)
 with open("calls.jsonl", "a") as f:
@@ -125,7 +126,7 @@ def calls(root):
 
 
 def orchestrator_calls(root):
-    return [c for c in calls(root) if c["kind"] in ("plan", "repair", "replan", "summary")]
+    return [c for c in calls(root) if c["kind"] in ("plan", "repair", "replan", "check", "summary")]
 
 
 def run(root, sid):
@@ -440,9 +441,18 @@ def test_orchestrator_blocker_wakes_the_orchestrator_once(project):
 # Context isolation, recovery, retrieval
 
 
-def test_missing_expected_outputs_fail_the_attempt_and_retry(project):
+def test_missing_expected_outputs_fail_the_attempt_and_retry(project, tmp_path):
     """Seen 2026-10-18: a wrapper ran unrelated work and replied "done" without the task's files."""
-    fake(project, plan=plan(task("a", expected_outputs=[{"path": "out/a.png", "description": "img"}, "out/dir/"]),
+    other = tmp_path / "other-repo"
+    (other / "out/dir").mkdir(parents=True)
+    (other / "out/a.png").write_bytes(b"wrong root")
+    manifest = project / ".alfrd/alfrd.yaml"
+    data = yaml.safe_load(manifest.read_text())
+    data["project_settings"]["agent_access"] = {"folders": [str(other)]}
+    manifest.write_text(yaml.safe_dump(data))
+    # Long paths must survive the generic retry note's 200-character error preview.
+    long_rel = "out/" + "long-name-" * 24 + ".txt"
+    fake(project, plan=plan(task("a", expected_outputs=[{"path": "out/a.png", "description": "img"}, "out/dir/", long_rel]),
                             task("b", owner="sonnet", deps=["a"])),
          a=result(), b=result(), summary={"text": "ok"})
     sid = chat.create_session(project)["id"]
@@ -450,12 +460,38 @@ def test_missing_expected_outputs_fail_the_attempt_and_retry(project):
     state = run(project, sid)
     a = next(t for t in state["tasks"] if t["row"].endswith(".a"))
     assert a["status"] == "failed" and a["attempts"] == 2              # one retry, checked in code
-    assert "expected output(s) missing: out/a.png, out/dir/" in (a.get("error") or "")
+    error = a["error"]
+    assert error.startswith("expected output(s) missing:")
+    attempts = [c["prompt"] for c in calls(project) if c["task"] == "a"]
+    assert len(attempts) == 2
+    for rel in ("out/a.png", "out/dir/", long_rel):
+        assert str(project / rel) in error
+        assert str(project / rel) in attempts[0]
+        assert str(project / rel) in attempts[1].split("## Previous attempt: missing expected outputs")[1]
+    assert f"Same relative path exists under another writable root: {other / 'out/a.png'}" in error
+    assert str(other / "out/a.png") in attempts[1]
+    assert "ALFRD checks these exact absolute paths; write them there even if you also edit another repo." in attempts[0]
+    planner = next(c["prompt"] for c in calls(project) if c["kind"] == "plan")
+    assert "Give each expected output as an absolute path" in planner
+    assert str(project) in planner
     assert not [c for c in calls(project) if c["task"] == "b"]         # the dependent never ran
     assert chat.missing_outputs(project, ["../escape.txt"]) == ["../escape.txt"]
     (project / "out/dir").mkdir(parents=True)
     (project / "out/a.png").write_bytes(b"png")
     assert chat.missing_outputs(project, [{"path": "out/a.png"}, "out/dir/"]) == []
+
+
+@pytest.mark.parametrize("output", ["nested/../result.txt", {"path": " result.txt ", "description": "report"}])
+def test_expected_prompt_and_check_share_resolution(tmp_path, output):
+    lines = "\n".join(chat.expected_output_lines(tmp_path, [output]))
+    assert f"`{tmp_path / 'result.txt'}`" in lines
+    assert chat.missing_outputs(tmp_path, [output])
+    (tmp_path / "result.txt").write_text("done")
+    assert chat.missing_outputs(tmp_path, [output]) == []
+    assert chat.missing_outputs(tmp_path, ["result.txt/"]) == ["result.txt/"]
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("outside")
+    assert chat.missing_outputs(tmp_path, [str(outside)]) == [str(outside)]
 
 
 def test_agent_prompts_hold_only_their_task(project, tmp_path):
@@ -648,6 +684,9 @@ def test_promote_a_request_to_workflow_steps(project):
     assert saved["workflows"][0]["steps"] == ["build", "r0001-impl", "r0001-verify", "r0001-docs"]
     assert saved["steps"]["r0001-verify"]["depends_on"] == ["r0001-impl"] and saved["steps"]["r0001-impl"]["depends_on"] == []
     assert saved["steps"]["r0001-impl"]["outputs"] == ["src/x.py"]
+    impl_prompt = (project / saved["steps"]["r0001-impl"]["stdin_file"]).read_text()
+    assert f"`{project / 'src/x.py'}`" in impl_prompt
+    assert "ALFRD checks these exact absolute paths" in impl_prompt
     prompt = project / saved["steps"]["r0001-verify"]["stdin_file"]
     assert "# Do verify" in prompt.read_text() and "verify works" in prompt.read_text() and "r0001-impl" in prompt.read_text()
     cfg = load_execution(project)

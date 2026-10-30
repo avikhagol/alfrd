@@ -136,3 +136,26 @@ def test_unknown_scope_and_machine_scope_are_not_saved_here(make_client):
     for scope in ("machine", "nope"):
         response = client.post(URL, headers=client.h, json={"scope": scope, "changes": {"studio.live_interval": 1}, "expected_revision": 1})
         assert response.status_code == 400
+
+
+def test_checker_toggle_is_superuser_only_and_persists_per_project(make_client, project):  # noqa: F811
+    from alfrd import chat
+
+    client = make_client()
+    assert client.get("/api/studio/session").get_json()["can_superuser"] is True
+    for enabled in (False, True):
+        body = {"scope": "project", "project": client.project,
+                "changes": {"chat.watch.enabled": enabled}, "expected_revision": revisions(client)["project"]}
+        assert client.post(URL, headers=client.h, json=body, environ_base=REMOTE).status_code == 403
+        assert client.post(URL, json=body).status_code == 403
+        response = client.post(URL, headers=client.h, json=body)
+        assert response.status_code == 200, response.get_json()
+        flag = next(f for f in response.get_json()["flags"] if f["key"] == "chat.watch.enabled")
+        assert flag["value"] is enabled and flag["scope"] == "project" and flag["default"] is True
+        assert chat.settings(project)["watch"]["enabled"] is enabled
+        assert chat.settings_view(project)["block"]["watch"]["enabled"] is enabled
+    # The full chat settings API cannot bypass the same superuser permission gate.
+    url = f"/api/studio/projects/{client.project}/chat/settings"
+    assert client.post(url, headers=client.h, json={"chat": {"watch": {"enabled": False}}},
+                       environ_base=REMOTE).status_code == 403
+    assert chat.settings(project)["watch"]["enabled"] is True
