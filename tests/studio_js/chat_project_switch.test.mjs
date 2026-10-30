@@ -102,3 +102,19 @@ test('lazy shell fetches only selected lists, with no picker decoration or activ
     Object.assign(globalThis, globals);
   }
 });
+
+
+test('fresh selected lists skip settled duplicate reads; TTL and background invalidation still refresh', async () => {
+  let calls = 0, now = 0;
+  const c = createChatProjects({ now: () => now, request: async () => {
+    calls++; return response({ sessions: [row(String(calls))] });
+  } });
+  c.select('a'); await flush();
+  await c.load('a'); assert.equal(calls, 1);
+  c.select('b'); await flush(); c.select('a'); await flush(); assert.equal(calls, 2);
+  now = 30000; await c.load('a'); assert.equal(calls, 3);
+  c.select('b'); await flush(); await c.invalidate('a');
+  c.select('a'); await flush(); assert.equal(calls, 5);
+  c.refresh(); await flush(); assert.equal(calls, 6);
+  c.stop();
+});

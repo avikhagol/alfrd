@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -101,7 +102,7 @@ def test_effective_args_reuses_adapter_code(tmp_path):
     out = {e["id"]: e for e in skills.effective_args({"c": spec})}
     expected = agent_command(spec["argv"], "opus", startup=startup_options(spec))[0]
     assert out["c"]["argv"] == list(expected)
-    assert "--disable-slash-commands" in out["c"]["argv"]
+    assert "--disable-slash-commands" not in out["c"]["argv"]
     assert "--setting-sources" in out["c"]["argv"]
     assert out["c"]["adapter"] == "claude"
     assert out["c"]["error"] is None
@@ -154,8 +155,8 @@ def test_agent_view_native_flags_and_notes():
         "bad": {"argv": ["claude"], "lean": "yes"},
     })
     assert view["claude"]["adapter"] == "claude"
-    assert view["claude"]["native"] == {"skills": False, "plugins": False, "mcp": False}
-    assert "--disable-slash-commands" in view["claude"]["effective_args"]
+    assert view["claude"]["native"] == {"skills": True, "plugins": False, "mcp": False}
+    assert "--disable-slash-commands" not in view["claude"]["effective_args"]
     assert view["plain"]["native"] == {"skills": True, "plugins": True, "mcp": True}
     assert view["codex"]["adapter"] == "codex"
     assert view["codex"]["native"] == {"skills": False, "plugins": False, "mcp": False}
@@ -196,4 +197,97 @@ def test_skills_route_lists_skills_and_per_agent_native_flags(skills_web):
     assert agents["codex"]["adapter"] == "codex"
     assert agents["codex"]["native"] == {"skills": False, "plugins": False, "mcp": False}
     assert any("Codex: no effect" in note for note in agents["codex"]["notes"])
-    assert agents["claude"]["adapter"] == "claude" and "--disable-slash-commands" in agents["claude"]["effective_args"]
+    assert agents["claude"]["adapter"] == "claude" and "--disable-slash-commands" not in agents["claude"]["effective_args"]
+
+
+@pytest.mark.parametrize("value,disabled", [(None, False), (True, False), (False, True)])
+def test_lean_selected_skills_explicit_precedence(tmp_path, value, disabled):
+    write_skill(tmp_path, "skills", "review", "---\nname: Review\ndescription: check diffs\n---\nbody")
+    snap = skills.snapshot_selection(tmp_path, {"enabled": True, "selected_ids": ["review"]})
+    spec = {"argv": ["claude", "-p"], "lean": True}
+    if value is not None:
+        spec["skills"] = value
+    args = skills.effective_args({"c": spec})[0]["argv"]
+    assert ("--disable-slash-commands" in args) is disabled
+    assert "--strict-mcp-config" in args and "--setting-sources" in args
+    assert f"Use skill review for check diffs; full text in {tmp_path}/skills/review/SKILL.md" in skills.snapshot_prompt(snap)
+
+
+def test_codex_exposure_preserves_existing_files_and_snapshot(tmp_path):
+    source = write_skill(tmp_path, "skills", "review", "---\nname: review\ndescription: review changes\n---\nbody")
+    snap = skills.snapshot_selection(tmp_path, {"enabled": True, "selected_ids": ["review"]})
+    workspace = tmp_path / "run"
+    workspace.mkdir()
+    native = workspace / ".agents/skills/alfrd-review"
+    native.mkdir(parents=True)
+    user_file = native / "SKILL.md"
+    user_file.write_text("user content")
+    assert skills.expose_codex_skills(tmp_path, workspace, snap)[0]["delivery"] == "injected"
+    assert user_file.read_text() == "user content"
+    user_file.unlink()
+    native.rmdir()
+    result = skills.expose_codex_skills(tmp_path, workspace, snap)[0]
+    assert result["delivery"] == "native" and native.is_symlink()
+    assert (native / "SKILL.md").read_text() == source.read_text()
+    assert skills.expose_codex_skills(tmp_path, workspace, snap)[0] == result
+    source.write_text("changed")
+    assert skills.expose_codex_skills(tmp_path, workspace, snap)[0]["delivery"] == "injected"
+    assert skills.expose_codex_skills(tmp_path, workspace, snap, enabled=False) == []
+
+
+def test_codex_exposure_rejects_symlink_root(tmp_path):
+    write_skill(tmp_path, "skills", "x", "x")
+    snap = skills.snapshot_selection(tmp_path, {"enabled": True, "selected_ids": ["x"]})
+    workspace, outside = tmp_path / "run", tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / ".agents").symlink_to(outside, target_is_directory=True)
+    assert skills.expose_codex_skills(tmp_path, workspace, snap)[0]["delivery"] == "injected"
+    assert list(outside.iterdir()) == []
+
+
+def test_inventory_endpoint_is_read_only_and_reports_selection(skills_web):
+    from alfrd import chat
+
+    client, base, project = skills_web
+    source = write_skill(project, ".claude/skills", "review", "---\nname: Review\ndescription: check diffs\n---\nbody")
+    refs = source.parent / "references"
+    refs.mkdir()
+    (refs / "guide.md").write_text("guide")
+    (refs / "unsafe.md").symlink_to(source)
+    chat.save_settings(project, {"skill_selection": {"enabled": True, "selected_ids": ["review"]}})
+    response = client.get(f"{base}/skills/inventory")
+    assert response.status_code == 200
+    item, = response.get_json()["skills"]
+    assert item["path"] == str(source)
+    assert item["source_root"] == ".claude/skills"
+    assert item["bytes"] == source.stat().st_size
+    assert item["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert item["reference_files"] == [".claude/skills/review/references/guide.md"]
+    assert item["selected_by_default"] is True
+    assert item["providers"] == {"claude": {"delivery": "native"}, "codex": {"delivery": "native", "fallback": "injected"}, "generic": {"delivery": "injected"}}
+    assert not (project / ".agents/skills").exists()
+    assert client.post(f"{base}/skills/inventory").status_code == 405
+
+
+def test_inventory_and_preview_repo_library(skills_web, monkeypatch):
+    """Inventory follows the registered project root and includes unselected skills."""
+    from alfrd.gui import studio_chat
+
+    client, base, project = skills_web
+    repo = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(studio_chat, "_project_root", lambda name: repo)
+    entries = client.get(f"{base}/skills/inventory").get_json()["skills"]
+    found = {entry["id"]: entry for entry in entries}
+    required = {"alfrd", "artifact-handoff", "blocker-reporting", "failure-triage",
+                "mailbox-protocol", "plan-json-author", "verification-checklist"}
+    assert required <= found.keys()
+    for ident in required:
+        item = found[ident]
+        assert item["name"] and item["description"] and item["providers"]
+        assert item["source_root"] == "skills"
+        response = client.get(f"{base}/skills/preview", query_string={"id": ident})
+        assert response.status_code == 200
+        assert response.get_json()["content"] == (repo / item["source"]).read_text()
+    monkeypatch.setattr(studio_chat, "_project_root", lambda name: project)
+    assert client.get(f"{base}/skills/inventory").get_json()["skills"] == []

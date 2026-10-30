@@ -68,7 +68,7 @@ export async function openSetup(ctx, project, o = {}) {
     </div>
     <footer class="modal-f row gap"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn primary" id="su-save">${icon("save")} Save</button></footer>`, (root, close) => {
     root.setAttribute("aria-labelledby", "su-h");
-    const skills = mountSkills(project, $("[data-skills-settings]", root), s);
+    const skills = mountSkills(project, $("[data-skills-settings]", root), s, ctx);
     const draw = () => {
       skills.refresh();
       $("#su-roles", root).innerHTML = rolesHtml();

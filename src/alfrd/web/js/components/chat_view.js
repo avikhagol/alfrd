@@ -1,4 +1,5 @@
-import { viewerFor, renderViewer, fileObject } from "./viewers.js";
+import { skeletonRows } from "../utils/loading.js";
+import { refreshHTML, refreshProtected, sourceHTML } from "../utils/refresh.js";
 import { mountPanelResize } from './panel_resize.js';
 // Chat section (#/chat/<session>?p=<project>): sessions, transcript, composer with @agent
 // autocomplete, task graph (graph_view.js, read-only), task detail with Cancel/Retry, decisions,
@@ -9,7 +10,23 @@ import { mountPanelResize } from './panel_resize.js';
 import { $, $$, esc, icon, keyLabel, loadCss, storage, routeHash, setRoute } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { taskMenuApi } from "./task_menu_api.js";
-import { mountGraph } from "./graph_view.js";
+// The closed inspector owns no graph work or optional panel requests.
+function mountGraph(el, options) {
+  let graph = null, pending = null, model = null, selected = null;
+  return {
+    update(m, task) {
+      model = m; selected = task;
+      if (graph) return graph.update(m, task);
+      el.innerHTML = skeletonRows("details");
+      pending ||= import("./graph_view.js").then((mod) => {
+        if (!el.isConnected) { pending = null; return; }
+        el.replaceChildren(); graph = mod.mountGraph(el, options); graph.update(model, selected);
+      }).catch((e) => { pending = null; if (el.isConnected) el.textContent = e.message; });
+    },
+    fit() { if (pending) pending.then(() => graph?.fit()); },
+    focus() { if (pending) pending.then(() => graph?.focus()); },
+  };
+}
 import { mountComposerDraft } from "./composer_draft.js";
 import { bindComposer, composerHtml } from "./chat_composer.js";
 import { bindChatTitle } from "./chat_title.js";
@@ -18,7 +35,6 @@ import { mountTranscript } from "./transcript.js";
 import { messageHtml as sharedMessageHtml } from "./chat_message.js";
 import { activeSession, destinationSession, paintSessionList, filterSessions, chatSheet, conversationStarter } from "../data/chat_sessions.js";
 import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
-import { createGoalsTab } from "./goals_tab.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
   parseMention, promotable, requestProgress, requestTotals, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
@@ -26,12 +42,71 @@ import {
 
 import { chatProjects } from "../data/chat_projects.js";
 
+import { createLRU } from "../data/chat_state.js";
+import { snapshots, prefetchSnapshot } from "../data/chat_cache.js";
+const views = createLRU(3, (view) => view.destroy());
+let activeView = null, identity = null;
+function clearViews() { views.clear(); activeView = null; snapshots.clear(); }
+server.onAuthRequired(clearViews);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { for (const e of snapshots.cache.values()) snapshots.invalidate(e.project, e.sid); activeView?.refresh(); }
+});
+export function leave() { return activeView?.suspend(); }
+// Navigation can attach an already-mounted destination before the batched shell paint.
+export function restore(el, ctx) {
+  const p = ctx.activeProject(), sid = ctx.state.chatSession || (storage.get("ui:chat.session", {}) || {})[p] || "";
+  if (!views.entries.has(JSON.stringify([p, sid]))) return false;
+  render(el, ctx); return true;
+}
+export function render(el, ctx) {
+  const auth = JSON.stringify([location.origin, server.session?.csrf_token, server.session?.projects]);
+  if (identity !== auth) { clearViews(); identity = auth; }
+  const projects = ctx.projects?.().map((p) => p.id) || [...new Set([ctx.activeProject(), ...[...views.entries.values()].map((v) => v.project())])];
+  snapshots.catalog(projects);
+  for (const [key, view] of views.entries) if (!projects.includes(view.project())) { views.delete(key); if (view === activeView) activeView = null; }
+  const p = ctx.activeProject(), sid = ctx.state.chatSession || (storage.get("ui:chat.session", {}) || {})[p] || "";
+  for (const [oldKey, retained] of [...views.entries]) {
+    const actual = JSON.stringify([retained.project(), retained.sid() || ""]);
+    if (retained.sid() && oldKey !== actual) { views.entries.delete(oldKey); views.set(actual, retained); }
+  }
+  const key = JSON.stringify([p, sid]);
+  let view = views.get(key);
+  if (view !== activeView) {
+    if (activeView?.suspend() === false) { ctx.state.selectedProject = activeView.project(); ctx.state.chatSession = activeView.sid(); return; }
+    if (!view) { view = createChatView(); views.set(key, view); }
+    activeView = view; el.replaceChildren(view.root); view.resume();
+  } else if (view && (!view.root.isConnected || view.isSuspended())) { el.replaceChildren(view.root); view.resume(); }
+  view.render(view.root, ctx);
+  if (view.sid()) {
+    ctx.state.chatSession = view.sid();
+    const remembered = storage.get("ui:chat.session", {}) || {};
+    if (remembered[p] !== view.sid()) storage.set("ui:chat.session", { ...remembered, [p]: view.sid() });
+    setRoute(routeHash(`chat/${view.sid()}`, ctx.state.selectedProject, ctx.state.selectedTarget), { replace: true });
+  }
+  const resolved = JSON.stringify([p, view.sid() || ""]);
+  if (view.sid() && resolved !== key) { views.entries.delete(key); views.set(resolved, view); }
+  el.dataset.chat = p || "";
+}
+
+export const canDelegate = (d) => (!d.mailbox_message_id || d.kind === "question") && !d.repeat && !d.delegated;
+
+export function createChatView() {
+const root = document.createElement("div");
+root.style.display = "contents";
+let suspended = false, destroyed = false, savedScroll = [], settingsController = null, prefetchTimer = 0, prefetchSid = null, focusIntent = null;
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
   error: null, loading: false, checking: null, task: null, open: new Map(), sendError: "", gen: 0, keys: {}, notes: [] };
 let scope = createRequestScope();
 let inspTab = "graph";
 let insp = null; // the inspector shell (inspector.js): closed unless the user opened it
-const goals = createGoalsTab({ get, refresh: () => loadSession() });
+let goals = null, goalsLoading = null;
+function drawGoals(options) {
+  if (goals) return goals.update(options);
+  if (!options.host) return;
+  options.host.innerHTML = skeletonRows("details");
+  goalsLoading ||= import("./goals_tab.js").then((m) => { goals = m.createGoalsTab({ get, refresh: () => loadSession() }); ctxRef?.update(); })
+    .catch((e) => { goalsLoading = null; ctxRef?.toast(e.message, "fail"); });
+}
 let host = null, graph = null, ctxRef = null, refreshTimer = 0, slowTimer = 0, clock = 0, lastLoaded = 0, composer = null, draft = null, act = null, full = null;
 const base = (p) => `/api/studio/projects/${encodeURIComponent(p)}/chat`;
 const SESSION_KEY = "ui:chat.session";
@@ -43,29 +118,33 @@ const queries = new Map();
 const stop = createRequestStop({ state: () => S.data, context: () => ({ project: S.project, sid: S.sid }),
   cancel: (row, ctx, task) => post(ctx.project, `/sessions/${encodeURIComponent(ctx.sid)}/tasks/${encodeURIComponent(row)}/cancel`, { expected_status: task.status, ...(task.units?.at(-1) ? { expected_unit: task.units.at(-1) } : {}) }),
   refresh: loadSession, changed: () => composer?.refresh(), report: (text, tone) => ctxRef.toast(text, tone) });
-chatProjects.subscribe((entry) => {
+const unsubscribeProjects = chatProjects.subscribe((entry) => {
   if (host?.isConnected && entry.project === S.project) {
     S.sessions = entry.sessions; S.sessionsError = entry.error; ctxRef?.update();
   }
 });
 
-async function get(url) {
-  const res = await server.request(url, { headers: { Accept: "application/json" } });
+async function get(url, signal) {
+  const res = await server.request(url, { signal, headers: { Accept: "application/json" } });
   const body = await res.json().catch(() => null);
   if (!res.ok) { const e = new Error(body?.error?.message || `${res.status} ${res.statusText}`); e.status = res.status; throw e; }
   return body;
 }
 const post = (p, path, body = {}, method = "POST") => server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat${path}`, body, method);
 
-window.addEventListener("alfrd-events", (e) => {
+const onEvents = (e) => {
   const { project, events } = e.detail || {};
   if (!host || project !== S.project) return;
   const chatEvents = (events || []).filter((ev) => String(ev.plan || "").startsWith("chat-"));
   if (!chatEvents.length) return;
   const mine = chatEvents.some((ev) => ev.plan === `chat-${S.sid}`);
+  if (suspended) return;
   scheduleRefresh(mine);
   if (mine) act?.kick();
-});
+};
+window.addEventListener("alfrd-events", onEvents);
+const onResync = ({ detail }) => { if (!suspended && (!detail?.project || detail.project === S.project)) { S.revisionReset = true; loadSession(); } };
+window.addEventListener("alfrd-chat-resync", onResync);
 
 function scheduleRefresh(session = true) {
   clearTimeout(refreshTimer);
@@ -74,22 +153,32 @@ function scheduleRefresh(session = true) {
 
 const liveFlowing = (ctx) => ["live", "polling"].includes(ctx.state.liveStatus?.state);
 
-export function leave() {
+let closeSkills = null;
+
+function leave() {
+  if (closeSkills?.() === false) return false; closeSkills = null;
   sessionSheet?.({ restore: false }); inspectorSheet?.({ restore: false }); sessionSheet = inspectorSheet = null;
   filesModule?.leaveFiles(); filesEpoch++;
-  goals.stop();
+  goals?.stop();
   clearInterval(slowTimer); clearInterval(clock); slowTimer = clock = 0;
-  act?.stop();
+  act?.suspend();
   draft?.suspend?.();
+  clearTimeout(refreshTimer); clearTimeout(prefetchTimer); settingsController?.abort();
+  snapshots.cancel(S.project, S.sid);
+  if (prefetchSid) snapshots.cancel(S.project, prefetchSid);
+  layoutObserver?.disconnect(); panelResizers.forEach((r) => r.suspend());
+  return true;
 }
 
-export function render(el, ctx) {
+function render(el, ctx) {
+  if (destroyed) return; suspended = false;
+  loadCss("css/loading.css");
   loadCss("css/chat.css");
   ctxRef = ctx;
   if (ctx.state.mode !== "server") { host = null; el.innerHTML = `<div class="empty chat-empty"><h2>Chat</h2><p role="status">Chat needs <code>alfrd serve</code>: agents run on the server.</p></div>`; delete el.dataset.chat; return; }
   const p = ctx.activeProject();
   if (!p) return; // app.js asks for a project
-  if (el.dataset.chat !== p) mount(el, ctx, p);
+  if (el.dataset.chat !== p && mount(el, ctx, p) === false) { ctx.state.selectedProject=S.project; return; }
   host = el;
   const wanted = ctx.state.chatSession || (storage.get(SESSION_KEY, {}) || {})[p] || null;
   if (S.sessions && !S.sessionsError) {
@@ -99,7 +188,7 @@ export function render(el, ctx) {
   draw(ctx);
   if (!clock) clock = setInterval(() => {
     if (!host?.isConnected) return;
-    if (activeRequest(S.data)?.finished == null) drawProgress(ctxRef);
+    if (insp?.isOpen() && activeRequest(S.data)?.finished == null) drawProgress(ctxRef);
     drawCheckStatus();
   }, 1000);
   if (!slowTimer) slowTimer = setInterval(() => {
@@ -127,18 +216,22 @@ function syncSheets() {
   const overlay = insp?.isOpen() && (window.innerWidth <= 1280 || room < (chat?.classList.contains("chat-sessions-collapsed") ? 692 : 868));
   chat?.classList.toggle("chat-inspector-sheet", Boolean(overlay));
   panelResizers.forEach((r) => r.sync());
+  if (insp?.isOpen()) drawInspector(ctxRef);
+  else { goals?.stop(); filesModule?.leaveFiles(); filesEpoch++; }
   if (overlay && !inspectorSheet) { closeSessions(); inspectorSheet = chatSheet($("#chat-inspector", host), () => { insp.close(); syncSheets(); }); }
   else if (!overlay && inspectorSheet) { inspectorSheet({ restore: false }); inspectorSheet = null; }
 }
 function openInspector() { closeSessions(); insp?.open(); syncSheets(); }
 function closeInspector() { insp?.close({ restoreFocus: false }); syncSheets(); }
-window.addEventListener("resize", () => { if (host?.isConnected) syncSheets(); });
+const onResize = () => { if (!suspended && host?.isConnected) syncSheets(); };
+window.addEventListener("resize", onResize);
 
 function mount(el, ctx, p) {
+  if (closeSkills?.() === false) return false; closeSkills = null;
   panelResizers.forEach((r) => r.destroy()); panelResizers = []; layoutObserver?.disconnect();
   host = el;
   sessionSheet?.({ restore: false }); inspectorSheet?.({ restore: false }); sessionSheet = inspectorSheet = null;
-  goals.stop();
+  goals?.stop();
   draft?.destroy();
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
     task: null, sendError: "", keys: {}, renaming: null, gen: S.gen + 1 });
@@ -160,7 +253,6 @@ function mount(el, ctx, p) {
       <header class="chat-head" id="chat-head"></header>
       <p class="sr-only" id="chat-check-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
-      <section class="chat-activity" id="chat-activity" aria-label="Running now" hidden></section>
       <p class="chat-stop-status muted small" role="status"></p>
       ${composerHtml("chat", { attachments: true })}
     </section>
@@ -195,8 +287,10 @@ function mount(el, ctx, p) {
       label: "Resize chat inspector", enabled: () => insp.isOpen() && !chat.classList.contains("chat-inspector-sheet"),
       available: () => chat.clientWidth - 52 - 360 - (wide() && !chat.classList.contains("chat-sessions-collapsed") ? sessions.offsetWidth + 16 : 0),
       apply: (w) => chat.style.setProperty("--inspector-width", `${w}px`) })];
-  layoutObserver = typeof ResizeObserver === "function" ? new ResizeObserver(syncSheets) : null; layoutObserver?.observe(el);
+  layoutObserver = typeof ResizeObserver === "function" ? new ResizeObserver(syncSheets) : null; layoutObserver?.observe($(".chat", el));
   syncSheets();
+  const cachedProject = chatProjects.snapshot(p);
+  S.sessions = cachedProject?.sessions || null; S.sessionsError = cachedProject?.error || null;
   loadSessions(false);
   loadSettings();
 }
@@ -205,6 +299,7 @@ function mount(el, ctx, p) {
 
 async function loadSessions(refresh = true) {
   const p = S.project;
+  if (suspended || destroyed) { if (refresh) chatProjects.invalidate(p); return; }
   chatProjects.select(p);
   const entry = await chatProjects.load(p, true, refresh);
   if (p !== S.project || !entry) return;
@@ -214,25 +309,27 @@ async function loadSessions(refresh = true) {
 
 async function loadSettings() {
   const p = S.project;
-  try { const s = await get(`${base(p)}/settings`); if (p === S.project) { S.settings = s; S.settingsError = null; } }
-  catch (error) { if (p === S.project) S.settingsError = error.message; }
+  settingsController?.abort(); settingsController = new AbortController();
+  try { const s = await get(`${base(p)}/settings`, settingsController.signal); if (p === S.project) { S.settings = s; S.settingsError = null; } }
+  catch (error) { if (error.name === "AbortError") return; if (p === S.project) S.settingsError = error.message; }
   ctxRef?.update();
 }
 
-async function loadSession() {
+async function loadSession(force = true) {
   const p = S.project, sid = S.sid, gen = ++S.gen;
   if (!sid) return false;
   let accepted = false;
   S.loading = !S.data;
   try {
-    const data = await get(`${base(p)}/sessions/${encodeURIComponent(sid)}`);
+    const data = await snapshots.load(p, sid, "", { force });
+    if (!data || suspended || destroyed) return false;
     if (gen !== S.gen || p !== S.project || sid !== S.sid) return false; // a newer request or another session won
-    if (staleState(S.data, data)) { S.loading = false; return false; }
+    if (!S.revisionReset && staleState(S.data, data)) { S.loading = false; return false; }
     const was = hasActivity(S.data);
-    S.data = data; S.error = null; lastLoaded = Date.now();
+    S.data = data; S.revisionReset = false; S.error = null; lastLoaded = Date.now();
     accepted = true;
     if (hasActivity(data) && !was) act?.kick();
-  } catch (error) { if (gen === S.gen) S.error = error.status === 404 ? "This session is no longer available. Refresh sessions or start a New session." : `Couldn’t load this conversation. ${error.message}`; }
+  } catch (error) { if (gen === S.gen && !suspended) { if ([401, 403, 404].includes(error.status)) { S.data = null; act?.reset(); } S.error = error.status === 404 ? "This session is no longer available. Refresh sessions or start a New session." : `Couldn’t load this conversation. ${error.message}`; } }
   S.loading = false;
   ctxRef?.update();
   return accepted;
@@ -241,7 +338,7 @@ async function loadSession() {
 function openSession(sid, { replace = false } = {}) {
   scope = createRequestScope();
   closeSessions();
-  S.sid = sid; S.data = null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
+  S.sid = sid; S.data = snapshots.peek(S.project, sid)?.data || null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
   const feedback = $("#chat-check-feedback", host);
   if (feedback) feedback.textContent = "";
   const remembered = storage.get(SESSION_KEY, {}) || {};
@@ -251,7 +348,7 @@ function openSession(sid, { replace = false } = {}) {
   setRoute(routeHash(sid ? `chat/${sid}` : "chat", st.selectedProject, st.selectedTarget), { replace });
   draft?.select(S.project, sid);
   act?.reset();
-  if (sid) loadSession();
+  if (sid) loadSession(false);
 }
 
 // --- drawing ---------------------------------------------------------------------
@@ -280,28 +377,33 @@ function drawFilesTab(ctx, request) {
 }
 
 function draw(ctx) {
+  if (suspended || destroyed) return;
   drawSessions();
   drawHead(ctx);
   drawLog();
-  drawProgress(ctx);
-  drawDecisions();
-  const scopeHtml = scope.html(S.data);
-  if (changed("scope", scopeHtml)) $("#chat-request-scope", host).innerHTML = scopeHtml;
-  const request = scope.request(S.data);
-  $("#chat-insp-panel", host).dataset.request = request || "all";
-  $("#chat-insp-panel", host).hidden = inspTab === "graph";
-  $(".chat-graph-card", host).hidden = inspTab !== "graph";
-  const model = { ...graphModel(S.data?.graph, agents(), request, S.data?.requests), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
-  graph?.update(model, S.data ? S.task : null);
-  if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
-  drawFilesTab(ctx, request);
-  goals.update({ host: inspTab === "goals" ? $("#chat-insp-panel", host) : null, state: S.data, project: S.project, sid: S.sid, request });
-  drawTask(ctx);
+  if (full?.host.isConnected) full.g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data), S.data?.requests), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
   draft?.select(S.project, S.sid);
   $("#chat-send-error", host).textContent = S.sendError || "";
   composer?.refresh();
   $(".chat-stop-status", host).textContent = stop.state().reason || "";
   syncSheets();
+}
+
+function drawInspector(ctx) {
+  drawProgress(ctx);
+  drawDecisions();
+  const scopeHtml = scope.html(S.data);
+  refreshHTML($("#chat-request-scope", host), scopeHtml);
+  const request = scope.request(S.data);
+  $("#chat-insp-panel", host).dataset.request = request || "all";
+  $("#chat-insp-panel", host).hidden = inspTab === "graph";
+  $(".chat-graph-card", host).hidden = inspTab !== "graph";
+  const model = { ...graphModel(S.data?.graph, agents(), request, S.data?.requests), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
+  if (inspTab === "graph") graph?.update(model, S.data ? S.task : null);
+  if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
+  drawFilesTab(ctx, request);
+  drawGoals({ host: inspTab === "goals" ? $("#chat-insp-panel", host) : null, state: S.data, project: S.project, sid: S.sid, request });
+  drawTask(ctx);
 }
 
 function drawSessions() {
@@ -311,7 +413,7 @@ function drawSessions() {
   if (S.renaming && box.querySelector(`[data-rename="${CSS.escape(S.renaming)}"]`) && S.sessions?.some((x) => x.id === S.renaming)) return;
   if (!changed("sessions", [S.sessions, S.sessionsError, S.sid, S.renaming, needsOnly, S.sessionQuery])) return;
   if (S.sessionsError) { box.innerHTML = `<li class="callout fail small" role="alert">${esc(S.sessionsError)} <button type="button" class="btn sm" data-chat="reload">Retry</button></li>`; return; }
-  if (!S.sessions) { box.innerHTML = `<li class="muted small" role="status">Loading sessions…</li>`; return; }
+  if (!S.sessions) { box.innerHTML = `<li>${skeletonRows("sessions")}</li>`; return; }
   const name = ctxRef.projectName?.(S.project) || S.project; // the identifier is not for people
   if (!S.sessions.length) { box.innerHTML = `<li class="muted small">No conversations in ${esc(name)}. <button type="button" class="btn sm" data-chat="new">New session</button><button type="button" class="btn sm" data-chat="setup">Setup</button></li>`; return; }
   const query = S.sessionQuery || "";
@@ -362,6 +464,8 @@ async function deleteSession(sid) {
   try {
     await post(S.project, `/sessions/${encodeURIComponent(sid)}`, {}, "DELETE");
   } catch (error) { ctxRef.toast(`Delete: ${error.message}`, "fail"); return; }
+  snapshots.remove(S.project, sid);
+  if (suspended || destroyed) { chatProjects.invalidate(S.project); return; }
   const i = S.sessions.findIndex((x) => x.id === sid);
   S.sessions = S.sessions.filter((x) => x.id !== sid); S.keys.sessions = null;
   const remembered = storage.get(SESSION_KEY, {}) || {};
@@ -385,6 +489,7 @@ function setCollapsed(on) {
 function drawHead(ctx) {
   const live = ctx.state.liveStatus?.state || "off";
   const s = S.sessions?.find((x) => x.id === S.sid);
+  if ($("#chat-head", host).dataset.sid === (S.sid || "") && refreshProtected($("#chat-head", host))) { drawCheckStatus(); return; }
   const titleInput = $("#chat-title-input", host);
   // Live metadata updates must not replace an in-progress title draft or its cursor.
   if (titleInput?.dataset.sid === S.sid && (document.activeElement === titleInput || titleInput.dataset.saving)) { drawCheckStatus(); return; }
@@ -392,10 +497,11 @@ function drawHead(ctx) {
   const focused = $("#chat-head", host).contains(document.activeElement) ? document.activeElement.dataset.chat : null;
   const flowing = ["live", "polling"].includes(live);
   $("#chat-head", host).innerHTML = `<div class="chat-head-title"><button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${s ? `<input id="chat-title-input" class="chat-title-input" data-sid="${esc(s.id)}" aria-label="Rename chat" title="Rename chat (Enter to save, Escape to cancel)" maxlength="120" value="${esc(s.title)}">` : esc(S.sid || "No session")}</h3>
-    <button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button>${s ? `<details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests || s.schedule ? 'disabled title="Cancel the schedule before deleting this session"' : ""}>${icon("trash")} Delete</button></div></details>` : ""}</div>
+    <button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button><details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="skills" aria-haspopup="dialog">Skills</button>${s ? `<button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests || s.schedule ? 'disabled title="Cancel the schedule before deleting this session"' : ""}>${icon("trash")} Delete</button>` : ""}</div></details></div>
     <div class="chat-head-status"><span class="chat-live tone-${flowing ? "ok" : "warn"}" role="status" title="${esc([flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected", ctx.state.liveStatus?.detail, S.data?.plan ? `runner ${S.data.plan.runner_alive ? "active" : "idle"} (plan ${S.data.plan.id})` : ""].filter(Boolean).join(" · "))}"><span class="sr-only">${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}${S.data?.plan ? `, runner ${S.data.plan.runner_alive ? "active" : "idle"}` : ""}</span></span>
-    ${S.sid ? `<span class="muted small" id="chat-check-status"></span><button type="button" class="icon-btn sm" data-chat="check" aria-label="${S.checking === `${S.project}/${S.sid}` ? "Checking" : "Check for interrupted work and resume it; paused runners stay paused"}" aria-busy="${S.checking === `${S.project}/${S.sid}`}" ${S.checking === `${S.project}/${S.sid}` ? "disabled" : ""} aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${icon(S.checking === `${S.project}/${S.sid}` ? "sync" : "check")}</button>` : ""}</div>
+    ${S.sid ? `<button type="button" class="icon-btn sm" data-chat="check" aria-label="${S.checking === `${S.project}/${S.sid}` ? "Checking" : "Check for interrupted work and resume it; paused runners stay paused"}" aria-busy="${S.checking === `${S.project}/${S.sid}`}" ${S.checking === `${S.project}/${S.sid}` ? "disabled" : ""} aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${icon(S.checking === `${S.project}/${S.sid}` ? "sync" : "check")}</button>` : ""}</div>
     ${S.settingsError ? `<p class="callout fail small chat-wide" role="alert">Chat settings: ${esc(S.settingsError)} — fix the <code>chat:</code> block in <a href="${esc(routeHash("config", S.project, ctx.state.selectedTarget))}">Settings</a>.</p>` : ""}`;
+  $("#chat-head", host).dataset.sid = S.sid || "";
   drawCheckStatus();
   if (s) {
     const project = S.project, sid = s.id;
@@ -422,8 +528,11 @@ function drawHead(ctx) {
 }
 
 function drawCheckStatus() {
-  const label = $("#chat-check-status", host);
-  if (label) label.textContent = checkStatus(S.data?.check);
+  const tick = $('[data-chat="check"]', host);
+  if (tick && !tick.disabled) {
+    tick.title = checkStatus(S.data?.check);
+    tick.setAttribute("aria-label", tick.title);
+  }
 }
 
 async function checkNow(button) {
@@ -448,7 +557,7 @@ async function checkNow(button) {
     if (S.checking === key) S.checking = null;
     if (current()) {
       const b = $('[data-chat="check"]', host);
-      if (b) { b.setAttribute("aria-disabled", "false"); b.innerHTML = icon("check"); b.setAttribute("aria-label", "Check for interrupted work and resume it; paused runners stay paused"); b.setAttribute("aria-busy", "false"); b.disabled = false; }
+      if (b) { b.setAttribute("aria-disabled", "false"); b.innerHTML = icon("check"); b.setAttribute("aria-label", "Check for interrupted work and resume it; paused runners stay paused"); b.setAttribute("aria-busy", "false"); b.disabled = false; drawCheckStatus(); }
     }
   }
 }
@@ -492,11 +601,12 @@ function transcriptHtml(row) {
 
 function drawLog() {
   const box = $("#chat-log", host);
-  box.setAttribute("aria-busy", String(Boolean(S.sid && !S.data && !S.error)));
+  box.setAttribute("aria-busy", String(Boolean(!S.sessions && !S.sessionsError || S.sid && !S.data && !S.error)));
   if (S.data) { act?.update(S.data, S.notes.filter((n) => n.sid === S.sid && n.project === S.project)); conversationStarter(box); return; }
-  if (!S.sid) box.innerHTML = `<div class="empty"><p>Start a session with <b>New</b>, then ask for something.</p></div>`;
-  else if (S.error) box.innerHTML = `<div class="callout fail" role="alert">${esc(S.error)} <button type="button" class="btn sm" data-chat="refresh">Retry</button></div>`;
-  else box.innerHTML = `<p class="muted" role="status">Loading conversation…</p>`;
+  if (!S.sessions && !S.sessionsError || S.sid && !S.data && !S.error) { sourceHTML(box, skeletonRows("messages")); return; }
+  if (!S.sid) sourceHTML(box, `<div class="empty"><p>Start a session with <b>New</b>, then ask for something.</p></div>`);
+  else if (S.error) sourceHTML(box, `<div class="callout fail" role="alert">${esc(S.error)} <button type="button" class="btn sm" data-chat="refresh">Retry</button></div>`);
+  else sourceHTML(box, `<p class="muted" role="status">Loading conversation…</p>`);
 }
 
 function drawProgress(ctx) {
@@ -526,7 +636,7 @@ function drawProgress(ctx) {
       ${warned.length ? `<p class="small"><span class="badge tone-warn" role="status">${icon("alert")}<span>${warned.length} task${warned.length === 1 ? "" : "s"} over the ${money(S.data?.settings?.warn_task_cost_usd)} warning</span></span></p>` : ""}
       ${promo ? `<button type="button" class="btn sm" data-chat="promote" data-request="${esc(promo.id)}" title="Add request ${esc(promo.id)}'s tasks to the active workflow (preview first)">${icon("workflow")} Promote to workflow</button>` : ""}`;
   const total = u ? `<p class="muted small chat-total" data-tokens="session">Session: ${u.turns} turn${u.turns === 1 ? "" : "s"} · ${esc(tokenLine(u) || money(u.total_cost_usd))} · ${u.orchestrator_calls} orchestrator call${u.orchestrator_calls === 1 ? "" : "s"}</p>` : "";
-  if (box.dataset.html !== html + total) { box.dataset.html = html + total; box.innerHTML = html + total; }
+  refreshHTML(box, html + total);
 }
 
 const meter = (label, value, max, ratio, shown, limit, tone) => `<div class="chat-meter"><span class="small">${label}</span>
@@ -535,12 +645,12 @@ const meter = (label, value, max, ratio, shown, limit, tone) => `<div class="cha
 
 // "Let orchestrator decide" (chat.delegate_decision): ASK is allowed; PRM, a repeated
 // blocker (it would only loop) or one the orchestrator already handed back.
-export const canDelegate = (d) => (!d.mailbox_message_id || d.kind === "question") && !d.repeat && !d.delegated;
 
 function drawDecisions() {
   const box = $("#chat-decisions", host);
   const list = S.data?.blockers || [];
   const done = (S.data?.decisions || []).filter((d) => d.status !== "pending").slice(-5);
+  if (refreshProtected(box)) return;
   if (!changed("decisions", [list, done.map((d) => d.id)])) return;
   if (box.contains(document.activeElement) && list.some((d) => box.querySelector(`[data-decision="${CSS.escape(d.id)}"]`))) {
     // Someone is answering: keep their input; only the list of pending ids decides a rebuild.
@@ -592,7 +702,7 @@ function drawTask(ctx) {
       ${canRetry(t) ? `<button type="button" class="btn sm" data-task-act="retry" data-row="${esc(t.row)}">${icon("reset")} Retry</button>` : ""}
       <button type="button" class="btn sm" data-transcript="${esc(t.row)}" aria-expanded="${Boolean(open)}">${icon(open ? "fold" : "unfold")} ${open ? "Hide" : "Full"} transcript</button>
     </div>${open ? transcriptHtml(t.row) : ""}`;
-  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+  refreshHTML(box, html);
 }
 
 // --- actions ---------------------------------------------------------------------
@@ -639,6 +749,7 @@ async function viewArtifact(ref) {
     info = page; text += page.content ?? ""; offset = page.offset + page.length; eof = page.eof;
   };
   try { await more(); } catch (error) { ctx.toast(`Artifact: ${error.status === 409 ? "the file changed since this version was recorded" : error.message}`, "fail"); return; }
+  const { viewerFor, renderViewer, fileObject } = await import("./viewers.js");
   const viewer = /\.(md|markdown)$/i.test(info.path) ? viewerFor(info.path, "text/markdown") : null;
   const markdown = viewer && viewer.id !== "text";
   ctx.modal(`<header class="modal-h"><h2 class="mono">${esc(info.path)}</h2><span class="muted small mono">${esc(String(info.sha256).slice(0, 12))} · ${Math.ceil(info.size / 1024)} KiB</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
@@ -673,7 +784,7 @@ async function newSession() {
   try {
     const { session } = await post(p, "/sessions", {});
     chatProjects.load(p, true, true);
-    if (p !== S.project) return;
+    if (p !== S.project || suspended || destroyed) return;
     S.sessions = [session, ...(S.sessions || [])]; S.keys.sessions = null;
     openSession(session.id);
     ctxRef.update();
@@ -692,11 +803,12 @@ function bind(el) {
   el.addEventListener("input", (e) => {
     if (e.target.id === "chat-session-search") { queries.set(S.project, e.target.value); S.sessionQuery = e.target.value; drawSessions(); }
   });
-  el.addEventListener("focusout", (e) => { if (e.target.closest(".chat-list")) setTimeout(() => drawSessions(), 0); });
+  el.addEventListener("toggle", (e) => { if (e.target.matches?.(".chat-session-menu") && !e.target.open) drawHead(ctxRef); }, true);
+  el.addEventListener("focusout", (e) => { if (e.target.closest("#chat-head")) setTimeout(() => drawHead(ctxRef), 0); if (e.target.closest("#chat-decisions")) setTimeout(drawDecisions, 0); if (e.target.closest(".chat-list")) setTimeout(() => drawSessions(), 0); });
   el.addEventListener("click", (e) => {
     const b = e.target.closest("button, [data-agent], a[data-sid]");
     if (!b) return;
-    if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { openSession(b.dataset.sid); ctxRef.update(); } return; }
+    if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { ctxRef.state.chatSession = b.dataset.sid; setRoute(routeHash(`chat/${b.dataset.sid}`, ctxRef.state.selectedProject, ctxRef.state.selectedTarget)); restore(root.parentElement, ctxRef); ctxRef.update(); } return; }
     if (b.dataset.chatPrompt) { composer.input.value = b.dataset.chatPrompt; draft.edit(composer.input.value); composer.refresh(); composer.input.focus(); return; }
     const a = b.dataset.chat;
     if (a === "clear-filters") {
@@ -714,8 +826,31 @@ function bind(el) {
     else if (a === "close-sessions") closeSessions();
     else if (a === "collapse") setCollapsed(true);
     else if (a === "sessions" && wide() && $(".chat", host).classList.contains("chat-sessions-collapsed")) setCollapsed(false);
-    else if (a === "refresh") { loadSession(); loadSessions(); loadSettings(); }
+    else if (a === "refresh") { server.invalidateChatProbes(); loadSession(); loadSessions(); loadSettings(); }
     else if (a === "check") checkNow(b);
+    else if (a === "skills") {
+      const menu = b.closest("details"), trigger = menu.querySelector("summary");
+      menu.open = false;
+      trigger.focus();
+      // Bind to the mounted chat project, not a later global project selection.
+      let modalRoot;
+      const close = ctxRef.modal(`<header class="modal-h"><h2 id="skills-modal-title">Skills Explorer</h2><button type="button" class="icon-btn" data-close aria-label="Close Skills Explorer">${icon("close")}</button></header><div class="modal-b" data-skills-body></div>`, (root) => {
+        modalRoot = root;
+        root.setAttribute("aria-labelledby", "skills-modal-title");
+        root.addEventListener("beforeclose", (event) => {
+          // Live header redraws can replace the original overflow trigger.
+          if (!trigger.isConnected) root.parentElement.returnFocus = $(".chat-session-menu summary", host);
+          queueMicrotask(() => { if (!event.defaultPrevented) closeSkills = null; });
+        });
+        const project = S.project, body = root.querySelector("[data-skills-body]");
+        body.innerHTML = skeletonRows("details");
+        import("./skills_explorer.js").then((m) => {
+          if (root.isConnected) m.render(body, { state: { mode: "server", selectedProject: project } });
+        }).catch((e) => { if (root.isConnected) body.textContent = e.message; });
+        root.querySelector("[data-close]").focus();
+      }, "wide skills-modal");
+      closeSkills = () => { if (modalRoot.isConnected) close(); return !modalRoot.isConnected; };
+    }
     else if (a === "setup") command("setup");
     else if (a === "reload") loadSessions();
     else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); }
@@ -874,4 +1009,30 @@ function openGraphFull({ fromComposer = false, request = null } = {}) {
     g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data), S.data?.requests), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
     requestAnimationFrame(() => { g.fit(); g.focus(); });
   }, "full");
+}
+
+function suspend() {
+  if (suspended) return true;
+  focusIntent = root.contains(document.activeElement) && document.activeElement?.matches("textarea,input") ? document.activeElement : null;
+  savedScroll = [...root.querySelectorAll("*")].filter((e) => e.scrollTop || e.scrollLeft).map((e) => [e, e.scrollTop, e.scrollLeft]);
+  if (leave() === false) return false;
+  suspended = true; return true;
+}
+function resume() {
+  suspended = false; panelResizers.forEach((r) => r.resume()); if ($(".chat", root)) layoutObserver?.observe($(".chat", root)); act?.resume(); draft?.resume?.();
+  for (const [el, top, left] of savedScroll) { el.scrollTop = top; el.scrollLeft = left; }
+  if (focusIntent?.isConnected) focusIntent.focus({ preventScroll: true });
+  if (S.project) { S.sessions = chatProjects.snapshot(S.project)?.sessions || S.sessions; loadSessions(false); loadSettings(); }
+  if (S.sid) { const cached = snapshots.peek(S.project, S.sid); if (cached?.data) S.data = cached.data; loadSession(false); }
+}
+const prefetch = (event) => {
+  const sid = event.target.closest?.("a[data-sid]")?.dataset.sid;
+  clearTimeout(prefetchTimer);
+  if (!sid || sid === S.sid || document.hidden || navigator.connection?.saveData) return;
+  prefetchTimer = setTimeout(() => { if (!suspended) { prefetchSid = sid; prefetchSnapshot(S.project, sid); } }, 125);
+};
+root.addEventListener("pointerover", prefetch); root.addEventListener("focusin", prefetch);
+return { root, render, suspend, resume, isSuspended: () => suspended, refresh: () => { if (!suspended) loadSession(); }, project: () => S.project, sid: () => S.sid,
+  destroy() { suspend(); destroyed = true; unsubscribeProjects(); draft?.destroy(); act?.stop(); panelResizers.forEach((r) => r.destroy()); layoutObserver?.disconnect(); window.removeEventListener("alfrd-events", onEvents); window.removeEventListener("alfrd-chat-resync", onResync); window.removeEventListener("resize", onResize); root.remove(); },
+};
 }

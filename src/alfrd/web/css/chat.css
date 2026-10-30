@@ -49,8 +49,6 @@
 .chat-input-wrap { position: relative; }
 .chat-input-wrap textarea { width: 100%; resize: vertical; min-height: 64px; max-height: 40vh; overflow-y: auto; }
 .attach-tray { display: flex; flex-direction: column; gap: 5px; }
-.attach-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.attach-actions [data-attach-hint] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attach-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .attach-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--subtle); max-width: 100%; }
 .attach-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -122,7 +120,6 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .cd-progress { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 0; min-height: 22px; }
 .cd-log { padding: 8px; gap: 8px; }
 .cd-log .chat-msg { max-width: 100%; padding: 10px 0; }
-.cd-arts { margin: 4px 0 0; overflow-wrap: anywhere; }
 .chat-dock .chat-input-wrap textarea { min-height: 44px; }
 .chat-dock .chat-mentions { min-width: 0; width: 100%; }
 .chat-logs { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -134,14 +131,7 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .chat-gfull, .chat-gfull > div { flex: 1; min-width: 0; }
 .chat-gfull .gv-canvas { flex: 1; min-height: 0; height: auto; }
 /* Activity strip (chat_activity.js) */
-.chat-activity { display: flex; flex-direction: column; gap: 6px; }
-.chat-act-h { margin: 0; display: flex; gap: 6px; align-items: center; }
-.chat-act { border: 1px solid var(--border); border-left: 3px solid var(--run, var(--accent)); border-radius: 8px; padding: 6px 8px; background: var(--surface); }
-.chat-act-orch { border-left-style: dashed; border-left-color: var(--accent); }
-.chat-act header { align-items: center; }
-.chat-act-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-act-tail { max-height: 16rem; overflow: auto; margin: 8px 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--console-bg); color: var(--text); }
-.cd-activity { max-height: 30vh; }
 /* /setup (chat_setup.js) */
 .su h3 { margin: 12px 0 6px; font-size: 14px; }
 .su-roles, .su-agents { display: grid; gap: 8px; }
@@ -300,8 +290,6 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .chat .chat-head .chat-head-status { flex: none; width: auto; gap: 4px; }
 .chat .chat-head h3 { font-size: 14px; line-height: 20px; font-weight: 500; }
 .chat .chat-head :is(.icon-btn, .chat-session-menu summary) { color: var(--chat-muted); }
-.chat .chat-head #chat-check-status { flex: 0 1 auto; max-width: 16rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat .chat-head #chat-check-status:empty { display: none; }
 .chat-live { display: inline-block; flex: none; width: 7px; height: 7px; margin: 0 6px; border-radius: 50%; background: var(--chat-warning); }
 .chat-live.tone-ok { background: var(--chat-success); }
 .chat .chat-log { border: 0; background: transparent; padding: 8px 4px; }

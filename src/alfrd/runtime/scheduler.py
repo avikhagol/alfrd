@@ -1830,6 +1830,14 @@ class Runner:
         if step and step.cwd:
             cwd = Path(render([step.cwd], values)[0]).expanduser()
             cwd = cwd if cwd.is_absolute() else self.folder.root / cwd
+        if self.plan.get("chat") and step and step.adapter == "codex" and not step.manual:
+            from alfrd import skills as saved_skills
+
+            store = chat._store_of(self)
+            rec = store.task(row.key)
+            snapshot = store.request(rec["request"]).get("skill_snapshot") if rec else None
+            unit["skill_delivery"] = saved_skills.expose_codex_skills(
+                store.root, cwd, saved_skills.launch_snapshot(snapshot, rec), enabled=step.native_skills)
         unit.update(argv=argv, cwd=str(cwd), log=str(log_path.relative_to(self.folder.root)),
                     exit_file=str(exit_path.relative_to(self.folder.root)), timeout=timeout,
                     usage_file=str(exit_path.with_suffix(".usage.jsonl").relative_to(self.folder.root)))

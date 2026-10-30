@@ -184,6 +184,9 @@ def create_project_api():
     if isinstance(scope, list) and project.identifier not in scope:
         scope.append(project.identifier)
     current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
+    from alfrd.gui.project_selection import save
+
+    save(current_app)
     draft = payload.get("draft") if isinstance(payload.get("draft"), dict) else {}
     return jsonify(name=project.name, identifier=project.identifier, root=project.root_path,
                    template=payload.get("template", "basic"), targets=draft.get("targets") or []), 201
@@ -921,6 +924,9 @@ def _forget(service, project_name: str, row) -> dict:
         scope[:] = [key for key in scope if key not in aliases]
     if current_app.config.get("STUDIO_DEFAULT_PROJECT") in aliases:
         current_app.config["STUDIO_DEFAULT_PROJECT"] = None
+    from alfrd.gui.project_selection import save
+
+    save(current_app)
     return counts
 
 
@@ -1062,8 +1068,8 @@ PROJECT_VISIBILITY = ("hidden", "shown", "opened")
 def project_visibility(project_name: str):
     """Show, hide or open a remembered project in this server's Studio (loopback + CSRF).
 
-    ``{"state": "hidden" | "shown" | "opened"}``. Only the server's scope
-    (``STUDIO_PROJECTS``) and opened project (``STUDIO_DEFAULT_PROJECT``) change:
+    ``{"state": "hidden" | "shown" | "opened"}``. The server's scope
+    (``STUDIO_PROJECTS``), its persisted selection and opened project change:
     the runtime database and the project folder are not touched, so a hidden
     project is shown again without Import → Connect.
     """
@@ -1096,6 +1102,9 @@ def project_visibility(project_name: str):
         current_app.config["STUDIO_DEFAULT_PROJECT"] = key
     elif default == key:
         current_app.config["STUDIO_DEFAULT_PROJECT"] = None
+    from alfrd.gui.project_selection import save
+
+    save(current_app)
     return jsonify(project=key, state=state, projects=current_app.config.get("STUDIO_PROJECTS"),
                    default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"))
 
@@ -1161,6 +1170,10 @@ def project_rediscover():
             current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
         current_app.extensions["alfrd_forgotten"] = [f for f in current_app.extensions.get("alfrd_forgotten", []) if f["root"] != item["root"]]
         restored.append({"root": item["root"], "name": project.name, "identifier": project.identifier, "default_manifest": used_default})
+    from alfrd.gui.project_selection import save
+
+    if restored:
+        save(current_app)
     return jsonify(restored=restored, failed=failed, projects=scope,
                    default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"))
 

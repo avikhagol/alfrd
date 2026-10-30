@@ -412,6 +412,141 @@ if the file changed since it was loaded you see the difference instead of overwr
 The draft is kept in this browser (it survives a reload) until it is created or discarded. The short
 **Quick dialog…** remains for folder, name and template only.
 
+The chat header’s check tick shows its last-check age and next scheduled check
+in its hover tooltip and accessible label. Click it to check for interrupted work.
+
+## Skills Explorer
+
+In **Chat**, open the conversation header’s **⋯ → Skills** to browse the current
+chat project’s installed skills in a centred, scrollable modal. Close it with the
+close button, Escape or a backdrop click; focus returns to the ⋯ trigger.
+Reopening starts a fresh search and preview. Switching projects closes the modal. Chat mode must be enabled in Preferences and requires `alfrd serve`.
+The explorer has no global navigation entry or standalone route, and is not
+shown in the agent-loop view: ALFRD’s saved-skill delivery is chat-specific.
+It lists global skills from `~/.alfrd/skills` plus project skills grouped by `.alfrd/skills`, `.claude/skills`, and `skills/`, including the bundled
+ALFRD skill library when installed in the project. Duplicate IDs use the first
+root in that order. Search matches names, descriptions, paths and provider policy.
+Use **Refresh skills** after editing installed files. Discovery is relative to the
+selected project root, not the server working directory or provider home folders.
+Choose the ALFRD repository project to browse its bundled `skills/` library.
+
+
+Use **New skill** to create guidance in **Current project** (the default) or the
+**Global library**. The form shows the selected project and absolute destination:
+`<registered-project>/.alfrd/skills/<id>/SKILL.md`, or
+`$ALFRD_SKILLS_DIR/<id>/SKILL.md` (default `~/.alfrd/skills`). Global saves change
+the shared library. IDs use 1–64 lowercase letters/numbers and single hyphens;
+reserved device names and existing IDs in any project discovery root are rejected.
+Creating a skill leaves it inactive. Choose its scopes and **Save activations**
+separately when you want future requests to use it.
+
+Editable cards offer **Edit**. The detail editor changes only `SKILL.md`, preserving
+supporting files. Packaged/external sources are read-only; use **Copy skill…** and
+choose a new ID or scope to customize them. The authoritative document remains in
+the textarea; Name and Description update their frontmatter scalar lines without
+rebuilding the body or unknown metadata. Malformed frontmatter disables structured
+fields until repaired. The escaped live preview never loads remote resources.
+**Save skill** requires a leading closed YAML mapping, nonempty name/description
+strings (128/2,048 UTF-8 bytes maximum), a Markdown body, frontmatter within 8 KiB,
+and a document within 65,536 bytes. Use single-line scalar metadata: duplicate keys,
+collections, block scalars, aliases, anchors, merge keys and custom tags are rejected.
+
+Saves compare a revision containing the identity, path, SHA-256 and filesystem
+identity. A stale save keeps your draft and displays the current saved text; copy
+your draft before refreshing. There is no force overwrite. ALFRD writers share a
+library lock and publish atomically with fsync; unrelated editors that ignore the
+lock can still race after the final revision check. Dirty content and activation
+drafts prompt before dismissal/navigation; Cancel keeps editing. **Cancel edit**
+restores the opened content while retaining activation selections.
+
+**Import from URL** supports public HTTPS raw `SKILL.md`, GitHub blob/folder URLs,
+and ZIP/tar.gz bundles. **Fetch preview** shows the original and resolved URL,
+pinned GitHub commit where applicable, fetched time, complete file list, byte
+sizes, manifest, digest and proposed destination. It does not install or activate
+anything. Review this information, choose the final ID/scope, then **Save skill**.
+Markdown links are not crawled. Imported instructions grant no permissions.
+Preview handles expire after ten minutes and belong to this Studio session and
+project; **Discard preview** removes them. Confirmation uses exactly the reviewed
+bytes, without another fetch, and retries are idempotent.
+
+Imports require verified HTTPS on port 443, public DNS addresses and pinned
+connections. Credentials, private/local IPs, redirects to insecure destinations,
+unsafe archive paths, links, special files and ambiguous skill roots are rejected.
+The budget is 30 seconds, eight requests, three redirects, 10 MiB downloaded and
+10 MiB expanded, with 1,000 files/2,000 archive entries. Supporting files must be
+UTF-8 text without NUL, at most 1 MiB, with `.md`, `.txt`, `.rst`, `.json`, `.yaml`,
+`.yml`, `.toml`, `.csv` or `.tsv` extensions; scripts, binaries, hidden paths and
+nested archives reject the bundle. Large GitHub repositories can exceed the
+whole-archive limit; use a raw manifest or small skill-only archive instead.
+
+Imported skills retain `.alfrd-source.json` provenance outside their instructions.
+**Locally modified** indicates changes from imported hashes. **Re-fetch source**
+opens another preview with a file comparison and installed manifest. Unchanged
+sources show **No upstream content change**. Changed content requires saving a
+new copy under another ID or scope; there is no automatic merge, replacement or
+activation transfer.
+
+Each compact skill card shows its name, a one-line description, **Global** or
+**Project** scope, a project source badge where relevant, and **Orchestrator** plus
+one badge per active role (for example **Developer**), or a muted **Inactive** badge.
+Badges reflect the current draft immediately; use **Save activations** to persist it.
+Long names and descriptions have full-text tooltips; the detail pane repeats the
+full description and path. Badges wrap on narrow screens. **About skills** expands
+header help; header badges also provide tooltips for scope and new-request semantics.
+
+The detail pane shows a delivery badge per provider. These describe policy for a
+selected skill with native skills enabled, rather than an actual launch outcome:
+Claude uses native discovery for `.claude/skills`, Codex is eligible for native
+exposure with injection fallback, and generic providers use injection. Selected
+manifests also retain prompt injection. Launch settings or exposure failures can
+change delivery; the launch unit's `skill_delivery` records Codex outcomes.
+
+Open a skill to read its escaped SKILL.md preview, absolute manifest path,
+byte size, SHA-256 and reference-file paths. Reference contents are not fetched.
+If a manifest changes between inventory and preview, a warning asks you to refresh
+the metadata. Use the scope checkboxes and **Save activations** to persist project activation state.
+Each manifest is limited to 64 KiB; a request snapshot is limited to 128 KiB total.
+
+To create and activate a skill:
+
+1. Create `skills/review/SKILL.md` in the project with YAML frontmatter and instructions:
+   ```markdown
+   ---
+   name: Review
+   description: Review changes and report concrete findings
+   ---
+   Read the changed code and check its behavior before reporting findings.
+   ```
+   Add supporting files under the same directory (for example `references/guide.md`).
+2. Keep it there for project-only use, or run `alfrd skills add --global skills/review`
+   to copy the whole bundle to the global library. A `SKILL.md` path also works.
+   Existing global IDs are never replaced; use `--id another-name` for a new copy.
+   Set `ALFRD_SKILLS_DIR` to an absolute path to override the global root.
+   Python callers can use `alfrd.skills.add_global_skill(path, global_root=...)`.
+3. In **Chat → ⋯ → Skills**, choose the Global or Project row, check **Orchestrator**
+   and/or task roles, then **Save activations**. **Cancel** discards the draft.
+   State lives in the project's `.alfrd/skills.json`, independent of other projects.
+   Changes apply to new requests; retries retain their frozen guidance.
+
+Global and project skills with the same ID remain separate rows. If both are
+active for a scope, the project copy wins and the global checkbox says Overridden.
+Custom configured and previously saved roles appear alongside suggested roles.
+Tasks without a role receive no role skills. Required prompts instruct agents to
+read the active absolute SKILL.md paths; this grants no additional filesystem access.
+Codex native discovery may still expose other installed or previously linked skills.
+
+Until the first explicit save, existing `chat.skill_selection` continues to apply
+to every launch. The modal marks this as Legacy selection and offers those skills
+checked for Orchestrator and all shown roles. Saving makes explicit scopes authoritative.
+Missing active skills appear as Unavailable and must be removed or reinstalled.
+The activation API is `GET/PUT /api/studio/projects/<project>/chat/skills/activations`;
+PUT sends `{version: 1, activations: [{id, source, scope}], base_hash}` using the hash
+from GET. Stale saves return 409. Skill installation is local CLI/Python API only.
+
+Tab reaches search, refresh and each skill. Enter or Space opens a focused skill;
+Up/Down and Home/End move between skills. Loading, empty results and request errors
+are announced; failed previews offer **Retry preview**.
+
 ## Keyboard and browser
 
 Press **?** (or choose *Keyboard shortcuts* in the palette or the footer) for the full list, written
@@ -526,12 +661,29 @@ Python side: `alfrd/studio_defs.py`, `alfrd/avica_layout.py`, `alfrd/gui/studio.
 Tests:
 
 ```bash
-python -m pytest -q -n auto -m "not serial"   # everything else, in parallel (about a minute)
-python -m pytest -q -m serial                 # tests that measure time or CPU, alone
-node --test tests/studio_js/*.test.mjs        # the Studio's tests only (pytest runs them too)
+rtk .venv/bin/python -m pytest -q -n 4 -m "not serial" --durations=30
+rtk .venv/bin/python -m pytest -q -m serial --durations=30
+# JS-only iteration (already included in pytest; do not repeat after a green full run):
+rtk .venv/bin/python scripts/run_studio_tests.py
 ```
 
-Add `-m "not slow and not serial"` to skip building and installing the wheel while iterating.
+Run from the repository root with its Python environment, or use
+`uv run --extra dev python -m pytest`. Plain system `pytest` can import an old
+installed ALFRD and fail collection. The Studio runner expands test paths itself,
+limits concurrent Node workers to four, and kills its process group on its
+240-second deadline. Use `--timeout` and `--concurrency` for explicit overrides,
+and pass file paths for targeted iteration. Set `ALFRD_PLAYWRIGHT` and
+`ALFRD_CHROMIUM_EXECUTABLE` to the installed Playwright module and Chromium when
+running browser acceptance checks; optional dependency skips are not browser
+validation. Pytest's Studio check inherits these settings.
+
+The two pytest commands cover the entire suite, including the Node tests once.
+Use bounded worker counts on shared machines; `-n auto` can oversubscribe them.
+While iterating, select affected files; a final full run still includes slow
+wheel and serial tests. On failure, preserve the log and rerun only the failing
+file/test after diagnosis. Wait on the actual command/session handle with a
+deadline. A `pgrep -f "node --test"` loop can match its own shell forever and does
+not establish the test runner's exit status.
 
 ## Setup forms (`quickstart:`)
 

@@ -1,3 +1,5 @@
+import { snapshots } from "../data/chat_cache.js";
+import { refreshHTML, sourceHTML } from "../utils/refresh.js";
 import { viewerFor, openViewer } from "./viewers.js";
 import { mountPanelResize } from './panel_resize.js';
 // Chat dock: the active chat session beside any project view (Workflow, Results, Overview, plugin
@@ -120,7 +122,6 @@ function mount(host, p) {
     <div class="cd-session-row"><label class="sr-only" for="cd-session">Session</label><select id="cd-session" class="input sm"></select><span id="cd-running" class="chat-running" role="img" aria-label="Running" title="Running" hidden></span><button type="button" class="btn sm" data-cd="new">${icon("plus")} New</button></div>
     <p class="cd-progress small" id="cd-progress" aria-live="off"></p>
     <div class="chat-log cd-log" id="cd-log" tabindex="0" aria-label="Messages"></div>
-    <section class="chat-activity cd-activity" id="cd-activity" aria-label="Running now" hidden></section>
     <p class="chat-stop-status muted small" role="status"></p>
     ${composerHtml("cd", { attachments: true })}`;
   act = mountTranscript($("#cd-log", host), { project: () => D.project, sid: () => D.sid, busy: () => hasActivity(D.data), agentName, compact: true, state: () => D.data, error: () => D.error, messageHtml, viewGraph: () => $("#cd-full", el)?.click(), onReply: () => loadSession(), notes: () => D.notes.filter((n) => n.sid === D.sid && n.project === D.project),
@@ -165,12 +166,13 @@ async function loadSessions(refresh = true) {
   if (p) { chatProjects.select(p); applySessions(await chatProjects.load(p, true, refresh)); }
 }
 
-async function loadSession() {
+async function loadSession(force = true) {
   const p = D.project, sid = D.sid, gen = ++D.gen;
   if (!sid) return false;
   let accepted = false;
   try {
-    const data = await get(`${base(p)}/sessions/${encodeURIComponent(sid)}?messages=200`);
+    const data = await snapshots.load(p, sid, "messages=200", { force });
+    if (!data) return false;
     if (gen !== D.gen || p !== D.project || sid !== D.sid) return false;
     if (staleState(D.data, data)) return false;
     const was = hasActivity(D.data);
@@ -183,11 +185,12 @@ async function loadSession() {
 }
 
 function openSession(sid, { remember = true } = {}) {
-  D.sid = sid || null; D.data = null; D.gen++; D.key = "";
+  snapshots.cancel(D.project, D.sid, "messages=200");
+  D.sid = sid || null; D.data = snapshots.peek(D.project, sid, "messages=200")?.data || null; D.gen++; D.key = "";
   if (sid && remember) storage.set(SESSION_KEY, { ...(storage.get(SESSION_KEY, {}) || {}), [D.project]: sid });
   draft?.select(D.project, D.sid);
   act?.reset();
-  if (sid) loadSession();
+  if (sid) loadSession(false);
   draw();
 }
 
@@ -203,8 +206,8 @@ function draw() {
   if (runningDot) runningDot.hidden = !D.sessions?.some((s) => s.id === D.sid && s.plan_status === "running");
   const opts_ = (D.sessions || []).map((s) => `<option value="${esc(s.id)}" ${s.id === D.sid ? "selected" : ""}>${esc(s.title)}${s.schedule ? ` · ${s.schedule.queued_count || 0} queued` : ""}</option>`).join("");
   const html = opts_ || `<option value="">${D.sessions ? "No session yet" : "Loading…"}</option>`;
-  if (sel.dataset.html !== html) { sel.dataset.html = html; sel.innerHTML = html; }
-  sel.disabled = !D.sessions?.length;
+  refreshHTML(sel, html);
+  if (document.activeElement !== sel) sel.disabled = !D.sessions?.length;
   const st = ctxRef.state;
   $("#cd-full", el).setAttribute("href", routeHash(D.sid ? `chat/${D.sid}` : "chat", st.selectedProject, st.selectedTarget));
   drawLog();
@@ -219,9 +222,9 @@ function drawLog() {
   const box = $("#cd-log", el);
   box.setAttribute("aria-busy", String(Boolean(!D.data && !D.error && (!D.sessions || D.sid))));
   if (D.data) { act?.update(D.data, D.notes.filter((n) => n.sid === D.sid && n.project === D.project)); conversationStarter(box); return; }
-  if (D.error) box.innerHTML = `<p class="callout fail small" role="alert">${esc(D.error)} <button type="button" class="btn sm" data-cd="refresh">Retry</button></p>`;
-  else if (D.sessions && !D.sessions.length) box.innerHTML = `<div class="empty small"><p>No conversations in ${esc(ctxRef?.projectName?.(D.project) || D.project)}.</p><button type="button" class="btn sm primary" data-cd="new">New session</button></div>`;
-  else box.innerHTML = `<p class="muted small" role="status">Loading conversation…</p>`;
+  if (D.error) sourceHTML(box, `<p class="callout fail small" role="alert">${esc(D.error)} <button type="button" class="btn sm" data-cd="refresh">Retry</button></p>`);
+  else if (D.sessions && !D.sessions.length) sourceHTML(box, `<div class="empty small"><p>No conversations in ${esc(ctxRef?.projectName?.(D.project) || D.project)}.</p><button type="button" class="btn sm primary" data-cd="new">New session</button></div>`);
+  else sourceHTML(box, `<p class="muted small" role="status">Loading conversation…</p>`);
 }
 
 function messageHtml(original) {
@@ -270,7 +273,7 @@ async function onClick(e) {
   if (b.dataset.chatPrompt) { composer.input.value = b.dataset.chatPrompt; draft.edit(composer.input.value); composer.refresh(); composer.input.focus(); return; }
   const a = b.dataset.cd;
   if (a === "close") opts.onClose?.();
-  else if (a === "refresh") { D.error = ""; loadSessions(); loadSession(); }
+  else if (a === "refresh") { server.invalidateChatProbes(); D.error = ""; loadSessions(); loadSession(); }
   else if (a === "new") newSession();
 }
 

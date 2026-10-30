@@ -20,7 +20,7 @@ test("Log and Reply Find layout, focus, navigation and highlights", { skip: !chr
   });
   await new Promise(done => service.listen(0, "127.0.0.1", done));
   t.after(() => new Promise(done => { service.close(done); service.closeAllConnections(); }));
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ ...(process.env.ALFRD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.ALFRD_CHROMIUM_EXECUTABLE } : {}) });
   t.after(() => browser.close());
   const before = process.env.ALFRD_FIND_BEFORE;
   const shots = process.env.ALFRD_FIND_SCREENSHOTS;

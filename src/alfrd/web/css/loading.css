@@ -1,0 +1,23 @@
+/* Small, static outlines: no animation, including with reduced motion. */
+.skeleton-block { background: var(--subtle, #252a33); border: 1px solid var(--border, #363c46); border-radius: 6px; min-height: 18px; }
+.loading-layout { display: grid; grid-template-columns: var(--sessions-width, 220px) minmax(0,1fr); gap: 12px; padding: 28px 42px; height: 100%; min-height: 0; box-sizing: border-box; }
+.outline-sessions { display: flex; flex-direction: column; gap: 8px; }
+.outline-sessions .skeleton-block { min-height: 28px; }
+.outline-conversation { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.outline-heading { height: 32px; flex: none; }
+.outline-messages { flex: 1; padding: 8px 4px; }
+.outline-messages .skeleton-block { height: 72px; margin-bottom: 18px; max-width: 85%; }
+.outline-messages .skeleton-block:nth-child(2) { margin-left: 12%; }
+.outline-composer { height: 52px; flex: none; }
+.outline-details { display: none; }
+.outline-picker { width: 200px; height: 30px; }
+.rail > .skeleton-block { width: 30px; height: 32px; margin: 8px 0; }
+#startup-outline { flex: 1; min-height: 0; }
+.skeleton-rows { display: flex; flex-direction: column; gap: 8px; }
+.skeleton-sessions .skeleton-block { min-height: 28px; }
+.skeleton-messages .skeleton-block { min-height: 72px; margin-bottom: 18px; max-width: 85%; }
+.skeleton-details .skeleton-block { min-height: 100px; }
+@media (max-width: 900px) { .loading-layout { grid-template-columns: minmax(0,1fr); padding: 24px 28px; } .outline-sessions { display: none; } }
+@media (min-width: 1281px) { .loading-layout[data-inspector="open"] { grid-template-columns: var(--sessions-width, 220px) minmax(0,1fr) var(--inspector-width, 320px); } .loading-layout[data-inspector="open"] .outline-details { display: flex; flex-direction: column; gap: 12px; } }
+@media (min-width: 901px) { .loading-layout[data-collapsed="true"] { grid-template-columns: minmax(0,1fr); } .loading-layout[data-collapsed="true"] .outline-sessions { display: none; } }
+@media (min-width: 1281px) { .loading-layout[data-inspector="open"][data-collapsed="true"] { grid-template-columns: minmax(0,1fr) var(--inspector-width, 320px); } }

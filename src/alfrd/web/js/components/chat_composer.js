@@ -59,8 +59,9 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
     const o = orchestrator();
     return o ? `To orchestrator @${o}` : "";
   };
+  let grownText = input.value;
   const refresh = () => {
-    autogrow(input);
+    if (input.value !== grownText) { grownText = input.value; autogrow(input); }
     input.placeholder = `${route() || "To orchestrate"}; @agent for direct, /help for commands`;
     if (stop) {
       const s = stopState?.() || {};
@@ -82,7 +83,7 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
     input.setAttribute("aria-expanded", String(Boolean(items.length)));
     list.innerHTML = items.map((o, i) => `<li id="${id}-opt-${i}" role="option" aria-selected="${i === menu.active}" data-agent="${esc(o.key)}" class="${i === menu.active ? "on" : ""}">${o.html}</li>`).join("");
     if (items.length) input.setAttribute("aria-activedescendant", `${id}-opt-${menu.active}`); else input.removeAttribute("aria-activedescendant");
-    refresh();
+    autogrow(input); refresh();
   };
   const close = () => { menu = { at: null, items: [], active: 0 }; list.hidden = true; input.setAttribute("aria-expanded", "false"); input.removeAttribute("aria-activedescendant"); };
   const run = (cmd, args = "") => { input.value = ""; onDraft(""); close(); refresh(); onCommand(cmd, args); };
@@ -121,7 +122,7 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   });
   input.addEventListener("keyup", (e) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) update(); });
   if (typeof ResizeObserver === "function") { let width = -1; new ResizeObserver(([e]) => { const w = Math.round(e.contentRect.width); if (w !== width) { width = w; autogrow(input); } }).observe(form); }
-  refresh();
+  autogrow(input); refresh();
   return { input, close, refresh };
 }
 

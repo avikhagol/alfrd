@@ -27,6 +27,8 @@ export function mountRequestLine(node, o) {
     node, jump,
     update(next, nextState) { group = next; state = nextState; activity.kick(); mail(); mailbox?.kick(); },
     kick() { activity.kick(); mailbox?.kick(); },
+    suspend() { activity.suspend(); mailbox?.suspend(); },
+    resume() { activity.resume(); mailbox?.resume(); },
     stop() { activity.stop(); mailbox?.stop(); },
   };
 }

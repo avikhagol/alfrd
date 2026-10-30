@@ -87,6 +87,7 @@ test("app route selects the linked project before opening its run and deduplicat
     switchProject: (p) => { calls.push(["project", p]); state.selectedProject = p; },
     chooseTarget: () => null, storage: { get: () => ({}) }, rememberTarget() {}, unsaved: () => [],
     VIEWS: [{ id: "overview", mod: {} }, { id: "workflow", mod: {} }], scheduleRender() {}, plansAvailable: () => true,
+    skillsCanLeave: () => true,
     shown: () => true, chatOn: () => false, // superuser section filter (app.js): nothing hidden here
     openLinkedRun: async (_, ...args) => { assert.equal(state.selectedProject, "p"); calls.push(["run", ...args]); },
   };

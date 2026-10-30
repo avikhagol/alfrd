@@ -66,6 +66,13 @@ test("shared Chat and narrow dock composer: schedule, add, edit, remove, run and
     await page.locator(`#${prefix}-schedule-toggle`).click();
     await page.locator(`#${prefix}-schedule [name=time]`).fill("2099-10-28T17:00");
     await page.locator(`#${prefix}-schedule [name=zone]`).fill("UTC");
+    await page.locator(`#${prefix}-schedule [name=offset]`).focus();
+    assert.equal(await page.evaluate(async (prefix) => {
+      const select = document.querySelector(`#${prefix}-schedule [name=offset]`), option = select.options[0], value = select.value;
+      const { scheduleController } = await import("/js/data/chat_schedule.js"); await scheduleController("p", "s").refresh();
+      return select.isConnected && select.options[0] === option && select.value === value && document.activeElement === select && select.closest("dialog").open;
+    }, prefix), true, "schedule polling retains the focused offset control and open picker");
+
     await page.locator(`#${prefix}-schedule [data-save-time]`).click();
     await page.locator(`#${prefix}-schedule [data-run]`).waitFor();
   };
@@ -106,6 +113,14 @@ test("shared Chat and narrow dock composer: schedule, add, edit, remove, run and
   await page.locator("#cd-schedule [data-edit]").nth(1).click();
   await page.locator("#cd-schedule [data-edit-text]").fill("add weekly CSV export");
   assert.equal(await page.locator("#cd-schedule [data-run]").isDisabled(), true);
+  await page.evaluate(async () => {
+    const input = document.querySelector("#cd-schedule [data-edit-text]"); input.focus(); input.setSelectionRange(4, 9); input.style.height = "141px"; window.queuedInput = input;
+    const { scheduleController } = await import("/js/data/chat_schedule.js");
+    // The fixture shares the controller key shown in its initial setup.
+    for (const [project, sid] of [["p", "s"]]) await scheduleController(project, sid).refresh();
+  });
+  assert.equal(await page.locator("#cd-schedule [data-edit-text]").evaluate(el => el === queuedInput && el.selectionStart === 4 && el.selectionEnd === 9 && el.style.height === "141px" && document.activeElement === el), true);
+
   await page.locator("#cd-schedule [data-save]").click();
   await page.locator("#chat-schedule li").filter({ hasText: "weekly CSV" }).waitFor();
   await page.locator("#cd-schedule [data-remove]").first().click();

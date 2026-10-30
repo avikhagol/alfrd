@@ -3,13 +3,15 @@ import { server } from './server.js';
 import { pendingCount, countText } from './inbox.js';
 import { $ } from '../utils/dom.js';
 
-export function createChatProjects({ request, changed = () => {} }) {
+export function createChatProjects({ request, changed = () => {}, now = Date.now, freshMs = 30000, maxProjects = 2 }) {
   const cache = new Map(), listeners = new Set();
   let selected = null, running = 0;
   const queue = [];
   function entry(p) {
-    if (!cache.has(p)) cache.set(p, { project: p, sessions: null, stale: true, error: null, version: 0, pending: null });
-    return cache.get(p);
+    if (!cache.has(p)) cache.set(p, { project: p, sessions: null, stale: true, error: null, version: 0, fetchedAt: null, pending: null });
+    const value = cache.get(p); cache.delete(p); cache.set(p, value);
+    while (cache.size > maxProjects) cache.delete(cache.keys().next().value);
+    return value;
   }
   function emit(e) { for (const fn of listeners) fn(e); changed(); }
   function pump() {
@@ -19,10 +21,12 @@ export function createChatProjects({ request, changed = () => {} }) {
     }
   }
   function load(p, full = p === selected, invalidate = false) {
-    if (!p || p !== selected) return Promise.resolve(null);
+    if (!p) return Promise.resolve(null);
     const e = entry(p);
     if (invalidate) { e.version++; e.stale = true; }
+    if (p !== selected) return Promise.resolve(null);
     if (e.pending) { e.again ||= invalidate || (full && !e.full); return e.pending; }
+    if (!e.stale && e.fetchedAt !== null && now() - e.fetchedAt < freshMs) return Promise.resolve(e);
     e.full = full;
     e.pending = new Promise((resolve) => {
       queue.push(async () => {
@@ -36,7 +40,7 @@ export function createChatProjects({ request, changed = () => {} }) {
           if (version !== e.version) { e.again = true; return; }
           if (!Array.isArray(body.sessions)) throw new Error('Sessions unavailable');
           e.sessions = body.sessions;
-          e.stale = false; e.error = null;
+          e.stale = false; e.error = null; e.fetchedAt = now();
         } catch (error) { if (cache.get(p) === e) { e.error = error.message; e.stale = true; } }
         finally {
           e.pending = null;

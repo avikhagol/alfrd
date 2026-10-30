@@ -1,4 +1,5 @@
 // Composer attachments: deliberately mountable so Chat and the dock can opt in separately.
+import { sourceHTML } from "../utils/refresh.js";
 import { esc, icon } from "../utils/dom.js";
 import { error as stateError } from "./state_view.js";
 
@@ -79,7 +80,7 @@ export function mountAttachmentTray(root, { id = "chat", uploadUrl = "S/attachme
   const update = (notify = true) => {
     const busy = active();
     if (!disposed) {
-      chipsEl.innerHTML = [...chips.values()].map(renderChip).join("");
+      sourceHTML(chipsEl, [...chips.values()].map(renderChip).join(""));
       if (sendButton) { sendButton.disabled = busy; sendButton.title = busy ? "Wait for image uploads to finish" : ""; sendButton.setAttribute("aria-disabled", String(busy)); }
       reason.textContent = busy ? "Wait for image uploads to finish before sending." : "";
     }

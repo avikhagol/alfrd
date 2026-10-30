@@ -100,7 +100,8 @@ test("textarea auto-grows to min(240px, 40dvh) and scrolls beyond", () => {
   t.value = ""; autogrow(t); assert.equal(t.style.height, ""); assert.equal(t.style.overflowY, "hidden");
   delete globalThis.visualViewport; delete globalThis.innerHeight;
   const m = mount(); m.c.input.scrollHeight = 77; m.type("a\nb\nc"); assert.equal(m.c.input.style.height, "77px");
-  m.c.input.scrollHeight = 55; m.c.refresh(); assert.equal(m.c.input.style.height, "55px");
+  m.c.input.scrollHeight = 55; m.c.refresh(); assert.equal(m.c.input.style.height, "77px", "background refresh preserves grown height");
+  autogrow(m.c.input); assert.equal(m.c.input.style.height, "55px", "explicit geometry updates still resize");
 });
 
 test("Stop is separate, optional, and leaves the draft alone", () => {

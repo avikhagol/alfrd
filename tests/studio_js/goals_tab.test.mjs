@@ -60,7 +60,7 @@ test("loader uses authenticated getter, encodes path, retains markup on unchange
   api.update({ ...args, state: state() });
   assert.equal(urls.length, 1); assert.equal(host.onclick, click); assert.equal(host.innerHTML, html);
   api.update({ ...args, state: state(2) });
-  assert.match(host.innerHTML, /state-loading/);
+  assert.equal(host.innerHTML, html, "revision refresh retains content until the new overview arrives");
   pending[1].resolve(overview(2)); await tick();
   assert.match(host.innerHTML, /Task status: done/);
   api.stop();
@@ -114,6 +114,6 @@ test("no session and pending snapshot use F2 states without fetching; integratio
   api.update({ host, project: "p", sid: "s" }); assert.match(host.innerHTML, /Loading session/);
   assert.equal(calls, 0); api.stop();
   const source = await readFile(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
-  assert.match(source, /goals.update\(\{ host: inspTab === "goals"/);
-  assert.match(source.slice(source.indexOf("export function leave"), source.indexOf("export function render")), /goals.stop\(\)/);
+  assert.match(source, /drawGoals\(\{ host: inspTab === "goals"/);
+  assert.match(source.slice(source.indexOf("function leave() {\n"), source.indexOf("function render(el, ctx) {\n  if (destroyed)")), /goals\?\.stop\(\)/);
 });

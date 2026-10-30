@@ -1,3 +1,4 @@
+import { refreshHTML } from "../utils/refresh.js";
 // Settings → Plugins → Configure: a plugin's settings form, Test, and its services. Loaded on first use.
 import { esc } from "../utils/dom.js";
 import { server } from "../data/server.js";
@@ -48,7 +49,7 @@ export function attach(ctx, panel, canWrite) {
     opened.set(id, c);
     const b = body(id);
     if (!b) return;
-    b.innerHTML = render(c, canWrite);
+    refreshHTML(b, render(c, canWrite));
     b.hidden = false;
     button(id)?.setAttribute("aria-expanded", "true");
     if (message) say(id, message, tone);

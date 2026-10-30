@@ -60,8 +60,11 @@ export function anchorIndex(nodes, top) {
 export function mountTranscript(box, o) {
   let scope = "", messages = new Map(), lines = new Map(), flow, status, phase, newer, empty, currentState, stick = true;
   const render = o.renderMarkdown || renderMessageMarkdown, mountLine = o.mountLine || mountRequestLine;
-  let unseen = 0, known = new Set();
-  const protectedView = () => Boolean(String(window.getSelection?.() || "") || (box.contains(document.activeElement) && document.activeElement !== newer && document.activeElement !== box));
+  let unseen = 0, known = new Set(), suspended = false;
+  const protectedView = () => {
+    const selection = window.getSelection?.();
+    return Boolean((String(selection || "") && box.contains(selection?.anchorNode)) || (box.contains(document.activeElement) && document.activeElement !== newer && document.activeElement !== box));
+  };
   const atEnd = () => box.scrollHeight - box.scrollTop - box.clientHeight <= 24;
   const toEnd = () => {
     if (document.activeElement === newer) { box.tabIndex = -1; box.focus?.({ preventScroll: true }); }
@@ -119,15 +122,17 @@ export function mountTranscript(box, o) {
   }
   const api = {
     update(state, notes = []) {
+      if (suspended) return;
       currentState = state;
       const next = JSON.stringify([o.project(), o.sid()]);
-      if (next !== scope || !flow?.isConnected) { scope = next; reset(); }
-      const following = !protectedView() && (stick || atEnd()), kids = [...flow.children];
+      if (next !== scope || !flow || flow.parentNode !== box) { scope = next; reset(); }
+      const following = !protectedView() && atEnd(), kids = [...flow.children];
       const i = following ? -1 : anchorIndex(kids, box.getBoundingClientRect().top);
       const anchor = kids[i], before = anchor?.getBoundingClientRect().top;
       const groups = threadGroups({ ...state, messages: [...(state?.messages || []), ...notes] }), items = transcriptItems(groups);
       empty.hidden = Boolean(items.length);
-      status.textContent = o.error?.() ? "Updates paused — reconnecting" : "";
+      const statusText = o.error?.() ? "Updates paused — reconnecting" : "";
+      if (status.textContent !== statusText) status.textContent = statusText;
       const phases = groups.filter((g) => g.request).map((g) => `${g.request.text?.slice(0, 80) || "Request"}: ${g.request.status.replaceAll("_", " ")}`).join(". ");
       if (phase.textContent !== phases) phase.textContent = phases;
       const keys = new Set(items.map((x) => x.key));
@@ -162,6 +167,8 @@ export function mountTranscript(box, o) {
     jumpMail(request, id) { stick = false; lines.get(`run:${request}`)?.jump(id); },
     kick() { for (const l of lines.values()) l.kick(); },
     reset() { scope = ""; reset(); },
+    suspend() { suspended = true; for (const l of lines.values()) l.suspend?.(); },
+    resume() { suspended = false; for (const l of lines.values()) l.resume?.(); },
     stop: stopAll,
   };
   return api;

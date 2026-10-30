@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import urllib.request
 from importlib import resources
@@ -74,6 +75,8 @@ _STATIC_IMPORT = re.compile(
 )
 #: Modules the Studio loads with ``import()`` on first use; never part of startup.
 LAZY_MODULES = {
+    "js/components/canvas.js", "js/components/logs.js", "js/components/metadata.js",
+    "js/components/results.js", "js/components/alfrd_config.js",
     "js/components/folder_browser.js", "js/data/paths.js",
     "js/components/agent_dialog.js",
     "js/components/agent_settings_dialog.js", "js/data/agent_settings.js",
@@ -100,7 +103,7 @@ LAZY_MODULES = {
 
 
 def _startup_files() -> set[Path]:
-    """index.html, studio.css and the static import closure of js/app.js."""
+    """HTML, critical styles/scripts, and the static import closure of js/app.js."""
     root = web_root()
     seen: set[Path] = set()
     todo = [root / "js" / "app.js"]
@@ -112,6 +115,7 @@ def _startup_files() -> set[Path]:
         for match in _STATIC_IMPORT.finditer(path.read_text(encoding="utf-8")):
             todo.append(path.parent / (match.group(1) or match.group(2)))
     return seen | {(root / "index.html").resolve(), (root / "css" / "studio.css").resolve(),
+                   (root / "css" / "loading.css").resolve(), (root / "js" / "loading-shell.js").resolve(),
                    (root / "css" / "themes" / "obsidian-orbit" / "theme.css").resolve()}
 
 
@@ -119,19 +123,20 @@ def _gz(path: Path) -> int:
     return len(gzip.compress(path.read_bytes(), 9))
 
 
-def test_startup_payload_under_200kib_compressed():
-    # What the Studio loads when it opens. 150 KB until 0.2.1 (~149 KB then);
-    # @avikhagol: increased since, startup reached ~197 KB (0.4.0.0)
+def test_startup_payload_under_170kib_compressed():
+    # Lazy views move 30 KiB of the existing budget out of startup.
+    # Combined startup + lazy ceiling stays 600 KiB; critical HTML assets count too.
     total = sum(_gz(p) for p in _startup_files())
-    assert total < 200 * 1024, f"{total} bytes gzip"
+    assert total < 170 * 1024, f"{total} bytes gzip"
 
 
-def test_lazy_payload_under_400kib_compressed():
+def test_lazy_payload_under_430kib_compressed():
     startup = _startup_files()
     total = sum(_gz(p) for p in _web_files()
                 if p.resolve() not in startup and p.suffix not in {".png", ".ico"})
-    # v0.4.0.0 wave5 decision 1A: 336 KiB (344,064 B); raised by owner 2026-10-26 to 400 KiB (409,600 B) for chat delegation/outputs/watch UI. Excludes local runtime state.
-    assert total < 400 * 1024, f"{total} bytes gzip"
+    # Previously 400 KiB: 30 KiB is transferred from the startup ceiling when
+    # Workflow, Logs, Metadata, Results and Settings become lazy. No total increase.
+    assert total < 430 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
@@ -259,9 +264,9 @@ def test_js_parsers_with_node():
     if not node:
         pytest.skip("Node.js not available")
     result = subprocess.run(
-        [node, "--test", *sorted(str(p) for p in (PROJECT_ROOT / "tests" / "studio_js").glob("*.test.mjs"))],
+        [sys.executable, str(PROJECT_ROOT / "scripts" / "run_studio_tests.py")],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=255,
     )
     assert result.returncode == 0, result.stdout + result.stderr

@@ -76,6 +76,10 @@ def create_app(config=None):
     if config:
         app.config.update(config)
 
+    from alfrd.gui.project_selection import restore as restore_project_selection
+
+    restore_project_selection(app)
+
     # ``dict.setdefault`` does not replace Flask's initial ``None`` value.
     if not app.config.get("SECRET_KEY"):
         import secrets

@@ -1,3 +1,4 @@
+import { sourceHTML } from "../utils/refresh.js";
 import { taskIslands, islandKey, islandProgress, isTask, outputUnits, ownerSlot } from "../data/chat_islands.js";
 import { statusIcon } from "./status_icons.js";
 import { quietCounts, usageUnits, usageCountsHtml } from "./usage_counts.js";
@@ -49,23 +50,23 @@ export function mountActivity(box, o) {
     const label = active ? req.status === "planning" ? "Planning the tasks" : req.status === "needs_decision" ? "Needs your answer" : "Working" : req?.status === "done" ? "Run completed" : statusInfo(req?.status).label;
     const started = Number(req?.created_ts) ? req.created_ts * 1000 : Date.parse(req?.created);
     const ended = req?.finished ? Date.parse(req.finished) : Date.now();
-    header.textContent = !req ? "" : [req?.status ? label : "", p && Array.isArray(state().tasks) ? (progress.total ? `${progress.done}/${progress.total} tasks complete` : "Planning tasks…") : "",
+    setText(header, !req ? "" : [req?.status ? label : "", p && Array.isArray(state().tasks) ? (progress.total ? `${progress.done}/${progress.total} tasks complete` : "Planning tasks…") : "",
       Number.isFinite(started) && Number.isFinite(ended) ? duration(Math.max(0, Math.round((ended - started) / 1000))) : "",
-      (req?.usage?.total_cost_usd == null ? "Cost — / Not reported" : money(req.usage.total_cost_usd)), quietCounts(snapshot.telemetry?.requests?.[rid()] || req?.telemetry)].filter((s) => s && s !== "—").join(" · ");
+      (req?.usage?.total_cost_usd == null ? "Cost — / Not reported" : money(req.usage.total_cost_usd)), quietCounts(snapshot.telemetry?.requests?.[rid()] || req?.telemetry)].filter((s) => s && s !== "—").join(" · "));
     const warned = costWarnings(state(), rid());
-    $("[data-run-warning]", box).textContent = [p?.costRatio >= 0.8 ? `${p.costRatio >= 1 ? "Cost cap reached" : "Approaching cost cap"}: ${money(req?.usage?.total_cost_usd)} / ${money(p.maxCost)}` : "",
+    setText($("[data-run-warning]", box), [p?.costRatio >= 0.8 ? `${p.costRatio >= 1 ? "Cost cap reached" : "Approaching cost cap"}: ${money(req?.usage?.total_cost_usd)} / ${money(p.maxCost)}` : "",
       p?.timeRatio >= 0.8 ? `${p.timeRatio >= 1 ? "Time limit reached" : "Approaching time limit"}: ${duration(p.seconds)} / ${duration(p.maxSeconds)}` : "",
-      warned.length ? `${warned.length} task${warned.length === 1 ? "" : "s"} over cost warning` : ""].filter(Boolean).join(" · ");
+      warned.length ? `${warned.length} task${warned.length === 1 ? "" : "s"} over cost warning` : ""].filter(Boolean).join(" · "));
     if (usage.open) {
       const host = $("[data-usage-counts]", box), html = usageCountsHtml(req, snapshot.telemetry?.requests?.[rid()], snapshot.items, usageUnits(state(), rid()), snapshot);
-      if (host.innerHTML !== html) host.innerHTML = html;
+      sourceHTML(host, html);
     }
     const stepBox = $("[data-current-steps]", box), stepHtml = stepsHtml(active ? currentSteps(req) : [], rid(), state().blockers);
-    if (stepBox.innerHTML !== stepHtml) stepBox.innerHTML = stepHtml;
-    notice.textContent = snapshot.unsupported ? "Live output unavailable on this server. Open the full transcript for details." : snapshot.stale ? "Updates paused — reconnecting" : "";
+    sourceHTML(stepBox, stepHtml);
+    setText(notice, snapshot.unsupported ? "Live output unavailable on this server. Open the full transcript for details." : snapshot.stale ? "Updates paused — reconnecting" : "");
     const progressHost = $("[data-task-progress]", run);
     const progressHtml = progress.total ? `<label>${progress.done} of ${progress.total} tasks complete <progress max="${progress.total}" value="${progress.done}"></progress></label>${["failed", "blocked", "cancelled"].filter((k) => progress[k]).map((k) => `<span>${progress[k]} ${k}</span>`).join(" · ")}` : "Planning tasks…";
-    if (progressHost.innerHTML !== progressHtml) progressHost.innerHTML = progressHtml;
+    sourceHTML(progressHost, progressHtml);
     const taskKeys = new Set(tasks.map(islandKey));
     for (const [key, island] of islands) if (!taskKeys.has(key)) { island.el.remove(); islands.delete(key); }
     for (const task of tasks) {
@@ -88,7 +89,7 @@ export function mountActivity(box, o) {
       // Compare source markup: the browser expands SVG self-closing paths in innerHTML.
       if (island.statusHtml !== status) { statusEl.innerHTML = status; island.statusHtml = status; }
       const steps = stepsHtml(currentSteps(req, task.row), rid(), state().blockers) || "Step — / Not reported", stepEl = $(".chat-island-step", el);
-      if (stepEl.innerHTML !== steps) stepEl.innerHTML = steps;
+      sourceHTML(stepEl, steps);
       const deps = Array.isArray(task.dependencies) ? task.dependencies : [task.dependencies];
       setText($("[data-dependencies]", el), deps.length ? `Depends on: ${deps.join(", ")}` : "No dependencies");
       setText($(".chat-island-metrics", el), `Elapsed ${task.metrics.seconds == null ? "— / Not reported" : duration(Math.round(task.metrics.seconds))} · Cost ${task.metrics.cost == null ? "— / Not reported" : money(task.metrics.cost)}`);
@@ -143,8 +144,10 @@ export function mountActivity(box, o) {
       if (!protectedTail) setText($("[data-raw]", row.el), Array.isArray(r.tail) ? r.tail.join("\n") : "");
     }
   }
+  let suspended = false;
   const api = {
     kick() {
+      if (suspended) return;
       const next = JSON.stringify([o.project(), o.sid(), rid()]);
       if (context !== next) { api.stop(); context = next; rows.clear(); islands.clear(); run = null; snapshot = { items: [] }; }
       if (!o.project() || !o.sid()) return;
@@ -165,6 +168,8 @@ export function mountActivity(box, o) {
     rawHost() { return $("[data-raw-protocol]", box); },
     decisionsHost() { return $("[data-decisions]", box); },
     reset() { api.stop(); context = ""; api.kick(); },
+    suspend() { suspended = true; api.stop(); },
+    resume() { suspended = false; api.kick(); },
     stop() { clearInterval(clock); clock = null; subscription?.stop(); subscription = null; paused = true; },
   };
   return api;

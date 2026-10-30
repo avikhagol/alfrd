@@ -1376,7 +1376,7 @@ def prepare_launch(runner, spec, unit: Mapping[str, Any]) -> str | None:
         _write_prompt(store, row, (store.tasks_dir / row / "prompt.md").read_text(encoding="utf-8"))
     # Freeze selection across retries, reassignments and settings/file edits. Legacy requests
     # without a snapshot remain off; never resolve the current selection at launch.
-    section = saved_skills.snapshot_prompt(store.request(rec["request"]).get("skill_snapshot"))
+    section = saved_skills.snapshot_prompt(saved_skills.launch_snapshot(store.request(rec["request"]).get("skill_snapshot"), rec))
     if section:
         prompt_path = store.tasks_dir / row / "prompt.md"
         text = prompt_path.read_text(encoding="utf-8")
@@ -3356,7 +3356,7 @@ def promotion(root: str | Path, sid: str, rid: str) -> dict[str, Any]:
             entry_def = next((e for e in (merged_manifest(store.root).get("entrypoint") or []) if isinstance(e, Mapping) and e.get("name") == name), None) \
                 or {"name": name, **(builtin or {})}
             spec["output_capture"] = entry_def.get("output_capture", "file") if entry_def.get("output_file") else "stdout"
-        for key in ("model", "adapter", "timeout", "lean", "model_option", "env"):
+        for key in ("model", "adapter", "timeout", "lean", "model_option", "env", "skills", "plugins", "mcp"):
             if agent.get(key) is not None:
                 spec[key] = agent[key]
         outputs = [output_display_path(store.root, o) for o in task_outputs(store, rec)]

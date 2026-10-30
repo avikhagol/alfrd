@@ -8,12 +8,18 @@ export { createProjectLoader, projectLoadInfo } from "./project_load.js";
 const API = "/api";
 const fitsCache = new Map();
 const authListeners = new Set();
+// Capability reads are project-scoped, shared by Chat and dock, and short-lived.
+const chatProbes = new Map();
+let probeSession = null, probeToken = null;
+function clearChatProbes() { chatProbes.clear(); }
+
 
 function requireAuth() {
   if (server.authRequired) return;
   server.authRequired = true;
   server.session = null;
   fitsCache.clear();
+  clearChatProbes();
   for (const listener of authListeners) listener();
 }
 
@@ -58,6 +64,36 @@ export const server = {
     return () => authListeners.delete(listener);
   },
 
+  invalidateChatProbes: clearChatProbes,
+  chatProbe(project) {
+    if (probeSession !== this.session || probeToken !== this.session?.csrf_token) {
+      clearChatProbes(); probeSession = this.session; probeToken = this.session?.csrf_token;
+    }
+    const cached = chatProbes.get(project);
+    if (cached && (cached.pending || Date.now() - cached.at < 30000)) return cached.promise;
+    const entry = { pending: true, at: 0 };
+    chatProbes.set(project, entry);
+    // Bound retained projects without evicting a request another composer is awaiting.
+    for (const [key, value] of chatProbes) {
+      if (chatProbes.size <= 32) break;
+      if (!value.pending) chatProbes.delete(key);
+    }
+    entry.promise = (async () => {
+      try {
+        const res = await this.request(`/api/studio/projects/${encodeURIComponent(project)}/chat/probe`);
+        if (!res.ok) throw new Error("Capabilities unavailable");
+        const data = await res.json();
+        if (chatProbes.get(project) !== entry || probeSession !== this.session || probeToken !== this.session?.csrf_token) throw new Error("Capabilities changed");
+        entry.at = Date.now();
+        return data;
+      } catch (error) {
+        if (chatProbes.get(project) === entry) chatProbes.delete(project);
+        throw error;
+      } finally { entry.pending = false; }
+    })();
+    return entry.promise;
+  },
+
   /** Detect a same-origin ALFRD server. Resolves to the session or null. */
   async detect() {
     if (this.authRequired || location.protocol === "file:") return null;
@@ -80,11 +116,14 @@ export const server = {
   async mutate(path, payload, method = "POST") {
     if (this.authRequired) throw accessError();
     if (!this.session?.mutations_enabled) throw new Error("Runtime mutations are disabled on this server (loopback only).");
-    return getJson(path, {
+    const result = await getJson(path, {
       method,
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": this.session.csrf_token },
       body: JSON.stringify(payload || {}),
     });
+    // Includes setup, Settings file saves and provider changes; reject old in-flight probes.
+    clearChatProbes();
+    return result;
   },
 
   /** Register a project directory or alfrd.yaml path with the server. */

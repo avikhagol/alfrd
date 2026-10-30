@@ -9,11 +9,13 @@ export function mountPanelResize({ panel, handle, key, width, min, max, defaultW
   available = () => max, enabled = () => true, apply, save = (w) => storage.set(key, w) }) {
   let preferred = panelWidth(width ?? storage.get(key, defaultWidth), min, max, defaultWidth), effective = preferred, drag = null;
   const listeners = [];
+  let suspended = false;
   const on = (node, name, fn) => { node.addEventListener(name, fn); listeners.push(() => node.removeEventListener(name, fn)); };
   handle.classList.add('panel-resize'); handle.classList.toggle('panel-resize-right', side === 'right');
   for (const [k, v] of Object.entries({ role: 'separator', 'aria-orientation': 'vertical', 'aria-label': label, 'aria-controls': controls, 'aria-valuemin': min, 'aria-valuemax': max })) handle.setAttribute(k, String(v));
   handle.title = 'Left/Right: move 20 pixels (Shift: 80). Home/End: minimum/maximum. Enter or double-click: reset. Escape: cancel drag.';
   function sync() {
+    if (suspended) return;
     const active = enabled();
     if (!active && drag) finish(true);
     handle.hidden = !active; handle.tabIndex = active ? 0 : -1;
@@ -51,5 +53,7 @@ export function mountPanelResize({ panel, handle, key, width, min, max, defaultW
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(sync) : null;
   if (panel.parentElement) observer?.observe(panel.parentElement);
   sync();
-  return { sync, preferred: () => preferred, destroy() { finish(true); observer?.disconnect(); listeners.splice(0).forEach((off) => off()); } };
+  return { suspend() { finish(true); suspended = true; observer?.disconnect(); },
+    resume() { suspended = false; if (panel.parentElement) observer?.observe(panel.parentElement); sync(); },
+    sync, preferred: () => preferred, destroy() { finish(true); observer?.disconnect(); listeners.splice(0).forEach((off) => off()); } };
 }

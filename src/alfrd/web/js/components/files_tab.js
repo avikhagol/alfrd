@@ -1,3 +1,4 @@
+import { sourceHTML } from "../utils/refresh.js";
 import { esc, copyText } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { empty, loading, error } from "./state_view.js";
@@ -65,9 +66,9 @@ export function mountFiles(host, { getOverview, raw, isCurrent, view, reveal, ro
   let alive = true, files = [];
   const current = () => alive && host.isConnected && isCurrent();
   const status = () => host.querySelector("[data-file-status]");
-  const draw = () => { host.innerHTML = filesHtml(files) + '<div role="status" data-file-status></div>'; };
+  const draw = () => { sourceHTML(host, filesHtml(files) + '<div role="status" data-file-status></div>'); };
   const load = async () => {
-    host.innerHTML = loading("Loading files…");
+    if (!host.innerHTML || !host.querySelector("[data-file-status]")) sourceHTML(host, loading("Loading files…"));
     try {
       const data = await getOverview();
       if (!current()) return;

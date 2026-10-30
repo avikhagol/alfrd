@@ -170,7 +170,7 @@ STARTUP_KEYS = ("lean", "mcp", "plugins", "skills")
 def startup_options(spec):
     """Validated lean-startup options of an entrypoint or step (``lean``, ``mcp``, ``plugins``, ``skills``).
 
-    ``lean: true`` means ``mcp: none``, ``plugins: false`` and ``skills: false`` unless one is given.
+    ``lean: true`` means ``mcp: none``, ``plugins: false`` unless overridden. Native skills stay on unless ``skills: false`` is explicit.
     Returns {} when nothing is asked for (existing projects start agents unchanged). Raises ValueError.
     """
     spec = spec or {}
@@ -179,7 +179,7 @@ def startup_options(spec):
     lean = spec.get("lean", False)
     if not isinstance(lean, bool):
         raise ValueError("lean must be true or false")
-    out = {"mcp": "none", "plugins": False, "skills": False} if lean else {}
+    out = {"mcp": "none", "plugins": False} if lean else {}
     mcp = spec.get("mcp")
     if mcp is not None:
         if isinstance(mcp, str) and mcp in ("none", "default"):

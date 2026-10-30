@@ -41,7 +41,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       window.mail = [approval,
         { ...approval, id: "peer", seq: 2, kind: "info", recipient: { kind: "agent", agent_id: "reviewer", task_id: "b" }, subject: "API ready", body: "Use the reply endpoint.", payload: {} },
         { ...approval, id: "orch", seq: 3, kind: "info", recipient: { kind: "orchestrator" }, subject: "Review complete", body: "Ready for summary.", payload: {} }];
-      window.fixture = { session: { id: "s", title: "Design chat" }, requests, tasks, messages, settings: DEFAULTS, mailbox_version: 1,
+      window.fixture = { session: { id: "s", title: "Design chat" }, requests, tasks, messages, settings: DEFAULTS, mailbox_version: 1, check: { at: ago(120), next_at: new Date(Date.now() + 180000).toISOString() },
         graph: { nodes: tasks.map((x) => ({ id: x.row, title: x.task.title, owner: x.owner, request: x.request, status: x.status, kind: x.kind })), edges: [] },
         blockers: [{ id: "d1", task: "r2.a", request: "r2", needs: "user", mailbox_message_id: "permission", question: "Publish preview?", status: "pending" },
           { id: "d2", task: "r2.b", request: "r2", needs: "user", kind: "permission", repeat: 2, reason: "outside the allowed directories", question: "Grant access?", status: "pending",
@@ -55,7 +55,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
           data = { items: tasks.flatMap((task) => task.logs.filter((l) => units ? units.includes(l.unit) : l.status === "running").map((l) => ({ ...l, row: task.row, request: task.request, owner: task.owner, kind: task.kind, title: task.task.title, seconds: 10,
             display_tail: Array.from({ length: 120 }, (_, i) => `Public output ${window.tailVersion} line ${i}`), tail: ['{"type":"technical"}'] }))) };
         } else if (url.includes("/mailbox/")) data = { messages: window.mail, events: [], next_cursor: "one", has_more: false };
-        else if (url.endsWith("/sessions")) data = { sessions: [{ id: "s", title: "Design chat" }] };
+        else if (url.endsWith("/sessions")) data = { sessions: [{ id: "s", title: window.sessionTitle || "Design chat" }] };
         else if (url.endsWith("/settings")) data = DEFAULTS;
         else data = window.fixture;
         return new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -83,10 +83,83 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
     await page.locator('[data-key="run:r2"] .chat-run-row').first().waitFor();
     return page;
   };
-  for (const theme of ["obsidian-orbit", "daylight-orbit"]) for (const width of [1440, 1024, 390]) {
+  for (const dock of [false, true]) await t.test(`heartbeat preserves ${dock ? "dock" : "chat"} scroll, typing and native menus`, async () => {
+    const page = await open("obsidian-orbit", 1440, dock); t.after(() => page.close());
+    const id = dock ? "cd" : "chat";
+    await page.evaluate(() => {
+      fixture.messages.push(...Array.from({ length: 50 }, (_, i) => ({ id: `long-${i}`, request: "r2", role: "user", text: `Message ${i}\n` + "Reading history. ".repeat(40) })));
+      window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } }));
+    });
+    await page.locator('[data-key="m:long-49"]').waitFor();
+    await page.locator(`#${id}-input`).fill(Array(8).fill("Unsent words and a caret").join("\n"));
+    await page.evaluate(async (id) => {
+      const { sessionDraft } = await import("/js/data/chat_draft.js");
+      const d = sessionDraft("p", "s"); d.chips.set("kept", { id: "kept", name: "kept.png", status: "done", ref: "a.png@abc" }); d.sync();
+      const input = document.getElementById(`${id}-input`), log = document.getElementById(`${id}-log`);
+      input.focus(); input.setSelectionRange(9, 14); input.style.height = "173px";
+      Object.assign(log.style, { height: "280px", maxHeight: "280px", overflow: "auto", flex: "none" });
+      log.scrollTop = 250; log.dispatchEvent(new Event("scroll"));
+      window.kept = { input, text: input.value, start: input.selectionStart, end: input.selectionEnd, height: input.style.height, top: log.scrollTop,
+        first: log.querySelector('[data-key="m:long-1"]'), details: log.querySelector(".chat-details"), chip: document.querySelector('[data-attach-chip="kept"]') };
+      window.refresh();
+      window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } }));
+    }, id);
+    await page.waitForTimeout(500);
+    assert.deepEqual(await page.evaluate((id) => {
+      const log = document.getElementById(`${id}-log`), input = document.getElementById(`${id}-input`);
+      return [input === kept.input, input.value === kept.text, document.activeElement === input, input.selectionStart === kept.start, input.selectionEnd === kept.end,
+        input.style.height === kept.height, log.scrollTop === kept.top, log.querySelector('[data-key="m:long-1"]') === kept.first,
+        log.querySelector(".chat-details") === kept.details, document.querySelector('[data-attach-chip="kept"]') === kept.chip];
+    }, id), Array(10).fill(true));
+    // A real native select owns focus while the server changes its options.
+    if (!dock) await page.locator('[data-chat="inspect"]').click();
+    const select = page.locator(dock ? "#cd-session" : "[data-request-scope]");
+    await select.focus();
+    await page.evaluate((dock) => {
+      const select = document.querySelector(dock ? "#cd-session" : "[data-request-scope]");
+      window.keptSelect = { select, option: select.options[0], value: select.value, html: select.innerHTML };
+      if (dock) {
+        import("/js/data/chat_projects.js").then(({ chatProjects }) => { window.sessionTitle = "Changed title"; chatProjects.load("p", true, true); });
+      } else fixture.requests[1].text = "Updated request label";
+      window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } }));
+    }, dock);
+    await page.waitForTimeout(500);
+    assert.equal(await select.evaluate((el) => el === keptSelect.select && el.options[0] === keptSelect.option && el.innerHTML === keptSelect.html && el.value === keptSelect.value && document.activeElement === el), true);
+    await page.locator(`#${id}-input`).focus();
+    if (!dock) await page.waitForFunction(() => document.querySelector('[data-request-scope]').textContent.includes("Updated request label"));
+    else await page.waitForFunction(() => document.querySelector("#cd-session").textContent.includes("Changed title"));
+    // New messages retain a reader's offset; only a reader already at the bottom follows.
+    await page.evaluate((id) => { document.getElementById(`${id}-log`).scrollTop = 250; }, id);
+    await page.evaluate(() => { fixture.messages.push({ id: "added-away", role: "user", request: "r2", text: "New while reading" }); window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })); });
+    await page.locator('[data-key="m:added-away"]').waitFor();
+    assert.equal(await page.locator(`#${id}-log`).evaluate((el) => el.scrollTop), 250);
+    await page.evaluate((id) => { const log = document.getElementById(`${id}-log`); log.scrollTop = log.scrollHeight; }, id);
+    await page.evaluate(() => { fixture.messages.push({ id: "added-bottom", role: "user", request: "r2", text: "New at bottom" }); window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })); });
+    await page.locator('[data-key="m:added-bottom"]').waitFor();
+    assert.ok(await page.locator(`#${id}-log`).evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 24));
+    if (!dock) {
+      await page.locator(".chat-session-menu summary").click();
+      await page.evaluate(() => { fixture.plan.runner_alive = false; window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })); });
+      await page.waitForTimeout(500);
+      assert.equal(await page.locator(".chat-session-menu").evaluate((el) => el.open), true);
+    }
+  });
+  for (const theme of ["obsidian-orbit", "daylight-orbit"]) for (const width of [1440, 1024, 390, 360]) {
     await t.test(`${theme} ${width}px`, async () => {
       const page = await open(theme, width); t.after(() => page.close());
       const errors = []; page.on("pageerror", (e) => errors.push(e.message));
+      if (width === 360) assert.ok(await page.locator('#chat-head').evaluate((head) => {
+        const title = head.querySelector('.chat-head-title').getBoundingClientRect();
+        const status = head.querySelector('.chat-head-status').getBoundingClientRect();
+        const controls = [...head.querySelectorAll('button, summary, input')].filter((el) => el.getClientRects().length).map((el) => el.getBoundingClientRect());
+        return title.right <= status.left + 1 && controls.every((a, i) => controls.slice(i + 1).every((b) =>
+          Math.min(a.right, b.right) <= Math.max(a.left, b.left) + 1 || Math.min(a.bottom, b.bottom) <= Math.max(a.top, b.top) + 1));
+      }), '360px header groups and controls do not overlap');
+      const tick = page.locator('[data-chat="check"]');
+      assert.equal(await tick.getAttribute("title"), "Checked 2 min ago · next in 3 min");
+      assert.equal(await tick.getAttribute("aria-label"), await tick.getAttribute("title"));
+      assert.equal(await page.locator("#chat-check-status").count(), 0);
+      assert.equal(await tick.innerText(), "");
       assert.equal(await page.locator('#chat-log details.chat-turn, #chat-log [data-collapse], #chat-log [data-expand]').count(), 0, 'no accordion, no Collapse/Expand');
       assert.deepEqual(await page.locator('#chat-log [data-request="r1"]').evaluateAll((els) => els.map((e) => e.dataset.key)), ["m:m1", "run:r1", "m:m2"], 'user message, one activity line, answer');
       const old = page.locator('.chat-message-slot[data-request="r1"]');
@@ -114,6 +187,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       assert.equal(await page.locator('#chat-progress').isVisible(), true);
       assert.equal(await page.locator('#chat-decisions').isVisible(), true);
       assert.match(await page.locator('[data-decision="d2"]').innerText(), /Blocked 2× with the same access[\s\S]*Grant this task access and re-run: \/srv\/site[\s\S]*Reassign this task to @codex/);
+      await page.locator('#chat-graph .node').first().waitFor(); // Graph code loads when the inspector opens.
       assert.equal(await page.locator('#chat-graph').isVisible(), true);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       if (width === 1440) {

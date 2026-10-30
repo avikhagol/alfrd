@@ -9,7 +9,8 @@ async function handler(component, deps) {
   const source = await readFile(new URL(`../../src/alfrd/web/js/components/${component}.js`, import.meta.url), "utf8");
   const start = source.indexOf("async function viewArtifact(ref)");
   const body = source.slice(start, source.indexOf("\n}\n", start) + 2)
-    .replace('await import("./logview.js")', 'logview');
+    .replace('await import("./logview.js")', 'logview')
+    .replace('await import("./viewers.js")', 'viewers');
   return new Function(...Object.keys(deps), `${body}; return viewArtifact;`)(...Object.values(deps));
 }
 
@@ -35,6 +36,7 @@ for (const component of ["chat_view", "chat_dock"]) {
     const view = await handler(component, {
       ctxRef: ctx, S: { project: "p", sid: "s" }, D: { project: "p", sid: "s" },
       base: () => "/chat", URLSearchParams, viewerFor, renderViewer, fileObject, openViewer,
+      viewers: { viewerFor, renderViewer, fileObject },
       esc: (s) => String(s), icon: () => "", $: (selector) => selector === "#chat-art" ? el : more,
       logview: { openFull: (...args) => textViews.push(args) },
       get: async (url) => {

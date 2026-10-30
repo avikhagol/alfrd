@@ -28,6 +28,8 @@ _ATTACHMENT_STATUS = {"unsupported_type": 415, "too_large": 413, "too_many": 413
 
 
 def _fail(error: Exception):
+    if isinstance(error, saved_skills.SkillError):
+        return jsonify(error={"code": error.status, "message": str(error), "reason": error.reason, **error.details}), error.status
     if isinstance(error, chat.ScheduleConflictError):
         return jsonify(error={"code": 409, "message": str(error), "reason": error.reason}, **error.state), 409
     if isinstance(error, att.AttachmentError):
@@ -38,6 +40,8 @@ def _fail(error: Exception):
         return _json_error(error, error.status)
     if isinstance(error, LookupError):
         return _json_error(error, 404)
+    if isinstance(error, OSError) and not isinstance(error, PermissionError):
+        return _json_error(ValueError('Skill filesystem operation was denied or unavailable'), 403, reason='filesystem_denied')
     if isinstance(error, PermissionError):
         return _json_error(error, 409)
     if isinstance(error, (ExecutionError, ValueError)):
@@ -109,11 +113,148 @@ def chat_skills(project_name: str):
         return _fail(error)
 
 
+@studio_api.get(_BASE + "/skills/inventory")
+def chat_skill_inventory(project_name: str):
+    """Read-only metadata and provider delivery policy; never creates native skill links."""
+    try:
+        root = _project_root(project_name)
+        return jsonify(skills=saved_skills.skill_inventory(root, chat.settings(root).get("skill_selection")), project_path=str(root), global_path=str(saved_skills.global_skills_root()))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
 @studio_api.get(_BASE + "/skills/preview")
 def chat_skill_preview(project_name: str):
     """Bounded plain text from the same safe discovery roots; never accepts a file path."""
     try:
-        return jsonify(saved_skills.preview(_project_root(project_name), request.args.get("id")))
+        return jsonify(saved_skills.preview(_project_root(project_name), request.args.get("id"), request.args.get("origin")))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+def _skill_payload(allowed, limit=512*1024):
+    if request.content_length is not None and request.content_length > limit:
+        raise saved_skills.SkillError('manifest_too_large', 'Request exceeds size limit', 413)
+    raw = request.stream.read(limit+1)
+    if len(raw) > limit:
+        raise saved_skills.SkillError('manifest_too_large', 'Request exceeds size limit', 413)
+    import json
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise ValueError('Send a JSON object') from None
+    if not isinstance(value, dict) or set(value)-set(allowed):
+        raise ValueError('Unexpected skill request fields')
+    return value
+
+
+def _skill_owner():
+    from flask import session
+    import secrets
+    if 'skill_import_owner' not in session:
+        session['skill_import_owner'] = secrets.token_urlsafe(32)
+    return session['skill_import_owner']
+
+
+@studio_api.post(_BASE + '/skills/validate')
+def chat_skill_validate(project_name):
+    try:
+        _project_root(project_name)
+        content = _skill_payload(['content']).get('content')
+        fields = saved_skills.validate_skill_document(content)
+        import yaml
+        match = saved_skills._FRONT.match(content)
+        node = yaml.compose(match.group(1), Loader=yaml.SafeLoader)
+        spans = {}
+        for key, value in node.value:
+            if key.value in ('name', 'description'):
+                # Browser string offsets are UTF-16 code units, including astral characters.
+                spans[key.value] = [len(content[:match.start(1)+mark.index].encode('utf-16-le'))//2
+                                    for mark in (value.start_mark, value.end_mark)]
+        return jsonify(fields=fields, scalar_spans=spans)
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.put(_BASE + '/skills/content')
+def chat_skill_content(project_name):
+    try:
+        p = _skill_payload(['origin', 'id', 'content', 'base_revision'])
+        result = saved_skills.save_skill_document(_project_root(project_name), p.get('id'), p.get('content'), origin=p.get('origin'), base_revision=p.get('base_revision'))
+        _poke(project_name)
+        return jsonify(result)
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/create')
+def chat_skill_create(project_name):
+    try:
+        p = _skill_payload(['origin', 'id', 'content'])
+        result = saved_skills.create_skill(_project_root(project_name), p.get('id'), p.get('content'), origin=p.get('origin'))
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/copy')
+def chat_skill_copy(project_name):
+    try:
+        p = _skill_payload(['source_origin', 'source_id', 'base_revision', 'target_origin', 'id'])
+        result = saved_skills.copy_skill(_project_root(project_name), p.get('source_id'), source_origin=p.get('source_origin'), id=p.get('id'), target_origin=p.get('target_origin'), base_revision=p.get('base_revision'))
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/imports/preview')
+def chat_skill_import_preview(project_name):
+    from alfrd.skill_imports import prepare_skill_import
+    try:
+        p = _skill_payload(['url'], 8192)
+        return jsonify(prepare_skill_import(_project_root(project_name), p.get('url'), owner=_skill_owner()))
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/imports/confirm')
+def chat_skill_import_confirm(project_name):
+    from alfrd.skill_imports import commit_skill_import
+    try:
+        p = _skill_payload(['token', 'origin', 'id'], 8192)
+        result = commit_skill_import(_project_root(project_name), p.get('token'), p.get('origin'), p.get('id'), owner=_skill_owner())
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.delete(_BASE + '/skills/imports/<token>')
+def chat_skill_import_discard(project_name, token):
+    from alfrd.skill_imports import discard_skill_import
+    try:
+        return jsonify(discard_skill_import(_project_root(project_name), token, owner=_skill_owner()))
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.route(_BASE + "/skills/activations", methods=["GET", "PUT"])
+def chat_skill_activations(project_name: str):
+    """Project-owned activation state, guarded against stale modal saves."""
+    try:
+        root = _project_root(project_name)
+        conf = chat.settings(root)
+        if request.method == "PUT":
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict) or "base_hash" not in payload:
+                raise ValueError("send version, activations and base_hash")
+            saved_skills.save_activations(root, {k: payload.get(k) for k in ("version", "activations")},
+                                          base_hash=payload["base_hash"])
+            _poke(project_name)
+        roles = [role for agent in conf["agents"].values() for role in agent.get("roles", [])]
+        return jsonify(saved_skills.activation_state(root, conf.get("skill_selection"), roles=roles))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 

@@ -74,7 +74,7 @@ export function openChatSettings(ctx, project, text, apply) {
     </div>
     <footer class="modal-f row gap"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn" data-cs="apply">Apply to draft</button><button type="button" class="btn primary" data-cs="save">${icon("save")} Apply and save</button></footer>`, (root, close) => {
     permissionBadge($("[data-permissions]", root), project);
-    const skills = mountSkills(project, $("[data-skills-settings]", root), s);
+    const skills = mountSkills(project, $("[data-skills-settings]", root), s, ctx);
     const draw = () => {
       skills.refresh();
       $("#cs-agents", root).innerHTML = Object.entries(s.agents).map(([k, a]) => row(k, a)).join("");

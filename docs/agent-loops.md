@@ -81,13 +81,44 @@ logical turn (`retry_of`), and the model used is recorded.
 A Claude entrypoint (or workflow step) can start without everything the CLI loads by default.
 `lean: true` on an entrypoint or step adds, for Claude only, these flags (all in `claude --help`):
 `--strict-mcp-config` (only MCP servers named by `--mcp-config`, so none), `--setting-sources
-project,local` (no user settings: user plugins, hooks, MCP servers) and `--disable-slash-commands`
-(no skills). Finer control: `mcp: none | default | [file.json, ...]` (files go to `--mcp-config`),
-`plugins: false` (the setting-sources flag) and `skills: false`; they override what `lean` implies.
+project,local` (no user settings: user plugins, hooks, MCP servers). Native skills stay enabled. Finer control: `mcp: none | default | [file.json, ...]` (files go to `--mcp-config`),
+`plugins: false` (the setting-sources flag) and `skills: false` (adds `--disable-slash-commands`).
+Explicit options override lean defaults; selected saved skills and `skills: true` never silently
+lose native discovery to lean. Explicit `skills: false` wins even when saved skills are selected.
 A command that already contains one of these flags is left alone. Codex and generic commands never
 get them. Existing projects start unchanged (default off); the agent-loop template sets `lean: true`
 on its `claude` entrypoint and the chat presets `claude` and `sonnet` are lean. Project-level
 `CLAUDE.md` and project settings are still read.
+
+### Selected skills and native discovery
+
+Global and project skill activations are saved per project in `.alfrd/skills.json`.
+Select them in Chat → ⋯ → Skills for Orchestrator or individual task roles
+([create and activate a skill](studio-guide.md#skills-explorer)). Project copies win
+when the same ID from both sources is active for a scope. Selected skills are
+frozen per chat request and injected with a must-read absolute-path instruction and an explicit
+`Use skill <id> for <description>; full text in <path>` directive. Injection remains available
+with native skills disabled and never grants access or changes sandbox permissions.
+
+For Codex chat launches, ALFRD exposes active skills as `alfrd-<source>-<id>` directory symlinks (legacy selections use `alfrd-<id>`) under
+`<launch cwd>/.agents/skills`, unless `skills: false` is explicit. It validates the source against
+the frozen manifest hash first. Existing user entries are never replaced; symlinked destination
+roots, collisions, source edits, and filesystem errors fall back to prompt injection. The launch
+unit records `skill_delivery` with the outcome and fallback reason. Links remain in the workspace
+for reuse; ALFRD does not delete user entries or links, so use isolated run workspaces when skills
+must remain scoped to a run. Supporting reference files follow the source directory and are live;
+only the injected manifest text is frozen. Claude discovers project `.claude/skills` itself;
+other saved roots continue to use injection for Claude.
+
+Verified with installed `codex-cli 0.162.1` and the
+[official Codex skills documentation](https://learn.chatgpt.com/docs/build-skills): native repository
+roots are `.agents/skills` from CWD up to the repo root, user skills live in `~/.agents/skills`,
+admin skills in `/etc/codex/skills`, and system skills ship with Codex. Symlinked skill folders
+are supported. ALFRD does not write home directories or depend on legacy `~/.codex/skills` discovery.
+
+Studio exposes a read-only `GET /api/studio/projects/<project>/chat/skills/inventory` endpoint
+with metadata, references, default selection and provider delivery policy. It performs no installs;
+Codex native delivery is best effort at launch, and explicit native-disable settings still apply.
 
 ### Usage and cost
 
@@ -467,3 +498,39 @@ reported by fewer than 80% of attempts is marked unusable and the report is
 **not ready** (exit code 1). Units recorded before 0.2.2 have no lineage and are
 counted as unlabeled, not guessed.
 
+
+
+### Authoring and importing saved skills
+
+Create or edit guidance through the same validated, atomic write layer as Studio:
+
+```sh
+alfrd skills new review --project /path/to/project --file ./SKILL.md
+alfrd skills edit review --project /path/to/project --origin project
+alfrd skills new shared --global --file ./SKILL.md
+alfrd skills import https://example.org/SKILL.md --project /path/to/project --preview-only --json
+alfrd skills import --confirm TOKEN --project /path/to/project --id review-import
+alfrd skills import https://example.org/review.zip --global --id review --yes
+alfrd skills import --from project:review-import --project /path/to/project --preview-only
+```
+
+Exactly one target scope is required. New/edit use `$VISUAL` or `$EDITOR` against
+a temporary document, or `--file PATH` / `--file -` for automation. Editor failures
+and failed saves retain the draft and report its path. Noninteractive imports
+require `--preview-only` followed by `--confirm`, or explicit `--yes`, which prints
+the reviewed preview before publishing. CLI preview tokens persist for ten minutes
+in an OS-user-owned mode-0700 temporary directory. Optional repeated
+`--activate orchestrator` / `--activate 'role:custom role'` on new/import performs a
+separate hash-guarded activation save; it requires `--project` even for `--global`.
+If it fails, the skill remains saved and the command exits nonzero with
+“Skill saved; activation was not saved”.
+
+Python exposes `validate_skill_document`, `read_skill_document`,
+`save_skill_document`, `create_skill`, `copy_skill`, `prepare_skill_import`,
+`commit_skill_import` and `discard_skill_import` from `alfrd.skills`. Supply an
+explicit project, origin, and optional absolute `global_root` for isolated callers.
+Edits require `base_revision`; copies require the preview's `copy_revision`, which
+binds the whole supporting bundle. Import confirmation accepts an opaque token
+and never a staging path. Skills remain untrusted guidance, with activation
+independent of installation. Existing requests retain frozen manifest content;
+supporting references remain live.

@@ -1,3 +1,4 @@
+import { refreshHTML } from "../utils/refresh.js";
 // Jobs tray (loaded on first use): every active run across projects, with Open project
 // and View log. Switching projects never stops a run or its log subscriptions.
 
@@ -48,13 +49,13 @@ export function openJobs(ctx) {
   loadCss("css/lazy.css");
   const draw = (root) => {
     const rows = jobRows(ctx);
-    root.querySelector("#jobs-list").innerHTML = rows.length ? rows.map((r) => `<li class="job-row">
+    refreshHTML(root.querySelector("#jobs-list"), rows.length ? rows.map((r) => `<li class="job-row">
         <div class="job-main"><b>${esc(r.name)}</b>${r.root ? ` <span class="muted small mono">${esc(r.root)}</span>` : ""}
           <div class="muted small"><span class="mono">Run ${esc(r.title || r.run)}</span>${r.workflow ? ` · ${esc(r.workflow)}` : ""} · ${esc(r.elapsed)}</div></div>
         <span class="badge tone-${TONE[r.status] || "muted"}">${icon(r.status === "Running" ? "sync" : "hourglass")}${esc(r.status)}</span>
         ${r.plugin ? '<button class="btn sm" data-plugin-open>Open Plugins</button>' : `<button class="btn sm" data-job-open="${esc(r.project)}" ${r.session ? `data-job-session="${esc(r.session)}"` : ""}>${icon("folder")} ${r.session ? "Open chat" : "Open project"}</button>
         <button class="btn sm" data-job-log="${esc(r.log)}" data-job-project="${esc(r.project)}">${icon("log")} View log</button>`}</li>`).join("")
-      : '<li class="muted">No active runs.</li>';
+      : '<li class="muted">No active runs.</li>');
   };
   ctx.modal(`<header class="modal-h"><h2>${icon("play")} Jobs</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b"><p class="muted small">Runs keep going when you switch projects. View log follows it in the Log Stream without changing the open project.</p><ul class="jobs-list" id="jobs-list"></ul></div>`, (root, close) => {

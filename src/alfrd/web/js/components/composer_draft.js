@@ -19,9 +19,9 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
   const input = $(`#${id}-input`, root), button = $(`#${id}-send`, root), warning = $(`#${id}-image-warning`, root);
   let schedule = null, scheduleUI = null;
   let key = "", model = null, tray = null, unsubscribe = () => {}, probe = null, project = null, session = null;
+  let probeRequest = null;
   const refresh = () => {
-    if (model && input.value !== model.read().text) input.value = model.read().text;
-    autogrow(input);
+    if (model && input.value !== model.read().text) { input.value = model.read().text; autogrow(input); }
     tray?.refresh();
     const draft = model?.read(), sending = !!model?.sending(), uploading = !!model?.busy() && !sending, failed = !!model?.failed(), empty = !draft?.text.trim() && !draft?.refs.length;
     const reason = !session ? "Choose a session to send a message."
@@ -33,11 +33,22 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
     const note = $(`#${id}-send-reason`, root); if (note) note.textContent = reason;
     warning.textContent = [model?.error(), model?.read().refs.length ? imageWarning(input.value, settings(), probe, !!schedule?.read()?.schedule) : ""].filter(Boolean).join(" ");
   };
+  function refreshProbe() {
+    if (!project) return;
+    const pending = server.chatProbe(project), selected = key;
+    if (pending === probeRequest) return;
+    probe = null; probeRequest = pending;
+    pending.then((data) => {
+      if (key === selected && probeRequest === pending) { probe = data; refresh(); }
+    }).catch(() => {
+      if (key === selected && probeRequest === pending) { probe = null; probeRequest = null; refresh(); }
+    });
+  }
   return {
     edit(text) { if (model) model.edit(text, model.read().refs); refresh(); },
     select(p, sid) {
       const next = JSON.stringify([p, sid]);
-      if (next === key && scheduleUI) { scheduleUI.refresh().catch(() => {}); refresh(); return; }
+      if (next === key && scheduleUI) { refreshProbe(); refresh(); return; }
       unsubscribe(); tray?.destroy(); scheduleUI?.destroy(); scheduleUI = null; schedule = null; tray = null; key = next; project = p; session = sid;
       model = sid ? sessionDraft(p, sid) : null;
       const slot = $(`#${id}-schedule`, root), toggle = $(`#${id}-schedule-toggle`, root);
@@ -59,7 +70,7 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
           };
         }
       }
-      input.value = model?.read().text || "";
+      input.value = model?.read().text || ""; autogrow(input);
       if (model) {
         const draft = model, url = `/api/studio/projects/${encodeURIComponent(p)}/chat/sessions/${encodeURIComponent(sid)}`;
         tray = mountComposerAttachments(root, id, { chips: draft.chips, sendButton: null, uploadUrl: `${url}/attachments`,
@@ -68,12 +79,8 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
           onChange: () => draft.sync(), onError: (error) => { if (model === draft) onError(error.message); } });
         unsubscribe = draft.subscribe(refresh);
       }
-      probe = null;
-      const selected = key;
-      server.request(`/api/studio/projects/${encodeURIComponent(p)}/chat/probe`).then(async (res) => {
-        const data = res.ok ? await res.json() : null;
-        if (key === selected) { probe = data; refresh(); }
-      }).catch(() => {});
+      probe = null; probeRequest = null;
+      refreshProbe();
       refresh();
     },
     async send() {
@@ -95,7 +102,8 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
         return true;
       } finally { draft.finish(); }
     },
-    suspend() { scheduleUI?.destroy(); scheduleUI = null; },
+    suspend() { scheduleUI?.suspend(); },
+    resume() { scheduleUI?.resume(); },
     destroy() { unsubscribe(); tray?.destroy(); scheduleUI?.destroy(); schedule = null; key = ""; model = null; },
   };
 }

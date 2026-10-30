@@ -45,7 +45,7 @@ test("scope changes render totals or the selected request and keep unknown total
   const start = source.indexOf("function drawProgress(ctx)");
   const body = source.slice(start, source.indexOf("\n}\n", start) + 2);
   const S = { data: state() }, scope = createRequestScope(), box = { dataset: {}, innerHTML: "" };
-  const deps = { ...chat, S, scope, host: {}, $: () => box, server: { session: {} }, esc: String, icon: () => "", meter: (label, value, max, ratio, shown) => `${label}: ${shown}` };
+  const deps = { ...chat, refreshHTML: (el, html) => { el.innerHTML = html; }, S, scope, host: {}, $: () => box, server: { session: {} }, esc: String, icon: () => "", meter: (label, value, max, ratio, shown) => `${label}: ${shown}` };
   const draw = new Function(...Object.keys(deps), `${body}; return drawProgress;`)(...Object.values(deps));
   const realNow = Date.now;
   Date.now = () => now;

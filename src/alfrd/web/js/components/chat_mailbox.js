@@ -145,13 +145,17 @@ export function mountMailbox(box, o) {
     reorder(list, user.map((m) => cards.get(m.id).el));
     jump();
   }
+  let suspended = false;
   const api = {
     jump(id) { jumpId = id; jump(); api.kick(); },
     kick() {
+      if (suspended) return;
       if (!sub) sub = subscribeMailbox(o.project(), o.sid(), o.request(), draw, {
         visible: () => box.isConnected && !box.closest("[hidden]"), busy: o.busy,
       }); else sub.kick();
     },
+    suspend() { suspended = true; api.stop(); },
+    resume() { suspended = false; api.kick(); },
     stop() { sub?.stop(); sub = null; },
   };
   api.kick(); return api;

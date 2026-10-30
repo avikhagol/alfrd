@@ -1,4 +1,6 @@
-import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget, setRoute, isEditable, keyLabel } from "./utils/dom.js";
+import { outlineHtml } from "./utils/loading.js";
+import { refreshProtected, refreshHTML, sourceHTML } from "./utils/refresh.js";
+import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget, setRoute, isEditable, keyLabel, loadCss } from "./utils/dom.js";
 import { projectLabels } from "./utils/text_fit.js";
 import { mountPicker } from "./components/picker.js";
 import { stepParamsFromConfig } from "./data/avica.js";
@@ -19,12 +21,12 @@ import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./
 import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
 import { projectNotes } from "./data/notes.js";
 import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull, dockedLogs, undockLog, mountDock, dockInfo, setDockFollow, onDock } from "./components/logview.js";
-import * as logs from "./components/logs.js";
+const loadLogs = () => import("./components/logs.js");
 import * as overview from "./components/overview.js";
-import * as canvas from "./components/canvas.js";
-import * as metadata from "./components/metadata.js";
-import * as results from "./components/results.js";
-import * as config from "./components/alfrd_config.js";
+let canvas = null;
+const loadCanvas = () => import("./components/canvas.js").then((m) => (canvas = m));
+const compactWorkflow = () => storage.get("ui:shell.v2.compact", false) === true;
+let results = null;
 import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace, unsaved } from "./data/workspace.js";
 import { forgetPlan, syncPlanCatalog, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
 watchThemeAccent(); // tab icon follows the theme accent
@@ -33,22 +35,26 @@ const DEMO_ALFRD_PROJECT = "avica-demo"; // data/demo.js's key; the demo data it
 export let VERSION = "standalone";
 
 /** A section whose module loads on its first visit (chat, New project canvas). */
-function lazyView(load) {
+function lazyView(load, styles = []) {
   let mod = null, loading = null;
-  return { leave: (c) => mod?.leave?.(c), render(el, c) {
-    if (mod) return mod.render(el, c);
-    if (!el.firstChild) el.innerHTML = '<p class="empty" role="status">Loading…</p>';
-    loading ||= load().then((m) => { mod = m; scheduleRender(); }, (e) => { loading = null; el.innerHTML = `<p class="callout fail" role="alert">${esc(e.message)}</p>`; });
+  const mounted = new WeakSet();
+  return { leave: (c) => mod?.leave?.(c), restore: (el, c) => mod?.restore?.(el, c), render(el, c) {
+    if (mod) {
+      if (!mounted.has(el)) { mod.mount?.(el, c); mounted.add(el); }
+      return mod.render(el, c);
+    }
+    if (!el.firstChild) el.innerHTML = outlineHtml();
+    loading ||= Promise.all([load(), ...styles.map(loadCss)]).then(([m]) => { mod = m; scheduleRender(); }, (e) => { loading = null; el.innerHTML = `<div class="callout fail" role="alert">${esc(e.message)} <button type="button" class="btn sm">Retry</button></div>`; el.querySelector("button").onclick = () => { el.replaceChildren(); scheduleRender(); }; });
   } };
 }
 const VIEWS = [
   { id: "overview", label: "Overview", icon: "overview", mod: overview },
-  { id: "workflow", label: "Workflow", icon: "workflow", mod: canvas },
-  { id: "metadata", label: "Metadata", icon: "metadata", mod: metadata },
-  { id: "results", label: "Results", icon: "results", mod: results },
-  { id: "logs", label: "Logs", icon: "log", mod: logs },
-  { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js")) },
-  { id: "config", label: "Settings", icon: "project", mod: config },
+  { id: "workflow", label: "Workflow", icon: "workflow", mod: lazyView(loadCanvas) },
+  { id: "metadata", label: "Metadata", icon: "metadata", mod: lazyView(() => import("./components/metadata.js")) },
+  { id: "results", label: "Results", icon: "results", mod: lazyView(() => import("./components/results.js").then((m) => (results = m))) },
+  { id: "logs", label: "Logs", icon: "log", mod: lazyView(loadLogs) },
+  { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js"), ["css/chat.css"]) },
+  { id: "config", label: "Settings", icon: "project", mod: lazyView(() => import("./components/alfrd_config.js")) },
   { id: "new-project", label: "New project", icon: "plus", page: true, mod: lazyView(() => import("./components/project_canvas.js")) },
   { id: "superuser", label: "Superuser", icon: "power", page: true, mod: lazyView(() => import("./components/superuser.js")) },
   // #/plugin/<id>: pages from api.registerPage (components/plugin_pages.js lists them under "Plugins" in the rail).
@@ -90,6 +96,8 @@ const state = {
 };
 
 const listeners = new Set();
+let bootPending = true;
+let bootDefinitions = Promise.resolve();
 let renderQueued = false;
 let renderFrame = 0;
 
@@ -151,8 +159,8 @@ export const ctx = {
     setTimeout(() => el.classList.add("out"), tone === "fail" || tone === "warn" ? 8000 : 3600);
     setTimeout(() => el.remove(), tone === "fail" || tone === "warn" ? 8400 : 4000);
   },
-  openRun(project, id = null) { canvas.showRun(ctx, project, id); },
-  openLogs(opts = {}) { logs.showLogs(ctx, opts); },
+  openRun(project, id = null) { return loadCanvas().then((m) => m.showRun(ctx, project, id)).catch((e) => ctx.toast(e.message, "fail")); },
+  openLogs(opts = {}) { return loadLogs().then((m) => m.showLogs(ctx, opts)).catch((e) => ctx.toast(e.message, "fail")); },
   /** Pick a folder on the ALFRD server (never the viewer's machine) into `input`; Create project still decides. */
   browseFolder(host, input, more) {
     let browser, cancelled = false;
@@ -511,6 +519,7 @@ function resolveInitialProject() {
 function switchProject(project, { render = true, restoreView = true, syncUrl = true, push = false } = {}) {
   const next = project && project !== "all" ? project : "all";
   const before = state.selectedProject || "all";
+  if (before !== next && !skillsCanLeave()) return false;
   if (before !== next) {
     if (pendingLink) pendingLink = null;
     linkedRoute = "";
@@ -536,7 +545,10 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
     const top = incoming.scroll[incoming.view || state.view] || 0;
     requestAnimationFrame(() => requestAnimationFrame(() => { const m = $("#main"); if (m) m.scrollTop = top; }));
   }
-  if (render) scheduleRender();
+  if (render) {
+    if (state.view === "chat") VIEWS.find((v) => v.id === "chat")?.mod.restore?.($("#view-chat"), ctx);
+    scheduleRender();
+  }
 }
 
 
@@ -562,7 +574,7 @@ function syncWorkflow() {
     applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", tree.manifestText, { quiet: true });
   }
   state.workflowProject = p;
-  canvas.resetSimulation?.();
+  canvas?.resetSimulation?.();
   applyAvicaParams(state.avica?.[p], { quiet: true });
 }
 
@@ -582,7 +594,7 @@ function applyWorkflowInfo(info, fileName, text, { quiet = false } = {}) {
     if (!state.aliases.some((x) => x.from === a.from)) state.aliases.push(a);
   });
   if (!quiet) ctx.log(info.errors.length ? "error" : "info", `Workflow "${wf?.name ?? "?"}" loaded from ${fileName}: ${wf ? wf.steps.length : 0} steps, ${info.errors.length} error(s), ${info.warnings.length} warning(s).`, "workflow");
-  canvas.resetSimulation?.();
+  canvas?.resetSimulation?.();
   scheduleRender();
 }
 
@@ -769,6 +781,7 @@ function keepWorkflow(project, bundle) {
 
 
 async function ensureTemplatesFor(text) {
+  await bootDefinitions;
   try {
     const name = templateName(parseYaml(text || ""));
     if (name) await loadTemplate(name, parseYaml);
@@ -1368,7 +1381,7 @@ function removeWorkspace(project) {
   delete state.trees[project];
   workflowCache.delete(project);
   overview.forgetProject(project);
-  results.forgetProject(project);
+  results?.forgetProject(project);
   forgetPlan(project);
   dockedLogs().filter((d) => d.project === project).forEach((d) => undockLog(d.key));
   [...tabErrors.keys()].filter((k) => k.startsWith(`${project}\u0000`)).forEach((k) => tabErrors.delete(k));
@@ -1423,7 +1436,11 @@ const bumpSelection = () => { selectionAc.abort(); selectionAc = new AbortContro
 /** AbortSignal for a request made for the selected target; aborted (so the reply is stale) after a switch. */
 ctx.selection = () => selectionAc.signal;
 
+function skillsCanLeave() {
+  return [...document.querySelectorAll('[data-skills-body]')].every((el) => el.skillsCanLeave?.() !== false);
+}
 function goTo(view) {
+  if (view !== state.view && !skillsCanLeave()) return;
   rememberTarget();
   if (setRoute(routeHash(view, state.selectedProject, state.selectedTarget))) route();
 }
@@ -1530,8 +1547,13 @@ document.addEventListener("keydown", (e) => {
   if (e.altKey && e.shiftKey && !mod && e.code === "KeyA" && dockAvailable()) { e.preventDefault(); setChatDock(); }
   if (e.key === "?" && !mod && !e.altKey && $("#modal-host").hidden) { e.preventDefault(); ctx.openShortcuts(); }
 });
-function toggleCompact() {
-  if (state.view !== "workflow") { canvas.setCompact(ctx, true); goTo("workflow"); } else canvas.setCompact(ctx);
+async function toggleCompact() {
+  const view = state.view;
+  try {
+    const m = await loadCanvas();
+    if (view !== state.view) return;
+    if (view !== "workflow") { m.setCompact(ctx, true); goTo("workflow"); } else m.setCompact(ctx);
+  } catch (e) { ctx.toast(e.message, "fail"); }
 }
 // The chat dock's own composer keeps Alt+Shift+A (the handler above ignores fields).
 document.addEventListener("keydown", (e) => {
@@ -1567,7 +1589,7 @@ ctx.palette.register(() => (dockAvailable() ? [{ id: "chat-dock", group: "action
 ctx.openShortcuts = () => import("./components/shortcuts.js").then((m) => m.openShortcuts(ctx)).catch((e) => ctx.toast(`Shortcuts: ${e.message}`, "fail"));
 ctx.palette.register(() => [
   { id: "shortcuts", group: "action", icon: "info", label: "Keyboard shortcuts", detail: "action · ?", run: ctx.openShortcuts },
-  { id: "compact", group: "action", icon: "fold", label: canvas.compact() ? "Exit compact workflow mode" : "Compact workflow mode", detail: `action · ${keyLabel("Alt+Shift+C")}`, run: toggleCompact },
+  { id: "compact", group: "action", icon: "fold", label: compactWorkflow() ? "Exit compact workflow mode" : "Compact workflow mode", detail: `action · ${keyLabel("Alt+Shift+C")}`, run: toggleCompact },
 ]);
 // Unsaved edits (alfrd.yaml editor, workflow draft, step Configure form) survive switching views and
 // projects in this tab, but not a reload or closing it.
@@ -1704,8 +1726,8 @@ const live = createLive({
   onRuntime: liveRuntime,
   onPluginJob: () => renderJobs(),
   onAlfrd: (project, events) => (window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project, events } })), import("./components/notifications.js").then((m) => m.handleNotifications(ctx, project, events)).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server"))),
-  onResync: (project) => (refreshJobSummaries(), chatProjects?.invalidate(project), loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
-  onStatus: (status) => { state.liveStatus = status; chatProjects?.sync(); renderLiveBadge(); },
+  onResync: (project) => (window.dispatchEvent(new CustomEvent("alfrd-chat-resync", { detail: { project } })), refreshJobSummaries(), chatProjects?.invalidate(project), loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
+  onStatus: (status) => { if (status.state !== state.liveStatus?.state && ["live", "polling"].includes(status.state)) window.dispatchEvent(new CustomEvent("alfrd-chat-resync")); state.liveStatus = status; chatProjects?.sync(); renderLiveBadge(); },
 });
 live.enabled = state.prefs.live !== false;
 setTails(live.enabled);
@@ -1720,6 +1742,8 @@ let renderWaiting = false;
 ["keydown", "input", "compositionstart", "compositionupdate"].forEach((t) => document.addEventListener(t, (e) => {
   if (e.target?.closest?.("#main") && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) typingUntil = Date.now() + 2500;
 }, true));
+document.addEventListener("click", () => { if (renderWaiting) setTimeout(liveRender, 0); });
+document.addEventListener("toggle", () => { if (renderWaiting) setTimeout(liveRender, 0); }, true);
 document.addEventListener("focusout", () => { if (renderWaiting) setTimeout(liveRender, 50); }, true);
 const released = () => { pointerDown = 0; if (renderWaiting) setTimeout(liveRender, 0); };
 document.addEventListener("pointerdown", () => { pointerDown = Date.now(); }, true);
@@ -1753,7 +1777,7 @@ function findByKey(key, root) {
 function liveRender() {
   if (pointerDown && Date.now() - pointerDown < 15000) { renderWaiting = true; return; }
   const act = document.activeElement;
-  const editing = act?.tagName === "TEXTAREA" && act.closest("#main");
+  const editing = Boolean(act?.matches?.("input,textarea,select,[contenteditable]") || document.querySelector(".picker-pop, .menu[role=menu], .chat-session-menu[open], dialog[open]"));
   if (editing || Date.now() < typingUntil) {
     renderWaiting = true;
     if (!editing) setTimeout(liveRender, Math.max(200, typingUntil - Date.now() + 50));
@@ -1897,7 +1921,8 @@ ctx.palette.register(() => [
 
 function renderShell() {
   $("#app").dataset.sidebar = shellUi.sidebarCollapsed === true ? "collapsed" : "expanded";
-  $("#app").innerHTML = `
+  const shell = document.createElement("template");
+  shell.innerHTML = `
     <header class="topbar">
       <div class="brand">${LOGO}<h1>alfrd</h1></div>
       <span class="mode-badge" id="mode-badge"></span>
@@ -1939,6 +1964,15 @@ function renderShell() {
     <aside id="chat-dock" class="chat-dock" hidden aria-label="Chat"></aside>
     <section class="dock-strip" id="dock-strip" hidden aria-label="Followed log"></section>
     <section class="console" id="console" hidden aria-label="Log stream"></section>`;
+  // Adopt the HTML shell roots so startup does not discard the layout geometry.
+  const app = $("#app");
+  for (const node of [...shell.content.children]) {
+    const old = [...app.children].find((el) => node.id ? el.id === node.id : el.tagName === node.tagName);
+    if (old) { old.replaceChildren(...node.childNodes); for (const a of node.attributes) old.setAttribute(a.name, a.value); old.removeAttribute("aria-hidden"); }
+    else app.append(node);
+  }
+  $(".topbar").inert = true; $("#workspace-rail").inert = true;
+  $("#main").insertAdjacentHTML("beforeend", `<div id="startup-outline">${outlineHtml()}</div>`);
   $("#btn-jobs").addEventListener("click", async (e) => {
     try {
       lazy.jobs ||= import("./components/jobs_tray.js");
@@ -2000,7 +2034,7 @@ function renderHeader() {
   const quit = $("#btn-quit");
   if (quit) quit.hidden = !(live && server.session?.can_quit);
   const modeText = `${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}${live && server.session?.superuser?.read_only ? " · read-only" : ""}`;
-  badge.innerHTML = `<i></i><span>${modeText}</span>`;
+  sourceHTML(badge, `<i></i><span>${modeText}</span>`);
   badge.title = `${modeText}: ${live ? "projects come from the runtime database; re-queue runs through the runtime API." : "everything runs in this browser; no pipeline code is executed."}`;
 
   const rescanBtn = $("#btn-rescan");
@@ -2012,6 +2046,7 @@ function renderHeader() {
   pickers.project.set([{ value: "all", label: `All projects (${projects.length})` }, ...projects.map((p) => ({
     value: p.id, label: labels[p.id], detail: state.projectRoots?.[p.id] || "", badge: [isDirty(p.id) ? "unsaved" : "", ctx.loadInfo(p.id).badge].filter(Boolean).join(" · "),
   }))], state.selectedProject || "all");
+  $("#pick-project").disabled = catalogPending;
   $("#project-picker-description").textContent = [ctx.loadInfo(activeProject()).badge, state.projectRoots?.[activeProject()]].filter(Boolean).join(". ");
   pickers.target.set(ctx.scopedTargets().map((t) => ({
     value: t.id, label: t.name, detail: state.selectedProject === "all" ? state.projectTitles[t.project] || ctx.projectName(t.project) : "",
@@ -2038,7 +2073,7 @@ async function pollSystem() {
     systemHtml = sysMeter("CPU", s.cpu) + sysMeter("RAM", s.mem_total ? (100 * s.mem_used) / s.mem_total : 0);
     systemTitle = `${SYSTEM_HINT}\nCPU ${Math.round(s.cpu)}% · RAM ${gib(s.mem_used)} / ${gib(s.mem_total)} GB`;
     const el = $("#foot-mode .sys");
-    if (el) { el.title = systemTitle; el.lastElementChild.innerHTML = systemHtml; }
+    if (el) { el.title = systemTitle; sourceHTML(el.lastElementChild, systemHtml); }
   } catch { clearInterval(systemTimer); systemTimer = null; } // older server or offline: keep the label
 }
 function startSystemPoll() {
@@ -2051,15 +2086,15 @@ function renderFooter() {
   const st = $("#foot-storage");
   if (!st) return;
   st.textContent = `Local Storage: ${bytes(storage.size())} / Saved`;
-  $("#foot-mode").innerHTML = state.mode === "server"
+  sourceHTML($("#foot-mode"), state.mode === "server"
     ? `<span class="sys" title="${esc(systemTitle || SYSTEM_HINT)}">${icon("server")}<span class="sys-meters">${systemHtml || "alfrd serve"}</span></span>`
-    : `${icon("info")} Browser mode · preview workflows and import results`;
+    : `${icon("info")} Browser mode · preview workflows and import results`);
   const errors = state.consoleLines.filter((l) => l.level === "error").length;
   const warns = state.consoleLines.filter((l) => l.level === "warn").length;
   const info = state.consoleLines.length - errors - warns;
   const followed = dockedLogs().length;
   $("#foot-logcount").textContent = `Logs [${errors} errors, ${warns} warnings, ${info} info]${followed ? ` · ${followed} followed` : ""}`;
-  $("#footer-right").innerHTML = ctx.footerRight;
+  sourceHTML($("#footer-right"), ctx.footerRight);
 }
 
 const consoleUi = loadUi("console", { height: 280 });
@@ -2152,17 +2187,19 @@ function renderConsole() {
       <button class="btn sm" data-act="clear">Clear</button>`
     : `<span class="muted small mono trunc ctab-path" title="${esc(active.rel)}">${esc(ctx.projectName(active.project))} · ${esc(active.rel)}</span>
       <button class="btn sm" data-act="full" title="Open full screen">${icon("expand")} Full screen</button>`;
-  $(".console-h", el).innerHTML = `<b class="console-title">${icon("log")} Log stream</b>
+  refreshHTML($(".console-h", el), `<b class="console-title">${icon("log")} Log stream</b>
       <div class="ctabs" role="tablist" aria-label="Log stream tabs">${tabBtn("studio", "Studio")}${docks.map((d) => tabBtn(d.key, dockLabel(d), `<span class="live-dot" ${d.live ? "" : "hidden"}></span>`, `${ctx.projectName(d.project)} · ${d.rel} (following)`)).join("")}</div>
       <span class="grow"></span>${tools}
-      <button class="icon-btn sm" data-act="close" aria-label="Hide log stream" title="Hide the panel (docked logs stay as tabs)">${icon("minus")}</button>`;
+      <button class="icon-btn sm" data-act="close" aria-label="Hide log stream" title="Hide the panel (docked logs stay as tabs)">${icon("minus")}</button>`);
   const body = $(".console-b", el);
   if (tab === "studio") {
     const lines = state.consoleLines.filter((l) => filter === "all" || l.level === filter);
+    const oldPre = $("pre", body);
+    const following = body.dataset.tab !== "studio" || !oldPre || oldPre.scrollHeight - oldPre.scrollTop - oldPre.clientHeight <= 24;
     body.dataset.tab = "studio";
-    body.innerHTML = `<pre class="log">${lines.map((l) => `<span class="lvl-${l.level}"><span class="log-time">${l.t.toISOString().slice(11, 19)}</span> [${esc(l.scope)}] <span class="log-level">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.text)}</span>`).join("\n") || '<span class="muted">No log lines yet.</span>'}</pre>`;
+    refreshHTML(body, `<pre class="log">${lines.map((l) => `<span class="lvl-${l.level}"><span class="log-time">${l.t.toISOString().slice(11, 19)}</span> [${esc(l.scope)}] <span class="log-level">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.text)}</span>`).join("\n") || '<span class="muted">No log lines yet.</span>'}</pre>`);
     const pre = $("pre", body);
-    pre.scrollTop = pre.scrollHeight;
+    if (following) pre.scrollTop = pre.scrollHeight;
   } else if (body.dataset.tab !== tab || !body.querySelector("pre[data-dock-log]")) {
     body.dataset.tab = tab;
     mountDock(ctx, body, tab).then(() => { if (state.consoleOpen && state.consoleTab === tab) renderConsole(); });
@@ -2279,7 +2316,12 @@ function renderLoading() {
   }
 }
 
+let renderedViewScope = "";
+document.addEventListener("change", () => { renderedViewScope = ""; }, true);
 function renderAll() {
+  if (bootPending) return;
+  $(".topbar").inert = false; $("#workspace-rail").inert = false;
+  $("#startup-outline")?.remove();
   const focusedHeading = document.activeElement?.matches("#main h2");
   syncWorkflow();
   saveUi("app", state, ["selectedProject", "selectedTarget"]);
@@ -2289,7 +2331,12 @@ function renderAll() {
     const active = v.id === state.view;
     el.hidden = !active;
     if (active) {
-      if (!askForProject(el, v.id)) v.mod.render(el, ctx);
+      const viewScope = JSON.stringify([v.id, state.selectedProject, state.selectedTarget]);
+      if (v.id !== "chat" && viewScope === renderedViewScope && (refreshProtected(el) || document.querySelector(".picker-pop, .menu[role=menu]"))) renderWaiting = true;
+      else {
+        if (!askForProject(el, v.id)) v.mod.render(el, ctx);
+        renderedViewScope = viewScope;
+      }
       const ek = errorKey(activeProject() || "all", v.id); // only the active project's errors show
       const error = tabErrors.get(ek);
       el.querySelector(".tab-error")?.remove();
@@ -2323,14 +2370,15 @@ function route() {
   const [id, page] = url.view.split("/");
   if (id === "plugin") state.pluginPage = page || "";
   if (url.project && (url.project === "all" || ctx.projects().some((p) => p.id === url.project))) {
-    if (state.selectedProject !== url.project) switchProject(url.project, { render: false, restoreView: false, syncUrl: false });
+    if (state.selectedProject !== url.project && switchProject(url.project, { render: false, restoreView: false, syncUrl: false }) === false) { setRoute(routeHash(state.view, state.selectedProject, state.selectedTarget)); return; }
     state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[url.project], state.selectedTarget);
     rememberTarget();
   }
   if (id === "chat") state.chatSession = page || "";
   const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) && shown(id) ? id : "overview";
   if (next !== state.view) {
-    VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
+    if (!skillsCanLeave()) { setRoute(routeHash(state.view, state.selectedProject, state.selectedTarget)); return; }
+    if (VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx) === false) return;
     const watch = { config: ["settings"], workflow: ["workflow", "inspector"] }[state.view] || [];
     const kept = unsaved().filter(([, what]) => watch.includes(what)).map(([p]) => ctx.projectName(p));
     if (kept.length) ctx.toast(`Unsaved changes in ${[...new Set(kept)].join(", ")} are kept in this tab. Save them before closing or reloading it.`, "warn");
@@ -2357,12 +2405,12 @@ async function boot() {
     else goTo(url.view);
   });
   route();
-  await loadTemplate("avica", parseYaml);
-  await loadDefaultManifest();
-  await ensureTemplatesFor(storage.get("workflow")?.text);
+  bootDefinitions = Promise.all([loadTemplate("avica", parseYaml), loadDefaultManifest()]);
 
   const session = await server.detect();
   if (server.authRequired) return;
+  bootPending = false;
+  if (!session) await ensureTemplatesFor(storage.get("workflow")?.text);
   if (session?.version) VERSION = session.version;
   ctx.log("info", `Studio ${VERSION} started (${location.protocol === "file:" ? "file" : location.origin}).`);
   state.demoEnabled = Boolean(session?.demo) || new URLSearchParams(location.search).has("demo");

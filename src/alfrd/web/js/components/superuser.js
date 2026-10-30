@@ -1,3 +1,4 @@
+import { refreshHTML } from "../utils/refresh.js";
 // Superuser page (#/superuser, also http://host:port/superuser): the per-user settings every
 // `alfrd serve` / `alfrd gui` reads (alfrd.superuser, `alfrd su`), statistics and an ops panel
 // (active runs and agents of every project, other servers, system). Loopback browsers only.
@@ -192,13 +193,13 @@ function drawOps() {
   const h = S.host;
   if (!h) return;
   const o = S.ops;
-  if (S.opsError) { h.querySelector("#su-runs").innerHTML = `<p class="callout fail small">${esc(S.opsError)}</p>`; return; }
+  if (S.opsError) { refreshHTML(h.querySelector("#su-runs"), `<p class="callout fail small">${esc(S.opsError)}</p>`); return; }
   if (!o) return;
   const st = o.stats;
-  h.querySelector("#su-stats").innerHTML = [["Projects", st.projects], ["Workflow runs", st.plans], ["Chat sessions", st.chat_sessions],
+  refreshHTML(h.querySelector("#su-stats"), [["Projects", st.projects], ["Workflow runs", st.plans], ["Chat sessions", st.chat_sessions],
     ["Active runs", st.active_plans], ["Runners alive", st.runners_alive], ["Agents / commands running", st.running_units], ["Servers up", st.servers_alive]]
-    .map(([k, v]) => `<div><span>${esc(k)}</span><b class="tabular">${esc(v)}</b></div>`).join("");
-  h.querySelector("#su-runs").innerHTML = o.runs.length ? `<div class="table-wrap"><table class="su-table"><thead><tr><th>Project</th><th>Run</th><th>Status</th><th>Runner</th><th>Running now</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+    .map(([k, v]) => `<div><span>${esc(k)}</span><b class="tabular">${esc(v)}</b></div>`).join(""));
+  refreshHTML(h.querySelector("#su-runs"), o.runs.length ? `<div class="table-wrap"><table class="su-table"><thead><tr><th>Project</th><th>Run</th><th>Status</th><th>Runner</th><th>Running now</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
     ${o.runs.map((r) => {
       const key = `${r.project}|${r.plan}`, busy = S.busy.has(key);
       return `<tr><td>${esc(r.project_name)}<br><span class="muted small mono">${esc(r.root)}</span></td>
@@ -209,20 +210,20 @@ function drawOps() {
         <td class="su-acts">${r.status === "paused" ? `<button type="button" class="btn sm" data-op="resume" data-key="${esc(key)}" ${busy ? "disabled" : ""}>${icon("play")} Resume</button>`
           : `<button type="button" class="btn sm" data-op="pause" data-key="${esc(key)}" ${busy ? "disabled" : ""}>${icon("pause")} Pause</button>`}
           <button type="button" class="btn sm danger" data-op="cancel" data-key="${esc(key)}" ${busy ? "disabled" : ""}>${icon("close")} Cancel</button></td></tr>`;
-    }).join("")}</tbody></table></div>` : `<p class="muted small">Nothing is running in any project.</p>`;
-  h.querySelector("#su-servers").innerHTML = o.servers.length ? `<ul class="su-servers">${o.servers.map((s) => `<li><span class="badge tone-${s.alive ? "ok" : "warn"}">${s.alive ? "up" : "gone"}</span> <code>${esc(s.url || `port ${s.port}`)}</code> <span class="muted small">pid ${esc(s.pid ?? "–")}${s.this ? " · this server" : ""}</span></li>`).join("")}</ul>`
-    : `<p class="muted small">No server files.</p>`;
+    }).join("")}</tbody></table></div>` : `<p class="muted small">Nothing is running in any project.</p>`);
+  refreshHTML(h.querySelector("#su-servers"), o.servers.length ? `<ul class="su-servers">${o.servers.map((s) => `<li><span class="badge tone-${s.alive ? "ok" : "warn"}">${s.alive ? "up" : "gone"}</span> <code>${esc(s.url || `port ${s.port}`)}</code> <span class="muted small">pid ${esc(s.pid ?? "–")}${s.this ? " · this server" : ""}</span></li>`).join("")}</ul>`
+    : `<p class="muted small">No server files.</p>`);
 }
 
 function drawSystem() {
   const box = S.host?.querySelector("#su-system"), sys = S.ops?.system;
   if (!box || !sys) return;
   const f = S.view?.flags || {};
-  box.innerHTML = [["Version", sys.version], ["Python", sys.python], ["Host", sys.host], ["Platform", sys.platform], ["Server pid", sys.pid], ["Uptime", fmtAge(sys.uptime_s)],
+  refreshHTML(box, [["Version", sys.version], ["Python", sys.python], ["Host", sys.host], ["Platform", sys.platform], ["Server pid", sys.pid], ["Uptime", fmtAge(sys.uptime_s)],
     ["CPU", sys.cpu == null ? "–" : `${sys.cpu}% of ${sys.cores} cores`], ["Memory", sys.mem_total ? `${fmtBytes(sys.mem_used)} / ${fmtBytes(sys.mem_total)}` : "–"],
     ["Load", sys.load ? sys.load.map((x) => x.toFixed(2)).join(" ") : "–"], ["Runtime database", sys.runtime_db || "–"], ["Database size", fmtBytes(sys.runtime_db_bytes)],
     ["Project scope", Array.isArray(f.projects_scope) ? `${f.projects_scope.length} project(s)` : "all projects"], ["Demo data", f.demo ? "on" : "off"]]
-    .map(([k, v]) => `<div><span>${esc(k)}</span><b class="mono small" title="${esc(v)}">${esc(v)}</b></div>`).join("");
+    .map(([k, v]) => `<div><span>${esc(k)}</span><b class="mono small" title="${esc(v)}">${esc(v)}</b></div>`).join(""));
 }
 
 async function op(button) {

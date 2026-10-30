@@ -64,14 +64,23 @@ export function when(iso) {
   return d.toISOString().replace("T", " ").slice(0, 19);
 }
 
-/** Add a stylesheet once (css/lazy.css for features loaded on first use). */
+/** Deduplicated stylesheet readiness. Failed loads can be retried by the owning view. */
+const stylesheetLoads = new Map();
 export function loadCss(href) {
-  if (document.querySelector(`link[data-lazy="${href}"]`)) return;
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = href;
-  link.dataset.lazy = href;
-  document.head.appendChild(link);
+  if (stylesheetLoads.has(href)) return stylesheetLoads.get(href);
+  let link = document.querySelector(`link[data-lazy="${href}"], link[href="${href}"]`);
+  if (link?.sheet) return Promise.resolve();
+  const fresh = !link;
+  if (!link) { link = document.createElement("link"); link.rel = "stylesheet"; link.href = href; link.dataset.lazy = href; }
+  const ready = new Promise((resolve, reject) => {
+    link.addEventListener("load", resolve, { once: true });
+    link.addEventListener("error", () => { stylesheetLoads.delete(href); link.remove(); reject(new Error(`Could not load ${href}`)); }, { once: true });
+  });
+  // Callers that only initiate CSS need no catch; awaiting views still receive the rejection.
+  ready.catch(() => {});
+  stylesheetLoads.set(href, ready);
+  if (fresh) document.head.appendChild(link);
+  return ready;
 }
 
 /** Trigger a client-side download of text content. */

@@ -1,3 +1,4 @@
+import { sourceHTML } from "../utils/refresh.js";
 import { esc } from "../utils/dom.js";
 import { empty, loading, error } from "./state_view.js";
 
@@ -20,6 +21,7 @@ export function createGoalsTab({ get, refresh = () => {}, timeoutMs = 10000 }) {
   function update({ host, state, project, sid, request = null }) {
     const next = JSON.stringify([project, sid, state?.rev, request]);
     if (host === box && next === key) return;
+    const sameScope = host === box && key && JSON.stringify(JSON.parse(key).filter((_, i) => i !== 2)) === JSON.stringify([project, sid, request]);
     stop(); box = host; key = next;
     if (!box) return;
     if (!sid) { box.innerHTML = empty("No goals yet", "Choose or start a session."); return; }
@@ -28,7 +30,7 @@ export function createGoalsTab({ get, refresh = () => {}, timeoutMs = 10000 }) {
     const load = async () => {
       const own = ++generation;
       clearTimeout(timer);
-      target.innerHTML = loading("Loading goals…");
+      if (!sameScope) sourceHTML(target, loading("Loading goals…"));
       try {
         const overview = await Promise.race([
           get(`/api/studio/projects/${encodeURIComponent(project)}/chat/sessions/${encodeURIComponent(sid)}/overview`),
@@ -36,7 +38,7 @@ export function createGoalsTab({ get, refresh = () => {}, timeoutMs = 10000 }) {
         ]);
         if (own !== generation) return;
         if (overview.rev !== state.rev) throw new Error("Session changed. Retry.");
-        target.innerHTML = goalsHtml(overview, state, request);
+        sourceHTML(target, goalsHtml(overview, state, request));
       } catch (err) {
         if (own === generation) target.innerHTML = error({ status: err.status ?? 500, message: err.message }, { onRetry: load });
       } finally { if (own === generation) clearTimeout(timer); }

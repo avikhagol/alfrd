@@ -121,6 +121,7 @@ class StepCommand:
     loop_options: Mapping[str, Any] = field(default_factory=dict)
     introduce_roles: bool = False      # full persona instructions (first appearance) instead of the summary
     adapter: str = "generic"
+    native_skills: bool = True
     model_option: str | None = None    # a generic agent's model flag (entrypoint ``model_option``)
     fallback_models: tuple[str, ...] = ()
     after: float | None = None         # seconds to wait after the previous step finishes
@@ -513,6 +514,7 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
             env={str(k): str(v) for k, v in {**(entries.get(entry, {}).get("env") or {}), **(spec.get("env") or {})}.items()},
             stdin_file=io.get("stdin_file"), output_file=io.get("output_file"),
             output_capture=io.get("output_capture", "file"), cwd=io.get("cwd"), handoff=dict(handoff),
+            native_skills=startup.get("skills") is not False,
             iteration=int(spec.get("iteration") or 0), iterations=int(spec.get("iterations") or 0),
             base_step=spec.get("base_step", sid),
             first_turn=sid == (merged.get("step_order") or [None])[0],

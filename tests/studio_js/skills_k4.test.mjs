@@ -17,7 +17,8 @@ test("K4 preview escapes all untrusted markup and copy uses selected/available",
   assert.doesNotMatch(html, /<script|<img|<a |onerror="|href="javascript:/);
   assert.match(html, /&lt;script&gt;/);
   const ui = skillsHtml(state(), catalogue, agents, flags);
-  assert.match(ui, /1 selected · 1.0 KiB \/ 128 KiB/);
+  assert.match(ui, /data-open-skills/);
+  assert.doesNotMatch(ui, /data-saved-skills|data-skill-id/);
   assert.match(ui, /Lean is a preset/);
   assert.match(ui, /Codex: no effect/);
   assert.match(ui, /Effective args from saved settings/);
@@ -29,7 +30,7 @@ test("K4 preview escapes all untrusted markup and copy uses selected/available",
   }
   assert.deepEqual(selectionSize(state(), catalogue), { count: 1, bytes: 1024 });
   const locked = skillsHtml(state(), catalogue, agents, flags.map((f) => ({ ...f, locked: true, reason: "Set by Superuser" })));
-  assert.match(locked, /data-saved-skills checked disabled/);
+  assert.match(locked, /data-native-key="skills"[^>]*disabled/);
   assert.match(locked, /Set by Superuser/);
 });
 
@@ -52,19 +53,11 @@ test("K4 mounted chooser edits one enclosing draft and renders a safe fetched pr
   try {
     const panel = mountSkills("p", host, s);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.match(host.innerHTML, /1 selected/);
-    events.change({ target: { dataset: { skillId: "one" }, checked: false, hasAttribute: () => false } });
-    assert.deepEqual(s.skill_selection.selected_ids, []);
+    assert.match(host.innerHTML, /data-open-skills/);
     events.change({ target: { dataset: { nativeAgent: "claude", nativeKey: "skills" }, checked: true, hasAttribute: () => false } });
     assert.equal(s.agents.claude.skills, true);
-    await events.click({ target: { closest: () => ({ dataset: { leanAgent: "claude" } }) } });
+    await events.click({ target: { closest: () => ({ dataset: { leanAgent: "claude" }, hasAttribute: () => false }) } });
     assert.deepEqual(s.agents.claude, { lean: true, skills: false, plugins: false, mcp: "none" });
-    await events.click({ target: { closest: () => ({ dataset: { previewSkill: "one" } }) } });
-    assert.match(preview.innerHTML, /&lt;svg/);
-    assert.doesNotMatch(preview.innerHTML, /<svg/);
-    s.skill_selection.selected_ids = ["one"];
-    catalogue[0].bytes = 131073;
-    assert.match(panel.problem(), /128 KiB/);
-    catalogue[0].bytes = 1024;
+    assert.equal(panel.problem(), null);
   } finally { server.request = old; }
 });
