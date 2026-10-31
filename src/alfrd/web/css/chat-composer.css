@@ -76,3 +76,5 @@
 .chat-schedule dialog label { display:block; margin-bottom:10px; }
 .chat-schedule dialog input, .chat-schedule dialog select { display:block; width:100%; }
 .chat-schedule [data-editor] textarea { width:100%; min-height:80px; }
+
+.chat-schedule-block { border: 1px solid var(--border); border-radius: 6px; padding: .5rem; margin-block: .5rem; }

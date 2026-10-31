@@ -254,7 +254,23 @@ def chat_skill_activations(project_name: str):
                                           base_hash=payload["base_hash"])
             _poke(project_name)
         roles = [role for agent in conf["agents"].values() for role in agent.get("roles", [])]
-        return jsonify(saved_skills.activation_state(root, conf.get("skill_selection"), roles=roles))
+        state = saved_skills.activation_state(root, conf.get("skill_selection"), roles=roles)
+        scope_models = {}
+        for agent in conf["agents"].values():
+            if agent.get("model"):
+                label = agent.get("label") or agent["model"]
+                for role in agent.get("roles", []):
+                    labels = scope_models.setdefault("role:" + role, [])
+                    if label not in labels:
+                        labels.append(label)
+        orchestrator = conf["agents"].get(conf["orchestrator"], {})
+        model = conf.get("orchestrator_model") or orchestrator.get("model")
+        if model:
+            # An override can differ from the model described by the agent's label.
+            label = orchestrator.get("label") if model == orchestrator.get("model") else None
+            scope_models["orchestrator"] = [label or model]
+        state["scope_models"] = {scope: ", ".join(labels) for scope, labels in scope_models.items()}
+        return jsonify(state)
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 

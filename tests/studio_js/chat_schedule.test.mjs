@@ -59,3 +59,29 @@ test("shared controller retries the same operation and original URL after lost r
   assert.deepEqual(calls[0], calls[1]);
   assert.match(calls[1][0], /sch_original\/run$/);
 });
+
+
+test("multiple schedule targets survive refresh, isolate mutations and reject stale cache state", async () => {
+  const c = scheduleController("multi", "targets");
+  const one = { id: "sch_one", status: "scheduled", items: [] }, two = { id: "sch_two", status: "scheduled", items: [] };
+  const snapshot = { ...state(two, 4), schedules: [one, two] };
+  c.accept(snapshot); c.select(one.id);
+  assert.equal(c.read().schedule.id, one.id);
+  assert.deepEqual(c.target(), { schedule_id: one.id, expected_schedule_revision: 4 });
+  c.accept({ ...snapshot, schedule_revision: 3, schedules: [] });
+  assert.equal(c.read().schedule_revision, 4);
+  const calls = [];
+  server.request = async (url, init) => {
+    if (!init) return new Response(JSON.stringify(snapshot));
+    calls.push([url, JSON.parse(init.body)]);
+    return new Response(JSON.stringify({ ...snapshot, schedule_revision: 5 }));
+  };
+  await c.refresh();
+  assert.equal(c.read().schedule.id, one.id, "background refresh preserves the append target");
+  await c.mutate("time", { run_at: "2099-01-01T00:00:00Z", timezone: "UTC" }, null, two.id);
+  assert.match(calls[0][0], /sch_two$/);
+  assert.equal(calls[0][1].expected_schedule_revision, 4);
+  c.accept({ ...snapshot, schedule_revision: 6, schedule: two, schedules: [two] });
+  assert.equal(c.read().schedule.id, two.id);
+  assert.equal(c.target().schedule_id, two.id, "terminal selection does not trap a fresh composer send");
+});

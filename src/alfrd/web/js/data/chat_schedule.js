@@ -40,29 +40,34 @@ export function scheduleController(project, sid) {
   if (controllers.has(key)) return controllers.get(key);
   const base = `/api/studio/projects/${encodeURIComponent(project)}/chat/sessions/${encodeURIComponent(sid)}/schedule`;
   const listeners = new Set(), attempts = new Map();
+  let selected = null;
+  const view = () => selected && state?.schedules ? { ...state, schedule: state.schedules.find((b) => b.id === selected) || null } : state;
+  const emit = () => { for (const fn of listeners) fn(view()); };
   let state = null, received = 0, timer = null, serial = Promise.resolve();
-  const publish = (body) => { if (!state || body.schedule_revision >= state.schedule_revision) { state = body; received = performance.now(); for (const fn of listeners) fn(state); } };
+  const publish = (body) => { if (!state || body.schedule_revision >= state.schedule_revision) { state = body; if (selected && body.schedules && !body.schedules.some((b) => b.id === selected)) selected = null; received = performance.now(); emit(); } };
   const focus = () => controller.refresh().catch(() => {});
   const controller = {
-    read: () => state,
+    read: view,
+    select(id) { selected = id; emit(); },
     now: () => state ? Date.parse(state.server_now) + performance.now() - received : Date.now(),
-    target: () => state?.schedule ? { schedule_id: state.schedule.id, expected_schedule_revision: state.schedule_revision } : {},
+    target: () => selected || state?.schedule ? { schedule_id: selected || state.schedule.id, expected_schedule_revision: state.schedule_revision } : {},
     accept: publish,
-    async refresh() { const res = await server.request(base); if (!res.ok) throw new Error("Could not load schedule."); const body = await res.json(); if (body.schedule_revision !== undefined) publish(body); return state; },
-    mutate(action, payload = {}, item = null) {
+    async refresh() { const res = await server.request(base); if (!res.ok) throw new Error("Could not load schedule."); const body = await res.json(); if (body.schedule_revision !== undefined) publish(body); return view(); },
+    mutate(action, payload = {}, item = null, batchId = null) {
       const job = async () => {
-        const signature = JSON.stringify([action, payload, item]);
+        const signature = JSON.stringify([action, payload, item, batchId]);
         let attempt = attempts.get(signature);
         if (!attempt) {
           const body = { ...payload, expected_schedule_revision: state?.schedule_revision || 0,
             ...(action === "create" ? { client_schedule_id: crypto.randomUUID() } : { operation_id: crypto.randomUUID() }) };
-          const suffix = action === "create" ? "" : `/${state?.schedule?.id}${item ? `/items/${item}` : action === "time" ? "" : `/${action}`}`;
+          const suffix = action === "create" ? "" : `/${batchId || selected || state?.schedule?.id}${item ? `/items/${item}` : action === "time" ? "" : `/${action}`}`;
         attempt = { body, suffix }; attempts.set(signature, attempt);
         }
         const { body, suffix } = attempt;
         const method = action === "remove" ? "DELETE" : ["edit", "time"].includes(action) ? "PATCH" : "POST";
         const res = await server.request(base + suffix, { method, headers: { "Content-Type": "application/json", "X-CSRF-Token": server.session?.csrf_token || "" }, body: JSON.stringify(body) });
         const result = await res.json();
+        if (res.ok && action === "create") selected = result.selected_schedule_id || result.schedule?.id;
         if (result.schedule_revision !== undefined) publish(result);
         if (!res.ok) { if (res.status === 409) attempts.delete(signature); throw new Error(result.error?.message || "Schedule could not be saved."); }
         attempts.delete(signature); return result;
@@ -70,7 +75,7 @@ export function scheduleController(project, sid) {
       const result = serial.then(job); serial = result.catch(() => {}); return result;
     },
     subscribe(fn) {
-      listeners.add(fn); if (state) fn(state);
+      listeners.add(fn); if (state) fn(view());
       if (!timer) { timer = setInterval(focus, 15000); timer.unref?.(); globalThis.addEventListener?.("focus", focus); }
       focus();
       return () => { listeners.delete(fn); if (!listeners.size) { clearInterval(timer); timer = null; globalThis.removeEventListener?.("focus", focus); } };

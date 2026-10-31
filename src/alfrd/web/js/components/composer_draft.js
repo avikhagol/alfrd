@@ -91,7 +91,7 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
         const res = await server.request(`/api/studio/projects/${encodeURIComponent(p)}/chat/sessions/${encodeURIComponent(sid)}/messages`, {
           method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": server.session.csrf_token }, body: JSON.stringify(payload) });
         const body = await res.json().catch(() => null);
-        if (!res.ok && res.status === 409 && body?.schedule?.id === payload.schedule_id) {
+        if (!res.ok && res.status === 409 && (body?.schedules || [body?.schedule]).some((b) => b?.id === payload.schedule_id)) {
           draft.rebaseSchedule(body.schedule_revision, payload.schedule_id);
           sendSchedule?.accept(body);
         }

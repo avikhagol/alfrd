@@ -703,7 +703,7 @@ def delete_session(root: str | Path, sid: str) -> dict[str, Any]:
     folder = _plan_folder(store)
     with store.lock():
         data = store.load()
-        if store.load_schedule().get("current_id"):
+        if _schedule_pending(store.load_schedule()):
             raise PermissionError("cancel the pending schedule before deleting this session")
         active = [r["id"] for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
         if active:
@@ -4126,8 +4126,13 @@ class ScheduleConflictError(PermissionError):
         self.state = schedule_state(store.root, store.id)
 
 
+def _schedule_pending(data):
+    return sorted((b for b in data["batches"] if b["status"] in SCHEDULE_OPEN), key=lambda b: (datetime.fromisoformat(b["run_at"].replace("Z", "+00:00")).timestamp(), b["created_at"], b["id"]))
+
+
 def _schedule_current(data):
-    return next((b for b in data["batches"] if b["id"] == data.get("current_id")), None)
+    pending = _schedule_pending(data)
+    return next((b for b in pending if b["id"] == data.get("current_id")), pending[0] if pending else None)
 
 
 def schedule_state(root, sid, *, available=True):
@@ -4142,7 +4147,7 @@ def schedule_state(root, sid, *, available=True):
         if batch.get("dispatch"):
             result["dispatch"] = {k: v for k, v in batch["dispatch"].items() if k not in ("conf", "skill_snapshot")}
         return result
-    return {"schedule": public(current), "last_schedule": public(terminal), "schedule_revision": data["revision"],
+    return {"schedule": public(current), "schedules": [public(b) for b in _schedule_pending(data)], "last_schedule": public(terminal), "schedule_revision": data["revision"],
             "rev": store.rev, "server_now": _schedule_now(),
             "schedule_service": {"available": available, "reason": None if available else "Schedule execution requires a loopback Studio server", "tick_seconds": 1}}
 
@@ -4168,6 +4173,8 @@ def _schedule_revision(store, data, expected):
 
 def _schedule_changed(store, data, batch, kind):
     batch["updated_at"] = _schedule_now()
+    current = _schedule_current(data)
+    data["current_id"] = current["id"] if current else None
     store.save_schedule(data)
     server_event(store, "chat.schedule." + kind, schedule_id=batch["id"], schedule_revision=data["revision"],
                  status=batch["status"], queued_count=len(_schedule_items(batch)), run_at=batch["run_at"],
@@ -4219,19 +4226,30 @@ def create_schedule(root, sid, *, run_at, timezone, client_schedule_id, expected
     original = _schedule_hash(run_at, timezone)
     with store.lock():
         data = store.load_schedule()
+        receipt = data.get('creations', {}).get(client_schedule_id)
+        if receipt:
+            if receipt['hash'] != original:
+                raise ScheduleConflictError("schedule_id_reused", store)
+            return {**schedule_state(root, sid), "selected_schedule_id": receipt['id'], "replayed": True}
         for batch in data['batches']:
             if batch['client_schedule_id'] == client_schedule_id:
                 if batch['original_payload_hash'] != original:
                     raise ScheduleConflictError("schedule_id_reused", store)
-                return {**schedule_state(root, sid), "replayed": True}
+                return {**schedule_state(root, sid), "selected_schedule_id": batch["id"], "replayed": True}
         if not spawn:
             raise ScheduleConflictError("schedule_service_disabled", store)
         _recover_scheduled_dispatch(store)
         data = store.load_schedule()
         _schedule_revision(store, data, expected_schedule_revision)
-        if data['current_id']:
-            raise ScheduleConflictError("schedule_already_open", store)
         run_at = _schedule_time(run_at, timezone)
+        same = next((b for b in _schedule_pending(data) if b['run_at'] == run_at), None)
+        if same:
+            if same['status'] == 'dispatching':
+                raise ScheduleConflictError('schedule_dispatching', store)
+            data.setdefault('creations', {})[client_schedule_id] = {'hash': original, 'id': same['id']}
+            data['current_id'] = same['id']
+            _schedule_changed(store, data, same, 'selected')
+            return {**schedule_state(root, sid), 'selected_schedule_id': same['id'], 'appended': True}
         batch = {'id': 'sch_' + uuid.uuid4().hex, 'client_schedule_id': client_schedule_id,
                  'original_payload_hash': original, 'status': 'scheduled', 'run_at': run_at, 'scheduled_for': run_at, 'timezone': timezone,
                  'created_at': _schedule_now(), 'updated_at': _schedule_now(), 'trigger': 'time', 'items': [],
@@ -4239,7 +4257,7 @@ def create_schedule(root, sid, *, run_at, timezone, client_schedule_id, expected
         data['batches'].append(batch)
         data['current_id'] = batch['id']
         _schedule_changed(store, data, batch, 'created')
-        return schedule_state(root, sid)
+        return {**schedule_state(root, sid), 'selected_schedule_id': batch['id']}
 
 
 def enqueue_message(store, text, images, cid, schedule_id=None, expected=None):
@@ -4250,13 +4268,13 @@ def enqueue_message(store, text, images, cid, schedule_id=None, expected=None):
         for batch in data['batches']:
             for item in batch['items']:
                 if item.get('client_message_id') == cid:
-                    if item['original_payload_hash'] != payload_hash:
+                    if item['original_payload_hash'] != payload_hash or (schedule_id and schedule_id != batch['id']):
                         raise ScheduleConflictError('message_id_reused', store)
                     return {**schedule_state(store.root, store.id), 'queued': True, 'item': item, 'request': None, 'task': None, 'replayed': True}
         if any(m.get('client_message_id') == cid for m in store.messages()):
             raise ScheduleConflictError('message_id_reused', store)
-    batch = _schedule_current(data)
-    if schedule_id and (not batch or batch['id'] != schedule_id):
+    batch = next((b for b in _schedule_pending(data) if b['id'] == schedule_id), None) if schedule_id else _schedule_current(data)
+    if schedule_id and not batch:
         raise ScheduleConflictError('schedule_no_longer_open', store)
     if not batch:
         return None
@@ -4329,12 +4347,14 @@ def mutate_schedule(root, sid, schedule_id, action, *, expected_schedule_revisio
             _schedule_validate(store, batch)
             kind = 'item_updated' if action == 'edit' else 'item_removed'
         elif action == 'time':
-            batch.update(run_at=_schedule_time(run_at, timezone), scheduled_for=_schedule_time(run_at, timezone), timezone=timezone, status='scheduled',
+            resolved = _schedule_time(run_at, timezone)
+            if any(b['id'] != schedule_id and b['run_at'] == resolved for b in _schedule_pending(data)):
+                raise ScheduleConflictError('schedule_time_already_used; append to the existing schedule instead', store)
+            batch.update(run_at=resolved, scheduled_for=resolved, timezone=timezone, status='scheduled',
                          hold_reason=None, waiting_on_requests=[], error=None, trigger='time')
             kind = 'changed'
         elif action == 'cancel':
             batch['status'] = 'cancelled'
-            data['current_id'] = None
             kind = 'cancelled'
         elif action == 'run':
             if not spawn:
@@ -4435,7 +4455,6 @@ def _recover_scheduled_dispatch(store):
         if rec:
             _publish_scheduled_row(store, req, rec, snap['conf'])
         batch.update(status='submitted', request_id=req['id'])
-        data['current_id'] = None
         _schedule_changed(store, data, batch, 'submitted')
         server_event(store, 'task.created', task=req['id'] + '.plan', request=req['id'], task_kind='plan', owner=req['agent'])
         recovered.append(req['id'])
@@ -4455,8 +4474,12 @@ def dispatch_due_schedules(root, sid=None, *, now=None, spawn=True):
                 if spawn:
                     launch = bool(_recover_scheduled_dispatch(store))
                 data = store.load_schedule()
-                batch = _schedule_current(data)
-                if batch and batch['status'] != 'dispatching' and batch['status'] != 'error' and datetime.fromisoformat(batch['run_at'].replace('Z', '+00:00')).timestamp() <= instant:
+                for candidate in _schedule_pending(data):
+                    # Recovery writes its own journal; reload before each independent transition.
+                    data = store.load_schedule()
+                    batch = next(b for b in data['batches'] if b['id'] == candidate['id'])
+                    if batch['status'] in ('dispatching', 'error') or datetime.fromisoformat(batch['run_at'].replace('Z', '+00:00')).timestamp() > instant:
+                        continue
                     active = [r['id'] for r in store.requests() if r.get('status') in REQUEST_ACTIVE]
                     plan = _read(_plan_folder(store).plan_file) or {}
                     reason = 'schedule_service_disabled' if not spawn else 'active_requests' if active else 'workflow_resume' if (plan.get('status') in ('paused', 'cancelled') or _plan_folder(store).control() in ('pause', 'cancel')) else None
@@ -4466,7 +4489,6 @@ def dispatch_due_schedules(root, sid=None, *, now=None, spawn=True):
                             _schedule_changed(store, data, batch, 'waiting')
                     elif not _schedule_items(batch):
                         batch['status'] = 'expired_empty'
-                        data['current_id'] = None
                         _schedule_changed(store, data, batch, 'expired_empty')
                     else:
                         try:
@@ -4477,7 +4499,7 @@ def dispatch_due_schedules(root, sid=None, *, now=None, spawn=True):
                         else:
                             launch = bool(_recover_scheduled_dispatch(store)) or launch
                 # Recovery can finish a submission whose runner was never launched.
-                if spawn and not launch and not batch:
+                if spawn and not launch and not _schedule_pending(store.load_schedule()):
                     launch = any(r.get('schedule_id') and r.get('status') in REQUEST_ACTIVE for r in store.requests()) and not _plan_folder(store).runner_alive()
             if launch and spawn:
                 plan = _read(_plan_folder(store).plan_file) or {}

@@ -8,6 +8,10 @@ const identity = (s) => `${s.origin || "project"}:${s.id}`;
 const mounted = new WeakMap();
 const badge = (text, label, tone = "muted") => `<span class="badge tone-${tone}" aria-label="${esc(label)}" title="${esc(label)}">${esc(text)}</span>`;
 const roleName = (role) => ({ development: "Developer", design: "Designer", verification: "Verifier" }[role] || role);
+export const activationLabel = (scope, models = {}) => {
+  const name = scope === "orchestrator" ? "Orchestrator" : scope.slice(5);
+  return esc(models[scope] ? `${name} (${models[scope]})` : name);
+};
 const badges = (skill) => Object.entries(skill.providers || {}).map(([provider, policy]) => {
   const label = `${provider}: ${policy.delivery}${policy.fallback ? ` (fallback: ${policy.fallback})` : ""}`;
   return badge(label, label);
@@ -28,7 +32,7 @@ export function render(el, ctx) {
   const previous=mounted.get(el);
   if (previous && el.skillsCanLeave?.() === false) return;
   previous?.dispose?.();
-  const state = { key, skills: [], query: "", selected: null, inventoryRequest: 0, previewRequest: 0, activations: [], roles: [], hash: null };
+  const state = { key, skills: [], query: "", selected: null, inventoryRequest: 0, previewRequest: 0, activations: [], roles: [], scopeModels: {}, hash: null };
   mounted.set(el, state);
   el.innerHTML = `<div data-skills-explorer><div class="row gap wrap"><strong>Installed skills</strong><span class="grow"></span><button type="button" class="btn" data-skill-new>New skill</button><button type="button" class="btn" data-skill-import>Import from URL</button><button type="button" class="btn" data-skills-reload>Refresh skills</button></div>
     <div class="skills-explorer-meta">${badge(project || "(none)", `Project: ${project || "(none)"}`)}<span class="badge tone-muted" data-activation-mode></span>${badge("New requests", "Applies to new requests. Retries retain their frozen guidance.")}</div>
@@ -57,7 +61,7 @@ export function render(el, ctx) {
   window.addEventListener('beforeunload', unload);
   state.dispose=()=>{window.removeEventListener('beforeunload',unload);cancelImport();};
   async function mutate(path, payload, method='POST') {
-    const response = await server.request(base+path, { method, headers: { 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
+    const response = await server.request(base+path, { method, headers: { 'Content-Type':'application/json', 'X-CSRF-Token': server.session?.csrf_token || '' }, body: JSON.stringify(payload) });
     const body = await response.json();
     if (!response.ok) { const error = new Error(body?.error?.message || 'Could not save skill'); error.details = body?.error; throw error; }
     return body;
@@ -222,7 +226,7 @@ export function render(el, ctx) {
     target.innerHTML = `<fieldset><legend>Active for</legend>${scopes.map((scope) => {
       const checked = state.activations.some((a) => a.source === (skill.origin || "project") && a.id === skill.id && a.scope === scope);
       const overridden = checked && skill.origin === "global" && state.activations.some((a) => a.source === "project" && a.id === skill.id && a.scope === scope);
-      return `<label class="row gap"><input type="checkbox" data-activation-scope="${esc(scope)}" ${checked ? "checked" : ""}>${esc(scope === "orchestrator" ? "Orchestrator" : scope.slice(5))}${overridden ? " · Overridden" : ""}${skill.unavailable ? " · Unavailable" : ""}</label>`;
+      return `<label class="row gap"><input type="checkbox" data-activation-scope="${esc(scope)}" ${checked ? "checked" : ""}>${activationLabel(scope, state.scopeModels)}${overridden ? " · Overridden" : ""}${skill.unavailable ? " · Unavailable" : ""}</label>`;
     }).join("")}</fieldset>`;
   }
   detail.onchange = (e) => {
@@ -239,10 +243,8 @@ export function render(el, ctx) {
     const button = el.querySelector("[data-activation-save]"), message = el.querySelector("[data-activation-status]");
     button.disabled = true;
     try {
-      const response = await server.request(`${base}/activations`, { method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: 1, activations: state.activations, base_hash: state.hash }) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.error?.message || "Could not save activations");
+      const body = await server.mutate(`${base.slice(4)}/activations`,
+        { version: 1, activations: state.activations, base_hash: state.hash }, "PUT");
       if (!current()) return;
       state.hash = body.hash; activationBaseline = JSON.stringify(state.activations); message.textContent = "Activations saved. Applies to new requests.";
       activationMode(false);
@@ -298,7 +300,7 @@ export function render(el, ctx) {
     try {
       const [body, activation] = await Promise.all([read(`${base}/inventory`), read(`${base}/activations`)]);
       if (!current() || request !== state.inventoryRequest) return;
-      state.activations = activation.activations; state.roles = activation.roles; state.hash = activation.hash;
+      state.activations = activation.activations; state.roles = activation.roles; state.scopeModels = activation.scope_models || {}; state.hash = activation.hash;
       state.skills = body.skills; state.projectPath=body.project_path; state.globalPath=body.global_path; activationBaseline=JSON.stringify(state.activations);
       for (const a of activation.unavailable || []) if (!state.skills.some((s) => identity(s) === `${a.source}:${a.id}`))
         state.skills.push({ id: a.id, name: a.id, origin: a.source, source_root: "Unavailable", unavailable: true });

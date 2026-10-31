@@ -290,3 +290,98 @@ def test_torn_message_repair_and_progressed_row_is_not_reset(queued, monkeypatch
     sweep(queued)
     assert chat._table(store, chat.settings(root)).row('r0001.plan').cell(chat.settings(root)['orchestrator']) == chat.pc.DONE
     assert len(store.requests()) == 1
+
+
+def test_multiple_schedules_append_same_instant_and_dispatch_separately(queued):
+    root, sid, first = queued
+    add(queued, 'first request', 'one', schedule_id=first)
+    def create(cid, at):
+        return chat.create_schedule(root, sid, run_at=at, timezone='UTC', client_schedule_id=cid,
+                                    expected_schedule_revision=chat.schedule_state(root, sid)['schedule_revision'])
+    second = create('second', '2099-10-29T15:00:00Z')['selected_schedule_id']
+    add(queued, 'second request', 'two', schedule_id=second)
+    same = create('same-instant', '2099-10-28T17:00:00+02:00')
+    assert same['selected_schedule_id'] == first and len(same['schedules']) == 2
+    add(queued, 'appended to first', 'three', schedule_id=first)
+    replay = chat.create_schedule(root, sid, run_at='2099-10-28T17:00:00+02:00', timezone='UTC',
+                                  client_schedule_id='same-instant', expected_schedule_revision=0)
+    assert replay['replayed'] and replay['selected_schedule_id'] == first
+    store = chat.session(root, sid)  # reload the durable state
+    assert len(store.load_schedule()['batches']) == 2
+    chat.dispatch_due_schedules(root, sid, now=datetime_timestamp('2099-10-28T15:00:00Z'))
+    [req] = store.requests()
+    assert req['schedule_id'] == first and 'appended to first' in req['text'] and 'second request' not in req['text']
+    assert [b['id'] for b in chat.schedule_state(root, sid)['schedules']] == [second]
+    req['status'] = 'done'; store.save_request(req)
+    chat.dispatch_due_schedules(root, sid, now=datetime_timestamp('2099-10-29T15:00:00Z'))
+    assert [r['schedule_id'] for r in store.requests()] == [first, second]
+    assert not chat.schedule_state(root, sid)['schedules']
+
+
+def datetime_timestamp(value):
+    from datetime import datetime
+    return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+
+
+@pytest.mark.parametrize('target', [0, 1])
+@pytest.mark.parametrize('action', ['run', 'cancel'])
+def test_schedule_another_after_bullets_has_independent_controls(queued, target, action):
+    root, sid, first = queued
+    one = add(queued, '- a\n- b', 'bullets', schedule_id=first)['item']
+    out = chat.create_schedule(root, sid, run_at='2099-10-30T15:00:00Z', timezone='UTC',
+                               client_schedule_id='another',
+                               expected_schedule_revision=chat.schedule_state(root, sid)['schedule_revision'])
+    second = out['selected_schedule_id']
+    assert second != first
+    two = add(queued, 'later message', 'later', schedule_id=second)['item']
+    pending = chat.schedule_state(root, sid)['schedules']
+    assert [b['id'] for b in pending] == [first, second]
+    assert pending[0]['items'][0]['text'] == '- a\n- b'
+    assert len(pending[0]['items']) == 1
+    assert '   - a\n   - b' in chat.build_scheduled_prompt(pending[0])
+    for n, (bid, item) in enumerate([(first, one), (second, two)]):
+        q = (root, sid, bid)
+        mutate(q, 'edit', operation_id=f'edit-{n}', item_id=item['id'],
+               text=f'- edited {n}\n- retained bullet', attachments=[])
+        mutate(q, 'time', operation_id=f'time-{n}', run_at=f'2099-11-0{n + 1}T15:00:00Z', timezone='UTC')
+        add(q, f'append {n}', f'append-{n}', schedule_id=bid)
+    before = chat.schedule_state(root, sid)['schedules']
+    for n, batch in enumerate(before):
+        assert [i['text'] for i in batch['items']] == [f'- edited {n}\n- retained bullet', f'append {n}']
+        assert batch['run_at'] == f'2099-11-0{n + 1}T15:00:00Z'
+    mutate((root, sid, before[target]['id']), action, operation_id='terminal')
+    after = chat.schedule_state(root, sid)['schedules']
+    assert after == [before[1 - target]]
+    requests = chat.session(root, sid).requests()
+    assert [r['schedule_id'] for r in requests] == ([before[target]['id']] if action == 'run' else [])
+    if action == 'run':
+        assert f'append {target}' in requests[0]['text']
+        assert f'append {1 - target}' not in requests[0]['text']
+
+
+def test_multiple_schedule_mutations_are_isolated_and_revision_safe(queued):
+    root, sid, first = queued
+    item = add(queued)['item']
+    out = chat.create_schedule(root, sid, run_at='2099-10-30T00:00:00Z', timezone='UTC',
+                               client_schedule_id='two', expected_schedule_revision=chat.schedule_state(root, sid)['schedule_revision'])
+    second = out['selected_schedule_id']
+    with pytest.raises(chat.ScheduleConflictError, match='stale'):
+        chat.mutate_schedule(root, sid, first, 'cancel', operation_id='stale', expected_schedule_revision=0)
+    with pytest.raises(ValueError, match='future'):
+        mutate(queued, 'time', run_at='2000-01-01T00:00:00Z', timezone='UTC')
+    with pytest.raises(chat.ScheduleConflictError, match='already_used'):
+        mutate(queued, 'time', run_at='2099-10-30T00:00:00Z', timezone='UTC')
+    mutate(queued, 'time', run_at='2099-10-29T00:00:00Z', timezone='UTC')
+    mutate(queued, 'edit', item_id=item['id'], text='edited first', attachments=[])
+    mutate(queued, 'cancel')
+    assert [b['id'] for b in chat.schedule_state(root, sid)['schedules']] == [second]
+    for action in ('edit', 'time', 'run', 'cancel'):
+        with pytest.raises(chat.ScheduleConflictError, match='no_longer_editable'):
+            mutate(queued, action, operation_id='late-' + action)
+    with pytest.raises(chat.ScheduleConflictError, match='no_longer_open'):
+        add(queued, 'late', 'late', schedule_id=first)
+    add(queued, 'second only', 'second-only', schedule_id=second)
+    mutate((root, sid, second), 'run', operation_id='run-second')
+    assert [r['schedule_id'] for r in chat.session(root, sid).requests()] == [second]
+    with pytest.raises(chat.ScheduleConflictError, match='no_longer_editable'):
+        mutate((root, sid, second), 'time', operation_id='after-dispatch')

@@ -151,6 +151,10 @@ def test_activation_api_inventory_preview_and_conflict(skills_web):
     assert {s["origin"] for s in inventory} == {"global", "project"}
     assert client.get(base + "/skills/preview?id=shared&origin=global").get_json()["content"].endswith("GLOBAL-GUIDANCE")
     payload = {"version": 1, "activations": [activation("shared", "global", "role:custom role")], "base_hash": initial["hash"]}
+    rejected = client.put(endpoint, json=payload)
+    assert rejected.status_code == 403
+    assert "CSRF" in rejected.get_json()["error"]["message"]
+    assert client.get(endpoint).get_json()["hash"] == initial["hash"]
     response = client.put(endpoint, json=payload, headers=headers)
     assert response.status_code == 200, response.get_json()
     assert response.get_json()["activations"] == payload["activations"]
@@ -259,3 +263,21 @@ def test_native_verifies_global_path_and_filters_scope(tmp_path, monkeypatch):
     delivery = skills.expose_codex_skills(tmp_path, workspace, snapshot)
     assert delivery[0]["delivery"] == "injected" and "source changed" in delivery[0]["reason"]
     assert skills.expose_codex_skills(tmp_path, workspace, skills.scoped_snapshot(snapshot, "role:development")) == []
+
+
+def test_activation_api_models_follow_saved_configuration(skills_web):
+    client, base, root = skills_web
+    configure(root, orchestrator="claude", orchestrator_model="opus-5.5", agents={
+        "claude": {"model": "opus-5.5", "label": "Claude Opus 5.5", "roles": ["orchestration"]},
+        "codex": {"model": "gpt-codex", "label": "GPT (Codex)", "roles": ["development"]},
+        "raw": {"model": "custom-model", "roles": ["research"]},
+        "unset": {"label": "Default agent", "roles": ["writing"]},
+    })
+    endpoint = base + "/skills/activations"
+    models = client.get(endpoint).get_json()["scope_models"]
+    assert models["orchestrator"] == "Claude Opus 5.5"
+    assert models["role:development"] == "GPT (Codex)"
+    assert models["role:research"] == "custom-model"
+    assert "role:writing" not in models
+    configure(root, orchestrator_model="new-model")
+    assert client.get(endpoint).get_json()["scope_models"]["orchestrator"] == "new-model"
