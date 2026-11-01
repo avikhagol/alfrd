@@ -188,13 +188,86 @@ export function registerProjectUI(api) {
     return ok;
   }
 
+  // Open synchronously within the click gesture; detach the child from Studio.
+  async function browserSession(project, kind, host, status, current, done, payload = {}) {
+    const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
+    let session;
+    try {
+      const start = await call(project, `${kind}_start`, payload);
+      session = start.session;
+      if (!current()) { tab?.close(); return; }
+      const url = kind === "auth" ? start.auth_url : start.picker_url;
+      if (tab) tab.location.href = url;
+      status.textContent = kind === "auth" ? "Waiting for Google sign-in…" : "Waiting for your spreadsheet selection…";
+      const fallback = h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "Open Google in a new tab" });
+      host.append(fallback);
+      const cancel = h("button", { type: "button", class: "btn", text: "Cancel", onclick: async () => {
+        cancelled = true;
+        await call(project, `${kind}_cancel`, { session });
+        if (current()) status.textContent = "Cancelled. You can try again.";
+        tab?.close();
+      } });
+      host.append(cancel);
+      let cancelled = false;
+      try {
+        const until = Date.now() + start.expires_in * 1000;
+        while (current() && !cancelled && Date.now() < until) {
+          const result = await call(project, `${kind}_status`, { session });
+          if (!current() || cancelled) return;
+          if (result.state === "signed_in" || result.state === "picked") { await done(result); return; }
+          if (result.state !== "waiting") throw new Error(result.message || `Google ${kind === "auth" ? "sign-in" : "Picker"}: ${result.state}. Try again.`);
+          await sleep(1000);
+        }
+        if (current() && !cancelled) status.textContent = "Session expired. Try again. On a remote server, use a service account.";
+      } finally { fallback.remove(); cancel.remove(); }
+    } catch (error) {
+      tab?.close();
+      if (current()) status.textContent = error.message;
+    } finally {
+      if (session) call(project, `${kind}_cancel`, { session }).catch(() => {});
+    }
+  }
+
+  function accountRow(project, state, body, handle, canWrite, current) {
+    const auth = state.auth;
+    if (auth?.mode !== "oauth") return;
+    const status = h("p", { role: "status", "aria-live": "polite", text: auth.signed_in
+      ? `✓ Signed in${auth.email ? ` as ${auth.email}` : " to Google"}`
+      : auth.status === "needs_reauth" ? auth.status_reason === "client_changed" ? "Sign in again (the Google client changed)." : "Google sign-in expired or was revoked. Sign in again."
+        : auth.available ? "Not signed in to Google" : "Google sign-in isn't configured in this build. Use Advanced / service account in Settings, or configure the OAuth client." });
+    const row = h("section", { class: "gs-account" }, h("h3", { text: "Google account" }), status);
+    const buttons = h("div", { class: "row gap wrap" });
+    if (auth.signed_in) buttons.append(h("button", { type: "button", class: "btn", text: "Sign out…", disabled: !canWrite, onclick: async () => {
+      if (!await handle.confirm("Sign out and revoke ALFRD access for this Google project on all computers? Previously chosen sheets may need choosing again.", { confirmLabel: "Sign out" })) return;
+      if (!current()) return;
+      try {
+        const result = await call(project, "sign_out", { confirm: true });
+        if (!current()) return;
+        if (!result.revoked) api.toast("Signed out locally. Couldn't reach Google; remove ALFRD at https://myaccount.google.com/connections.", "warn");
+        handle.close(); refresh(project); openConnection(project);
+      } catch (error) { if (current()) status.textContent = error.message; }
+    } }));
+    else buttons.append(h("button", { type: "button", class: "btn primary", text: "Sign in with Google…", disabled: !auth.available || !canWrite, onclick: async (event) => {
+      event.currentTarget.disabled = true;
+      await browserSession(project, "auth", row, status, current, async () => {
+        handle.close(); refresh(project); await openConnection(project);
+      });
+      if (current()) event.target.disabled = false;
+    } }));
+    buttons.append(h("button", { type: "button", class: "btn", text: "Advanced / sign-in settings…", onclick: () => { handle.close(); openPluginSettings(); } }));
+    row.append(buttons);
+    if (auth.remote_hint) row.append(h("p", { class: "small muted", text: "Remote server detected: Google sign-in needs a browser on the ALFRD computer. Use a service account for headless servers." }));
+    body.append(row);
+  }
+
   // -- connection dialog --
   async function openConnection(project, focusSync = false) {
     const version = scopeVersion;
     const body = h("div", { class: "gs-connection-dialog" }, h("p", { role: "status", text: "Loading connection…" }));
     const handle = api.dialog({ title: "Google Sheet", body, actions: [{ label: "Close", run: (d) => d.close() }] });
     connection = handle;
-    handle.onDispose = () => { if (connection === handle) connection = null; };
+    handle.onDispose = () => { if (connection === handle) connection = null; toolbar?.trigger?.focus(); };
     handle.root.classList.add("gs-connection-modal");
     const current = () => handle.root.isConnected && version === scopeVersion;
     const close = handle.root.querySelector("[data-close]");
@@ -213,10 +286,12 @@ export function registerProjectUI(api) {
     };
     body.replaceChildren(h("p", { class: "muted", text: api.projectName(project) }));
     if (!canWrite) body.append(h("p", { class: "small muted", text: OFF_TITLE }));
+    accountRow(project, state, body, handle, canWrite, current);
     if (!state.attached) {
       body.append(h("p", { class: "gs-chip", text: "Not connected" }),
         h("p", { text: "Connect a sheet to export project results and update step status during runs." }));
-      if (!state.credentials) body.append(h("p", { text: "Add a service-account key in Settings → Plugins → Google Sheet, then connect your sheet." }));
+      if (!state.credentials && state.auth?.mode !== "oauth") body.append(h("p", { text: "Add a service-account key in Settings → Plugins → Google Sheet, then connect your sheet." }));
+      if (!state.credentials && state.auth?.mode === "oauth") return handle;
       const setup = primary(state.credentials ? "Connect sheet…" : "Set up credentials…", () => {
         if (state.credentials) openAttach(project, state); else { handle.close(); openPluginSettings(); }
       }, state.credentials && !canWrite);
@@ -229,6 +304,22 @@ export function registerProjectUI(api) {
         h("p", { text: "Fix the file in an editor, or explicitly delete it and connect again." }),
         h("button", { type: "button", class: "btn danger", text: "Delete alfrd.gsheet.yaml…", disabled: !canWrite, onclick: () => openDetach(project, state, "delete") }));
       primary("Reload connection", () => openConnection(project, focusSync)); return handle;
+    }
+    if (state.auth?.mode === "oauth" && state.credentials) {
+      if (state.last_sync?.error_code === "file_access") body.append(alertBox("ALFRD lost access to the spreadsheet. Choose it again with Google Picker."));
+      const recovery = h("div", { class: "row gap wrap" });
+      const recoveryStatus = h("p", { role: "status", "aria-live": "polite" });
+      const chooseAgain = h("button", { type: "button", class: "btn", text: "Choose sheet again…", disabled: !canWrite || !state.auth.picker, onclick: async () => {
+        chooseAgain.disabled = true;
+        await browserSession(project, "picker", recovery, recoveryStatus, current, async (result) => {
+          if (result.file.id !== state.spreadsheet_id) throw new Error("Choose the spreadsheet already used by this mapping. To change spreadsheets, use Connect a different sheet.");
+          if (!result.file.can_edit) throw new Error("This spreadsheet is read-only. Ask its owner for Editor access.");
+          recoveryStatus.textContent = `Access restored to ${result.file.name}. Validate the connection to continue.`;
+        }, { file_id: state.spreadsheet_id });
+        if (current()) chooseAgain.disabled = !canWrite || !state.auth.picker;
+      } });
+      recovery.append(chooseAgain, h("button", { type: "button", class: "btn", text: "Connect a different sheet…", disabled: !canWrite, onclick: () => openAttach(project, state) }), recoveryStatus);
+      body.append(recovery);
     }
     const m = state.mapping;
     const status = h("p", { class: `gs-chip ${state.intrinsic_errors?.length ? "gs-chip-error" : "gs-chip-connected"}`, text: state.intrinsic_errors?.length ? "! Needs attention" : "✓ Connected" });
@@ -321,7 +412,7 @@ export function registerProjectUI(api) {
     const body = h("div", { class: "gs-attach" }, steps,
       h("p", { class: "gs-intro", text: "Choose a sheet, then match its rows to your plan targets. No run data is written during setup." }),
       h("fieldset", { class: "gs-step" }, h("legend", { text: "1. Spreadsheet" }),
-        field("Sheet URL or ID", sheet, "Share the sheet with the service-account email from Settings → Plugins, with Editor access."),
+        field("Sheet URL or ID", sheet, state.auth?.mode === "oauth" ? "Choose an existing sheet with Google Picker to grant access, or create a new one." : "Share the sheet with the service-account email from Settings → Plugins, with Editor access."),
         h("label", { class: "check" }, useDefault, h("span", { text: state.default_spreadsheet ? "Use the default sheet from Settings" : "Use the default sheet from Settings (none set)" })),
         h("div", { class: "row gap" }, load)),
       tabStep, colStep,
@@ -340,6 +431,40 @@ export function registerProjectUI(api) {
     };
     sheet.addEventListener("input", invalidateSource);
     useDefault.addEventListener("change", () => { sheet.disabled = useDefault.checked; invalidateSource(); });
+    if (state.auth?.mode === "oauth") {
+      const version = scopeVersion;
+      const current = () => body.isConnected && version === scopeVersion;
+      const message = h("p", { role: "status", "aria-live": "polite" });
+      const tools = h("div", { class: "gs-account row gap wrap" });
+      const choose = h("button", { type: "button", class: "btn", text: "Choose from Google Drive…", disabled: !state.auth.picker, onclick: async () => {
+        choose.disabled = true;
+        await browserSession(project, "picker", tools, message, current, async (result) => {
+          if (!result.file.can_edit) throw new Error("This sheet is read-only. Choose one you can edit.");
+          useDefault.checked = false; sheet.disabled = false; sheet.value = result.file.id;
+          invalidateSource(); load.click();
+          message.textContent = `Selected ${result.file.name}`;
+        });
+        if (current()) choose.disabled = !state.auth.picker;
+      } });
+      const title = h("input", { class: "input", placeholder: "Lab runs", maxlength: "100" });
+      const create = h("button", { type: "button", class: "btn", text: "Create new spreadsheet", onclick: async () => {
+        if (!title.value.trim()) { message.textContent = "Enter a title for the new spreadsheet."; title.focus(); return; }
+        create.disabled = true; message.textContent = "Creating spreadsheet…";
+        try {
+          const result = await call(project, "create_spreadsheet", { title: title.value.trim() });
+          if (!current()) return;
+          useDefault.checked = false; sheet.disabled = false; sheet.value = result.id;
+          invalidateSource(); load.click();
+          message.textContent = `Created ${result.name}. Add column headers and target rows in Google Sheets, then Load again.`;
+          const link = sheetURL(result.id);
+          if (link) tools.append(h("a", { href: link, target: "_blank", rel: "noopener noreferrer", text: "Open new spreadsheet ↗" }));
+        } catch (error) { if (current()) message.textContent = `${error.message} Check Google Drive before retrying; creation may have completed.`; }
+        finally { if (current()) create.disabled = false; }
+      } });
+      tools.append(choose, field("New spreadsheet title", title), create, message);
+      if (!state.auth.picker) tools.append(h("p", { class: "small muted", text: "Choosing existing files isn't set up in this build (missing Picker API key or project number)." }));
+      body.querySelector("fieldset").prepend(tools);
+    }
     load.addEventListener("click", async () => {
       invalidateSource(); loadHeaders.cancel();
       const mine = headerSequence;
@@ -822,9 +947,13 @@ export function registerProjectUI(api) {
   api.registerCommand({ id: "gsheet-editor", label: "Google Sheet: open mapping editor", run: withProject((project) => openEditor(project)) });
   api.registerCommand({ id: "gsheet-attach", label: "Google Sheet: attach…", run: withProject(async (project) => {
     const state = await call(project, "state");
-    if (!state.credentials) { api.toast("Add a service-account key in Settings → Plugins → Google Sheet first.", "warn"); return; }
+    if (!state.credentials) {
+      if (state.auth?.mode === "oauth") { await openConnection(project); return; }
+      api.toast("Add a service-account key in Settings → Plugins → Google Sheet first.", "warn"); return;
+    }
     if (!await policy()) { api.toast(OFF_TITLE, "warn"); return; }
     openAttach(project, state);
   }) });
+  api.registerCommand({ id: "gsheet-account", label: "Google Sheet: sign in / account…", run: withProject((project) => openConnection(project)) });
   return { renderToolbar, openConnection, openAttach, openEditor, editor, openPreview, openDetach };
 }

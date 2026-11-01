@@ -25,7 +25,7 @@ def after(ctx, state):
     return None
 
 plugin = Plugin(
-    id="gsheet", version="0.1.0", alfrd_api=">=1,<2", title="Google Sheet",
+    id="gsheet", version="0.2.0", alfrd_api=">=1,<2", title="Google Sheet",
     description="Two-way sync around launched steps, writing only changed cells.", cli=cli,
     settings=FIELDS, check=check, step_hooks=StepHooks(before=before, after=after, timeout=30),
     panels=(PanelSpec("gsheet_sync", evaluate=evaluate, client=True, title="Google Sheet", auto=auto_panel),),

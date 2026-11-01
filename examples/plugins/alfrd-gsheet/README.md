@@ -12,7 +12,94 @@ Google Sheet is still pending.
 Installing the plugin registers hooks; projects without a mapping make no API
 calls and do not need credentials.
 
-## Setup walkthrough
+## Setup walkthrough: Google sign-in (desktop)
+
+1. Install the plugin and restart `alfrd serve`:
+   `alfrd plugin install ./examples/plugins/alfrd-gsheet`.
+2. Open a project's **Google Sheet → Connect & validate…** dialog and choose
+   **Sign in with Google…**. Complete Google's consent screen in the browser on
+   the same computer as ALFRD. Select `oauth` in **Settings → Plugins → Google
+   Sheet → Sign-in method** if you previously used a service-account key.
+3. **Connect sheet… → Choose from Google Drive…**, or enter a title and
+   **Create new spreadsheet**. Picker grants ALFRD access to the chosen file.
+   Pasting an arbitrary spreadsheet URL alone cannot grant access. Creating a
+   sheet starts it empty: open its link, add headers and target rows, then Load.
+4. Select the tab, header row and row-match column, then **Attach**. Validate
+   the mapping and preview an export before writing run results.
+
+Google sign-in requests only `drive.file`, `openid` and email. It can read and
+edit files chosen with Picker or created by ALFRD, rather than all Drive files.
+**Choose sheet again…** restores a file grant without changing the mapping.
+A read-only sheet needs Editor permission from its owner. Expired or revoked
+sign-in stops subsequent sync requests until you sign in again. The local panel
+shows a sign-in or file-access recovery message after a failed sync.
+
+**Sign out…** attempts to revoke the grant, then deletes the local refresh token
+whether or not Google is reachable. Google's revocation affects **all clients
+of the same Google project**, including ALFRD on other computers. Previously
+chosen files may need choosing again. If revoke fails, remove ALFRD manually at
+<https://myaccount.google.com/connections>.
+
+CLI equivalents:
+
+```sh
+alfrd gsheet auth login
+alfrd gsheet auth status
+alfrd gsheet auth logout --yes
+alfrd gsheet create --title "Lab runs"
+alfrd gsheet init <project> --spreadsheet <returned-id>
+```
+
+`auth login --no-browser --timeout 300` prints a URL and waits; advanced remote
+users must forward the printed loopback port themselves. Normal login refuses
+headless/SSH sessions and starts no listener there. Servers and CI should use
+**service_account**, below. Hooks never initiate login.
+
+### OAuth client configuration
+
+The repository ships **empty placeholders** in `alfrd_gsheet/oauth_client.json`.
+Until a release supplies a configured client, Google sign-in is unavailable;
+service-account setup still works. Maintainers can fill the package file at
+build time, or set these variables in both the Studio server and runner/CLI
+environments. Non-empty environment values override the corresponding file keys.
+
+| File key | Environment override | Format |
+|---|---|---|
+| `client_id` | `ALFRD_GSHEET_OAUTH_CLIENT_ID` | Desktop client ending in `.apps.googleusercontent.com` |
+| `client_secret` | `ALFRD_GSHEET_OAUTH_CLIENT_SECRET` | Non-empty desktop client secret, at most 256 characters |
+| `picker_api_key` | `ALFRD_GSHEET_PICKER_API_KEY` | API key, 30–64 letters/digits/underscore/hyphen |
+| `project_number` | `ALFRD_GSHEET_GCP_PROJECT_NUMBER` | Numeric Cloud project number, 6–20 digits |
+
+Use one Google Cloud project for the Desktop OAuth client and Picker project
+number. Enable Sheets, Drive and Google Picker APIs. Restrict the API key to
+the Google Picker API. Loopback origins use random ports; validate any website
+restrictions before distributing your build. Without Picker configuration,
+sign-in and Create work; choosing existing files is disabled.
+
+Configure the external consent screen for the three scopes above and publish
+it **In production** before release. In **Testing**, grants containing
+`drive.file` normally expire after **7 days**. Complete applicable Google brand
+verification. No real client credentials, API keys or user tokens belong in
+source control.
+
+Refresh tokens live separately from plugin settings in
+`<user_config_dir("alfrd")>/gsheet/oauth-token.json` (directory 0700, file 0600,
+atomic replacement, honours `XDG_CONFIG_HOME`). Access tokens remain in process
+memory and the isolated Picker page; they are never returned in Studio actions.
+This is local file protection, not an OS keyring. Only short-lived nonces and
+URLs pass between Studio and the `127.0.0.1:<random-port>` helper. The helper
+checks Host, state/PKCE and single-use callbacks, and expires automatically.
+
+**Release validation still needed:** the brief's S0 checks A1–A4 require a
+maintainer Google project/account: Desktop-token Picker on the random loopback
+origin, API-key restrictions/CSP, inaccessible-file 403/404, and re-picking after
+revocation. These assumptions have not been live-verified by the offline tests.
+If Desktop-token web Picker is rejected, the brief describes a separate
+`trigger_onepick` desktop fallback; this build implements the web Picker path.
+See [Google installed-app OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)
+and [Google Picker integration](https://developers.google.com/workspace/drive/picker/guides/web-picker).
+
+## Advanced: service account (headless)
 
 1. **Install** the plugin and restart `alfrd serve`:
    `alfrd plugin install ./examples/plugins/alfrd-gsheet`.
@@ -23,7 +110,8 @@ calls and do not need credentials.
 3. **Share the spreadsheet** with the key's `client_email`
    (`…@….iam.gserviceaccount.com`) as an **Editor**. Use a dedicated sheet or
    a copy until you trust the mapping.
-4. **Configure**: in Settings → Plugins → Google Sheet → Configure, paste the
+4. **Configure**: in Settings → Plugins → Google Sheet → Configure, select
+   `service_account` as **Sign-in method**, paste the
    whole JSON key and set the default spreadsheet id or URL. Press **Test**. It
    writes nothing; it reports Editor access and the number of worksheets.
 5. **Generate a mapping**:
@@ -50,13 +138,18 @@ uv run python -m pytest -q examples/plugins/alfrd-gsheet/tests
 ```
 
 No service account, Google libraries or network are needed to run these tests.
-The optional real-auth signing test skips when Google's libraries are absent.
-To include it without accessing a real sheet:
+The optional real-library signing and OAuth refresh tests skip when Google's libraries are absent.
+To include them without accessing a real sheet:
 
 ```sh
 uv run --with 'google-auth[requests]==2.61.0' --with 'requests==2.32.5' \
   python -m pytest -q examples/plugins/alfrd-gsheet/tests
 ```
+
+The suite blocks non-loopback socket connections. Loopback HTTP handler tests
+use in-memory connections and fake Google responses, so even restricted CI
+needs no listening sockets. Browser-origin/Google interoperability remains a
+manual release check; JS syntax is checked with `node --check`.
 
 The engine accepts a `SheetsClient`; its protocol is in `alfrd_gsheet/client.py`.
 The transport dependencies are pinned in `pyproject.toml`; alfrd and its
@@ -70,8 +163,16 @@ alfrd plugin install ./examples/plugins/alfrd-gsheet
 
 ## Settings and Test
 
-In Settings → Plugins → Google Sheet → Configure, paste a service-account JSON
-key into **Service-account key JSON** and set **Default spreadsheet id or URL**.
+**Sign-in method** accepts `oauth` or `service_account`. Empty/missing uses
+`service_account` when `credentials_json` is present, otherwise `oauth`. Existing
+key-only configurations need no migration or file rewrite. Explicit `oauth`
+ignores a leftover key without deleting it; switching back restores that key.
+OAuth can be saved without any service-account key. Without a default sheet,
+OAuth Test refreshes sign-in and reports the account; set a default to also test
+sheet access.
+
+For Advanced mode, select `service_account`, paste a service-account JSON
+key into **Service-account key JSON (Advanced)** and set **Default spreadsheet id or URL**.
 Enable the Sheets API in the key's Google Cloud project and share the
 spreadsheet with the key's `client_email` as an Editor. Credentials stay
 in the host's private plugin settings file; public settings show only whether
@@ -84,7 +185,7 @@ permission with the Drive API** to have Test also ask Drive whether the account
 can edit; that needs the Drive API enabled in the same project. Syncing itself
 uses only the Sheets API.
 Read-only access asks you to grant Editor permission; 403/404 errors ask you to
-check sharing, the spreadsheet id and enabled APIs. Test requires a default
+check sharing, the spreadsheet id and enabled APIs. In service-account mode, Test requires a default
 spreadsheet even when individual mappings specify their own ids.
 
 Defaults: `value_input_option: RAW`, `conflict_policy: skip`,

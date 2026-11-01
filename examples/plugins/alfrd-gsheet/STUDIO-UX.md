@@ -175,3 +175,51 @@ locally; Google enforces remaining spreadsheet limits atomically.
 
 REST contract references: [InsertDimensionRequest and UpdateCellsRequest](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/request),
 [atomic batch requests](https://developers.google.com/workspace/sheets/api/guides/batch).
+
+
+## Google account and desktop Picker (0.2)
+
+The connection dialog starts with an accessible Google account row. All statuses
+use `role="status"`; errors are text, all actions are semantic buttons and the
+account row wraps below 480px. Closing returns focus to the Google Sheet toolbar.
+
+| State | Account / connection | Action and recovery |
+|---|---|---|
+| S-a | OAuth client unavailable | Advanced / sign-in settings; configure client or service account |
+| S-b | Signed out | Sign in with Google; no sync/browser flow starts automatically |
+| S-c | Waiting for consent | A pre-opened tab, fallback link, Cancel; poll once per second |
+| S-c2/c3 | Declined, state mismatch, missing Drive scope | Safe reason and retry; no token is saved |
+| S-d | Signed in, optional verified email | Connect sheet, Sign out, Advanced settings |
+| S-e | Revoked/expired or client changed | Sign in again; hooks fail fast until a new login |
+| S-f | Choosing a file | Isolated loopback Picker page, spreadsheets only; Cancel / expiry |
+| S-g | Creating | Title 1–100 chars; one POST, then Load tab/columns; no automatic replay |
+| S-h | Mapped sheet inaccessible | Choose sheet again restores access without rewriting mapping |
+| S-i | Service account / headless | Existing key setup, sharing and attach flow unchanged |
+
+Sign-out confirmation explains grant revocation on all computers; failure still
+forgets the local token and provides Google's account-connections URL. A newly
+created sheet needs headers/target rows in Google Sheets before attachment can
+find a row-match column. Creation timeout warns users to inspect Drive before
+retrying, because the first POST may have succeeded.
+
+Polling stops when its dialog is disposed or the project changes; both session
+kinds are cancelled on exit. A blocked popup has a manual link. Remote users see
+a service-account hint. File re-grant checks the selected ID against the mapped
+sheet; connecting a different sheet goes through explicit mapping replacement.
+
+### Manual browser and live release checklist (pending)
+
+With fake OAuth config and stubbed project actions: exercise unavailable,
+signed-out, waiting, declined, signed-in, reauth, Picker cancel/selection,
+create success/timeout and service-account states. Check Tab/Enter/Escape,
+status announcements, popup blocking, closing/switching projects during polling,
+and a 400px viewport. Stub tokens belong only in the helper page, never action
+responses or Studio DOM. The automated handler tests validate callback parsing;
+they do not claim a full browser walkthrough.
+
+After the brief's S0 project setup: sign in, pick a sheet, create a sheet, add
+headers, attach and sync a step. Revoke at Google account connections, verify the
+next sync reports auth_required and later syncs make no requests, sign in and
+choose the mapped sheet again. Confirm random-port Picker origin/CSP and API-key
+restrictions work with Desktop OAuth credentials. A1–A4 and this live walkthrough
+remain release gates until a maintainer executes them.
