@@ -185,7 +185,7 @@ account row wraps below 480px. Closing returns focus to the Google Sheet toolbar
 
 | State | Account / connection | Action and recovery |
 |---|---|---|
-| S-a | OAuth client unavailable | Advanced / sign-in settings; configure client or service account |
+| S-a | Google sign-in unavailable | Install the official ALFRD release, or use Advanced → service account in Settings |
 | S-b | Signed out | Sign in with Google; no sync/browser flow starts automatically |
 | S-c | Waiting for consent | A pre-opened tab, fallback link, Cancel; poll once per second |
 | S-c2/c3 | Declined, state mismatch, missing Drive scope | Safe reason and retry; no token is saved |

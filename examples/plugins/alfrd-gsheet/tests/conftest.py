@@ -13,6 +13,7 @@ import pytest
 def isolated_state(tmp_path, monkeypatch):
     """Example tests also run alone: never load real plugins/notification routes."""
     monkeypatch.setenv("ALFRD_HOME", str(tmp_path / "alfrd-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.delenv("ALFRD_NO_PLUGINS", raising=False)

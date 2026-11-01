@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -40,6 +41,23 @@ _cache = OrderedDict()
 
 
 CLIENT_FILE_ENV = "ALFRD_GSHEET_OAUTH_CLIENT_FILE"
+SIGN_IN_UNAVAILABLE = ("Google sign-in isn't available in this build. Install the official ALFRD release "
+                       "to sign in with Google, or use Advanced → service account in Settings.")
+_log = logging.getLogger(__name__)
+
+
+def user_client_path():
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "alfrd" / "gsheet_oauth_client.json"
+
+
+def _warn_client_permissions(path, source):
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return  # The reader reports a clear, redacted error if needed.
+    if mode & 0o044:
+        _log.warning("OAuth client file %s is group- or world-readable; use chmod 600.", source)
 
 
 class _OAuthConfig(dict):
@@ -71,8 +89,22 @@ def config():
     path = Path(__file__).with_name("oauth_client.json")
     defaults = _client_defaults(path, str(path))
     sources = {key: str(path) for key in ENV}
+    user_path = user_client_path()
+    try:
+        user_path.stat()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise SyncError("Cannot read per-user OAuth client file; check the path and permissions.") from None
+    else:
+        source = f"per-user OAuth client file ({user_path})"
+        _warn_client_permissions(user_path, source)
+        for key, value in _client_defaults(user_path, source).items():
+            if value != "":
+                defaults[key], sources[key] = value, source
     if filename := os.environ.get(CLIENT_FILE_ENV):
         source = f"{CLIENT_FILE_ENV} ({filename})"
+        _warn_client_permissions(Path(filename), source)
         for key, value in _client_defaults(Path(filename), source).items():
             if value != "":
                 defaults[key], sources[key] = value, source
@@ -88,6 +120,11 @@ def config():
     for key, value in out.items():
         if not isinstance(value, str) or (value and not re.fullmatch(patterns[key], value)):
             raise SyncError(f"Invalid {ENV[key]} in {sources[key]}; check the OAuth configuration.")
+    if not out["client_id"] or not out["client_secret"]:
+        _log.info("Google OAuth client unavailable. Maintainers: set %s and %s, set %s, "
+                  "or use $XDG_CONFIG_HOME/alfrd/gsheet_oauth_client.json "
+                  "(default ~/.config/alfrd/gsheet_oauth_client.json).",
+                  ENV["client_id"], ENV["client_secret"], CLIENT_FILE_ENV)
     return out
 
 
@@ -95,7 +132,7 @@ def require_config(*, picker=False):
     cfg = config()
     keys = ENV if picker else ("client_id", "client_secret")
     if any(not cfg[k] for k in keys):
-        raise SyncError("Google sign-in is not available in this build. Configure the OAuth client."
+        raise SyncError(SIGN_IN_UNAVAILABLE
                         if not picker else "Choosing existing files isn't set up in this build (missing Picker API key or project number).")
     return cfg
 

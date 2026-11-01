@@ -57,11 +57,27 @@ headless/SSH sessions and starts no listener there. Servers and CI should use
 
 ### OAuth client configuration
 
+**End users of the official ALFRD release need no OAuth client setup or credentials.**
+The release CI supplies the bundled client; users just choose **Sign in with Google**.
+
 The repository ships **empty placeholders** in `alfrd_gsheet/oauth_client.json`.
-Until a release supplies a configured client, Google sign-in is unavailable;
-service-account setup still works. Maintainers can fill the package file at
-build time, or set these variables in both the Studio server and runner/CLI
-environments. Non-empty environment values override the corresponding file keys.
+For source checkouts, maintainers can save their client outside the repository at
+`~/.config/alfrd/gsheet_oauth_client.json` (or
+`$XDG_CONFIG_HOME/alfrd/gsheet_oauth_client.json` when set). Discovery is automatic.
+Use Google's downloaded Desktop `{"installed": {...}}` JSON or a flat object
+with the keys below. Optional `picker_api_key` and `project_number` keys can be
+included in the same object as the client keys; `project_id` is not the project number.
+Web clients are rejected. Use `chmod 600` on the file; group- or world-readable
+client files trigger a warning without preventing sign-in.
+
+Precedence is **per key**, highest first: non-empty individual environment
+variables → `ALFRD_GSHEET_OAUTH_CLIENT_FILE` → per-user file → bundled defaults.
+The explicit file variable accepts the same JSON formats. Missing per-user files
+are ignored; malformed or unreadable files produce a redacted configuration error.
+Set overrides in both the Studio server and runner/CLI environments.
+Maintainer setup hints are logged by the server when the client is unavailable;
+Studio directs users to the official release or **Advanced → service account**.
+See the [maintainer setup guide](../../../docs/plugins/gsheet-oauth-setup.md).
 
 | File key | Environment override | Format |
 |---|---|---|

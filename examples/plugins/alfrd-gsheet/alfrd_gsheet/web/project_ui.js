@@ -235,7 +235,7 @@ export function registerProjectUI(api) {
     const status = h("p", { role: "status", "aria-live": "polite", text: auth.signed_in
       ? `✓ Signed in${auth.email ? ` as ${auth.email}` : " to Google"}`
       : auth.status === "needs_reauth" ? auth.status_reason === "client_changed" ? "Sign in again (the Google client changed)." : "Google sign-in expired or was revoked. Sign in again."
-        : auth.available ? "Not signed in to Google" : "Google sign-in isn't configured in this build. Use Advanced / service account in Settings, or configure the OAuth client." });
+        : auth.available ? "Not signed in to Google" : "Google sign-in isn't available in this build. Install the official ALFRD release to sign in with Google, or use Advanced → service account in Settings." });
     const row = h("section", { class: "gs-account" }, h("h3", { text: "Google account" }), status);
     const buttons = h("div", { class: "row gap wrap" });
     if (auth.signed_in) buttons.append(h("button", { type: "button", class: "btn", text: "Sign out…", disabled: !canWrite, onclick: async () => {

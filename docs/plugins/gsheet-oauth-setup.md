@@ -2,6 +2,8 @@
 
 Audience: ALFRD maintainers (or an organisation that brings its own Cloud project) who set up the Google Cloud side of **Sign in with Google** and **Google Picker** for the `alfrd-gsheet` plugin. End users never do any of this; they click **Sign in with Google**.
 
+**End users of official ALFRD releases need no OAuth credentials or client setup.** Release CI fills the bundled client from secrets. The options below are for maintainers working from source or organisations using their own project.
+
 Design background: `docs/briefs/gsheet-oauth-picker.md` in the `alfrd_brainstorm` repo. This guide uses its names exactly.
 
 The Google Cloud console is renamed and rearranged from time to time. Menu names below follow **Google Auth Platform** (Branding, Audience, Data Access, Clients). If your console differs, look for the equivalent page.
@@ -25,13 +27,16 @@ The plugin ships a defaults file, `alfrd_gsheet/oauth_client.json` (package data
 
 - It stays **empty in the repository**. The release build fills it (decision D1 in the brief: CI secret vs committed public values).
 - Set `ALFRD_GSHEET_OAUTH_CLIENT_FILE` to the path of Google's downloaded **Desktop app** client JSON (`{"installed": {...}}`), or a JSON file with the flat keys shown above. Web client JSON (`{"web": {...}}`) is rejected. The packaged file also accepts the Desktop format.
-- Precedence is **per key**: a non-empty individual env var above wins over a non-empty value in `ALFRD_GSHEET_OAUTH_CLIENT_FILE`, which wins over the packaged file. Google's download has no Picker API key or project number; supply those through the matching env vars or packaged defaults. `project_id` is not the numeric project number.
-- Keep the downloaded client file **outside the repository** (for example `~/.config/alfrd/google-client.json`) and `chmod 600` it. The repo ignores the file name pattern as a safety net, but do not rely on that.
+- For automatic discovery, save the file at **`~/.config/alfrd/gsheet_oauth_client.json`**, or **`$XDG_CONFIG_HOME/alfrd/gsheet_oauth_client.json`** when `XDG_CONFIG_HOME` is set. No file env var is needed. It accepts the same Desktop or flat JSON formats, including optional `picker_api_key` and `project_number` in the object containing the client keys.
+- Precedence is **per key**: a non-empty individual env var above wins over a non-empty value in `ALFRD_GSHEET_OAUTH_CLIENT_FILE`, then the per-user file, then the packaged file. Google's download has no Picker API key or project number; add those keys or use the matching env vars. `project_id` is not the numeric project number.
+- Keep the downloaded client file **outside the repository** and `chmod 600` it. Group- or world-readable client files produce a server warning but still load. An absent per-user file is ignored; malformed or unreadable files produce a clear error without their contents. Do not rely on gitignore to protect credentials.
 - Example for a local run or an organisation's own project:
 
   ```bash
-  chmod 600 ~/.config/alfrd/google-client.json
-  export ALFRD_GSHEET_OAUTH_CLIENT_FILE="$HOME/.config/alfrd/google-client.json"   # client ID + secret
+  # Save the downloaded Desktop JSON here first (use $XDG_CONFIG_HOME if set).
+  chmod 600 ~/.config/alfrd/gsheet_oauth_client.json
+  # Optional explicit override instead of automatic discovery:
+  # export ALFRD_GSHEET_OAUTH_CLIENT_FILE="/private/path/desktop-client.json"
   export ALFRD_GSHEET_PICKER_API_KEY="<picker api key>"
   export ALFRD_GSHEET_GCP_PROJECT_NUMBER="<digits-only project number>"
   # Alternative to the file: set both individually (these win over the file, per key)
@@ -43,7 +48,7 @@ The plugin ships a defaults file, `alfrd_gsheet/oauth_client.json` (package data
 - Organisations using their own Cloud project set all four individual env vars, or use `ALFRD_GSHEET_OAUTH_CLIENT_FILE` plus `ALFRD_GSHEET_PICKER_API_KEY` and `ALFRD_GSHEET_GCP_PROJECT_NUMBER`.
 - Google documents that a Desktop client's secret is not confidential (desktop apps are public clients and use PKCE), so shipping it in the package is expected. It is still not something to paste into issues or chat.
 - Validation: client ID must end with `.apps.googleusercontent.com`; project number is 6–20 digits; an invalid value produces an error naming the variable, never the value.
-- Without client ID + secret the Studio shows "Sign in with Google isn't set up in this ALFRD build." Without the API key or project number, sign-in and **Create new spreadsheet** work but **Choose from Google Drive** is disabled.
+- Without client ID + secret Studio and the API say: "Google sign-in isn't available in this build. Install the official ALFRD release to sign in with Google, or use Advanced → service account in Settings." Maintainer hints naming the env vars and per-user path appear in the server log at INFO level, not in this UI message. Without the API key or project number, sign-in and **Create new spreadsheet** work but **Choose from Google Drive** is disabled.
 
 The release workflow builds and publishes the host and `alfrd-gsheet` distributions. Before building the plugin it fills the packaged defaults from repository secrets `GSHEET_OAUTH_CLIENT_ID`, `GSHEET_OAUTH_CLIENT_SECRET`, `GSHEET_PICKER_API_KEY`, and `GSHEET_GCP_PROJECT_NUMBER` using JSON serialization without logging values. If any secret is empty, it warns and keeps the empty defaults. Configure the PyPI token to allow publishing both projects.
 
@@ -129,7 +134,7 @@ Do these in order once the smoke test passes. Console wording that could not be 
    - `GSHEET_PICKER_API_KEY`
    - `GSHEET_GCP_PROJECT_NUMBER`
 
-   If any is empty the release build warns and ships empty defaults, so sign-in would show "isn't set up in this ALFRD build".
+   If any is empty the release build warns and ships empty defaults, so sign-in would show "Google sign-in isn't available in this build."
 2. **Verify the domain `avikhagol.dev` in Google Search Console.** Open <https://search.google.com/search-console>, signed in with the **same Google account that owns the Cloud project** (brand verification checks ownership against the project owners/editors). **Add property → Domain** (not URL prefix), enter `avikhagol.dev`, and add the **TXT** record Google shows at your DNS provider for the root domain (host `@`). Wait for DNS to propagate, then click **Verify**. Keep the TXT record in place afterwards. Do not remove it.
 3. **Fill in Branding** (**Google Auth Platform → Branding**):
    - Application home page: `https://alfrd.avikhagol.dev/`
