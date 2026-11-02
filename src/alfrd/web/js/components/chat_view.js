@@ -90,7 +90,9 @@ export function render(el, ctx) {
 
 export const canDelegate = (d) => (!d.mailbox_message_id || d.kind === "question") && !d.repeat && !d.delegated;
 
-export function createChatView() {
+export function createChatView(options = {}) {
+let projection = null;
+const readOnly = () => options.projected && (options.readOnly?.() ?? projection?.clock?.mode === "replay");
 const root = document.createElement("div");
 root.style.display = "contents";
 let suspended = false, destroyed = false, savedScroll = [], settingsController = null, prefetchTimer = 0, prefetchSid = null, focusIntent = null;
@@ -130,7 +132,7 @@ async function get(url, signal) {
   if (!res.ok) { const e = new Error(body?.error?.message || `${res.status} ${res.statusText}`); e.status = res.status; throw e; }
   return body;
 }
-const post = (p, path, body = {}, method = "POST") => server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat${path}`, body, method);
+const post = (p, path, body = {}, method = "POST") => readOnly() ? Promise.reject(new Error("Replay is read-only. Go live to act.")) : server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat${path}`, body, method);
 
 const onEvents = (e) => {
   const { project, events } = e.detail || {};
@@ -140,7 +142,7 @@ const onEvents = (e) => {
   const mine = chatEvents.some((ev) => ev.plan === `chat-${S.sid}`);
   if (suspended) return;
   scheduleRefresh(mine);
-  if (mine) act?.kick();
+  if (mine && !readOnly()) act?.kick();
 };
 window.addEventListener("alfrd-events", onEvents);
 const onResync = ({ detail }) => { if (!suspended && (!detail?.project || detail.project === S.project)) { S.revisionReset = true; loadSession(); } };
@@ -209,6 +211,7 @@ function closeSessions() {
   $("[data-chat=sessions]", host)?.setAttribute("aria-expanded", "false");
 }
 function syncSheets() {
+  if (options.projected) { drawInspector(ctxRef); return; }
   if (wide()) closeSessions();
   const chat = $(".chat", host);
   const room = chat?.clientWidth || host?.clientWidth || window.innerWidth;
@@ -216,7 +219,7 @@ function syncSheets() {
   const overlay = insp?.isOpen() && (window.innerWidth <= 1280 || room < (chat?.classList.contains("chat-sessions-collapsed") ? 692 : 868));
   chat?.classList.toggle("chat-inspector-sheet", Boolean(overlay));
   panelResizers.forEach((r) => r.sync());
-  if (insp?.isOpen()) drawInspector(ctxRef);
+  if (insp?.isOpen() || options.projected) drawInspector(ctxRef);
   else { goals?.stop(); filesModule?.leaveFiles(); filesEpoch++; }
   if (overlay && !inspectorSheet) { closeSessions(); inspectorSheet = chatSheet($("#chat-inspector", host), () => { insp.close(); syncSheets(); }); }
   else if (!overlay && inspectorSheet) { inspectorSheet({ restore: false }); inspectorSheet = null; }
@@ -264,7 +267,7 @@ function mount(el, ctx, p) {
       <section class="card" id="chat-task" aria-live="polite" hidden></section>
     </div></aside></div>`;
   graph = mountGraph($("#chat-graph", el), { onMail: (request, id) => { closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
-    onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
+    onSelect: (row) => { S.task = row; drawTask(ctxRef); options.onTask?.(row); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); options.onTask?.(row); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid && n.project === S.project),
     select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
     inspect: openInspector,
@@ -316,6 +319,7 @@ async function loadSettings() {
 }
 
 async function loadSession(force = true) {
+  if (options.projected) { options.refresh?.(); return false; }
   const p = S.project, sid = S.sid, gen = ++S.gen;
   if (!sid) return false;
   let accepted = false;
@@ -338,14 +342,15 @@ async function loadSession(force = true) {
 function openSession(sid, { replace = false } = {}) {
   scope = createRequestScope();
   closeSessions();
-  S.sid = sid; S.data = snapshots.peek(S.project, sid)?.data || null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
+  S.sid = sid; S.data = options.projected ? null : snapshots.peek(S.project, sid)?.data || null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
   const feedback = $("#chat-check-feedback", host);
   if (feedback) feedback.textContent = "";
   const remembered = storage.get(SESSION_KEY, {}) || {};
   if (sid) storage.set(SESSION_KEY, { ...remembered, [S.project]: sid });
   const st = ctxRef.state;
   st.chatSession = sid || "";
-  setRoute(routeHash(sid ? `chat/${sid}` : "chat", st.selectedProject, st.selectedTarget), { replace });
+  if (options.projected) options.onSession?.(sid, { replace });
+  else setRoute(routeHash(sid ? `chat/${sid}` : "chat", st.selectedProject, st.selectedTarget), { replace });
   draft?.select(S.project, sid);
   act?.reset();
   if (sid) loadSession(false);
@@ -387,6 +392,7 @@ function draw(ctx) {
   composer?.refresh();
   $(".chat-stop-status", host).textContent = stop.state().reason || "";
   syncSheets();
+  if (options.projected) for (const el of root.querySelectorAll("#chat-form, #chat-decisions, #chat-head, #chat-task")) el.inert = readOnly();
 }
 
 function drawInspector(ctx) {
@@ -397,7 +403,7 @@ function drawInspector(ctx) {
   const request = scope.request(S.data);
   $("#chat-insp-panel", host).dataset.request = request || "all";
   $("#chat-insp-panel", host).hidden = inspTab === "graph";
-  $(".chat-graph-card", host).hidden = inspTab !== "graph";
+  if (!options.projected) $(".chat-graph-card", host).hidden = inspTab !== "graph";
   const model = { ...graphModel(S.data?.graph, agents(), request, S.data?.requests), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
   if (inspTab === "graph") graph?.update(model, S.data ? S.task : null);
   if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
@@ -602,6 +608,7 @@ function transcriptHtml(row) {
 function drawLog() {
   const box = $("#chat-log", host);
   box.setAttribute("aria-busy", String(Boolean(!S.sessions && !S.sessionsError || S.sid && !S.data && !S.error)));
+  if (readOnly() && S.data) { act?.suspend(); sourceHTML(box, (S.data.messages || []).map((m) => sharedMessageHtml(m, { agentName, orchestrator: orchestrator(), agents: agents() })).join("") || `<p class="muted">No messages recorded at this time.</p>`); return; }
   if (S.data) { act?.update(S.data, S.notes.filter((n) => n.sid === S.sid && n.project === S.project)); conversationStarter(box); return; }
   if (!S.sessions && !S.sessionsError || S.sid && !S.data && !S.error) { sourceHTML(box, skeletonRows("messages")); return; }
   if (!S.sid) sourceHTML(box, `<div class="empty"><p>Start a session with <b>New</b>, then ask for something.</p></div>`);
@@ -613,11 +620,13 @@ function drawProgress(ctx) {
   const box = $("#chat-progress", host);
   if (!box) return;
   const req = (S.data?.requests || []).find((r) => r.id === scope.request(S.data));
-  const pr = requestProgress(S.data, req);
+  const pr = requestProgress(S.data, req, S.projection ? Date.parse(S.projection.clock.at) : Date.now());
+  if (pr && S.projection) { pr.seconds = S.projection.summary.wall_seconds; pr.ongoing = !S.projection.summary.morning?.finished; }
   const u = S.data?.usage;
   const warned = req ? costWarnings(S.data, req.id) : [];
   const promo = server.session?.mutations_enabled ? promotable(S.data) : null;
   const totals = requestTotals(S.data);
+  if (S.projection) { totals.usage = S.projection.summary.usage; totals.seconds = S.projection.summary.wall_seconds; }
   const html = scope.isAll() ? `<h3 id="chat-progress-h">All requests</h3>
       <p class="small">${totals.count} request${totals.count === 1 ? "" : "s"}${totals.ongoing ? ` · ${totals.ongoing} ongoing` : ""}</p>
       <p class="small" data-tokens="all">Total tokens: in ${totals.usage.input_tokens ?? "—"} · out ${totals.usage.output_tokens ?? "—"}</p>
@@ -769,6 +778,7 @@ async function viewArtifact(ref) {
 }
 
 async function send() {
+  if (readOnly()) return;
   const input = $("#chat-input", host);
   const mention = parseMention(input.value.trim(), agents());
   if (mention?.error && $(`#chat-form`, host).dataset?.scheduled !== "true") { S.sendError = mention.error; draw(ctxRef); return; }
@@ -796,7 +806,7 @@ const bound = new WeakSet(); // the view element outlives mounts (project switch
 
 function bind(el) {
   // The composer's own elements are new on every mount, so it is bound every time.
-  draft = mountComposerDraft(el, "chat", { settings: () => S.data?.settings || S.settings, createSession: newSession, blocked: () => !!S.settingsError, onError: (m) => { S.sendError = m; $("#chat-send-error", el).textContent = m; } });
+  draft = mountComposerDraft(el, "chat", { settings: () => S.data?.settings || S.settings, createSession: newSession, blocked: () => readOnly() || !!S.settingsError, onError: (m) => { S.sendError = m; $("#chat-send-error", el).textContent = m; } });
   composer = bindComposer(el, "chat", { agents, orchestrator, send, stopState: stop.state, onStop: stop.stop, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { draft.edit(text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
   if (bound.has(el)) return;
   bound.add(el);
@@ -808,6 +818,7 @@ function bind(el) {
   el.addEventListener("click", (e) => {
     const b = e.target.closest("button, [data-agent], a[data-sid]");
     if (!b) return;
+    if (b.matches("a[data-sid]") && options.projected) { e.preventDefault(); if (b.dataset.sid !== S.sid) { openSession(b.dataset.sid); ctxRef.update(); } return; }
     if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { ctxRef.state.chatSession = b.dataset.sid; setRoute(routeHash(`chat/${b.dataset.sid}`, ctxRef.state.selectedProject, ctxRef.state.selectedTarget)); restore(root.parentElement, ctxRef); ctxRef.update(); } return; }
     if (b.dataset.chatPrompt) { composer.input.value = b.dataset.chatPrompt; draft.edit(composer.input.value); composer.refresh(); composer.input.focus(); return; }
     const a = b.dataset.chat;
@@ -1003,7 +1014,7 @@ function openGraphFull({ fromComposer = false, request = null } = {}) {
     <div class="modal-b chat-gfull"><div id="chat-gfull"></div></div>`, (root, close) => {
     root.setAttribute("aria-labelledby", "chat-gfull-h");
     const g = mountGraph($("#chat-gfull", root), { onMail: (request, id) => { close(); closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(close), groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
-      onSelect: (row) => { S.task = row; drawTask(ctxRef); },
+      onSelect: (row) => { S.task = row; drawTask(ctxRef); options.onTask?.(row); },
       onOpen: (row) => { close(); S.task = row; S.keys.task = null; draw(ctxRef); $("#chat-task", host)?.focus(); } });
     full = { host: root, g };
     g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data), S.data?.requests), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
@@ -1023,7 +1034,7 @@ function resume() {
   for (const [el, top, left] of savedScroll) { el.scrollTop = top; el.scrollLeft = left; }
   if (focusIntent?.isConnected) focusIntent.focus({ preventScroll: true });
   if (S.project) { S.sessions = chatProjects.snapshot(S.project)?.sessions || S.sessions; loadSessions(false); loadSettings(); }
-  if (S.sid) { const cached = snapshots.peek(S.project, S.sid); if (cached?.data) S.data = cached.data; loadSession(false); }
+  if (S.sid && !options.projected) { const cached = snapshots.peek(S.project, S.sid); if (cached?.data) S.data = cached.data; loadSession(false); }
 }
 const prefetch = (event) => {
   const sid = event.target.closest?.("a[data-sid]")?.dataset.sid;
@@ -1032,7 +1043,18 @@ const prefetch = (event) => {
   prefetchTimer = setTimeout(() => { if (!suspended) { prefetchSid = sid; prefetchSnapshot(S.project, sid); } }, 125);
 };
 root.addEventListener("pointerover", prefetch); root.addEventListener("focusin", prefetch);
-return { root, render, suspend, resume, isSuspended: () => suspended, refresh: () => { if (!suspended) loadSession(); }, project: () => S.project, sid: () => S.sid,
+return { root, render, suspend, resume,
+  setProjection(state) {
+    projection = state; S.projection = state; S.data = { ...state.view, settings: { ...S.settings, ...state.view.settings },
+      requests: (state.view.requests || []).map((r) => state.scope.kind === "request" ? { ...r, usage: state.summary.usage } : r) }; S.error = null; S.keys = {};
+    if (!S.data.tasks?.some((t) => t.row === S.task)) S.task = null;
+    scope.select(state.scope.kind === "all" ? "all" : state.scope.request);
+    if (state.clock.mode === "replay") act?.suspend(); else act?.resume();
+    draw(ctxRef);
+    for (const el of root.querySelectorAll("#chat-form, #chat-decisions, #chat-head, #chat-task")) el.inert = readOnly();
+  },
+  openTask(row) { S.task = row; S.keys.task = null; drawTask(ctxRef); options.onTask?.(row); },
+  isSuspended: () => suspended, refresh: () => { if (!suspended) loadSession(); }, project: () => S.project, sid: () => S.sid,
   destroy() { suspend(); destroyed = true; unsubscribeProjects(); draft?.destroy(); act?.stop(); panelResizers.forEach((r) => r.destroy()); layoutObserver?.disconnect(); window.removeEventListener("alfrd-events", onEvents); window.removeEventListener("alfrd-chat-resync", onResync); window.removeEventListener("resize", onResize); root.remove(); },
 };
 }

@@ -54,6 +54,7 @@ const VIEWS = [
   { id: "results", label: "Results", icon: "results", mod: lazyView(() => import("./components/results.js").then((m) => (results = m))) },
   { id: "logs", label: "Logs", icon: "log", mod: lazyView(loadLogs) },
   { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js"), ["css/chat.css"]) },
+  { id: "harness", label: "Harness", icon: "graph", page: true, mod: lazyView(() => import("./components/harness_view.js"), ["css/chat.css", "css/harness.css"]) },
   { id: "config", label: "Settings", icon: "project", mod: lazyView(() => import("./components/alfrd_config.js")) },
   { id: "new-project", label: "New project", icon: "plus", page: true, mod: lazyView(() => import("./components/project_canvas.js")) },
   { id: "superuser", label: "Superuser", icon: "power", page: true, mod: lazyView(() => import("./components/superuser.js")) },
@@ -538,7 +539,7 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
   state.selectedTarget = chooseTarget(inScope, storage.get("ui:app.targets", {})[next], incoming.target);
   rememberTarget();
   // A project picked by the user is a history entry (Back returns); first-load normalization replaces.
-  const view = before !== next && restoreView && incoming.view && incoming.view !== state.view ? incoming.view : state.view;
+  const view = state.view !== "harness" && before !== next && restoreView && incoming.view && incoming.view !== state.view ? incoming.view : state.view;
   if (syncUrl) setRoute(routeHash(view, next, state.selectedTarget), { replace: !(push && before !== next) });
   if (view !== state.view) route();
   if (before !== next) {
@@ -1567,7 +1568,7 @@ document.addEventListener("keydown", (e) => {
 // Chat dock (components/chat_dock.js, loaded on the first open): open/closed and width per browser.
 const dockUi = { open: false, width: 380, ...storage.get("ui:chat.dock", {}) };
 let dockMod = null, dockExplicit = false;
-const dockAvailable = () => chatOn() && state.mode === "server" && Boolean(activeProject()) && !["chat", "new-project"].includes(state.view);
+const dockAvailable = () => chatOn() && state.mode === "server" && Boolean(activeProject()) && !["chat", "harness", "new-project"].includes(state.view);
 let dockOpener;
 function setChatDock(open = !dockUi.open) {
   if (open && !dockUi.open) dockOpener = document.activeElement;
@@ -2269,7 +2270,7 @@ ctx.showDock = (key) => {
   ctx.toast("Following in the Log Stream — switch views freely", "ok");
 };
 
-const NEEDS_PROJECT = { chat: "chat with its agents", workflow: "edit its workflow", metadata: "browse its metadata", config: "edit its settings", plugin: "open this plugin page" };
+const NEEDS_PROJECT = { harness: "open the harness", chat: "chat with its agents", workflow: "edit its workflow", metadata: "browse its metadata", config: "edit its settings", plugin: "open this plugin page" };
 
 function askForProject(el, view) {
   const loading = view === "workflow" && activeProject() && state.workflowFile.loading;
@@ -2379,7 +2380,7 @@ function route() {
     state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[url.project], state.selectedTarget);
     rememberTarget();
   }
-  if (id === "chat") state.chatSession = page || "";
+  if (id === "chat" || id === "harness") state.chatSession = page || "";
   const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) && shown(id) ? id : "overview";
   if (next !== state.view) {
     if (!skillsCanLeave()) { setRoute(routeHash(state.view, state.selectedProject, state.selectedTarget)); return; }
@@ -2422,7 +2423,7 @@ async function boot() {
   if (session) {
     state.mode = "server";
     // route() ran before the session: #/chat and #/superuser need it
-    if (["chat", "superuser"].includes(parseRoute(location.hash).view.split("/")[0])) route();
+    if (["chat", "harness", "superuser"].includes(parseRoute(location.hash).view.split("/")[0])) route();
     startSystemPoll();
     ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();
