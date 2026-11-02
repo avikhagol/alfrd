@@ -1451,7 +1451,12 @@ ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) 
 const experimentalOn = () => server.session?.experimental === true;
 ctx.experimental = experimentalOn;
 // Chat mode (Preferences, per browser, off by default): Chat section, dock, chat runs
-function chatOn() { return experimentalOn() && shown("chat") && readPrefs()["ui.experimental_chat"] === true; }
+function chatOn() {
+  const harness_mode = state.view === "harness" || /^#\/harness(?:\/|\?|$)/.test(location.hash);
+  const superuser_toggle = experimentalOn() && shown("chat") && readPrefs()["ui.experimental_chat"] === true;
+  const chat_enabled = harness_mode || superuser_toggle;
+  return chat_enabled;
+}
 let chatProjects, chatProjectsLoading;
 function syncChatProjects() {
   if (chatProjects) {
