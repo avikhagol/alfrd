@@ -156,3 +156,5 @@ examples/proposed_0_2_1/
 src/alfrd/web/assets/defaults/.alfrd/
 wave3_status.md
 docs/v0.4.0.0/impl/
+.devolve/
+devolve.toml
