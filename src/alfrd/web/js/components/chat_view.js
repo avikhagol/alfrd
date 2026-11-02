@@ -37,7 +37,7 @@ import { activeSession, destinationSession, paintSessionList, filterSessions, ch
 import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
-  parseMention, promotable, requestProgress, requestTotals, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
+  parseMention, runSummary, requestProgress, requestTotals, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
 } from "../data/chat.js";
 
 import { chatProjects } from "../data/chat_projects.js";
@@ -90,13 +90,9 @@ export function render(el, ctx) {
 
 export const canDelegate = (d) => (!d.mailbox_message_id || d.kind === "question") && !d.repeat && !d.delegated;
 
-export function createChatView(options = {}) {
-const harnessLayout = options.projected && options.layout === "harness";
-let projection = null;
-const readOnly = () => options.projected && (options.readOnly?.() ?? projection?.clock?.mode === "replay");
+export function createChatView() {
 const root = document.createElement("div");
-if (harnessLayout) root.className = "chat-harness-root";
-if (!harnessLayout) { root.style.display = "contents"; }
+root.style.display = "contents";
 let suspended = false, destroyed = false, savedScroll = [], settingsController = null, prefetchTimer = 0, prefetchSid = null, focusIntent = null;
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
   error: null, loading: false, checking: null, task: null, open: new Map(), sendError: "", gen: 0, keys: {}, notes: [] };
@@ -134,7 +130,7 @@ async function get(url, signal) {
   if (!res.ok) { const e = new Error(body?.error?.message || `${res.status} ${res.statusText}`); e.status = res.status; throw e; }
   return body;
 }
-const post = (p, path, body = {}, method = "POST") => readOnly() ? Promise.reject(new Error("Replay is read-only. Go live to act.")) : server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat${path}`, body, method);
+const post = (p, path, body = {}, method = "POST") => server.mutate(`/studio/projects/${encodeURIComponent(p)}/chat${path}`, body, method);
 
 const onEvents = (e) => {
   const { project, events } = e.detail || {};
@@ -144,7 +140,7 @@ const onEvents = (e) => {
   const mine = chatEvents.some((ev) => ev.plan === `chat-${S.sid}`);
   if (suspended) return;
   scheduleRefresh(mine);
-  if (mine && !readOnly()) act?.kick();
+  if (mine) act?.kick();
 };
 window.addEventListener("alfrd-events", onEvents);
 const onResync = ({ detail }) => { if (!suspended && (!detail?.project || detail.project === S.project)) { S.revisionReset = true; loadSession(); } };
@@ -213,16 +209,14 @@ function closeSessions() {
   $("[data-chat=sessions]", host)?.setAttribute("aria-expanded", "false");
 }
 function syncSheets() {
-  if (options.projected && !harnessLayout) { drawInspector(ctxRef); return; }
   if (wide()) closeSessions();
   const chat = $(".chat", host);
   const room = chat?.clientWidth || host?.clientWidth || window.innerWidth;
   chat?.classList.toggle("chat-sessions-sheet", !wide());
-  if (harnessLayout) { panelResizers.forEach((r) => r.sync()); drawDecisions(); drawTask(ctxRef); return; }
   const overlay = insp?.isOpen() && (window.innerWidth <= 1280 || room < (chat?.classList.contains("chat-sessions-collapsed") ? 692 : 868));
   chat?.classList.toggle("chat-inspector-sheet", Boolean(overlay));
   panelResizers.forEach((r) => r.sync());
-  if (insp?.isOpen() || options.projected) drawInspector(ctxRef);
+  if (insp?.isOpen()) drawInspector(ctxRef);
   else { goals?.stop(); filesModule?.leaveFiles(); filesEpoch++; }
   if (overlay && !inspectorSheet) { closeSessions(); inspectorSheet = chatSheet($("#chat-inspector", host), () => { insp.close(); syncSheets(); }); }
   else if (!overlay && inspectorSheet) { inspectorSheet({ restore: false }); inspectorSheet = null; }
@@ -247,7 +241,7 @@ function mount(el, ctx, p) {
   S.open.clear();
   el.dataset.chat = p;
   const folded = storage.get(COLLAPSE_KEY, false) === true;
-  el.innerHTML = harnessLayout ? `<div class="chat chat-harness${folded ? " chat-sessions-collapsed" : ""}">
+  el.innerHTML = `<div class="chat${folded ? " chat-sessions-collapsed" : ""}">
     <nav class="chat-sessions" id="chat-sessions" aria-label="Chat sessions"><div class="chat-sessions-resize"></div><div class="row gap chat-sessions-top"><span class="sr-only" tabindex="-1" aria-label="Chat sessions"></span>
       <button type="button" class="chat-new" data-chat="new" aria-label="Start a new chat session" title="Start a new chat session">${icon("plus")}<span aria-hidden="true">New chat</span></button>
       <button type="button" class="icon-btn sm chat-collapse" data-chat="collapse" aria-controls="chat-sessions" aria-expanded="true" aria-label="Hide the chat list" title="Hide the chat list">${icon("sidebar")}</button><button type="button" class="icon-btn chat-close-sessions" data-chat="close-sessions" aria-label="Close chat list">${icon("close")}</button></div>
@@ -257,62 +251,43 @@ function mount(el, ctx, p) {
       <ul class="chat-list" id="chat-list" role="list"></ul></nav>
     <section class="chat-main" aria-label="Conversation">
       <header class="chat-head" id="chat-head"></header>
-      <div id="chat-slot-top" class="chat-slot-top"></div>
-      <p class="sr-only" id="chat-check-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
-      <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
-      <p class="chat-stop-status muted small" role="status"></p>
-      <div id="chat-slot-attention" class="chat-slot-attention"></div>
-      <section class="card chat-decisions-inline" id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
-      ${composerHtml("chat", { attachments: true })}
-    </section>
-    <div class="chat-drawer" id="chat-drawer" role="dialog" aria-modal="true" aria-label="Task details" tabindex="-1" hidden><section class="card" id="chat-task" aria-live="polite" hidden></section></div></div>` : `<div class="chat${folded ? " chat-sessions-collapsed" : ""}">
-    <nav class="chat-sessions" id="chat-sessions" aria-label="Chat sessions"><div class="chat-sessions-resize"></div><div class="row gap chat-sessions-top"><span class="sr-only" tabindex="-1" aria-label="Chat sessions"></span>
-      <button type="button" class="chat-new" data-chat="new" aria-label="Start a new chat session" title="Start a new chat session">${icon("plus")}<span aria-hidden="true">New chat</span></button>
-      <button type="button" class="icon-btn sm chat-collapse" data-chat="collapse" aria-controls="chat-sessions" aria-expanded="true" aria-label="Hide the chat list" title="Hide the chat list">${icon("sidebar")}</button><button type="button" class="icon-btn chat-close-sessions" data-chat="close-sessions" aria-label="Close chat list">${icon("close")}</button></div>
-      <div class="chat-search"><label class="sr-only" for="chat-session-search">Search sessions</label>${icon("search")}<input class="input sm" type="search" id="chat-session-search" placeholder="Search chats" value="${esc(queries.get(p) || "")}"><button type="button" class="icon-btn sm" data-chat="clear-search" aria-label="Clear search" title="Clear search">${icon("close")}</button></div>
-      <div class="chat-sec-h chat-recents-h"><span class="grow">Chats</span><button type="button" class="chat-chip" data-chat="needs-me" aria-pressed="${needsOnly}">Needs me</button></div>
-      <p class="sr-only" id="chat-session-count" role="status"></p>
-      <ul class="chat-list" id="chat-list" role="list"></ul></nav>
-    <section class="chat-main" aria-label="Conversation">
-      <header class="chat-head" id="chat-head"></header>
+      <div id="chat-run" class="chat-run" role="group" aria-label="Current run" hidden></div>
       <p class="sr-only" id="chat-check-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
       <p class="chat-stop-status muted small" role="status"></p>
       ${composerHtml("chat", { attachments: true })}
     </section>
     <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks"><div class="chat-inspector-resize"></div><div class="chat-inspector-content">
-      <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-request-scope"></div><div id="chat-insp-tabs">${tabsHtml()}</div></section>
+      <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-insp-tabs">${tabsHtml()}</div></section>
       <section class="card" id="chat-progress" aria-labelledby="chat-progress-h"></section>
       <section class="card" id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
       <section class="card chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
       <section class="card" id="chat-task" aria-live="polite" hidden></section>
     </div></aside></div>`;
-  graph = harnessLayout ? null : mountGraph($("#chat-graph", el), { onMail: (request, id) => { closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
-    onSelect: (row) => { S.task = row; drawTask(ctxRef); options.onTask?.(row); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); options.onTask?.(row); $("#chat-task", host)?.focus(); } });
+  graph = mountGraph($("#chat-graph", el), { onMail: (request, id) => { closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
+    onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid && n.project === S.project),
-    select: harnessLayout ? (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); options.onTask?.(row); } : (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
-    inspect: harnessLayout ? () => {} : openInspector,
+    select: (row) => { S.task = row; S.keys.task = null; drawTask(ctxRef); openInspector(); $("#chat-task", host)?.focus(); },
+    inspect: openInspector,
     openLog: (rel, meta) => openLog(ctxRef, S.project, rel, meta), cancel: (row, b) => taskAction("cancel", row, b) });
-  if (!harnessLayout) $(".chat-graph-card", el).addEventListener("keydown", (e) => {
+  $(".chat-graph-card", el).addEventListener("keydown", (e) => {
     if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.closest(".gv-canvas")) { e.preventDefault(); openGraphFull(); }
   });
   bind(el);
   const toggle = () => $("[data-chat=inspect]", el);
-  if (!harnessLayout) {
   insp = createInspector({ chat: $(".chat", el), panel: $("#chat-inspector", el), button: { setAttribute: (k, v) => toggle()?.setAttribute(k, v) },
     focus: (target) => { inspectorSheet?.({ restore: false }); inspectorSheet = null; (target?.isConnected ? target : toggle())?.focus(); } });
   insp.restore();
-  }
   const chat = $(".chat", el), sessions = $("#chat-sessions", el), inspector = $("#chat-inspector", el);
   panelResizers = [
     mountPanelResize({ panel: sessions, handle: $(".chat-sessions-resize", el), key: "ui:chat.sessionsWidth", min: 160, max: 360, defaultWidth: 220,
       label: "Resize chat sessions", enabled: () => wide() && !chat.classList.contains("chat-sessions-collapsed"),
-      available: () => chat.clientWidth - 52 - 360 - (harnessLayout ? 0 : (insp.isOpen() && !chat.classList.contains("chat-inspector-sheet") ? inspector.offsetWidth + 16 : 0)),
+      available: () => chat.clientWidth - 52 - 360 - (insp.isOpen() && !chat.classList.contains("chat-inspector-sheet") ? inspector.offsetWidth + 16 : 0),
       apply: (w) => chat.style.setProperty("--sessions-width", `${w}px`) }),
-    ...(harnessLayout ? [] : [mountPanelResize({ panel: inspector, handle: $(".chat-inspector-resize", el), key: "ui:chat.inspectorWidth", min: 280, max: 560, defaultWidth: 320, side: "right",
+    mountPanelResize({ panel: inspector, handle: $(".chat-inspector-resize", el), key: "ui:chat.inspectorWidth", min: 280, max: 560, defaultWidth: 320, side: "right",
       label: "Resize chat inspector", enabled: () => insp.isOpen() && !chat.classList.contains("chat-inspector-sheet"),
       available: () => chat.clientWidth - 52 - 360 - (wide() && !chat.classList.contains("chat-sessions-collapsed") ? sessions.offsetWidth + 16 : 0),
-      apply: (w) => chat.style.setProperty("--inspector-width", `${w}px`) })])];
+      apply: (w) => chat.style.setProperty("--inspector-width", `${w}px`) })];
   layoutObserver = typeof ResizeObserver === "function" ? new ResizeObserver(syncSheets) : null; layoutObserver?.observe($(".chat", el));
   syncSheets();
   const cachedProject = chatProjects.snapshot(p);
@@ -342,7 +317,6 @@ async function loadSettings() {
 }
 
 async function loadSession(force = true) {
-  if (options.projected) { options.refresh?.(); return false; }
   const p = S.project, sid = S.sid, gen = ++S.gen;
   if (!sid) return false;
   let accepted = false;
@@ -365,15 +339,14 @@ async function loadSession(force = true) {
 function openSession(sid, { replace = false } = {}) {
   scope = createRequestScope();
   closeSessions();
-  S.sid = sid; S.data = options.projected ? null : snapshots.peek(S.project, sid)?.data || null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
+  S.sid = sid; S.data = snapshots.peek(S.project, sid)?.data || null; S.error = null; S.task = null; S.open.clear(); S.gen++; S.keys = {};
   const feedback = $("#chat-check-feedback", host);
   if (feedback) feedback.textContent = "";
   const remembered = storage.get(SESSION_KEY, {}) || {};
   if (sid) storage.set(SESSION_KEY, { ...remembered, [S.project]: sid });
   const st = ctxRef.state;
   st.chatSession = sid || "";
-  if (options.projected) options.onSession?.(sid, { replace });
-  else setRoute(routeHash(sid ? `chat/${sid}` : "chat", st.selectedProject, st.selectedTarget), { replace });
+  setRoute(routeHash(sid ? `chat/${sid}` : "chat", st.selectedProject, st.selectedTarget), { replace });
   draft?.select(S.project, sid);
   act?.reset();
   if (sid) loadSession(false);
@@ -408,6 +381,7 @@ function draw(ctx) {
   if (suspended || destroyed) return;
   drawSessions();
   drawHead(ctx);
+  drawRun();
   drawLog();
   if (full?.host.isConnected) full.g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data), S.data?.requests), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
   draft?.select(S.project, S.sid);
@@ -415,18 +389,32 @@ function draw(ctx) {
   composer?.refresh();
   $(".chat-stop-status", host).textContent = stop.state().reason || "";
   syncSheets();
-  if (options.projected) for (const el of root.querySelectorAll("#chat-form, #chat-decisions, #chat-head, #chat-task")) el.inert = readOnly();
+}
+
+function drawRun() {
+  const box = $("#chat-run", host), run = runSummary(S.data);
+  if (!box || !changed("run", [run, S.sid, !S.data])) return;
+  box.hidden = !run && (!S.sid || Boolean(S.data));
+  if (!run) { box.innerHTML = S.sid && !S.data ? '<span class="muted">Loading run…</span>' : ""; return; }
+  if (!box.querySelector(".chat-run-title")) box.innerHTML = `<span class="chat-run-title"></span><span aria-hidden="true">·</span><span class="chat-run-status"></span><span aria-hidden="true">·</span><span class="chat-run-count"></span><span aria-hidden="true">·</span><span class="chat-run-needs"><span class="chat-run-flag"></span><span class="chat-run-needs-label"> need you</span></span><span class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>`;
+  const title = box.querySelector(".chat-run-title"), status = box.querySelector(".chat-run-status"), needs = box.querySelector(".chat-run-needs");
+  title.textContent = run.title; title.title = run.fullTitle; title.setAttribute("aria-label", run.fullTitle);
+  status.textContent = run.status; status.style.color = `var(--chat-${run.tone})`;
+  box.querySelector(".chat-run-count").textContent = `${run.done}/${run.total} done`;
+  box.querySelector(".chat-run-flag").textContent = `⚑ ${run.needsUser}`;
+  needs.style.color = `var(--chat-${run.needsUser ? "warning" : "muted"})`; needs.setAttribute("aria-label", `${run.needsUser} items need you`);
+  const announcement = `${run.status} · ${run.done}/${run.total} done · ${run.needsUser} items need you`;
+  const live = box.querySelector('[role="status"]');
+  if (live.textContent !== announcement) live.textContent = announcement;
 }
 
 function drawInspector(ctx) {
   drawProgress(ctx);
   drawDecisions();
-  const scopeHtml = scope.html(S.data);
-  refreshHTML($("#chat-request-scope", host), scopeHtml);
   const request = scope.request(S.data);
   $("#chat-insp-panel", host).dataset.request = request || "all";
   $("#chat-insp-panel", host).hidden = inspTab === "graph";
-  if (!options.projected) $(".chat-graph-card", host).hidden = inspTab !== "graph";
+  $(".chat-graph-card", host).hidden = inspTab !== "graph";
   const model = { ...graphModel(S.data?.graph, agents(), request, S.data?.requests), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
   if (inspTab === "graph") graph?.update(model, S.data ? S.task : null);
   if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
@@ -526,8 +514,8 @@ function drawHead(ctx) {
   const focused = $("#chat-head", host).contains(document.activeElement) ? document.activeElement.dataset.chat : null;
   const flowing = ["live", "polling"].includes(live);
   $("#chat-head", host).innerHTML = `<div class="chat-head-title"><button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${s ? `<input id="chat-title-input" class="chat-title-input" data-sid="${esc(s.id)}" aria-label="Rename chat" title="Rename chat (Enter to save, Escape to cancel)" maxlength="120" value="${esc(s.title)}">` : esc(S.sid || "No session")}</h3>
-    ${harnessLayout ? "" : `<button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button>`}<button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button><details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="skills" aria-haspopup="dialog">Skills</button>${s ? `<button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests || s.schedule ? 'disabled title="Cancel the schedule before deleting this session"' : ""}>${icon("trash")} Delete</button>` : ""}</div></details></div>
-    <div class="chat-head-status">${harnessLayout ? "" : `<span class="chat-live tone-${flowing ? "ok" : "warn"}" role="status" title="${esc([flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected", ctx.state.liveStatus?.detail, S.data?.plan ? `runner ${S.data.plan.runner_alive ? "active" : "idle"} (plan ${S.data.plan.id})` : ""].filter(Boolean).join(" · "))}"><span class="sr-only">${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}${S.data?.plan ? `, runner ${S.data.plan.runner_alive ? "active" : "idle"}` : ""}</span></span>`}
+    <button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button><details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="skills" aria-haspopup="dialog">Skills</button>${s ? `<button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests || s.schedule ? 'disabled title="Cancel the schedule before deleting this session"' : ""}>${icon("trash")} Delete</button>` : ""}</div></details></div>
+    <div class="chat-head-status"><span class="chat-live tone-${flowing ? "ok" : "warn"}" role="status" title="${esc([flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected", ctx.state.liveStatus?.detail, S.data?.plan ? `runner ${S.data.plan.runner_alive ? "active" : "idle"} (plan ${S.data.plan.id})` : ""].filter(Boolean).join(" · "))}"><span class="sr-only">${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}${S.data?.plan ? `, runner ${S.data.plan.runner_alive ? "active" : "idle"}` : ""}</span></span>
     ${S.sid ? `<button type="button" class="icon-btn sm" data-chat="check" aria-label="${S.checking === `${S.project}/${S.sid}` ? "Checking" : "Check for interrupted work and resume it; paused runners stay paused"}" aria-busy="${S.checking === `${S.project}/${S.sid}`}" ${S.checking === `${S.project}/${S.sid}` ? "disabled" : ""} aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${icon(S.checking === `${S.project}/${S.sid}` ? "sync" : "check")}</button>` : ""}</div>
     ${S.settingsError ? `<p class="callout fail small chat-wide" role="alert">Chat settings: ${esc(S.settingsError)} — fix the <code>chat:</code> block in <a href="${esc(routeHash("config", S.project, ctx.state.selectedTarget))}">Settings</a>.</p>` : ""}`;
   $("#chat-head", host).dataset.sid = S.sid || "";
@@ -631,7 +619,6 @@ function transcriptHtml(row) {
 function drawLog() {
   const box = $("#chat-log", host);
   box.setAttribute("aria-busy", String(Boolean(!S.sessions && !S.sessionsError || S.sid && !S.data && !S.error)));
-  if (readOnly() && S.data) { act?.suspend(); sourceHTML(box, (S.data.messages || []).map((m) => sharedMessageHtml(m, { agentName, orchestrator: orchestrator(), agents: agents() })).join("") || `<p class="muted">No messages recorded at this time.</p>`); return; }
   if (S.data) { act?.update(S.data, S.notes.filter((n) => n.sid === S.sid && n.project === S.project)); conversationStarter(box); return; }
   if (!S.sessions && !S.sessionsError || S.sid && !S.data && !S.error) { sourceHTML(box, skeletonRows("messages")); return; }
   if (!S.sid) sourceHTML(box, `<div class="empty"><p>Start a session with <b>New</b>, then ask for something.</p></div>`);
@@ -643,13 +630,10 @@ function drawProgress(ctx) {
   const box = $("#chat-progress", host);
   if (!box) return;
   const req = (S.data?.requests || []).find((r) => r.id === scope.request(S.data));
-  const pr = requestProgress(S.data, req, S.projection ? Date.parse(S.projection.clock.at) : Date.now());
-  if (pr && S.projection) { pr.seconds = S.projection.summary.wall_seconds; pr.ongoing = !S.projection.summary.morning?.finished; }
+  const pr = requestProgress(S.data, req);
   const u = S.data?.usage;
   const warned = req ? costWarnings(S.data, req.id) : [];
-  const promo = server.session?.mutations_enabled ? promotable(S.data) : null;
   const totals = requestTotals(S.data);
-  if (S.projection) { totals.usage = S.projection.summary.usage; totals.seconds = S.projection.summary.wall_seconds; }
   const html = scope.isAll() ? `<h3 id="chat-progress-h">All requests</h3>
       <p class="small">${totals.count} request${totals.count === 1 ? "" : "s"}${totals.ongoing ? ` · ${totals.ongoing} ongoing` : ""}</p>
       <p class="small" data-tokens="all">Total tokens: in ${totals.usage.input_tokens ?? "—"} · out ${totals.usage.output_tokens ?? "—"}</p>
@@ -666,7 +650,7 @@ function drawProgress(ctx) {
       <p class="muted small" data-tokens="request">${esc(tokenLine(req?.usage) || "no tokens reported yet")}</p>
       <p class="muted small">${pr.calls} orchestrator call${pr.calls === 1 ? "" : "s"}${S.data?.settings?.orchestrator_model ? ` (${esc(S.data.settings.orchestrator_model)}, escalation ${esc(S.data.settings.escalation_model || "agent model")})` : ""}${req?.usage?.total_cost_usd == null ? " · cost not reported by these agents" : ""}</p>
       ${warned.length ? `<p class="small"><span class="badge tone-warn" role="status">${icon("alert")}<span>${warned.length} task${warned.length === 1 ? "" : "s"} over the ${money(S.data?.settings?.warn_task_cost_usd)} warning</span></span></p>` : ""}
-      ${promo ? `<button type="button" class="btn sm" data-chat="promote" data-request="${esc(promo.id)}" title="Add request ${esc(promo.id)}'s tasks to the active workflow (preview first)">${icon("workflow")} Promote to workflow</button>` : ""}`;
+      `;
   const total = u ? `<p class="muted small chat-total" data-tokens="session">Session: ${u.turns} turn${u.turns === 1 ? "" : "s"} · ${esc(tokenLine(u) || money(u.total_cost_usd))} · ${u.orchestrator_calls} orchestrator call${u.orchestrator_calls === 1 ? "" : "s"}</p>` : "";
   refreshHTML(box, html + total);
 }
@@ -801,7 +785,6 @@ async function viewArtifact(ref) {
 }
 
 async function send() {
-  if (readOnly()) return;
   const input = $("#chat-input", host);
   const mention = parseMention(input.value.trim(), agents());
   if (mention?.error && $(`#chat-form`, host).dataset?.scheduled !== "true") { S.sendError = mention.error; draw(ctxRef); return; }
@@ -829,7 +812,7 @@ const bound = new WeakSet(); // the view element outlives mounts (project switch
 
 function bind(el) {
   // The composer's own elements are new on every mount, so it is bound every time.
-  draft = mountComposerDraft(el, "chat", { settings: () => S.data?.settings || S.settings, createSession: newSession, blocked: () => readOnly() || !!S.settingsError, onError: (m) => { S.sendError = m; $("#chat-send-error", el).textContent = m; } });
+  draft = mountComposerDraft(el, "chat", { settings: () => S.data?.settings || S.settings, createSession: newSession, blocked: () => !!S.settingsError, onError: (m) => { S.sendError = m; $("#chat-send-error", el).textContent = m; } });
   composer = bindComposer(el, "chat", { agents, orchestrator, send, stopState: stop.state, onStop: stop.stop, onCommand: command, onError: (m) => { S.sendError = m; draw(ctxRef); }, onDraft: (text) => { draft.edit(text); if (S.sendError) { S.sendError = ""; $("#chat-send-error", host).textContent = ""; } } });
   if (bound.has(el)) return;
   bound.add(el);
@@ -841,7 +824,6 @@ function bind(el) {
   el.addEventListener("click", (e) => {
     const b = e.target.closest("button, [data-agent], a[data-sid]");
     if (!b) return;
-    if (b.matches("a[data-sid]") && options.projected) { e.preventDefault(); if (b.dataset.sid !== S.sid) { openSession(b.dataset.sid); ctxRef.update(); } return; }
     if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { ctxRef.state.chatSession = b.dataset.sid; setRoute(routeHash(`chat/${b.dataset.sid}`, ctxRef.state.selectedProject, ctxRef.state.selectedTarget)); restore(root.parentElement, ctxRef); ctxRef.update(); } return; }
     if (b.dataset.chatPrompt) { composer.input.value = b.dataset.chatPrompt; draft.edit(composer.input.value); composer.refresh(); composer.input.focus(); return; }
     const a = b.dataset.chat;
@@ -887,10 +869,9 @@ function bind(el) {
     }
     else if (a === "setup") command("setup");
     else if (a === "reload") loadSessions();
-    else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); options.onTaskClose?.(); }
-    else if (a === "promote") promoteRequest(b.dataset.request);
+    else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); }
     else if (a === "graph-full") openGraphFull();
-    else if (a === "inspect") { if (!harnessLayout) { closeSessions(); insp?.toggle(); syncSheets(); } }
+    else if (a === "inspect") { closeSessions(); insp?.toggle(); syncSheets(); }
     else if (a === "sessions") {
       const open = $(".chat", host).classList.toggle("chat-sessions-open");
       b.setAttribute("aria-expanded", String(open));
@@ -915,10 +896,6 @@ function bind(el) {
     else if (b.dataset.artifact) viewArtifact(b.dataset.artifact);
     else if (b.dataset.taskAct) taskAction(b.dataset.taskAct, b.dataset.row, b);
     else if (b.dataset.delegate) delegateDecision(b.dataset.delegate, b);
-  });
-  el.addEventListener("change", (e) => {
-    if (!e.target.matches("[data-request-scope]")) return;
-    scope.select(e.target.value); S.task = null; draw(ctxRef);
   });
   el.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -966,41 +943,6 @@ async function taskAction(action, row, button) {
   } catch (error) { ctxRef.toast(`${action === "cancel" ? "Cancel" : "Retry"}: ${error.message}`, "fail"); button.disabled = false; }
 }
 
-// --- promote to workflow ---------------------------------------------------------
-
-/** Preview request `rid`'s tasks as workflow steps (server: chat.promotion), then save them into the active alfrd.yaml. */
-async function promoteRequest(rid) {
-  const ctx = ctxRef, p = S.project, sid = S.sid;
-  const url = `/sessions/${encodeURIComponent(sid)}/requests/${encodeURIComponent(rid)}/promote`;
-  let preview;
-  try { preview = await post(p, url, { preview: true }); } catch (error) { ctx.toast(`Promote: ${error.message}`, "fail"); return; }
-  ctx.modal(`<header class="modal-h"><h2 id="promote-h">${icon("workflow")} Promote request ${esc(rid)} to workflow steps</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b"><p class="small">Adds ${preview.steps.length} Agent step${preview.steps.length === 1 ? "" : "s"} to workflow <b>${esc(preview.workflow)}</b> in <code>${esc(preview.file)}</code>, each with a prompt file written from its task. Nothing is saved until you press Save.</p>
-      <table class="tbl small"><caption class="sr-only">Steps to add</caption><thead><tr><th scope="col">Step</th><th scope="col">Agent</th><th scope="col">Waits on</th><th scope="col">Task</th></tr></thead><tbody>
-      ${preview.steps.map((st) => `<tr><td class="mono">${esc(st.id)}</td><td>@${esc(st.owner)}${st.model ? ` · ${esc(st.model)}` : ""}</td><td class="mono">${esc(st.depends_on.join(", ") || "—")}</td><td>${esc(st.label)} <span class="muted">(${esc(st.status || "")})</span></td></tr>`).join("")}</tbody></table>
-      ${preview.added_entrypoints?.length ? `<p class="muted small">Also adds the entrypoint(s) ${preview.added_entrypoints.map((e) => `<code>${esc(e)}</code>`).join(", ")}.</p>` : ""}
-      <details><summary class="small">Changes to ${esc(preview.file)}</summary><pre class="log chat-pre" aria-label="Diff">${esc(preview.diff)}</pre></details>
-      <p id="promote-error" class="fail-t small" role="alert"></p></div>
-    <footer class="modal-f row gap"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn primary" id="promote-save">${icon("save")} Save to alfrd.yaml</button></footer>`, (root, close) => {
-    root.setAttribute("aria-labelledby", "promote-h");
-    const save = $("#promote-save", root);
-    save.focus();
-    save.onclick = async () => {
-      save.disabled = true;
-      try {
-        const out = await post(p, url, { preview: false, base_hash: preview.base_hash });
-        close();
-        ctx.toast(`Added ${out.steps.length} workflow step${out.steps.length === 1 ? "" : "s"} to ${out.workflow}`, "ok");
-        await ctx.refreshProject?.(p);
-        loadSession();
-      } catch (error) {
-        $("#promote-error", root).textContent = /changed|409/.test(error.message) ? "alfrd.yaml changed since this preview. Close and promote again to see the current file." : error.message;
-        save.disabled = false;
-      }
-    };
-  }, "wide");
-}
-
 // --- slash commands, setup, full-screen graph --------------------------------------------
 
 /** A local ALFRD note in the transcript (not sent, not stored: gone on reload). */
@@ -1037,7 +979,7 @@ function openGraphFull({ fromComposer = false, request = null } = {}) {
     <div class="modal-b chat-gfull"><div id="chat-gfull"></div></div>`, (root, close) => {
     root.setAttribute("aria-labelledby", "chat-gfull-h");
     const g = mountGraph($("#chat-gfull", root), { onMail: (request, id) => { close(); closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(close), groups: true, label: "Task graph (full screen)", empty: "Tasks appear here when the orchestrator plans a request.",
-      onSelect: (row) => { S.task = row; drawTask(ctxRef); options.onTask?.(row); },
+      onSelect: (row) => { S.task = row; drawTask(ctxRef); },
       onOpen: (row) => { close(); S.task = row; S.keys.task = null; draw(ctxRef); $("#chat-task", host)?.focus(); } });
     full = { host: root, g };
     g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data), S.data?.requests), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
@@ -1057,7 +999,7 @@ function resume() {
   for (const [el, top, left] of savedScroll) { el.scrollTop = top; el.scrollLeft = left; }
   if (focusIntent?.isConnected) focusIntent.focus({ preventScroll: true });
   if (S.project) { S.sessions = chatProjects.snapshot(S.project)?.sessions || S.sessions; loadSessions(false); loadSettings(); }
-  if (S.sid && !options.projected) { const cached = snapshots.peek(S.project, S.sid); if (cached?.data) S.data = cached.data; loadSession(false); }
+  if (S.sid) { const cached = snapshots.peek(S.project, S.sid); if (cached?.data) S.data = cached.data; loadSession(false); }
 }
 const prefetch = (event) => {
   const sid = event.target.closest?.("a[data-sid]")?.dataset.sid;
@@ -1067,18 +1009,6 @@ const prefetch = (event) => {
 };
 root.addEventListener("pointerover", prefetch); root.addEventListener("focusin", prefetch);
 return { root, render, suspend, resume,
-  setProjection(state) {
-    projection = state; S.projection = state; S.data = { ...state.view, settings: { ...S.settings, ...state.view.settings },
-      requests: (state.view.requests || []).map((r) => state.scope.kind === "request" ? { ...r, usage: state.summary.usage } : r) }; S.error = null; S.keys = {};
-    if (!S.data.tasks?.some((t) => t.row === S.task)) S.task = null;
-    scope.select(state.scope.kind === "all" ? "all" : state.scope.request);
-    if (state.clock.mode === "replay") act?.suspend(); else act?.resume();
-    draw(ctxRef);
-    for (const el of root.querySelectorAll("#chat-form, #chat-decisions, #chat-head, #chat-task")) el.inert = readOnly();
-  },
-  closeTask() { S.task = null; S.keys.task = null; drawTask(ctxRef); options.onTaskClose?.(); },
-  slots() { return harnessLayout ? Object.fromEntries(["top", "attention", "decisions", "drawer", "task"].map((name) => [name, $(name === "top" || name === "attention" ? `#chat-slot-${name}` : `#chat-${name}`, root)])) : null; },
-  openTask(row) { S.task = row; S.keys.task = null; drawTask(ctxRef); options.onTask?.(row); },
   isSuspended: () => suspended, refresh: () => { if (!suspended) loadSession(); }, project: () => S.project, sid: () => S.sid,
   destroy() { suspend(); destroyed = true; unsubscribeProjects(); draft?.destroy(); act?.stop(); panelResizers.forEach((r) => r.destroy()); layoutObserver?.disconnect(); window.removeEventListener("alfrd-events", onEvents); window.removeEventListener("alfrd-chat-resync", onResync); window.removeEventListener("resize", onResize); root.remove(); },
 };

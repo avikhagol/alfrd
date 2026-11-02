@@ -331,7 +331,7 @@ test("G7 cancellation retains the existing selection and ignores other pointers 
   r.canvas.fire("pointerup", { pointerId: 7 }); assert.deepEqual(r.graph.selection(), ["a"]);
 });
 
-test("G4 request scope selector is shared by Graph, Files and Goals", async () => {
+test("G4 internal request scope is shared by Graph, Files and Goals", async () => {
   const { createRequestScope, tabsHtml } = await import("../../src/alfrd/web/js/components/inspector.js");
   const { graphModel } = await import("../../src/alfrd/web/js/data/chat.js");
   const scope = createRequestScope();
@@ -340,15 +340,12 @@ test("G4 request scope selector is shared by Graph, Files and Goals", async () =
   state.requests[0].status = "done";
   assert.equal(scope.request(state), "b", "otherwise newest");
   scope.select("a");
-  const before = scope.html(state);
   for (const tab of ["graph", "files", "goals"]) {
     assert.match(tabsHtml(tab), new RegExp(`data-insp-tab="${tab}"[^>]*aria-selected="true"`));
-    assert.equal(scope.html(state), before);
     assert.equal(scope.request(state), "a");
   }
   state.requests.push({ id: "c", text: "<script>long title</script>", status: "running" });
   assert.equal(scope.request(state), "a", "background refresh keeps individual selection");
-  assert.match(scope.html(state), /&lt;script&gt;/);
   const raw = { rev: 4, nodes: [{ id: "a1", request: "a" }, { id: "b1", request: "b" }, { id: "old" }],
     edges: [{ from: "a1", to: "b1" }], groups: [{ id: "a", title: "First" }, { id: "b", title: "Second" }, { id: "unscoped", title: "Unscoped" }] };
   const filtered = graphModel(raw, {}, scope.request(state));
@@ -373,10 +370,9 @@ test("G4 request scope selector is shared by Graph, Files and Goals", async () =
   assert.notEqual(r.world.style.transform, moved, "scope changes fit");
   scope.select("current");
   assert.equal(scope.request({}), null, "legacy and empty sessions remain usable");
-  assert.match(scope.html({}), /Current request: None/);
   const src = readFileSync(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
-  assert.match(src, /id="chat-request-scope"/);
-  assert.match(src, /scope\.select\(e.target.value\)/);
+  assert.doesNotMatch(src, /id="chat-request-scope"/);
+  assert.match(src, /scope\.select\(request\)/);
   assert.match(src, /full.g.update\(model, S.task\)/);
 });
 
@@ -411,20 +407,16 @@ test("M7 message controls navigate without node selection, opening, capture or k
 });
 
 
-test("request scope lists newest creation first without changing selection or source order", async () => {
+test("internal request scope preserves historical selection and source order", async () => {
   const { createRequestScope } = await import("../../src/alfrd/web/js/components/inspector.js");
   const scope = createRequestScope();
   const requests = Object.freeze(["r0009", "r10", "r0011", "r0012"].map((id, i) => Object.freeze({ id, status: i === 1 ? "running" : "done" })));
   const state = { requests };
-  const options = () => [...scope.html(state).matchAll(/<option value="([^"]+)"( selected)?/g)].map((m) => [m[1], Boolean(m[2])]);
-  assert.deepEqual(options(), [["all", false], ["current", true], ["r0012", false], ["r0011", false], ["r10", false], ["r0009", false]]);
   assert.equal(scope.request(state), "r10", "current still follows newest active request");
   scope.select("r0009");
-  assert.deepEqual(options().filter(([, selected]) => selected), [["r0009", true]]);
   assert.equal(scope.request(state), "r0009");
   scope.select("all");
   assert.equal(scope.request(state), null);
-  assert.deepEqual(options().filter(([, selected]) => selected), [["all", true]]);
   assert.deepEqual(requests.map((r) => r.id), ["r0009", "r10", "r0011", "r0012"]);
 });
 

@@ -3,7 +3,6 @@
 // Alt+Shift+I toggles, Escape closes and focus goes back to where it was. A background update
 // (events, polling, a task changing) never opens it. No DOM lookups at import: Node tests load this alone.
 import { activeRequest } from "../data/chat.js";
-import { esc } from "../utils/dom.js";
 import { empty } from "./state_view.js";
 import { DEFAULTS, readPrefs, writePrefs } from "../data/prefs.js";
 
@@ -105,13 +104,5 @@ export function createRequestScope() {
     select(value) { choice = value; },
     isAll() { return choice === "all"; },
     request(state) { return choice === "all" ? null : choice === "current" ? activeRequest(state)?.id || null : choice; },
-    html(state) {
-      const current = activeRequest(state);
-      const options = [["all", "All requests"], ["current", `Current request: ${current?.text || current?.id || "None"}`],
-        ...(state?.requests || []).slice().reverse().map((r) => [r.id, `${r.id}: ${r.text || "Request"}`])];
-      if (!options.some(([id]) => id === choice)) options.push([choice, `${choice} (unavailable)`]);
-      return `<label>Request scope <select data-request-scope aria-label="Request scope" style="max-width:100%">${options.map(([id, text]) =>
-        `<option value="${esc(id)}"${choice === id ? " selected" : ""}>${esc(String(text).replace(/\s+/g, " ").slice(0, 100))}</option>`).join("")}</select></label>`;
-    },
   };
 }

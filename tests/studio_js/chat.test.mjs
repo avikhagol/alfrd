@@ -142,7 +142,7 @@ test("the transcript shows each specialist's result once, in time order, besides
   assert.deepEqual(C.timeline({}), []);
 });
 
-test("token report: new input, cache read, cache write, output and cost; warnings; promotable request", () => {
+test("token report: new input, cache read, cache write, output and cost; warnings", () => {
   const u = { input_tokens: 1200, input_uncached_tokens: 1200, cache_read_input_tokens: 45000, cache_creation_input_tokens: 3000, output_tokens: 900, total_cost_usd: 0.042 };
   assert.deepEqual(C.tokenReport(u), { fresh: 1200, read: 45000, write: 3000, out: 900, cost: 0.042 });
   assert.equal(C.tokenLine(u), "new 1.2k · cache read 45k · cache write 3.0k · out 900 · $0.042");
@@ -152,8 +152,6 @@ test("token report: new input, cache read, cache write, output and cost; warning
     tasks: [{ row: "r0001.a", request: "r0001", cost_warning: { bound: 0.5, value: 0.7 } }, { row: "r0001.b", request: "r0001" }] };
   assert.deepEqual(C.costWarnings(state, "r0001").map((t) => t.row), ["r0001.a"]);
   assert.deepEqual(C.costWarnings(state, "r0002"), []);
-  assert.equal(C.promotable(state).id, "r0001", "the newest request that has tasks");
-  assert.equal(C.promotable({ requests: [{ id: "r1", tasks: [] }] }), null);
 });
 
 test("chat settings: orchestrator / escalation models, final summary off, task cost warning, lean presets", () => {

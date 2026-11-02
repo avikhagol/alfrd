@@ -293,3 +293,10 @@ body.wf-compact:has(#view-workflow:not([hidden])) .app[data-dock="open"] > main 
 .chat-live { display: inline-block; flex: none; width: 7px; height: 7px; margin: 0 6px; border-radius: 50%; background: var(--chat-warning); }
 .chat-live.tone-ok { background: var(--chat-success); }
 .chat .chat-log { border: 0; background: transparent; padding: 8px 4px; }
+
+/* The current run stays above the independently scrolling conversation. */
+.chat .chat-run { display:flex; align-items:center; gap:var(--chat-space-2); width:100%; max-width:48rem; min-width:0; min-height:34px; margin:0 auto; padding:var(--chat-space-2) var(--chat-space-4); color:var(--chat-muted); font-size:var(--chat-control-size); line-height:var(--chat-control-leading); font-variant-numeric:tabular-nums; white-space:nowrap; overflow-x:auto; flex-shrink:0; }
+.chat .chat-run[hidden] { display:none; }
+.chat .chat-run > :not(.chat-run-title) { flex-shrink:0; }
+.chat .chat-run-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; color:var(--chat-text); }
+@media(max-width:640px) { .chat .chat-run-needs-label { display:none; } .chat .chat-run { padding-inline:var(--chat-space-2); } }
