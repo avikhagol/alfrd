@@ -48,10 +48,26 @@ Try the demo at `http://127.0.0.1:5000/studio/`; **Ctrl+C** stops it. For your p
 
 ## Harness mode
 
-Harness mode is a read-only observer for a Chat session's agent team. One page in Studio shows agents and
-their handoffs, a timeline of task attempts, a feed of correlated events, a morning summary, and a replay
-slider, next to the regular Chat, task graph, request stats and blockers. It reads existing plan events and
-task records; it never runs recovery, starts models or writes project files.
+Harness mode is a chat-only view of a Chat session's agent team. The conversation is the page: the Studio
+rail, top bar and footer are hidden, and the usual Chat session list and composer stay in place. Above the
+thread, a one-line **Run card** shows the request title, status, tasks done, items that need you and cost.
+Open it for a checklist of tasks with owner, latest activity and what each is waiting for; select a task to
+see its details in a drawer. When something needs you, an attention bar opens a bounded panel with the
+pending questions and decisions. The page reads existing plan events and task records; it never runs
+recovery, starts models or writes project files.
+
+The **Home** link in the top bar (and the page itself when the project has no session yet) shows a
+dashboard of the project's sessions, grouped as *Needs you*, *Running* and *Recent*, with a composer to
+start a new session.
+
+| Key | Action |
+|---|---|
+| `/` | Focus the composer |
+| `n` | Go to the next item that needs you |
+| `c` | Open or close the Run card checklist |
+| `Esc` | Close the drawer, checklist or decision panel |
+
+Shortcuts are ignored while typing in a field. On screens up to 900px wide only one panel is open at a time.
 
 ```bash
 alfrd harness --project <folder|registered-id> --chat <session-id> --no-open
