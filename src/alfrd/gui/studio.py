@@ -98,8 +98,6 @@ def studio_session():
 
     return jsonify(
         app="alfrd",
-        harness_state_version=1,
-        harness_mode=bool(current_app.config.get("STUDIO_HARNESS_MODE")),
         version=__version__,
         runtime_enabled=runtime_enabled(),
         mutations_enabled=mutations_enabled(),

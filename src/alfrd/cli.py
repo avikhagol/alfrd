@@ -325,8 +325,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
                live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2,
                token: str | None = None, no_token: bool = False, gui_install: bool = True,
-               plugin_actions: bool = True, experimental: bool = False,
-               harness_mode: bool = False, harness_chat: str | None = None, monitor_only: bool = False) -> None:
+               plugin_actions: bool = True, experimental: bool = False) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -350,7 +349,6 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         typer.echo("Warning: without TLS, the access token travels in clear text. Use an HTTPS reverse proxy or ssh -L.", err=True)
     database = Path(runtime_db).expanduser().resolve() if runtime_db else _default_runtime_db().resolve()
     service = _runtime_service(str(database))
-    from alfrd.harness_cli import startup_project
     config = {
         "RUNTIME_DATABASE": str(database),
         "RUNTIME_SERVICE": service,
@@ -360,8 +358,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         "STUDIO_DEMO": demo,
         # Live updates: seconds between checks of a busy project tree (0 turns them off).
         "STUDIO_LIVE_INTERVAL": max(0.0, float(live_interval)),
-        "STUDIO_DEFAULT_PROJECT": startup_project(service, project, _connect_startup_project) if harness_mode else _connect_startup_project(service, project),
-        "STUDIO_HARNESS_MODE": harness_mode,
+        "STUDIO_DEFAULT_PROJECT": _connect_startup_project(service, project),
         # --no-gui-install: Settings → Plugins can't install/update/remove (plugins.json may also say so).
         "PLUGINS_GUI_INSTALL": gui_install,
         # --no-plugin-actions: plugins' mutating project actions are refused (plugins.json may also say so).
@@ -371,8 +368,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     }
     from alfrd.manifest_default import local_manifest
 
-    start = (Path(service.get_project_by_selector(config["STUDIO_DEFAULT_PROJECT"]).root_path)
-             if harness_mode and config["STUDIO_DEFAULT_PROJECT"] else _startup_folder(project))
+    start = _startup_folder(project)
     discovered: list[tuple[str, Path]] = []
     # Not a project itself: register the sub-folders that have their own alfrd.yaml.
     if (discover and not project and not config["STUDIO_DEFAULT_PROJECT"]
@@ -412,21 +408,16 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     base = f"http://{authority}:{port}"
     query = "" if no_token else "?" + urlencode({"token": token})
     url = f"{base}/studio/{query}"
-    if harness_mode:
-        from alfrd.harness_cli import latest_chat, route
-        url += route(config["STUDIO_DEFAULT_PROJECT"], harness_chat or latest_chat(service, config["STUDIO_DEFAULT_PROJECT"]))
     print(f"ALFRD Studio: {url}", flush=True)
     app = create_app(config)
     # Only the process that serves writes the token file (not the reloader parent).
     serving = not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
     if serving:
         auth.write_server_file(port, f"{base}/studio/", None if no_token else token, secret_key)
-        if not monitor_only:
-            _start_plugin_services(database)
-    if not monitor_only:
-        _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
+        _start_plugin_services(database)
+    _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
-    if serving and not monitor_only:
+    if serving:
         _chat_watch_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
         _chat_schedule_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
     restart = threading.Event()
@@ -669,46 +660,6 @@ def gui(
     _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token,
                gui_install=not no_gui_install, plugin_actions=not no_plugin_actions,
                experimental=experimental_features)
-
-
-@alfrd_cli.command()
-def harness(
-    project: Optional[str] = typer.Option(None, "--project", help="Project folder or registered id."),
-    chat: Optional[str] = typer.Option(None, "--chat", help="Existing chat session id (default: latest)."),
-    no_open: bool = typer.Option(False, "--no-open", help="Print the URL without opening a browser."),
-    attach: Optional[str] = typer.Option(None, "--attach", help="Attach to a running server URL."),
-    host: str = typer.Option("127.0.0.1", help="Local server interface."),
-    port: int = typer.Option(5000, min=1, max=65535, help="Server port."),
-    db: Optional[str] = typer.Option(None, "--db", help="Runtime database for a new server."),
-):
-    """Open the agent harness; reuse a capable running server when present."""
-    from alfrd import harness as observer
-    from alfrd.harness_cli import attach_url, base_url, is_local, listening
-
-    project = project or observer.settings(Path.cwd())["default_project"]
-    if not project:
-        from alfrd.studio_defs import manifest_file
-        if manifest_file(Path.cwd()) is not None:
-            project = str(Path.cwd())
-    try:
-        if attach:
-            if host != "127.0.0.1" or port != 5000 or db:
-                raise ValueError("--attach cannot be combined with --host, --port or --db")
-            base = base_url(attach)
-            from urllib.parse import urlsplit
-            url = attach_url(base, project, chat, local_credentials=is_local(urlsplit(base).hostname))
-        elif listening(host, port):
-            authority = f"[{host}]" if ":" in host else host
-            url = attach_url(f"http://{authority}:{port}", project, chat, local_credentials=True)
-        else:
-            _serve_web(host, port, False, runtime_db=db, no_browser=no_open, project=project,
-                       harness_mode=True, harness_chat=chat, monitor_only=True)
-            return
-    except ValueError as error:
-        raise typer.BadParameter(str(error)) from error
-    typer.echo(f"ALFRD Harness: {url}")
-    if not no_open:
-        webbrowser.open(url)
 
 
 @alfrd_cli.command()

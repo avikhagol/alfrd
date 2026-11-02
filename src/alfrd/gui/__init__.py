@@ -107,8 +107,6 @@ def create_app(config=None):
     import alfrd.gui.studio_plugins  # noqa: F401  (adds the plugin list/toggle/theme/file routes)
     import alfrd.gui.studio_superuser as studio_superuser  # superuser settings, statistics and ops (/superuser)
     import alfrd.gui.studio_chat  # noqa: F401  (project chat: sessions, messages, decisions, artifacts)
-    import alfrd.gui.studio_harness  # noqa: F401 (read-only harness projection)
-    app.add_url_rule("/harness", "harness_redirect", alfrd.gui.studio_harness.harness_redirect)
 
     from alfrd.gui.api_v1 import api_v1
 

@@ -253,8 +253,6 @@ def merged_manifest(root: str | Path) -> dict[str, Any]:
     entries.update({str(e["name"]): copy.deepcopy(e) for e in manifest.get("entrypoint") or [] if isinstance(e, Mapping) and e.get("name")})
     merged["entrypoint"] = list(entries.values())
     merged["execution"] = {**copy.deepcopy(template.get("execution") or {}), **copy.deepcopy(manifest.get("execution") or {})}
-    merged["harness"] = {**copy.deepcopy(template.get("harness") if isinstance(template.get("harness"), Mapping) else {}),
-                         **copy.deepcopy(manifest.get("harness") if isinstance(manifest.get("harness"), Mapping) else {})}
     workflows = manifest.get("workflows") or template.get("workflows")
     merged["_workflow"] = workflows[0] if isinstance(workflows, list) and workflows and isinstance(workflows[0], Mapping) else {}
     if isinstance(workflows, Mapping) and workflows:
