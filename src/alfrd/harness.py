@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
 from itertools import pairwise
@@ -152,21 +153,36 @@ def _known(record, at):
     return created is not None and created <= at
 
 
-def _task_view(rec, status, owner):
+def _task_view(rec, status, owner, units, replay):
     task = rec.get("task") if isinstance(rec.get("task"), dict) else {}
-    return {"row": rec["row"], "request": rec.get("request"), "kind": rec.get("kind"),
+    view = {"row": rec["row"], "request": rec.get("request"), "kind": rec.get("kind"),
             "owner": owner if isinstance(owner, str) else None, "status": status, "created": iso(timestamp(rec.get("created"))),
             "depends_on": [d for d in rec.get("depends_on", []) if isinstance(d, str)] if isinstance(rec.get("depends_on"), list) else [], "units": [],
-            "task": {key: task[key] for key in ("id", "title", "role") if key in task}}
+            "task": {key: task[key] for key in ("id", "title", "role", "description", "acceptance_criteria", "expected_outputs", "budget") if key in task}}
+    if not replay:
+        if isinstance(rec.get("result"), dict):
+            view["result"] = {k: rec["result"][k] for k in ("status", "summary", "artifacts") if k in rec["result"]}
+        if isinstance(rec.get("error"), str):
+            view["error"] = rec["error"]
+        if "cost_warning" in rec:
+            view["cost_warning"] = rec["cost_warning"]
+        view["logs"] = [{"unit": u["id"], **{k: u.get(k) for k in
+            ("log", "status", "started", "finished", "total_cost_usd")},
+            "model": u.get("model") or u.get("requested_model"),
+            "handoff": f".alfrd/plans/{u['_harness_plan']}/handoffs/{u['id']}"} for u in units]
+    return view
 
 
 def _fold(events, tasks, units, at, replay):
     """Fold event state; keep one segment per unit, including concurrent attempts."""
-    statuses, owners, activity, segments, usage = {}, {}, {}, {}, {}
+    statuses, owners, activity, segments, usage, latest = {}, {}, {}, {}, {}, {}
     for event in events:
         task = _event_task(event, units)
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         kind, when = event.get("kind", ""), timestamp(event.get("at"))
+        if task and kind not in ("runner.heartbeat", "usage.updated"):
+            latest[task] = {"kind": kind, "at": iso(when),
+                            **{k: data[k] for k in ("status", "attempt") if k in data}}
         unit_id = event.get("unit")
         agent = event.get("agent") or (data.get("owner") if isinstance(data.get("owner"), str) else None)
         if task and agent:
@@ -220,8 +236,12 @@ def _fold(events, tasks, units, at, replay):
         row = rec["row"]
         status = statuses.get(row, "pending") if replay else rec.get("status", statuses.get(row, "pending"))
         status = "running" if status == "working" else status if status in STATES else "pending"
-        view = _task_view(rec, status, owners.get(row) if replay else rec.get("owner"))
+        view = _task_view(rec, status, owners.get(row) if replay else rec.get("owner"),
+                          [u for u in units.values() if u.get("row") == row], replay)
         view["units"] = [uid for uid, segment in segments.items() if segment["task"] == row]
+        view["attempts"] = len(view["units"])
+        view["usage"] = usage_total(usage[uid] for uid in view["units"])
+        view["latest"] = latest.get(row)
         views.append(view)
     return views, list(segments.values()), activity, usage
 
@@ -326,6 +346,76 @@ def _provider_activity(plan, segments, activity, at):
             activity[uid] = max([activity.get(uid, timestamp(segment["start"]))] + times)
 
 
+def _request_fields(record):
+    line = next((line.strip() for line in str(record.get("text") or "").splitlines() if line.strip()), "")
+    title = " ".join(line.split())
+    bounds = record.get("bounds")
+    budget = bounds.get("max_cost_usd") if isinstance(bounds, dict) else None
+    return {"title": (title[:79] + "…" if len(title) > 80 else title) or None,
+            "max_cost_usd": budget if type(budget) in (int, float) and math.isfinite(budget) and budget > 0 else None,
+            "mode": record.get("mode") if record.get("mode") in ("direct", "orchestrated") else None}
+
+
+def _attention(store, requests, decisions, replay):
+    from alfrd.mailbox import Mailbox, validate
+
+    class ObserverMailbox(Mailbox):
+        """Apply mailbox repairs/expiry to memory, never to the observed files.
+
+        Mailbox.locked() creates files, truncates torn tails and persists repairs;
+        its read methods cannot be used directly by a read-only projection.
+        """
+        @contextmanager
+        def locked(self):
+            def read(name):
+                out = []
+                path = self.dir / f"{name}.jsonl"
+                if not path.exists():
+                    return out
+                with path.open("rb") as stream:
+                    for line in stream:
+                        if not line.endswith(b"\n"):
+                            break
+                        record = json.loads(line)
+                        validate("agent_message" if name == "messages" else "agent_mailbox_event", record)
+                        out.append(record)
+                return out
+            self.messages, self.events = read("messages"), read("events")
+            self._reindex()
+            self._repair_resolutions()
+            self._expire()
+            yield
+
+        def _append(self, name, value):
+            getattr(self, name).append(value)
+            self._reindex()
+
+    items, by_message = [], {}
+    if not replay:
+        for request in requests:
+            box = ObserverMailbox(store.root, store.id, request["id"])
+            if box.summary()["pending_user"] > 0:
+                for message in box.pending()["messages"]:
+                    item = {"source": "mailbox", "id": message["id"], "request": request["id"],
+                            "kind": message["kind"], "at": message.get("created_at")}
+                    if item["id"] not in by_message:
+                        items.append(item)
+                        by_message[item["id"]] = item
+    for decision in decisions:
+        if decision.get("status") != "pending" or decision.get("needs") != "user":
+            continue
+        linked = decision.get("mailbox_message_id")
+        if not replay and linked:
+            if linked in by_message:
+                by_message[linked]["decision"] = decision["id"]
+            continue
+        items.append({"source": "decision", "id": decision["id"],
+                      **{k: decision[k] for k in ("request", "task", "kind") if k in decision},
+                      "at": decision.get("created")})
+    items.sort(key=lambda item: (item.get("kind") != "permission_request", item.get("at") or ""))
+    return {"count": len(items), "mailbox_known": not replay, "items": items}
+
+
 def _view(store, requests, tasks, edges, usage, configured, clock, scope, request, replay):
     """Adapt scoped records to the shared Chat/graph model without future outcomes."""
     messages = [m for m in store.messages() if timestamp(m.get("at")) and timestamp(m["at"]) <= clock
@@ -334,20 +424,25 @@ def _view(store, requests, tasks, edges, usage, configured, clock, scope, reques
     for record in records(store.decisions_dir):
         if not _known(record, clock) or (scope != "all" and record.get("request") != request):
             continue
-        decision = {k: record[k] for k in ("id", "request", "task", "kind", "needs", "status", "created", "question", "options", "reason") if k in record}
+        decision = {k: record[k] for k in ("id", "request", "task", "kind", "needs", "status", "created", "question", "options", "reason",
+            "mailbox_message_id", "repeat", "delegated", "choice", "answer", "decided_by", "resolved") if k in record}
         resolved = timestamp(record.get("resolved"))
         if replay and (not resolved or resolved > clock):
             decision["status"] = "pending"
+            for key in ("choice", "answer", "decided_by", "resolved"):
+                decision.pop(key, None)
         decisions.append(decision)
     nodes = [{"id": t["row"], "request": t["request"], "kind": t["kind"],
               "title": t["task"].get("title", t["row"]), "owner": t["owner"], "status": t["status"],
               "status_text": t["status"].title(), "depth": 1} for t in tasks]
     graph_edges = [{"from": e["from_task"], "to": e["to_task"], "kind": e["kind"]} for e in edges if e["kind"] == "depends_on"]
     return {"session": {k: v for k, v in store.load().items() if k in ("id", "title", "created")},
-        "requests": [{"id": r["id"], "created": r.get("created"), "status": "unknown" if replay else r.get("status")} for r in requests],
+        "requests": [{"id": r["id"], "created": r.get("created"), "status": "unknown" if replay else r.get("status"),
+                      **_request_fields(r)} for r in requests],
         "tasks": tasks, "graph": {"nodes": nodes, "edges": graph_edges, "groups": []},
         "messages": [{k: m[k] for k in ("id", "at", "role", "text", "request", "attachments", "kind") if k in m} for m in messages],
         "decisions": decisions, "blockers": [d for d in decisions if d.get("status") == "pending"],
+        "attention": _attention(store, requests, decisions, replay),
         "usage": usage, "settings": {"agents": {name: {k: a[k] for k in ("label", "model") if k in a} for name, a in configured.items()}},
         "read_only": replay}
 
@@ -398,6 +493,8 @@ def state(root, sid, *, project=None, scope=None, request=None, at=None, before_
     requests = [r for r in requests if _known(r, clock) and (scope == "all" or r.get("id") == request)]
     rows = {t["row"] for t in tasks}
     units = {u["id"]: u for u in records(plan / "units") if isinstance(u.get("id"), str) and isinstance(u.get("row"), str) and u["row"] in rows}
+    for unit in units.values():
+        unit["_harness_plan"] = store.plan_id
     events = [e for e in all_events if timestamp(e["at"]) <= clock and
               (scope == "all" or (e.get("data") or {}).get("request") == request or _event_task(e, units) in rows)]
     views, segments, activity, usage = _fold(events, tasks, units, clock, at is not None)
