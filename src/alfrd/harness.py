@@ -326,6 +326,32 @@ def _provider_activity(plan, segments, activity, at):
             activity[uid] = max([activity.get(uid, timestamp(segment["start"]))] + times)
 
 
+def _view(store, requests, tasks, edges, usage, configured, clock, scope, request, replay):
+    """Adapt scoped records to the shared Chat/graph model without future outcomes."""
+    messages = [m for m in store.messages() if timestamp(m.get("at")) and timestamp(m["at"]) <= clock
+                and (scope == "all" or m.get("request") == request)]
+    decisions = []
+    for record in records(store.decisions_dir):
+        if not _known(record, clock) or (scope != "all" and record.get("request") != request):
+            continue
+        decision = {k: record[k] for k in ("id", "request", "task", "kind", "needs", "status", "created", "question", "options", "reason") if k in record}
+        resolved = timestamp(record.get("resolved"))
+        if replay and (not resolved or resolved > clock):
+            decision["status"] = "pending"
+        decisions.append(decision)
+    nodes = [{"id": t["row"], "request": t["request"], "kind": t["kind"],
+              "title": t["task"].get("title", t["row"]), "owner": t["owner"], "status": t["status"],
+              "status_text": t["status"].title(), "depth": 1} for t in tasks]
+    graph_edges = [{"from": e["from_task"], "to": e["to_task"], "kind": e["kind"]} for e in edges if e["kind"] == "depends_on"]
+    return {"session": {k: v for k, v in store.load().items() if k in ("id", "title", "created")},
+        "requests": [{"id": r["id"], "created": r.get("created"), "status": "unknown" if replay else r.get("status")} for r in requests],
+        "tasks": tasks, "graph": {"nodes": nodes, "edges": graph_edges, "groups": []},
+        "messages": [{k: m[k] for k in ("id", "at", "role", "text", "request", "attachments", "kind") if k in m} for m in messages],
+        "decisions": decisions, "blockers": [d for d in decisions if d.get("status") == "pending"],
+        "usage": usage, "settings": {"agents": {name: {k: a[k] for k in ("label", "model") if k in a} for name, a in configured.items()}},
+        "read_only": replay}
+
+
 def _feed(events, units, plan):
     out = []
     for event in events:
@@ -413,6 +439,7 @@ def state(root, sid, *, project=None, scope=None, request=None, at=None, before_
         "dependency_edges": len(edges), "longest_stuck_agent": None, "longest_stuck_seconds": None,
         "errors": [e for e in _feed(events, units, store.plan_id) if e["severity"] == "error"][-3:][::-1],
         "note": "Longest historical stuck interval is unknown without timestamped provider progress."}
+    view = _view(store, requests, views, edges, summary["usage"], configured, clock, scope, request, at is not None)
     return {"schema": "alfrd.harness/1", "project": project or Path(root).name, "session": sid, "plan": store.plan_id,
         "scope": {"kind": scope, "request": request if scope == "request" else None},
         "clock": {"mode": "replay" if at is not None else "live", "at": iso(clock), "server_now": iso(current)},
@@ -425,7 +452,4 @@ def state(root, sid, *, project=None, scope=None, request=None, at=None, before_
         "agents": agents, "handoff_edges": edges, "timeline_segments": segments, "feed_events": page,
         "feed_page": {"has_more": len(feed) > count, "next_before_seq": page[-1]["seq"] if len(feed) > count and page else None},
         "summary": summary,
-        "view": {"session": {k: v for k, v in store.load().items() if k in ("id", "title", "created")},
-            "requests": [{"id": r["id"], "created": r.get("created"), "status": "unknown" if at else r.get("status")} for r in requests],
-            "tasks": views, "graph": {"nodes": views, "edges": edges, "groups": []}, "messages": [],
-            "decisions": [], "blockers": [], "usage": summary["usage"], "settings": {"agents": {}}, "read_only": at is not None}}
+        "view": view}

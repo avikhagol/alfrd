@@ -135,6 +135,21 @@ def test_timestamped_provider_progress_is_read_only_and_time_filtered(run, monke
     assert "private" not in json.dumps(current)
 
 
+def test_shared_view_graph_messages_and_decision_history(run):
+    root, store, _ = run
+    (store / "messages.jsonl").write_text("\n".join(json.dumps(m) for m in [
+        {"id": "m1", "at": T0, "role": "user", "text": "earlier", "request": "r0001"},
+        {"id": "m2", "at": "2026-11-01T13:00:00Z", "role": "assistant", "text": "later", "request": "r0001"}]) + "\n{bad")
+    write(store / "decisions/d1.json", {"id": "d1", "created": T0, "request": "r0001", "status": "resolved",
+        "resolved": "2026-11-01T13:00:00Z", "question": "Continue?", "answer": "future"})
+    view = harness.state(root, SID, scope="all", at="2026-11-01T12:01:00Z")["view"]
+    assert view["graph"]["nodes"][0]["id"] == "r0001.build"
+    assert view["graph"]["edges"][0]["from"] == "r0001.design"
+    assert [m["id"] for m in view["messages"]] == ["m1"]
+    assert view["blockers"][0]["status"] == "pending"
+    assert "future" not in json.dumps(view)
+
+
 def test_concurrent_attempts_retries_and_cumulative_usage(run, monkeypatch):
     root, _, plan = run
     monkeypatch.setattr(harness, "settings", lambda _: harness.merge_settings({"stuck_after_minutes": 0.5}))
