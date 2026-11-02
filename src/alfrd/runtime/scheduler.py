@@ -1813,6 +1813,10 @@ class Runner:
                 self.event("turn.fallback_model", f"{unit['id']}: retrying with fallback model {fallback}", unit=unit, model=fallback)
             if step and step.manual:
                 argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
+            elif step and step.adapter == "codex":
+                from alfrd.agent_io import codex_model
+
+                unit["model"] = codex_model(argv, {**(self.cfg.settings.get("env") or {}), **env})
         except (ExecutionError, OSError, ValueError) as exc:
             unit.update(status="failed", error=str(exc), finished=now_iso(),
                         outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
@@ -2099,6 +2103,7 @@ class Runner:
         if not unit.get("handoff") and not unit.get("agent_step"):
             return
         from alfrd.agent_io import codex_report, unit_adapter
+        from alfrd.model_prices import token_cost
 
         adapter = unit_adapter(unit)
         exit_path = self.folder.root / unit.get("exit_file", "-")
@@ -2133,6 +2138,14 @@ class Runner:
                     changes["model"] = match.group(1)
             except OSError:
                 pass
+        if adapter.name == "codex":
+            cost, missing = token_cost(changes.get("model") or unit.get("model") or unit.get("requested_model"),
+                                       changes.get("agent_usage", unit.get("agent_usage")))
+            changes.update(total_cost_usd=cost, cost_reason=missing,
+                           cost_source="api_estimate" if cost is not None else "unavailable")
+            if metadata and any(metadata.get(k) != changes[k] for k in ("total_cost_usd", "cost_reason", "cost_source")):
+                metadata.update(total_cost_usd=cost, cost_reason=missing, cost_source=changes["cost_source"])
+                _write_json(metadata_path, metadata)
         review = _read_json(exit_path.with_suffix(".review.json"), {}) or {}
         if review.get("status") == "pending":
             changes["review_status"] = ("approved" if exit_path.with_suffix(".approval.json").exists() else

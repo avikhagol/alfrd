@@ -172,7 +172,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       const row = active.locator('.chat-run-row').filter({ hasText: "Implement chat" });
       await row.locator('.chat-output > summary').click();
       await page.waitForFunction(() => document.querySelector('.chat-output[open] pre').textContent.includes('Public output'));
-      assert.equal(await row.locator('[data-cost]').innerText(), "— / Not reported");
+      assert.equal(await row.locator('[data-cost]').innerText(), "Not reported by agent");
       const pre = row.locator('.chat-act-tail');
       await pre.evaluate((el) => { document.activeElement.blur(); el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); });
       await page.evaluate(() => { window.tailVersion = 2; window.dispatchEvent(new CustomEvent('alfrd-events', { detail: { project: 'p', events: [{ plan: 'chat-s' }] } })); });

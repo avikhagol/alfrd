@@ -78,3 +78,9 @@
 .chat-schedule [data-editor] textarea { width:100%; min-height:80px; }
 
 .chat-schedule-block { border: 1px solid var(--border); border-radius: 6px; padding: .5rem; margin-block: .5rem; }
+
+/* Native textarea editing with a live preview for hanging list indentation. */
+.chat-composer .chat-list-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(240px, 40dvh); overflow: auto; padding: var(--chat-space-2) var(--chat-space-3); border-top: 1px solid var(--chat-border); font: var(--chat-body-size)/var(--chat-body-leading) var(--chat-sans); }
+.chat-composer .chat-list-preview[hidden] { display: none; }
+.chat-composer .chat-list-preview :is(ul, ol) { white-space: normal; padding-inline-start: 2em; margin: 0; }
+.chat-composer .chat-list-preview li { white-space: pre-wrap; }

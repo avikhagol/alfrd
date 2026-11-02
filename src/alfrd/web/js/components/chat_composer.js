@@ -1,3 +1,4 @@
+import { listHtml, listItem, listNewline } from "./chat_lists.js";
 // The chat composer (Chat page and chat dock): a textarea where Enter sends, Shift+Enter adds a line,
 // `@` at the start completes agent keys and `/` at the start lists the slash commands (listbox, arrows,
 // Enter/Tab inserts the pick, Esc closes). Commands (/setup, /help, /new, /graph) run here and are never sent.
@@ -33,6 +34,7 @@ export function composerHtml(id, { attachments = false } = {}) {
     <button type="button" class="btn sm chat-stop" id="${id}-stop" hidden>${icon("stop")} <span data-stop-label>Stop request</span></button>
     <button type="submit" class="btn primary sm chat-send" id="${id}-send">${icon("play")} <span data-send-label>Send</span></button>
     </div>
+    <div class="chat-list-preview" id="${id}-list-preview" aria-label="Message list preview" hidden></div>
     <div class="chat-schedule" id="${id}-schedule" hidden></div>
     ${attachments ? attachmentTrayHtml(id) + `<p id="${id}-image-warning" class="chat-composer-note warn-t small" role="status"></p>` : ""}
     <p id="${id}-send-reason" class="chat-composer-note muted small" role="status"></p>
@@ -62,6 +64,11 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   let grownText = input.value;
   const refresh = () => {
     if (input.value !== grownText) { grownText = input.value; autogrow(input); }
+    const preview = $(`#${id}-list-preview`, root);
+    if (preview) {
+      preview.hidden = !input.value.split("\n").some((line) => listItem(line));
+      preview.innerHTML = preview.hidden ? "" : listHtml(input.value);
+    }
     input.placeholder = `${route() || "To orchestrate"}; @agent for direct, /help for commands`;
     if (stop) {
       const s = stopState?.() || {};
@@ -112,7 +119,15 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   input.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== input) close(); }, 150));
   input.addEventListener("keydown", (e) => {
     if (composing(e)) return; // IME: never send, pick or dismiss
-    if (e.key === "Enter" && e.shiftKey) return; // newline, even with hints visible
+    if (e.key === "Enter" && e.shiftKey) {
+      const edit = listNewline(input.value, input.selectionStart, input.selectionEnd);
+      if (edit) {
+        e.preventDefault();
+        input.value = edit.text; input.setSelectionRange(edit.caret, edit.caret);
+        onDraft(input.value); update();
+      }
+      return; // newline, even with hints visible
+    }
     if (menu.items.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); menu.active = (menu.active + (e.key === "ArrowDown" ? 1 : -1) + menu.items.length) % menu.items.length; update(); return; }
       if ((e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.altKey) || e.key === "Tab") { e.preventDefault(); pick(menu.items[menu.active].key); return; }

@@ -195,3 +195,39 @@ test("only the composer files and its stylesheet carry composer rules; Stop neve
   const source = readFileSync(new URL("../../src/alfrd/web/js/components/chat_composer.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /onDraft\(""\)[^;]*onStop/);
 });
+
+
+test("Shift+Enter continues bullet and numbered lists and persists the draft", () => {
+  for (const [text, expected] of [["- a", "- a\n- "], ["* a", "* a\n* "], ["1. a", "1. a\n2. "], ["9. a", "9. a\n10. "]]) {
+    const m = mount(); m.type(text);
+    assert.equal(m.key("Enter", { shiftKey: true }).prevented, true);
+    assert.equal(m.c.input.value, expected);
+    assert.equal(m.c.input.selectionStart, expected.length);
+    assert.equal(m.calls.drafts.at(-1), expected);
+    assert.equal(m.calls.send, 0);
+    m.key("Enter"); assert.equal(m.calls.send, 1, "plain Enter still sends list drafts");
+  }
+});
+
+test("empty list newline exits, preview follows edits and restored drafts", () => {
+  const m = mount(); m.type("- a\n- ");
+  assert.match(m.el("#chat-list-preview").innerHTML, /<ul><li>a<\/li><li><\/li><\/ul>/);
+  assert.equal(m.el("#chat-list-preview").hidden, false);
+  m.key("Enter", { shiftKey: true });
+  assert.equal(m.c.input.value, "- a\n");
+  m.c.input.value = "3. restored"; m.c.refresh();
+  assert.match(m.el("#chat-list-preview").innerHTML, /<ol start="3">/);
+  m.type("* "); m.key("Enter", { shiftKey: true });
+  assert.equal(m.c.input.value, ""); assert.equal(m.el("#chat-list-preview").hidden, true);
+  m.type("- <script>alert(1)</script>");
+  assert.doesNotMatch(m.el("#chat-list-preview").innerHTML, /<script>/);
+});
+
+test("list newline preserves selections, IME and native ordinary newlines", () => {
+  const m = mount(); m.type("- item");
+  m.key("Enter", { shiftKey: true, isComposing: true }); assert.equal(m.c.input.value, "- item");
+  m.c.input.setSelectionRange(2, 6);
+  assert.equal(m.key("Enter", { shiftKey: true }).prevented, undefined);
+  assert.equal(m.c.input.value, "- item");
+  m.type("ordinary"); assert.equal(m.key("Enter", { shiftKey: true }).prevented, undefined);
+});

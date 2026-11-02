@@ -17,12 +17,15 @@ test("task islands retain retries, request identity and authoritative task statu
   assert.equal(islandProgress(taskIslands({ tasks: [{ ...task("plan"), kind: "summary" }] }, [], "r")).total, 0);
 });
 test("metrics distinguish reported zero, missing data, retry costs and frozen finish times", () => {
-  assert.deepEqual(taskMetrics(task("a")), { seconds: null, cost: null });
-  assert.deepEqual(taskMetrics({ seconds: 0, usage: { total_cost_usd: 0 } }), { seconds: 0, cost: 0 });
+  assert.deepEqual(taskMetrics(task("a")), { seconds: null, cost: null, costReason: "Not reported by agent" });
+  assert.deepEqual(taskMetrics({ seconds: 0, usage: { total_cost_usd: 0 } }), { seconds: 0, cost: 0, costReason: "Not reported by agent" });
   const timing = { started: "2026-01-01T00:00:00Z", finished: "2026-01-01T00:01:00Z", status: "done", usage: { total_cost_usd: .2 } };
-  assert.deepEqual(taskMetrics(timing, [{ cost_usd: 1 }, { cost_usd: 2 }], Date.parse("2026-01-02")), { seconds: 60, cost: .2 });
+  assert.deepEqual(taskMetrics(timing, [{ cost_usd: 1 }, { cost_usd: 2 }], Date.parse("2026-01-02")), { seconds: 60, cost: .2, costReason: "Not reported by agent" });
   assert.equal(taskMetrics({ started: timing.started, status: "running" }, [], Date.parse(timing.started) + 9000).seconds, 9);
   assert.equal(taskMetrics({ status: "done" }, [{ started: timing.started, finished: timing.finished }]).seconds, 60);
+  assert.equal(taskMetrics({ status: "running", seconds: 12 }, [
+    { status: "failed", seconds: 12 }, { status: "running", started: timing.started }
+  ], Date.parse(timing.started) + 9000).seconds, 21);
 });
 test("closed output requests no enlarged tails, even after choosing 400", () => {
   const rows = [{ data: { unit: "a" }, output: { open: true }, lines: 400 }, { data: { unit: "b" }, output: { open: false }, lines: 200 }];
@@ -36,7 +39,7 @@ test("dependencies and missing metric fields remain recorded, without guessed va
   assert.equal(ownerSlot("codex"), "sky");
   assert.notEqual(ownerSlot("agent-a"), ownerSlot("agent-b"));
   assert.deepEqual(groups[0].dependencies, ["r.a", "r.b"]);
-  assert.deepEqual(groups[0].metrics, { seconds: null, cost: null });
+  assert.deepEqual(groups[0].metrics, { seconds: null, cost: null, costReason: "Not reported by agent" });
 });
 
 let chromium;
@@ -90,7 +93,7 @@ test("island DOM, bounded shared polling, disclosure persistence and narrow layo
   assert.equal(await page.locator("#activity .chat-output[open]").count(), 0);
   assert.match(await page.locator("#activity [data-task-progress]").innerText(), /1 of 3 tasks complete/);
   assert.match(await page.locator("#activity [data-dependencies]").last().innerText(), /Depends on: a, b/);
-  assert.match(await page.locator("#activity .chat-island-metrics").last().innerText(), /Elapsed — \/ Not reported · Cost — \/ Not reported/);
+  assert.match(await page.locator("#activity .chat-island-metrics").last().innerText(), /Elapsed Not started · Cost Not reported by agent/);
   assert.match(await page.locator("#activity .chat-island-metrics").first().innerText(), /\$0\.000/);
   assert.equal(await page.locator('#activity [data-mail-jump="question"]').count(), 2);
   assert.equal(await page.evaluate(() => calls.length), 1, "both mounts coalesce to one baseline read");

@@ -3535,7 +3535,7 @@ def _write_graph(store: Session, conf: Mapping[str, Any] | None = None) -> None:
 def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev: int | None = None) -> dict[str, Any]:
     """The whole session state. ``rev`` is read before the rest, so a change landing mid-build only makes the next
     poll redundant. With ``since_rev`` equal to it the answer is just ``{rev, unchanged: True}``."""
-    from alfrd.agent_io import agent_totals
+    from alfrd.agent_io import agent_totals, elapsed_seconds, cost_reason
 
     store = session(root, sid)
     rev = store.rev
@@ -3552,13 +3552,19 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
     for rec in store.tasks():
         row = table.row(rec["row"])
         mine = [u for u in units if u.get("row") == rec["row"]]
+        durations = [elapsed_seconds(u) for u in mine]
+        missing_costs = list(dict.fromkeys(cost_reason(u) for u in mine if u.get("total_cost_usd") is None))
         tasks.append({**{k: v for k, v in rec.items() if k not in ("processed",)},
+                      "seconds": round(sum(durations), 1) if durations and all(s is not None for s in durations) else None,
+                      "cost_reason": "; ".join(missing_costs) if missing_costs else None,
                       "status": _cell_status(rec, row, table), "cell": row.cell(rec["owner"]) if row else None,
                       "attempts": len(mine), "usage": {**agent_totals(mine)} if mine else None,
                       "telemetry": totals(docs[u["id"]] for u in mine),
                       "units": [u["id"] for u in mine],
                       # each attempt's unit log and handoff folder (project-relative), for "Open log"
                       "logs": [{"unit": u["id"], "log": u.get("log"), "status": u.get("status"), "model": u.get("model") or u.get("requested_model"),
+                                "started": u.get("started"), "finished": u.get("finished"), "seconds": elapsed_seconds(u),
+                                "cost_reason": cost_reason(u) if u.get("total_cost_usd") is None else None,
                                 "handoff": f"{PLANS_REL}/{store.plan_id}/handoffs/{u['id']}", "total_cost_usd": u.get("total_cost_usd"),
                                 "usage": _usage(u)} for u in mine]})
     decisions = store.decisions()
@@ -4024,6 +4030,8 @@ def _request_telemetry(req: Mapping[str, Any], units: list[Mapping[str, Any]], d
 def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | None = None,
              units: list[str] | None = None) -> dict[str, Any]:
     """Bounded tails; explicit attempt ids also retrieve final output after completion."""
+    from alfrd.agent_io import elapsed_seconds, cost_reason
+
     store = session(root, sid)
     lines = max(1, min(int(lines or 60), ACTIVITY_MAX_LINES))
     scoped = None
@@ -4050,11 +4058,7 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
         kind = rec.get("kind") or "task"
         title = ((rec.get("task") or {}).get("title") if kind == "task"
                  else f"{ORCHESTRATOR_TITLES.get(kind, kind)} {rec.get('request') or ''}".strip())
-        try:
-            end = datetime.fromisoformat(str(unit["finished"])) if unit.get("finished") else current
-            seconds = round((end - datetime.fromisoformat(str(unit.get("started")))).total_seconds(), 1)
-        except (TypeError, ValueError):
-            seconds = None
+        seconds = elapsed_seconds(unit, current.timestamp())
         log = unit.get("log")
         path = (store.root / str(log)).resolve() if log else None
         if path is not None and not path.is_relative_to(store.root.resolve()):
@@ -4080,6 +4084,7 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
                     "started": unit.get("started"), "seconds": seconds, "log": log, "bytes": size, "tail": tail,
                     "status": unit.get("status"), "finished": unit.get("finished"), "cost_usd": cost,
                     "cost_state": "recorded" if isinstance(cost, (float, int)) else "unavailable",
+                    "cost_reason": cost_reason(unit) if cost is None else None,
                     "usage_updated_at": unit.get("usage_updated_at") or unit.get("finished"),
                     "tail_revision": revision, "tail_truncated": size > min(ACTIVITY_READ, max(16384, lines * 600)) or len(tail) >= lines,
                     "tail_state": state, "display_tail": display_tail})

@@ -1,5 +1,5 @@
 import { $ } from "../utils/dom.js";
-import { threadGroups } from "../data/chat.js";
+import { presentMessage, threadGroups } from "../data/chat.js";
 import { renderMessageMarkdown } from "./handoff_markdown.js";
 import { mountRequestLine } from "./chat_thread.js";
 import { messageHtml, enhanceCode, copyCode, fencedCodeHtml } from "./chat_message.js";
@@ -92,12 +92,12 @@ export function mountTranscript(box, o) {
   function prose(node, m) {
     const el = $(".chat-text", node);
     if (!el || m.role === "user") return;
-    const text = el.textContent, hit = markdown.get(m.id, text);
+    const text = presentMessage(m).text, initialHTML = el.innerHTML, hit = markdown.get(m.id, text);
     if (hit != null) { el.innerHTML = hit; el.classList.add("chat-markdown"); enhanceCode(el); return; }
     Promise.resolve(render(el, text)).then(() => {
       if (!el.classList.contains("chat-markdown")) {
         const fallback = fencedCodeHtml(text);
-        if (fallback && el.isConnected && el.textContent === text) { el.innerHTML = fallback; enhanceCode(el); }
+        if (fallback && el.isConnected && el.innerHTML === initialHTML) { el.innerHTML = fallback; enhanceCode(el); }
       }
       if (!el.classList.contains("chat-markdown")) return;
       markdown.set(m.id, text, el.innerHTML);
