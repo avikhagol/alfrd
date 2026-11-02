@@ -97,6 +97,12 @@ test('harness uses native Chat slots, task drawer and replay with drafts intact'
   assert.equal(await page.locator('#chat-decisions').isVisible(), false);
   for (const [width, height] of [[390, 600], [844, 390], [720, 450]]) {
     await page.setViewportSize({ width, height });
+    assert.equal(await page.evaluate(() => {
+      const status = document.querySelector('.h-connection').getBoundingClientRect();
+      const chats = document.querySelector('[data-chat=sessions]').getBoundingClientRect();
+      const top = document.querySelector('.h-top').getBoundingClientRect();
+      return status.right <= chats.left && chats.top >= top.top && chats.bottom <= top.bottom;
+    }), true, `Chats leaves connection status clear at ${width}×${height}`);
     const heightCheck = async () => assert.ok(await page.locator('#chat-log').evaluate((n, h) => n.getBoundingClientRect().height >= h * .4, height), `thread at ${width}×${height}`);
     await heightCheck();
     await page.locator('[data-h-checklist]').click();
@@ -110,6 +116,14 @@ test('harness uses native Chat slots, task drawer and replay with drafts intact'
   }
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('[data-h-decisions]').click();
+  await page.locator('[data-h-checklist]').click();
+  assert.ok(await page.locator('#chat-log').evaluate(n => n.getBoundingClientRect().height >= innerHeight * .25), 'both desktop panels leave a usable thread');
+  assert.equal(await page.evaluate(() => {
+    const panel = document.querySelector('#chat-decisions').getBoundingClientRect();
+    const action = document.querySelector('[data-decision=d0] [type=submit]').getBoundingClientRect();
+    return action.top >= panel.top && action.bottom <= panel.bottom;
+  }), true, 'first decision action is visible without scrolling');
+  await page.locator('[data-h-checklist]').click();
   await page.locator('[data-decision=d0] [name=answer]').fill('Half-typed answer');
   await page.locator('#chat-input').fill('Keep this draft');
   const before = await page.locator('#chat-log').evaluate(n => { n.scrollTop = 5; return n.scrollTop; });
@@ -159,12 +173,15 @@ test('harness uses native Chat slots, task drawer and replay with drafts intact'
   await page.locator('#chat-log').focus(); await page.keyboard.press('c');
   assert.equal(await page.locator('.h-run').count(), 0);
   // Home precedence, sorting, row cost and failed-send recovery.
-  await page.evaluate(() => { window.homeSessions = [{ id: 'a', title: 'Needs answer', pending_user: 1, active_requests: 1, created: '2026-11-02' }, { id: 'b', title: 'Running game', active_requests: 1, created: '2026-11-02' }, { id: 'c', title: 'Recent work', last_message: { at: '2026-11-02' } }]; location.hash = '#/harness?p=p'; });
+  await page.evaluate(() => { window.patchProjection = data => { data.summary.usage = {}; }; window.homeSessions = [{ id: 'a', title: 'Needs answer', pending_user: 1, active_requests: 1, created: '2026-11-02' }, { id: 'b', title: 'Running game', active_requests: 1, created: '2026-11-02' }, { id: 'c', title: 'Recent work', last_message: { at: '2026-11-02' } }]; location.hash = '#/harness?p=p'; });
   await page.locator('.h-home h1').waitFor();
   await page.locator('[data-h-open=a]').waitFor();
   assert.equal(await page.locator('[data-h-open=a]').count(), 1);
   assert.match(await page.locator('[data-h-sessions]').innerText(), /Needs you.*Running.*Recent/is);
   await page.waitForFunction(() => document.querySelector('[data-h-cost=a]').textContent.includes('Session cost:'));
+  await page.waitForFunction(() => document.querySelector('[data-h-cost=a]').textContent === ' · Session cost: unavailable');
+  assert.ok((await page.locator('.h-home time').first().innerText()).length <= 8);
+  assert.match(await page.locator('.h-home time').first().getAttribute('title'), /2026/);
   await page.evaluate(() => { window.homeError = 'Stub cannot accept this goal'; });
   await page.locator('#h-goal').fill('Keep the failed goal');
   await page.locator('[data-h-goal] [type=submit]').click();
