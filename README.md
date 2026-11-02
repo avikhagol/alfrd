@@ -46,6 +46,42 @@ Try the demo at `http://127.0.0.1:5000/studio/`; **Ctrl+C** stops it. For your p
 - **Run and resume work:** select target × step cells in a plan CSV; resume unfinished steps.
 - **Extend your workflow:** Claude Code ↔ Codex handoffs, notifications, plugins and themes.
 
+## Harness mode
+
+Harness mode is a read-only observer for a Chat session's agent team. One page in Studio shows agents and
+their handoffs, a timeline of task attempts, a feed of correlated events, a morning summary, and a replay
+slider, next to the regular Chat, task graph, request stats and blockers. It reads existing plan events and
+task records; it never runs recovery, starts models or writes project files.
+
+```bash
+alfrd harness --project <folder|registered-id> --chat <session-id> --no-open
+```
+
+| Flag | Meaning |
+|---|---|
+| `--project` | Project folder or registered id. Falls back to `harness.default_project`, then the current folder's manifest. |
+| `--chat` | Existing chat session id (default: latest). |
+| `--no-open` | Print the authenticated URL without opening a browser. |
+| `--attach URL` | Attach to a running server. Cannot be combined with `--host`, `--port` or `--db`. |
+| `--host`, `--port` | Local interface and port (default `127.0.0.1:5000`). If a harness-capable server already listens there, the command reuses it; an incompatible one is refused, never replaced. |
+| `--db` | Runtime database for a newly started server. |
+
+A newly started harness server only monitors: it skips reconcile, watch, scheduling and plugin services.
+
+Optional `harness:` keys in `alfrd.yaml`; missing or malformed values fall back to these defaults:
+
+```yaml
+harness:
+  default_project: null        # project used when --project is omitted
+  stuck_after_minutes: 10      # a working task with no recorded progress for this long is "stuck"
+  poll_seconds: 2              # live refresh interval
+  role_order: [orchestrator, research, design, build, verify, fix]   # agent columns, left to right
+```
+
+Inside Harness, Chat is always shown, overriding the Superuser **Chat** toggle (the effective check is
+`harness_mode OR superuser toggle`). This holds only in the harness page: your saved preference is not
+changed, other pages behave as before, and server-side authorization is unchanged.
+
 ## Documentation
 
 | Start here | Go further |
