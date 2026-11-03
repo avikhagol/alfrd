@@ -29,8 +29,8 @@ export function actions(target = {}) {
   const row = first(target.row, target.id, "");
   const hasLog = Boolean(target.log || target.logs?.length || target.attempts?.some?.((attempt) => attempt.log));
   const hasPrompt = Boolean(target.prompt || target.prompts?.length || target.attempts?.some?.((attempt) => attempt.prompt));
-  const hasReply = Boolean(target.reply || target.result || target.attempts?.length || target.response);
-  const hasFiles = Boolean(target.files?.length || target.artifacts?.length || target.result?.artifacts?.length);
+  const hasReply = Boolean(target.reply || target.response || target.attempts?.some?.((attempt) => attempt.reply));
+  const hasFiles = target.can_files !== false && Boolean(target.files?.length || target.artifacts?.length || target.result?.artifacts?.length);
   const retryEnabled = Boolean(preview ? preview.eligible : RETRYABLE.has(status));
   const retryReason = preview && !preview.eligible
     ? preview.reason || "This task cannot be retried"

@@ -6,7 +6,7 @@ import { avicaIndex, codeChips, detachCode, openAttachPicker, targetCodes } from
 import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
 import { openRunDialog, plansAvailable, planOf, loadPlan, RUN_STATUS } from "./plans.js";
-import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
+import { NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
 import { renderProjectSections, renderOverviewActions } from "./project_sections.js";
 import { scoped } from "../data/workspace.js";
 

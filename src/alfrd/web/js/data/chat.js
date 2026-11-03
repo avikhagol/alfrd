@@ -586,7 +586,7 @@ export function runSummary(state) {
   const req = activeRequest(state);
   if (!req) return null;
   const firstLine = (value) => String(value || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean)?.replace(/\s+/g, " ") || "";
-  const fullTitle = firstLine(req.text) || firstLine((state.messages || []).find((m) => m.request === req.id && m.role === "user")?.text)
+  const fullTitle = firstLine(req.title) || firstLine(req.text) || firstLine((state.messages || []).find((m) => m.request === req.id && m.role === "user")?.text)
     || (/^r0*(\d+)$/.test(req.id) ? `Request ${Number(req.id.slice(1))}` : req.id);
   const { done, total } = requestProgress(state, req);
   const decisions = (state.decisions || []).filter((d) => d.request === req.id && d.status === "pending" && d.needs === "user" && !d.mailbox_message_id);

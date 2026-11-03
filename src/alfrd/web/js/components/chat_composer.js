@@ -1,4 +1,4 @@
-import { listHtml, listItem, listNewline } from "./chat_lists.js";
+import { listNewline } from "./chat_lists.js";
 // The chat composer (Chat page and chat dock): a textarea where Enter sends, Shift+Enter adds a line,
 // `@` at the start completes agent keys and `/` at the start lists the slash commands (listbox, arrows,
 // Enter/Tab inserts the pick, Esc closes). Commands (/setup, /help, /new, /graph) run here and are never sent.
@@ -34,7 +34,6 @@ export function composerHtml(id, { attachments = false } = {}) {
     <button type="button" class="btn sm chat-stop" id="${id}-stop" hidden>${icon("stop")} <span data-stop-label>Stop request</span></button>
     <button type="submit" class="btn primary sm chat-send" id="${id}-send">${icon("play")} <span data-send-label>Send</span></button>
     </div>
-    <div class="chat-list-preview" id="${id}-list-preview" aria-label="Message list preview" hidden></div>
     <div class="chat-schedule" id="${id}-schedule" hidden></div>
     ${attachments ? attachmentTrayHtml(id) + `<p id="${id}-image-warning" class="chat-composer-note warn-t small" role="status"></p>` : ""}
     <p id="${id}-send-reason" class="chat-composer-note muted small" role="status"></p>
@@ -64,11 +63,6 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   let grownText = input.value;
   const refresh = () => {
     if (input.value !== grownText) { grownText = input.value; autogrow(input); }
-    const preview = $(`#${id}-list-preview`, root);
-    if (preview) {
-      preview.hidden = !input.value.split("\n").some((line) => listItem(line));
-      preview.innerHTML = preview.hidden ? "" : listHtml(input.value);
-    }
     input.placeholder = `${route() || "To orchestrate"}; @agent for direct, /help for commands`;
     if (stop) {
       const s = stopState?.() || {};

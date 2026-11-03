@@ -79,6 +79,8 @@ appear on the command line, in the bot's output or in its replies.
 
 | Command | Reply |
 |---|---|
+| `/chatmode` | Shows the current mode |
+| `/chatmode on`, `/chatmode off` | Configured superusers only: enable or disable plain-text chat requests |
 | `/new` | Creates and activates a chat session in the selected project (asks for a project if needed) |
 | `/resume-chat`, `/resume_chat` | Recent sessions across remembered projects: title, activity, state, Previous/Next buttons; tap to activate |
 | Plain text with an active session | Sends a prompt to that session using the same orchestrator API as Studio; acknowledges and relays replies, plans and task results |
@@ -100,12 +102,48 @@ appear on the command line, in the bot's output or in its replies.
 At start the bot also fills Telegram's `/` command menu (`setMyCommands`), so
 typing `/` in the chat lists the commands.
 
+### Superuser chat mode
+
+In **Settings → Plugins → Telegram → Configure**, set **Superuser private chat
+IDs** (`admin_chat_ids`) to comma or space separated positive private chat IDs
+(the same numeric IDs as Telegram user IDs). For example: `123456789, 987654321`.
+Empty denies all toggle attempts. In a group, the sender's ID must match; the
+group ID never grants its members superuser rights. Messages still must arrive
+in the configured **Allowed chat id** (`chat_id`). This adds no new allowed chats.
+Restart the bot after changing settings.
+
+An admin sends `/chatmode on` in the allowed chat. Ordinary messages from anyone
+already authorized in that chat now use the Studio orchestrator API. With no
+active session, the first message creates one in the selected project (or the
+only remembered project). With several projects, select one through `/status`
+→ **Pipeline / targets**, or create a session with `/new`, then resend the
+message. Plans, answers and task results return to that same Telegram chat via
+the existing durable transcript relay and request notifications. `/status`
+provides task status and log controls.
+
+`/chatmode off` stops new plain-text requests, including for an active session;
+plain text again answers pipeline lists. Existing work continues and its
+replies/results still arrive. `/new` and `/resume_chat` remain available, but
+plain-text requests stay disabled until an admin turns mode on again. `/chatmode`
+without arguments shows the mode and requires no admin rights.
+
+The toggle is stored atomically alongside the active session and cursors in
+`<plugins_dir>/telegram/status-<chat-id-hash>.json` and survives bot restarts.
+A failed state write refuses the change. **Initial chat mode** (`chat_mode`)
+accepts `on`, `off` or `legacy`; a saved per-chat toggle takes precedence. Empty
+or `legacy` is the compatibility default: no automatic session creation, and
+existing `/new` sessions still accept messages exactly as before. An explicit
+`off` disables those prompts too. Settings are changed through the existing
+local Studio plugin settings controls; Telegram users cannot change admin IDs.
+For `notify.json` configuration, the same keys can be placed on the Telegram
+route, for example `"admin_chat_ids": "123456789", "chat_mode": "off"`.
+
 ### Chat sessions
 
 `/new` uses the selected project, or asks you to choose one when several are
 remembered. `/resume_chat` is the spelling registered with Telegram
 (`setMyCommands` permits underscores); manually typed `/resume-chat` also works.
-With an active session, **every plain text message is a prompt**, including
+With an active session and chat mode on (or the legacy default), **every plain text message is a prompt**, including
 numbers and `more`. Use inline buttons to navigate pipeline lists while chatting.
 The backend uses the same project settings, agents, orchestration and permission
 gates as Studio. Telegram message IDs provide durable prompt replay protection.
@@ -301,3 +339,31 @@ action and a 12-digit hash prefix, with no approval callback or full action hash
 Review and approve in Studio through the existing secure mailbox path. Digest
 and mute preferences apply to these alerts. Browser notification preferences
 remain independent. See [notification kinds](../../../docs/notifications.md#chat-requests-and-human-decisions).
+
+## Scheduled requests from Telegram
+
+Configured superusers (`admin_chat_ids`) can schedule requests in the allowed
+destination chat, even when plain-text chat mode is off:
+
+- `/schedule in 2h Build the report` — relative duration; positive integer `m`, `h` or `d`.
+- `/schedule 2027-01-02 09:00 Build the report` — local Europe/Athens time.
+- `/schedule 2027-01-02T09:00:00+00:00 Build the report` — explicit UTC offset (`Z` also works).
+- `/schedule 2027-01-02 09:00 Europe/London Build the report` — named timezone.
+- `/scheduled` — list your pending items, IDs, text, times and statuses across remembered projects.
+- `/unschedule sch_…` — cancel your pending batch using its full ID.
+
+Select a project with `/status` first if several projects are remembered. Invalid,
+past, nonexistent or ambiguous local times are rejected; use an explicit offset
+for daylight-saving transitions. Requests retain multiline text. Empty admin
+configuration and missing sender identities deny access. List and cancel require
+the original sender in the original destination chat; other superusers cannot
+cancel that sender's batches through Telegram.
+
+Each command uses a dedicated chat session in Studio and its existing scheduled
+queue, without changing your active Telegram session. Telegram update redelivery
+does not create another batch or move a relative deadline. Execution uses the
+existing Studio scheduler: keep the loopback Studio server running with this
+project in its scope. The bot must also be running to deliver results; saved
+session cursors resume delivery after restart and after switching sessions.
+Agent answers, plans and task results return to the originating destination chat.
+Cancellation affects pending work; it does not stop a request already dispatched.

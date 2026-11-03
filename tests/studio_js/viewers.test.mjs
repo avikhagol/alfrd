@@ -11,7 +11,7 @@ test("viewerFor matches extension, then mime, then type/*; text is the fallback"
   assert.equal(viewerFor("PLOT.JPEG", "text/plain").id, "image"); // extension beats the mime
   assert.equal(viewerFor("Report.PDF").id, "pdf");
   assert.equal(viewerFor("download", "application/pdf").id, "pdf");
-  assert.equal(viewerFor("icon.svg").id, "text"); // never rendered as an image
+  assert.equal(viewerFor("icon.svg").id, "image");
   assert.equal(viewerFor("data.unknown").id, "text");
 });
 

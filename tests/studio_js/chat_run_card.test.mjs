@@ -43,3 +43,12 @@ test("Run: active selection and title fallbacks are independent of inspector sco
   s.requests[0].text = "x".repeat(120); assert.equal(runSummary(s).title.length, 80); assert.equal(runSummary(s).fullTitle.length, 120);
   s.requests[0].status = "done"; assert.equal(runSummary(s).id, "r0002");
 });
+
+
+test("Run uses the server's display summary for legacy scheduled requests", () => {
+  const s = fixture();
+  s.requests[0].text = "Scheduled batch sch_secret (3 pending items)";
+  s.requests[0].title = "Stitch theme, Files tab, Graph menu";
+  assert.equal(runSummary(s).fullTitle, "Stitch theme, Files tab, Graph menu");
+  assert.doesNotMatch(runSummary(s).title, /sch_|pending/);
+});

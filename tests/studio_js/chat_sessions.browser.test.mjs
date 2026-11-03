@@ -62,6 +62,56 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
     return { page, errors };
   };
 
+  await t.test("session menu dismissal, compact navigation and inspector scope placement", async () => {
+    const { page, errors } = await open(1440); t.after(() => page.close());
+    const menu = page.locator('#chat-head .chat-session-menu');
+    const summary = menu.locator('summary');
+    await summary.click();
+    assert.equal(await menu.evaluate(el => el.open), true);
+    await summary.click();
+    assert.equal(await menu.evaluate(el => el.open), false);
+    await summary.click();
+    await page.locator('#chat-input').click();
+    assert.equal(await menu.evaluate(el => el.open), false);
+    await summary.click();
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.evaluate(el => el.open), false);
+    assert.equal(await summary.evaluate(el => el === document.activeElement), true);
+    // Programmatic opening also enforces exclusivity (including retained views).
+    await summary.click();
+    await page.evaluate(() => {
+      const second = document.querySelector('.chat-session-menu').cloneNode(true);
+      second.removeAttribute('open'); second.id = 'second-menu';
+      document.body.append(second); second.open = true;
+    });
+    await page.waitForFunction(() => document.querySelectorAll('.chat-session-menu[open]').length === 1);
+    assert.equal(await menu.evaluate(el => el.open), false);
+    await page.locator('#chat-input').click();
+    assert.equal(await page.locator('.chat-session-menu[open]').count(), 0);
+    await page.locator('#second-menu').evaluate(el => el.remove());
+    assert.equal(await page.locator('.chat-main .chat-scope-bar').count(), 0);
+    assert.equal(await page.locator('.chat-inspector-content > .chat-scope-bar + .chat-insp').count(), 1);
+    await page.locator('[data-chat=collapse]').click();
+    const show = page.locator('[data-chat=sessions]');
+    assert.equal(await show.innerText(), '');
+    assert.equal(await show.getAttribute('aria-label'), 'Show the chat list');
+    assert.ok((await show.boundingBox()).width <= 36);
+    const schedule = page.locator('#chat-schedule-toggle');
+    const centre = box => box.y + box.height / 2;
+    const scheduleBox = await schedule.boundingBox();
+    const sendBox = await page.locator('#chat-send').boundingBox();
+    const glyphBox = await schedule.locator('span').boundingBox();
+    assert.ok(Math.abs(centre(scheduleBox) - centre(sendBox)) <= 1);
+    assert.ok(Math.abs(centre(glyphBox) - centre(scheduleBox)) <= 1);
+    if (process.env.ALFRD_UI_CHAT_REPORTS) {
+      await page.locator('[data-chat=inspect]').click();
+      await page.screenshot({ path: `${process.env.ALFRD_UI_CHAT_REPORTS}/ui-chat-fixes-desktop.png`, fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({ path: `${process.env.ALFRD_UI_CHAT_REPORTS}/ui-chat-fixes-phone.png`, fullPage: true });
+    }
+    assert.deepEqual(errors, []);
+  });
+
   await t.test("project-scoped active sessions, empty state, live update and drafts survive A/B/A", async () => {
     const { page, errors } = await open(1440); t.after(() => page.close());
     await page.evaluate(async () => {

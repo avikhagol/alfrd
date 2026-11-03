@@ -10,7 +10,7 @@ import { server } from "../data/server.js";
 
 const MIME = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-  ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf",
+  ".svg": "image/svg+xml", ".ico": "image/vnd.microsoft.icon", ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf",
 };
 
 const viewers = []; // newest first
@@ -90,6 +90,15 @@ export async function renderViewer(viewer, file, el) {
   }
   if (el.dataset?.converted === "1") return;
   await viewer.render(file, el);
+  if (/\.(md|markdown)$/i.test(file.path || file.name || "") && viewer.id !== "text") {
+    el.classList.add("file-markdown");
+    for (const table of el.querySelectorAll("table")) {
+      const wrap = document.createElement("div");
+      wrap.className = "file-table-wrap";
+      table.replaceWith(wrap);
+      wrap.append(table);
+    }
+  }
 }
 
 export function conversionButton(path, viewer = viewerFor(path)) {
@@ -156,7 +165,11 @@ registerViewer({
   },
 });
 registerViewer({
-  id: "image", match: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"],
+  id: "binary", match: ["application/octet-stream"],
+  render(file, el) { el.innerHTML = `<p class="muted">Binary file. Use the open or download action to view it.</p>`; },
+});
+registerViewer({
+  id: "image", match: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", "image/*"],
   render(file, el) {
     el.innerHTML = `<img class="viewer-img" src="${esc(file.url)}" alt="${esc(file.name)}">`;
   },

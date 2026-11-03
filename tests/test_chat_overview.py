@@ -70,6 +70,8 @@ def test_overview_goal_criteria_and_files_are_deduplicated(project, client):
     assert len([f for f in body["files"] if f["path"] == "out.txt"]) == 1
     assert files["out.txt"]["producer_rows"] == ["r0001.a", "r0001.b"]
     assert files["out.txt"]["state"] == "recorded" and files["out.txt"]["bytes"] == 2
+    assert files["out.txt"]["absolute_path"] == str(project.resolve() / "out.txt")
+    assert files["gone.txt"]["absolute_path"] == str(project.resolve() / "gone.txt")
     assert files["gone.txt"]["state"] == "missing"
     assert files["later.txt"]["state"] == "expected"
     (project / "out.txt").write_text("v2")
@@ -132,3 +134,25 @@ def test_cap_constant_is_20_mb():
 def test_unknown_session_is_404(project, client):
     assert client.get(client.base + "nosuch/overview").status_code == 404
     assert client.get(client.base + f"nosuch/artifacts/raw?ref=a@{sha(b'')}").status_code == 404
+
+
+@pytest.mark.parametrize("name,media,data", [
+    ("plot.png", "image/png", b"\x89PNG\r\n\x1a\n"),
+    ("icon.svg", "image/svg+xml", b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'),
+    ("icon.ico", "image/vnd.microsoft.icon", b"\x00\x00\x01\x00"),
+    ("report.pdf", "application/pdf", b"%PDF-1.4"),
+    ("archive.zip", "application/zip", b"PK\x00\x00"),
+    ("page.html", "text/html", b"<script>alert(1)</script>"),
+])
+def test_raw_preview_types_and_safe_document_policy(project, client, name, media, data):
+    sid = chat.create_session(project, "Preview")["id"]
+    (project / name).write_bytes(data)
+    response = client.get(client.base + sid + "/artifacts/raw", query_string={
+        "ref": f"{name}@{sha(data)}", "inline": "1"})
+    assert response.status_code == 200 and response.data == data
+    assert response.mimetype == media
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    csp = response.headers["Content-Security-Policy"]
+    assert "sandbox;" in csp and "default-src 'none'" in csp
+    disposition = "inline" if name.endswith((".png", ".svg", ".ico", ".pdf")) else "attachment"
+    assert response.headers["Content-Disposition"].startswith(disposition + ";")

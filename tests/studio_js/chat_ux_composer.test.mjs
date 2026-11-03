@@ -209,18 +209,18 @@ test("Shift+Enter continues bullet and numbered lists and persists the draft", (
   }
 });
 
-test("empty list newline exits, preview follows edits and restored drafts", () => {
+test("empty list newline exits and restored markdown drafts stay plain", () => {
   const m = mount(); m.type("- a\n- ");
-  assert.match(m.el("#chat-list-preview").innerHTML, /<ul><li>a<\/li><li><\/li><\/ul>/);
-  assert.equal(m.el("#chat-list-preview").hidden, false);
   m.key("Enter", { shiftKey: true });
   assert.equal(m.c.input.value, "- a\n");
-  m.c.input.value = "3. restored"; m.c.refresh();
-  assert.match(m.el("#chat-list-preview").innerHTML, /<ol start="3">/);
+  for (const text of ["3. restored", "* item", "# Heading", "**bold**", "```js\ncode\n```", "- <script>alert(1)</script>"]) {
+    m.c.input.value = text; m.c.refresh();
+    assert.equal(m.c.input.value, text);
+    assert.equal(m.root.nodes.has("#chat-list-preview"), false);
+  }
+  for (const id of ["chat", "dock"]) assert.doesNotMatch(composerHtml(id), /list-preview|Message list preview/);
   m.type("* "); m.key("Enter", { shiftKey: true });
-  assert.equal(m.c.input.value, ""); assert.equal(m.el("#chat-list-preview").hidden, true);
-  m.type("- <script>alert(1)</script>");
-  assert.doesNotMatch(m.el("#chat-list-preview").innerHTML, /<script>/);
+  assert.equal(m.c.input.value, "");
 });
 
 test("list newline preserves selections, IME and native ordinary newlines", () => {

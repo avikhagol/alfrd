@@ -336,7 +336,7 @@ test("G4 internal request scope is shared by Graph, Files and Goals", async () =
   const { graphModel } = await import("../../src/alfrd/web/js/data/chat.js");
   const scope = createRequestScope();
   const state = { requests: [{ id: "a", text: "First", status: "running" }, { id: "b", text: "Second", status: "done" }] };
-  assert.equal(scope.request(state), "a", "newest active is current");
+  assert.equal(scope.request(state), "b", "default follows latest request");
   state.requests[0].status = "done";
   assert.equal(scope.request(state), "b", "otherwise newest");
   scope.select("a");
@@ -412,7 +412,7 @@ test("internal request scope preserves historical selection and source order", a
   const scope = createRequestScope();
   const requests = Object.freeze(["r0009", "r10", "r0011", "r0012"].map((id, i) => Object.freeze({ id, status: i === 1 ? "running" : "done" })));
   const state = { requests };
-  assert.equal(scope.request(state), "r10", "current still follows newest active request");
+  assert.equal(scope.request(state), "r0012", "default follows latest request");
   scope.select("r0009");
   assert.equal(scope.request(state), "r0009");
   scope.select("all");

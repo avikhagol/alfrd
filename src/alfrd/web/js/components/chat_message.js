@@ -13,13 +13,19 @@ export function messageHtml(message, { agentName, orchestrator, agents, compact 
 
 // Enhance only sanitized viewer output, after caching it. Copy source excludes UI labels.
 export function enhanceCode(target) {
+  for (const table of target.querySelectorAll("table")) {
+    if (table.parentNode.classList.contains("chat-table-wrap")) continue;
+    const wrap = document.createElement("div"); wrap.className = "chat-table-wrap";
+    wrap.tabIndex = 0; wrap.setAttribute("role", "region"); wrap.setAttribute("aria-label", "Table");
+    table.before(wrap); wrap.append(table);
+  }
   for (const pre of target.querySelectorAll("pre")) {
     if (pre.parentNode.classList.contains("chat-code")) continue;
     const code = pre.querySelector("code"), language = /(?:language|lang)-([\w+-]+)/.exec(code?.className || "")?.[1];
     const group = document.createElement("div"); group.className = "chat-code";
     const head = document.createElement("div"); head.className = "chat-code-head";
     const label = document.createElement("span"); label.textContent = language || "Code";
-    const button = document.createElement("button"); button.type = "button"; button.className = "btn sm"; button.dataset.copyCode = ""; button.textContent = "Copy code";
+    const button = document.createElement("button"); button.type = "button"; button.className = "btn sm ghost"; button.dataset.copyCode = ""; button.textContent = "Copy code"; button.setAttribute("aria-label", "Copy code block");
     const status = document.createElement("span"); status.className = "chat-copy-status"; status.setAttribute("role", "status");
     pre.tabIndex = 0; pre.setAttribute("role", "region"); pre.setAttribute("aria-label", `${language || "Source"} code`);
     pre.before(group); head.append(label, button); group.append(head, pre, status);
@@ -39,6 +45,6 @@ export function fencedCodeHtml(text) {
 
 export async function copyCode(button, clipboard = globalThis.navigator?.clipboard) {
   const group = button.closest(".chat-code"), status = group.querySelector(".chat-copy-status");
-  try { await clipboard.writeText(group.querySelector("pre").textContent); status.textContent = "Copied"; }
+  try { await clipboard.writeText(group.querySelector("pre").textContent); status.textContent = "Copied"; button.textContent = "Copied"; setTimeout(() => { button.textContent = "Copy code"; }, 1500); }
   catch { status.textContent = "Couldn't copy. Select the code and copy it."; }
 }

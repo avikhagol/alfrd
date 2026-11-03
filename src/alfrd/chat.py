@@ -666,7 +666,7 @@ def list_sessions(root: str | Path) -> list[dict[str, Any]]:
         store = Session(Path(root).resolve(), data["id"])
         last = store.messages(1)
         attention = _session_attention(store)
-        out.append({**data, "messages": len(store.messages()), "last_message": last[0] if last else None,
+        out.append({**_display_session(store, data), "messages": len(store.messages()), "last_message": last[0] if last else None,
                     **attention,
                     "schedule": _schedule_summary(store),
                     "plan_status": (_read(_plan_folder(store).plan_file) or {}).get("status")})
@@ -815,7 +815,37 @@ def _replay(store: Session, message: dict[str, Any]) -> dict[str, Any]:
     return {"message": message, "request": req, "task": store.task(rows[0]) if rows else None, "replayed": True}
 
 
+def _scheduled_title(text):
+    """A display-only summary for old scheduler prompts; no stored text is changed."""
+    match = re.match(r"Scheduled batch sch_\S+ \((\d+) pending items\)", text)
+    if not match:
+        return None
+    items = re.findall(r"^\d+\. Added [^\n]*\n   ([^\n]*)", text, re.M)
+    return _batch_title(items, int(match[1]))
+
+
+def _batch_title(items, count):
+    summaries = []
+    for text in items[:3]:
+        text = " ".join(str(text).split()).strip("# ")
+        text = re.sub(r"\bsch_\S+|\bpending\b", "", text, flags=re.I).strip()
+        if text:
+            summaries.append(text[:28].rstrip())
+    if not summaries:
+        return f"Scheduled batch · {count} items"
+    extra = count - len(summaries)
+    return ", ".join(summaries) + (f" +{extra}" if extra > 0 else "")
+
+
+def _display_session(store, data):
+    if data.get("title_source") != "explicit" and re.match(r"Scheduled batch sch_", data.get("title", "")):
+        first = next((m for m in store.messages() if m.get("role") == "user"), {})
+        return {**data, "title": _scheduled_title(first.get("text", "")) or "Scheduled batch"}
+    return data
+
+
 def _prompt_title(text: str, agents) -> str:
+    text = _scheduled_title(text) or text
     text = unicodedata.normalize("NFC", text)
     mention = _MENTION.match(text)
     if mention and mention.group(1).lower() in agents:
@@ -3182,15 +3212,31 @@ def _task_units(store: Session, row: str) -> list[dict[str, Any]]:
     return [u for u in _plan_folder(store).units() if u.get("row") == row]
 
 
+def _transcript_path(store: Session, unit_id: str, part: str) -> Path:
+    """Only archive documents inside this session's plan; never follow symlinks."""
+    if (not unit_id or unit_id in (".", "..") or "/" in unit_id or "\\" in unit_id
+            or part not in TRANSCRIPT_PARTS):
+        raise LookupError("invalid transcript path")
+    path = _plan_folder(store).path / "handoffs" / unit_id / f"{part}.md"
+    relative = path.relative_to(store.root)
+    current = store.root
+    for component in relative.parts:
+        current = current / component
+        if current.is_symlink():
+            raise LookupError("transcript symlinks are not allowed")
+    if not path.resolve().is_relative_to(store.root.resolve()):
+        raise LookupError("transcript is outside the session plan")
+    return path
+
+
 def transcript(root: str | Path, sid: str, row: str) -> dict[str, Any]:
     """A task's attempts (one per unit) with the sizes of their archived prompt and reply; no content."""
     store = session(root, sid)
-    folder = _plan_folder(store)
     out = []
     for n, unit in enumerate(_task_units(store, row), 1):
         sizes = {}
         for part in TRANSCRIPT_PARTS:
-            path = folder.path / "handoffs" / unit["id"] / f"{part}.md"
+            path = _transcript_path(store, unit["id"], part)
             sizes[f"{part}_bytes"] = path.stat().st_size if path.is_file() else 0
         out.append({"unit": unit["id"], "attempt": n, "status": unit.get("status"), "started": unit.get("started"),
                     "finished": unit.get("finished"), "agent": unit.get("agent"), "model": unit.get("model"),
@@ -3206,11 +3252,7 @@ def transcript_part(root: str | Path, sid: str, row: str, unit_id: str, part: st
         raise LookupError(f"unknown transcript part {part!r}")
     if not any(u["id"] == unit_id for u in _task_units(store, row)):
         raise LookupError(f"{unit_id!r} is not an attempt of task {row!r}")
-    folder = _plan_folder(store)
-    base = (folder.path / "handoffs").resolve()
-    path = (base / unit_id / f"{part}.md").resolve()
-    if not path.is_relative_to(base):
-        raise LookupError("transcript is outside the session plan")
+    path = _transcript_path(store, unit_id, part)
     if not path.is_file():
         raise LookupError(f"no {part} archived for {unit_id}")
     limit = min(int(length or MAX_TRANSCRIPT_READ), MAX_TRANSCRIPT_READ)
@@ -3572,13 +3614,13 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
     from alfrd.events import EVENTS_FILE
     from alfrd.steps import steps_state
     steps = steps_state(folder.path / EVENTS_FILE)
-    requests = [{**r, "usage": request_usage(store, r, units), "telemetry": _request_telemetry(r, units, docs),
+    requests = [{**r, "title": _scheduled_title(r.get("text", "")), "usage": request_usage(store, r, units), "telemetry": _request_telemetry(r, units, docs),
                  "steps": [step for step in steps if step["request_id"] == r["id"]],
                  "mailbox": Mailbox(store.root, sid, r["id"]).summary()} for r in store.requests()]
     plan = _read(folder.plan_file) or {}
     return {
         **schedule_state(store.root, sid),
-        "session": store.load(), "messages": store.messages(messages), "requests": requests, "tasks": tasks,
+        "session": _display_session(store, store.load()), "messages": store.messages(messages), "requests": requests, "tasks": tasks,
         "graph": graph(store, conf), "decisions": decisions,
         "check": _read(store.dir / "check.json"),
         "blockers": [d for d in decisions if d.get("status") == "pending"],
@@ -4193,7 +4235,7 @@ def _schedule_items(batch):
 
 def build_scheduled_prompt(batch):
     items = _schedule_items(batch)
-    lines = [f'Scheduled batch {batch["id"]} ({len(items)} pending items)',
+    lines = [_batch_title([i["text"] for i in items], len(items)),
              f'Scheduled for: {batch.get("scheduled_for", batch["run_at"])} ({batch["timezone"]})', '',
              'Treat all numbered items below as ONE user request. Make one coordinated plan covering every item,',
              'sharing dependencies and avoiding duplicate work. Reconcile compatible requirements. A later item',

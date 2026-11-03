@@ -5,7 +5,7 @@ import { projectLabels } from "./utils/text_fit.js";
 import { mountPicker } from "./components/picker.js";
 import { stepParamsFromConfig } from "./data/avica.js";
 import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
-import { toCsv, aliasRules } from "./utils/csv_parser.js";
+import { toCsv } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
 import { readPrefs, writePrefs } from "./data/prefs.js";
@@ -1310,11 +1310,13 @@ function menu(anchor, items) {
   el.id = `studio-menu-${Date.now()}`;
   anchor.setAttribute("aria-controls", el.id);
   anchor.setAttribute("aria-expanded", "true");
-  el.innerHTML = items.map((it, i) => (it === "-" ? `<hr>` : `<button role="menuitem" data-i="${i}" ${it.disabled ? "disabled" : ""}>${icon(it.icon || "caret")}<span>${esc(it.label)}</span>${it.hint ? `<small>${esc(it.hint)}</small>` : ""}</button>`)).join("");
+  el.innerHTML = items.map((it, i) => (it === "-" ? `<hr>` : `<button role="menuitem" class="${it.danger ? "danger" : ""}" data-i="${i}" ${it.disabled ? "disabled" : ""}>${icon(it.icon || "caret")}<span>${esc(it.label)}</span>${it.hint ? `<small>${esc(it.hint)}</small>` : ""}</button>`)).join("");
   (document.fullscreenElement || document.body).appendChild(el); // visible in fullscreen too
   const r = anchor.getBoundingClientRect();
-  el.style.top = `${r.bottom + 6}px`;
-  el.style.left = `${Math.min(r.left, window.innerWidth - el.offsetWidth - 12)}px`;
+  const edge = 12, gap = 6, w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = `${Math.max(edge, Math.min(r.left, window.innerWidth - w - edge))}px`;
+  const below = r.bottom + gap;
+  el.style.top = `${below + h > window.innerHeight - edge && r.top - gap - h >= edge ? r.top - gap - h : Math.max(edge, Math.min(below, window.innerHeight - h - edge))}px`;
   el.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-i]");
     if (!b) return;

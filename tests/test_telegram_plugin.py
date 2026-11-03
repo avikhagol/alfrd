@@ -688,3 +688,22 @@ def test_digest_settings_preserve_fractional_minutes_and_blank(bot):
     for value in ("-1", "invalid"):
         with pytest.raises(ValueError):
             settings.save(module.plugin, {"hold_minutes": value})
+
+
+def test_chatmode_settings_and_persisted_precedence(bot, tmp_path):
+    from alfrd.extensions import settings
+
+    b, _, _, module = bot
+    settings.save(module.plugin, {"token": "123456:" + "A" * 30, "chat_id": b.chat,
+                                  "admin_chat_ids": "7, 9", "chat_mode": "on"})
+    route, where = module.configured_route()
+    assert where == "settings" and route["admin_chat_ids"] == "7, 9"
+    state = tmp_path / "mode.json"
+    fresh = module.Bot(route, b.plans, state=state)
+    assert fresh.chat_mode is True
+    fresh.command("/chatmode off", sender_id=7)
+    assert module.Bot(route, b.plans, state=state).chat_mode is False
+    assert module.Bot({**route, "chat_id": "99"}, b.plans, state=tmp_path / "other.json").chat_mode is True
+    for key, value in [("admin_chat_ids", "-100"), ("admin_chat_ids", "someone"), ("chat_mode", "yes")]:
+        with pytest.raises(ValueError):
+            settings.save(module.plugin, {key: value})

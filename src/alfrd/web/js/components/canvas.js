@@ -7,6 +7,7 @@
 // it only animates the graph in this browser and never executes anything.
 
 import { $, $$, on, esc, icon, short, hms, elapsed, storage, loadUi, saveUi, isEditable, keyLabel } from "../utils/dom.js";
+import { edgePath, NODE_H } from "../utils/graph_geometry.js";
 import { STEP_STATUS } from "../data/model.js";
 import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
@@ -33,7 +34,7 @@ const mode = () => (compact() ? "graph" : ui.mode); // compact shows the graph; 
 
 const W = 1040;
 const GAP = 32;
-export const NODE_H = 128;
+export { edgePath, NODE_H };
 const BANNER_H = 46;
 const STAGE_GAP = 40;
 
@@ -157,23 +158,6 @@ function computeLayout(ctx) {
   return { pos, banners, width: maxX, height: maxY };
 }
 
-export function edgePath(a, b) {
-  if (Math.abs(a.y - b.y) < NODE_H / 2) {
-    const leftToRight = a.x < b.x;
-    const x1 = leftToRight ? a.x + a.w : a.x;
-    const x2 = leftToRight ? b.x : b.x + b.w;
-    const y1 = a.y + NODE_H / 2;
-    const y2 = b.y + NODE_H / 2;
-    const dx = Math.max(24, Math.abs(x2 - x1) / 2) * (leftToRight ? 1 : -1);
-    return `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
-  }
-  const x1 = a.x + a.w / 2;
-  const y1 = a.y + NODE_H;
-  const x2 = b.x + b.w / 2;
-  const y2 = b.y;
-  const dy = Math.max(30, (y2 - y1) / 2);
-  return `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2 - 2}`;
-}
 
 function edgeClass(ctx, from, to) {
   const a = statusOf(ctx, from);

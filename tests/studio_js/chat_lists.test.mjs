@@ -81,7 +81,7 @@ test("browser: semantic lists, safe HTML, newline keys and Markdown source survi
     await page.locator("#chat-input").fill(draft);
     await page.locator("#chat-input").press("Shift+Enter");
     assert.equal(await page.locator("#chat-input").inputValue(), expected);
-    assert.equal(await page.locator("#chat-list-preview").isVisible(), true);
+    assert.equal(await page.locator(".chat-list-preview").count(), 0);
     await page.locator("#chat-input").press("Shift+Enter");
     assert.equal(await page.locator("#chat-input").inputValue(), expected.slice(0, expected.lastIndexOf("\n") + 1));
   }
