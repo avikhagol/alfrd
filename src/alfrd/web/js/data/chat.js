@@ -365,9 +365,6 @@ export function tokenLine(u) {
 /** Tasks of a request (or all) over their cost warning (chat.warn_task_cost_usd). */
 export const costWarnings = (state, request = null) => (state?.tasks || []).filter((t) => t.cost_warning && (!request || t.request === request));
 
-/** The newest request with tasks (what "Promote to workflow" offers), or null. */
-export const promotable = (state) => [...(state?.requests || [])].reverse().find((r) => (r.tasks || []).length) || null;
-
 export const money = (v) => (v == null || !Number.isFinite(Number(v)) ? "—" : `$${Number(v).toFixed(Number(v) < 1 ? 3 : 2)}`);
 export function duration(s) {
   if (!Number.isFinite(s)) return "—";
@@ -582,4 +579,23 @@ export function checkStatus(report, now = Date.now()) {
   const next = Date.parse(report?.next_at || "");
   const due = !Number.isFinite(next) ? "scheduled checks off" : next <= now ? "next check due" : `next in ${Math.ceil((next - now) / 60000)} min`;
   return `Checked ${age} · ${due}`;
+}
+
+/** A compact summary of the current request, using only the ordinary Chat snapshot. */
+export function runSummary(state) {
+  const req = activeRequest(state);
+  if (!req) return null;
+  const firstLine = (value) => String(value || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean)?.replace(/\s+/g, " ") || "";
+  const fullTitle = firstLine(req.title) || firstLine(req.text) || firstLine((state.messages || []).find((m) => m.request === req.id && m.role === "user")?.text)
+    || (/^r0*(\d+)$/.test(req.id) ? `Request ${Number(req.id.slice(1))}` : req.id);
+  const { done, total } = requestProgress(state, req);
+  const decisions = (state.decisions || []).filter((d) => d.request === req.id && d.status === "pending" && d.needs === "user" && !d.mailbox_message_id);
+  const needsUser = Math.max(0, Number(req.mailbox?.pending_user) || 0) + decisions.length;
+  const terminal = ["failed", "done", "cancelled", "stopped"].includes(req.status);
+  const blocked = (state.tasks || []).some((t) => t.request === req.id && t.kind === "task" && t.status === "blocked");
+  let status = ({ planning: "Planning…", preparing: "Planning…", running: "Running", summarizing: "Summarizing", needs_decision: "Waiting for orchestrator", done: "Done", failed: total ? "Failed" : "Planning failed", cancelled: "Cancelled", stopped: "Stopped" })[req.status]
+    || (req.status ? req.status.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase()) : "Unknown");
+  if (!terminal) { if (needsUser) status = "Needs you"; else if (blocked) status = "Blocked"; }
+  const tone = req.status === "failed" ? "error" : req.status === "done" ? "success" : ["Needs you", "Blocked", "Waiting for orchestrator"].includes(status) ? "warning" : req.status === "running" ? "live" : "muted";
+  return { id: req.id, title: fullTitle.length > 80 ? `${fullTitle.slice(0, 79)}…` : fullTitle, fullTitle, status, done, total, needsUser, tone };
 }

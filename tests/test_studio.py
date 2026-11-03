@@ -229,6 +229,16 @@ def test_flask_serves_studio_and_blocks_python_files(studio_app):
     assert client.get("/dashboard/").status_code == 404  # the legacy dashboard is gone
 
 
+def test_removed_mode_has_no_routes_or_capabilities(studio_app):
+    app, _ = studio_app
+    client = app.test_client()
+    assert not any("harness" in rule.rule.lower() for rule in app.url_map.iter_rules())
+    assert client.get("/harness").status_code == 404
+    assert client.get("/api/studio/projects/p/chat/sessions/s/harness/state").status_code == 404
+    session = client.get("/api/studio/session").get_json()
+    assert not any("harness" in key.lower() for key in session)
+
+
 def test_studio_session_and_json_connect(studio_app, tmp_path):
     app, service = studio_app
     client = app.test_client()

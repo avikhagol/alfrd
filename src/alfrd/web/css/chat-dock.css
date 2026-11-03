@@ -11,7 +11,7 @@
 .chat [data-chat="needs-me"][aria-pressed="true"] { border-color: var(--chat-action); background: var(--accent-wash, var(--chat-hover)); color: var(--chat-text); }
 .chat [data-chat="needs-me"][aria-pressed="true"]::before { content: "\2713" / ""; }
 .chat .chat-session b { display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat .chat-session.on { border-color: var(--chat-action); }
+.chat .chat-session.on { border-color: transparent; }
 .chat .chat-rename { flex-wrap: wrap; }
 .chat .chat-rename [role=alert] { width: 100%; margin: 0; color: var(--chat-error); }
 .chat .chat-head { gap: 4px; flex: none; }

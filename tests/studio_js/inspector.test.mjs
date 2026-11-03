@@ -229,3 +229,17 @@ for (const name of [
   "browser: 200 % zoom overlay scrolls and nothing is clipped",
   "browser: Alt+Shift+I from the composer toggles the inspector",
 ]) test(name, { skip: "ENV1 is open: no browser runtime in this environment" }, () => {});
+
+
+test("Files close returns to the previous tab, including repeated Files selection", async () => {
+  const { createInspectorTabs } = await import("../../src/alfrd/web/js/components/inspector.js");
+  const tabs = createInspectorTabs();
+  assert.equal(tabs.closeFiles(), false);
+  for (const previous of ["graph", "goals"]) {
+    tabs.select(previous); tabs.select("files"); tabs.select("files");
+    assert.equal(tabs.closeFiles(), true); assert.equal(tabs.active(), previous);
+    assert.equal(tabs.closeFiles(), false);
+  }
+  assert.match(tabsHtml("files"), /class="icon-btn sm" data-chat="close-files" aria-label="Close Files"/);
+  assert.doesNotMatch(tabsHtml("graph"), /data-chat="close-files"/);
+});

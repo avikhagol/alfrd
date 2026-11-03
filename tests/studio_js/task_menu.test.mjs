@@ -18,9 +18,9 @@ function fixture(overrides = {}) {
     key: (key) => handlers.keydown({ key, stopPropagation() {}, preventDefault() {} }) };
 }
 
-test("menu uses F5 reasons, arrow/Home/End navigation and Escape/Tab return focus", async () => {
+test("menu hides unavailable actions, arrow/Home/End navigation and Escape/Tab return focus", async () => {
   const r = fixture(); await r.menu.open("a");
-  assert.match(r.el.innerHTML, /No log is available/);
+  assert.doesNotMatch(r.el.innerHTML, /data-action="(?:log|prompt|reply|files|cancel)"/);
   r.key("ArrowDown"); assert.equal(document.activeElement, r.buttons[1]);
   r.key("End"); assert.equal(document.activeElement, r.buttons[2]);
   r.key("ArrowDown"); assert.equal(document.activeElement, r.buttons[0]);
@@ -93,4 +93,55 @@ test("API posts captured preconditions and escapes row/session/project path segm
     await api.run("cancel", t);
     assert.deepEqual(calls, [["/studio/projects/p%2Fx/chat/sessions/s%2Fx/tasks/a%2Fx/cancel", { expected_status: "running", expected_unit: "u3" }]]);
   } finally { server.mutate = original; }
+});
+
+
+test("all seven menu actions dispatch and missing read content is hidden", async () => {
+  for (const id of ["log", "prompt", "reply", "files", "retry", "cancel", "copy_id"]) {
+    const status = id === "cancel" ? "running" : "failed";
+    const r = fixture({ preview: async () => ({ eligible: status === "failed", current_status: status, current_unit: "u1" }) });
+    r.set({ row: "a", status, units: ["u1"], log: "x.log", prompt: true, reply: true, files: ["x"] });
+    globalThis.confirm = () => true;
+    await r.menu.open("a");
+    await r.menu.activate(id);
+    assert.equal(r.writes[0]?.[0], id);
+  }
+  const r = fixture({ preview: async () => { throw new Error("offline"); } });
+  await r.menu.open("a");
+  assert.doesNotMatch(r.el.innerHTML, /data-action="(?:retry|cancel)"/);
+  await r.menu.activate("copy_id");
+  assert.equal(r.writes[0][0], "copy_id");
+});
+
+test("prompt and reply use paged session transcript reads and Markdown, never the log endpoint", async () => {
+  const original = server.request, calls = [], opened = [];
+  server.request = async (url) => {
+    calls.push(url);
+    if (url.endsWith("retry-preview")) return { ok: true, json: async () => ({ eligible: false, current_status: "done", current_unit: "u1" }) };
+    if (url.endsWith("/transcript")) return { ok: true, json: async () => ({ attempts: [{ unit: "u1", prompt_bytes: 9, response_bytes: 8 }] }) };
+    return { ok: true, json: async () => url.endsWith("offset=0") ? { content: "# Hi", offset: 0, length: 4, eof: false } : { content: " there", offset: 4, length: 6, eof: true } };
+  };
+  try {
+    const api = taskMenuApi({ project: () => "p/x", sid: () => "s/x", state: () => ({ tasks: [{ row: "a/x", status: "done", result: {} }] }),
+      openLog: () => assert.fail("Prompt/reply must not use logs"), openMarkdown: async (...args) => opened.push(args) });
+    assert.equal(api.target("a/x").reply, false, "a result does not guarantee an archived response");
+    const preview = await api.preview("a/x"), target = { ...api.target("a/x"), ...preview };
+    assert.equal(target.reply, true); assert.equal(target.prompt, true);
+    await api.run("prompt", target); await api.run("reply", target);
+    assert.deepEqual(opened, [["prompt.md", "# Hi there"], ["response.md", "# Hi there"]]);
+    assert.ok(calls.includes("/api/studio/projects/p%2Fx/chat/sessions/s%2Fx/tasks/a%2Fx/transcript/u1/prompt?offset=4"));
+    assert.ok(calls.some((url) => url.includes("/u1/response?")));
+  } finally { server.request = original; }
+});
+
+test("missing archives and unavailable retry preview leave Copy ID available", async () => {
+  const original = server.request;
+  server.request = async (url) => ({ ok: url.endsWith("/transcript"), status: 503,
+    json: async () => url.endsWith("/transcript") ? { attempts: [] } : { error: { message: "offline" } } });
+  try {
+    const api = taskMenuApi({ project: () => "p", sid: () => "s", state: () => ({ tasks: [{ row: "a", status: "running" }] }) });
+    const p = await api.preview("a");
+    assert.equal(p.mutation_ready, false); assert.equal(p.prompt, false); assert.equal(p.reply, false);
+    assert.match(p.preview_error, /offline/);
+  } finally { server.request = original; }
 });

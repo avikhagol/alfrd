@@ -530,10 +530,15 @@ def chat_artifact_raw(project_name: str, session_id: str):
         data, media_type, path = chat.raw_artifact(_project_root(project_name), session_id, request.args.get("ref", ""))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
+    # SVG must remain sandboxed when opened as a document in the app origin.
+    inline = request.args.get("inline") == "1" and media_type in {
+        "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml",
+        "image/bmp", "image/x-icon", "image/vnd.microsoft.icon", "application/pdf"}
+    disposition = "inline" if inline else "attachment"
     return Response(data, mimetype=media_type,
                     headers={"Cache-Control": "private, max-age=31536000, immutable",
-                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'",
-                             "Content-Disposition": "attachment; filename*=UTF-8''" + quote(Path(path).name)})
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+                             "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(Path(path).name)})
 
 
 __all__: list[str] = []

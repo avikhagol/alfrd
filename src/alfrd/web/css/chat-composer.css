@@ -3,7 +3,7 @@
 :is(.chat, .chat-dock) .chat-composer {
   display: flex; flex-direction: column; gap: var(--chat-space-3);
   padding: var(--chat-space-2) var(--chat-space-3); padding-bottom: calc(var(--chat-space-2) + env(safe-area-inset-bottom, 0px));
-  background: var(--chat-surface); border: 1px solid var(--chat-border); border-radius: var(--chat-radius-composer);
+  background: var(--chat-surface); border: 1px solid color-mix(in srgb, var(--chat-muted) 70%, var(--chat-surface)); border-radius: var(--chat-radius-composer); box-shadow: none;
   box-sizing: border-box; position: relative;
 }
 :is(.chat, .chat-dock) .chat-composer:focus-within { border-color: var(--chat-action); }
@@ -41,11 +41,12 @@
 /* Keep the input and primary controls on one row, including while focused and in the dock. */
 .chat-composer-row { display: flex; align-items: flex-end; gap: var(--chat-space-2); min-width: 0; }
 .chat-composer-row .chat-input-wrap { flex: 1 1 0; min-width: 0; }
-.chat-composer-row > button { flex: 0 0 auto; }
+.chat-composer-row > button { flex: 0 0 auto; align-self: center; }
+.chat-composer .chat-schedule-toggle > span { display: flex; align-items: center; justify-content: center; line-height: 1; }
 .chat-composer-row > [hidden], .chat-composer .chat-schedule[hidden] { display: none; }
-.chat-composer-row .icon-btn { width: 34px; height: 34px; padding: 6px; }
+.chat-composer-row .icon-btn { width: 30px; height: 30px; padding: 6px; }
 .chat-composer .chat-schedule-toggle[aria-pressed="true"] { color: var(--chat-action); background: var(--chat-hover); box-shadow: inset 0 0 0 1px var(--chat-action); }
-.chat-composer .chat-send, .chat-composer .chat-stop { min-height: 34px; padding-inline: var(--chat-space-3); border-radius: var(--chat-radius-control); font-size: var(--chat-control-size); }
+.chat-composer .chat-send, .chat-composer .chat-stop { min-height: 32px; padding-inline: 14px; border-radius: var(--chat-radius-pill); font-size: var(--chat-control-size); }
 .chat-composer .chat-send:not(:disabled) { background: var(--chat-action); color: var(--chat-on-action); border-color: transparent; }
 .chat-composer .chat-send:disabled, .chat-composer .chat-stop:disabled { opacity: .55; cursor: not-allowed; }
 .chat-composer button:focus-visible { outline: 2px solid var(--chat-focus); outline-offset: 2px; }
@@ -78,3 +79,8 @@
 .chat-schedule [data-editor] textarea { width:100%; min-height:80px; }
 
 .chat-schedule-block { border: 1px solid var(--border); border-radius: 6px; padding: .5rem; margin-block: .5rem; }
+
+
+.chat-composer .chat-send:not(:disabled):hover { background: var(--accent); }
+.chat-composer .chat-stop { border-color: transparent; background: transparent; color: var(--fail-text); box-shadow: none; }
+.chat-composer .chat-stop:not(:disabled):hover { background: var(--fail-bg); }

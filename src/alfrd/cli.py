@@ -408,7 +408,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     base = f"http://{authority}:{port}"
     query = "" if no_token else "?" + urlencode({"token": token})
     url = f"{base}/studio/{query}"
-    print(f"ALFRD Studio: {url}")
+    print(f"ALFRD Studio: {url}", flush=True)
     app = create_app(config)
     # Only the process that serves writes the token file (not the reloader parent).
     serving = not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"

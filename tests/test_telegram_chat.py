@@ -215,3 +215,103 @@ def test_polling_relay_retries_failed_delivery(chat_bot, monkeypatch):
     b.checked_watch()
     assert "A reply after the prompt returned." in texts(api)[-1]
     assert b.chat_cursors != before
+
+
+def mode_message(b, text, sender=7, destination=None, mid=70):
+    b.handle({"message": {"chat": {"id": destination or b.chat}, "from": {"id": sender},
+                          "message_id": mid, "text": text}})
+
+
+@pytest.mark.parametrize("sender", [None, 8, -100])
+def test_chatmode_only_configured_superusers_can_toggle(chat_bot, sender):
+    b, api, root, spawned, _ = chat_bot
+    b.route["admin_chat_ids"] = "7, 9"
+    mode_message(b, "/chatmode on", sender)
+    assert "Only a configured superuser" in texts(api)[-1]
+    assert b.chat_mode is None and not b.state.exists()
+    mode_message(b, "/chatmode on", 7)
+    assert b.chat_mode is True
+    before = b.state.read_bytes()
+    mode_message(b, "/chatmode off", sender)
+    assert b.chat_mode is True and b.state.read_bytes() == before
+    assert not spawned and not chat.list_sessions(root)
+
+
+def test_chatmode_deny_by_default_and_ignore_other_chats(chat_bot):
+    b, api, _, _, _ = chat_bot
+    mode_message(b, "/chatmode on")
+    assert "Only a configured superuser" in texts(api)[-1]
+    b.route["admin_chat_ids"] = "7"
+    before = len(api.calls)
+    mode_message(b, "/chatmode on", destination=99)
+    assert len(api.calls) == before and b.chat_mode is None
+
+
+def test_chatmode_on_creates_request_for_group_member_and_relays(chat_bot):
+    b, api, root, spawned, module = chat_bot
+    b.chat = "-100"
+    b.route.update(chat_id=b.chat, admin_chat_ids="7")
+    fake(root, plan=plan(task("build"), message="Here is the plan."), build=result(summary="Task result."))
+    mode_message(b, "/chatmode@my_bot on")
+    # Any member of the already-authorized chat can request work; only 7 can toggle.
+    mode_message(b, "Build please", sender=8, mid=71)
+    sid = b.active_chat["session"]
+    store = chat.session(root, sid)
+    assert store.messages()[0]["client_message_id"] == "telegram.-100.71"
+    assert spawned == [f"chat-{sid}"]
+    mode_message(b, "Build please", sender=8, mid=71)
+    assert len(store.requests()) == 1
+    run(root, sid)
+    again = module.Bot(b.route, b.plans, state=b.state)
+    assert again.chat_mode is True
+    again.checked_watch()
+    assert any("Here is the plan." in text for text in texts(api))
+    assert any("Task result." in text for text in texts(api))
+    assert all(str(item["chat_id"]) == "-100" for item in sent(api))
+    mode_message(b, "/chatmode off", sender=8)
+    assert b.chat_mode is True
+
+
+def test_chatmode_off_restores_picker_and_retains_reply_delivery(chat_bot):
+    b, api, root, spawned, module = chat_bot
+    b.route["admin_chat_ids"] = "7"
+    mode_message(b, "/chatmode on")
+    message(b, "/new")
+    sid = b.active_chat["session"]
+    mode_message(b, "/chatmode off")
+    assert b.chat_mode is False
+    message(b, "Do not run this")
+    assert not spawned and not chat.session(root, sid).messages()
+    b.pick_project()
+    message(b, "1")
+    assert b.tracked  # legacy numeric pipeline selection
+    again = module.Bot(b.route, b.plans, state=b.state)
+    assert again.chat_mode is False and again.active_chat == b.active_chat
+    chat.session(root, sid).add_message("assistant", "Previously requested work finished.")
+    again.relay_chat()
+    assert "Previously requested work finished." in texts(api)[-1]
+    message(again, "/chatmode")
+    assert "Chat mode: off" in texts(api)[-1]
+
+
+def test_chatmode_invalid_args_and_failed_persistence(chat_bot, monkeypatch):
+    b, api, _, _, _ = chat_bot
+    b.route["admin_chat_ids"] = "7"
+    mode_message(b, "/chatmode banana")
+    assert "Use /chatmode" in texts(api)[-1] and b.chat_mode is None
+    def failed(**kwargs):
+        raise OSError("private filesystem details")
+    monkeypatch.setattr(b, "save_state", failed)
+    mode_message(b, "/chatmode on")
+    assert b.chat_mode is None and "No change made" in texts(api)[-1]
+    assert "private filesystem" not in texts(api)[-1]
+
+
+def test_chatmode_ambiguous_project_does_not_drop_prompt_silently(chat_bot):
+    b, api, root, spawned, _ = chat_bot
+    b.route["admin_chat_ids"] = "7"
+    b.plans.items["q"] = {"name": "Other", "root": str(root)}
+    mode_message(b, "/chatmode on")
+    message(b, "Build")
+    assert "No project selected" in texts(api)[-1]
+    assert not chat.list_sessions(root) and not spawned

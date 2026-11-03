@@ -122,6 +122,20 @@ Codex native delivery is best effort at launch, and explicit native-disable sett
 
 ### Usage and cost
 
+Elapsed time uses ALFRD's attempt `started`/`finished` timestamps for every adapter,
+including failed, cancelled, retried and adopted attempts. Task elapsed totals sum
+attempt durations; retry waiting time is not agent execution time. Session task
+logs expose these timestamps and `seconds`, even without a live-output subscription.
+
+Codex commands that write a final-response file request JSON usage output. ALFRD
+estimates standard API-equivalent USD from input, cached input and output tokens
+using `src/alfrd/model_prices.py` (official OpenAI sources and verification date
+are recorded there). This is an estimate, not a subscription invoice or a fast-mode,
+regional, long-context or tool-fee bill. The configured model is snapshotted at
+launch. Unknown models, absent usage and incomplete token breakdowns carry an
+explicit `cost_reason`; ALFRD does not invent a rate or infer token counts from
+response length. AGY/generic adapters report no cost unless their adapter supplies it.
+
 Claude emits one `result` event per wake-up (background tasks add more). ALFRD sums the tokens of
 all result events of a turn (a repeated event id counts once) and takes the cost from the latest
 one, because `total_cost_usd` is cumulative. Reports show new (uncached) input, cache read, cache

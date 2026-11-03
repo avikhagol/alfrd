@@ -34,10 +34,10 @@ import { openLog } from "./plans.js";
 import { mountTranscript } from "./transcript.js";
 import { messageHtml as sharedMessageHtml } from "./chat_message.js";
 import { activeSession, destinationSession, paintSessionList, filterSessions, chatSheet, conversationStarter } from "../data/chat_sessions.js";
-import { createInspector, tabsHtml, createRequestScope } from "./inspector.js";
+import { createInspector, tabsHtml, createRequestScope, createInspectorTabs } from "./inspector.js";
 import {
   activeRequest, canCancel, canRetry, costWarnings, decisionPayload, duration, graphModel, hasActivity, helpText, money,
-  parseMention, promotable, requestProgress, requestTotals, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
+  parseMention, runSummary, requestProgress, requestTotals, staleState, statusInfo, tokenLine, createRequestStop, checkStatus, taskOutputs,
 } from "../data/chat.js";
 
 import { chatProjects } from "../data/chat_projects.js";
@@ -51,6 +51,27 @@ server.onAuthRequired(clearViews);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) { for (const e of snapshots.cache.values()) snapshots.invalidate(e.project, e.sid); activeView?.refresh(); }
 });
+// Module-level handlers are shared by cached views and retain no menu nodes.
+document.addEventListener("click", (event) => {
+  for (const menu of document.querySelectorAll(".chat-session-menu[open]")) {
+    if (!menu.contains(event.target)) menu.open = false;
+  }
+}, true);
+document.addEventListener("toggle", (event) => {
+  if (!event.target.matches?.(".chat-session-menu[open]")) return;
+  for (const menu of document.querySelectorAll(".chat-session-menu[open]")) {
+    if (menu !== event.target) menu.open = false;
+  }
+}, true);
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const menus = document.querySelectorAll(".chat-session-menu[open]");
+  for (const menu of menus) {
+    menu.open = false;
+    menu.querySelector("summary")?.focus();
+  }
+  if (menus.length) { event.preventDefault(); event.stopPropagation(); }
+}, true);
 export function leave() { return activeView?.suspend(); }
 // Navigation can attach an already-mounted destination before the batched shell paint.
 export function restore(el, ctx) {
@@ -97,7 +118,7 @@ let suspended = false, destroyed = false, savedScroll = [], settingsController =
 const S = { renaming: null, project: null, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null,
   error: null, loading: false, checking: null, task: null, open: new Map(), sendError: "", gen: 0, keys: {}, notes: [] };
 let scope = createRequestScope();
-let inspTab = "graph";
+let inspectorTabs = createInspectorTabs();
 let insp = null; // the inspector shell (inspector.js): closed unless the user opened it
 let goals = null, goalsLoading = null;
 function drawGoals(options) {
@@ -200,7 +221,8 @@ function render(el, ctx) {
 function graphTaskMenu(close = () => {}) {
   return taskMenuApi({ project: () => S.project, sid: () => S.sid, state: () => S.data,
     refresh: () => loadSession(), openLog: (rel) => openLog(ctxRef, S.project, rel),
-    files: (row) => { close(); S.task = row; inspTab = "files"; S.keys.task = null; draw(ctxRef); openInspector(); } });
+    openMarkdown: async (path, text) => (await import("./files_tab.js")).openBlob(ctxRef, path, new Blob([text], { type: "text/markdown" })),
+    files: (row) => { close(); const task = S.data?.tasks?.find((t) => t.row === row); if (task?.request) scope.select(task.request); S.task = row; S.keys.task = null; selectInspectorTab("files"); openInspector(); } });
 }
 
 function closeSessions() {
@@ -236,7 +258,7 @@ function mount(el, ctx, p) {
   Object.assign(S, { project: p, sessions: null, sessionsError: null, settings: null, settingsError: null, sid: null, data: null, error: null,
     task: null, sendError: "", keys: {}, renaming: null, gen: S.gen + 1 });
   act?.stop();
-  scope = createRequestScope(); inspTab = "graph";
+  scope = createRequestScope(); inspectorTabs = createInspectorTabs();
   S.sessionQuery = queries.get(p) || "";
   S.open.clear();
   el.dataset.chat = p;
@@ -251,18 +273,30 @@ function mount(el, ctx, p) {
       <ul class="chat-list" id="chat-list" role="list"></ul></nav>
     <section class="chat-main" aria-label="Conversation">
       <header class="chat-head" id="chat-head"></header>
+      <div id="chat-run" class="chat-run" role="group" aria-label="Current run" hidden></div>
       <p class="sr-only" id="chat-check-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="chat-log" id="chat-log" tabindex="0" aria-label="Messages"></div>
       <p class="chat-stop-status muted small" role="status"></p>
       ${composerHtml("chat", { attachments: true })}
     </section>
     <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks"><div class="chat-inspector-resize"></div><div class="chat-inspector-content">
-      <section class="card chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-request-scope"></div><div id="chat-insp-tabs">${tabsHtml()}</div></section>
-      <section class="card" id="chat-progress" aria-labelledby="chat-progress-h"></section>
-      <section class="card" id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
-      <section class="card chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
-      <section class="card" id="chat-task" aria-live="polite" hidden></section>
+      <div class="chat-scope-bar"><button type="button" class="btn sm ghost chat-scope" data-chat="request-scope" aria-haspopup="menu" aria-expanded="false" aria-label="Request scope: latest request">Request scope · Latest request</button></div>
+      <section class="chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-insp-tabs">${tabsHtml()}</div></section>
+      <section id="chat-progress" aria-labelledby="chat-progress-h"></section>
+      <section id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
+      <section class="chat-graph-card" aria-labelledby="chat-graph-h"><h3 id="chat-graph-h"><span class="grow">Task graph</span><button type="button" class="icon-btn sm" id="chat-graph-full" data-chat="graph-full" aria-label="Task graph full screen" aria-keyshortcuts="F" title="Full screen (F)">${icon("expand")}</button></h3><div id="chat-graph"></div></section>
+      <section id="chat-task" aria-live="polite" hidden></section>
     </div></aside></div>`;
+  // Register before the overlay sheet so Files gets the first chance at Escape.
+  $("#chat-inspector", el).addEventListener("keydown", onFilesKeydown);
+  $("#chat-run", el).addEventListener("click", (event) => {
+    if (!event.target.closest("[data-chat=run-needs]")) return;
+    openInspector();
+    const decisions = $("#chat-decisions", host);
+    decisions.tabIndex = -1;
+    decisions.scrollIntoView({ block: "nearest" });
+    decisions.focus({ preventScroll: true });
+  });
   graph = mountGraph($("#chat-graph", el), { onMail: (request, id) => { closeInspector(); act?.jumpMail(request, id); }, taskMenu: graphTaskMenu(), groups: true, label: "Task graph", empty: "Tasks appear here when the orchestrator plans a request.",
     onSelect: (row) => { S.task = row; drawTask(ctxRef); }, onOpen: (row) => { S.task = row; drawTask(ctxRef); $("#chat-task", host)?.focus(); } });
   act = mountTranscript($("#chat-log", el), { project: () => S.project, sid: () => S.sid, busy: () => hasActivity(S.data), agentName, state: () => S.data, error: () => S.error, messageHtml, viewGraph: (request) => openGraphFull({ request }), onReply: () => loadSession(), notes: () => S.notes.filter((n) => n.sid === S.sid && n.project === S.project),
@@ -358,13 +392,29 @@ const agents = () => S.data?.settings?.agents || S.settings?.agents || {};
 const orchestrator = () => S.data?.settings?.orchestrator || S.settings?.orchestrator;
 const agentName = (key) => (key === "alfrd" ? "ALFRD" : `${agents()[key]?.label || key}`);
 
+function onFilesKeydown(e) {
+  if (e.key === "Escape" && !e.defaultPrevented && !e.isComposing && closeFilesView()) e.preventDefault();
+}
+function renderInspectorTab() {
+  const box = $("#chat-insp-tabs", host);
+  box.innerHTML = tabsHtml(inspectorTabs.active());
+  draw(ctxRef);
+  $(`[data-insp-tab="${inspectorTabs.active()}"]`, box)?.focus();
+}
+function selectInspectorTab(id) { inspectorTabs.select(id); renderInspectorTab(); }
+function closeFilesView() {
+  if (!inspectorTabs.closeFiles()) return false;
+  renderInspectorTab();
+  return true;
+}
+
 let filesModule = null, filesEpoch = 0;
 function drawFilesTab(ctx, request) {
   const panel = $("#chat-insp-panel", host), project = S.project, sid = S.sid;
   const key = JSON.stringify([project, sid, request, S.data?.rev]);
   const epoch = ++filesEpoch;
-  if (inspTab !== "files") { filesModule?.leaveFiles(); return; }
-  const current = () => panel.isConnected && inspTab === "files" && S.project === project && S.sid === sid && scope.request(S.data) === request;
+  if (inspectorTabs.active() !== "files") { filesModule?.leaveFiles(); return; }
+  const current = () => panel.isConnected && inspectorTabs.active() === "files" && S.project === project && S.sid === sid && scope.request(S.data) === request;
   import("./files_tab.js").then((m) => {
     if (epoch !== filesEpoch || !current()) return;
     filesModule = m;
@@ -372,7 +422,7 @@ function drawFilesTab(ctx, request) {
     m.drawFiles(panel, { key, isCurrent: current,
       rows: request ? (S.data?.graph?.nodes || []).filter((n) => n.request === request).map((n) => n.id) : null,
       getOverview: () => sid ? get(`${url}/overview`) : Promise.resolve({ files: [] }),
-      raw: (ref) => m.rawBlob(url, ref), view: (path, blob, guard) => m.openBlob(ctx, path, blob, guard), reveal: (path, guard) => m.revealFile(ctx, project, path, guard) });
+      raw: (ref) => m.rawBlob(url, ref), view: (path, blob, guard, ref) => m.openBlob(ctx, path, blob, guard, `${url}/artifacts/raw?${new URLSearchParams({ ref, inline: "1" })}`) });
   }).catch((err) => { if (current()) panel.textContent = err.message; });
 }
 
@@ -380,6 +430,11 @@ function draw(ctx) {
   if (suspended || destroyed) return;
   drawSessions();
   drawHead(ctx);
+  drawRun();
+  const scopeButton = $('[data-chat="request-scope"]', host);
+  scopeButton.textContent = `Request scope · ${scope.label(S.data)} ▾`;
+  scopeButton.setAttribute("aria-label", `Request scope: ${scope.label(S.data)}. Filters Graph, Files and Goals.`);
+  scopeButton.disabled = !S.data?.requests?.length;
   drawLog();
   if (full?.host.isConnected) full.g.update({ ...graphModel(S.data?.graph, agents(), scope.request(S.data), S.data?.requests), stream: S.sid, scope: `${S.sid}:${scope.request(S.data) || "all"}` }, S.task);
   draft?.select(S.project, S.sid);
@@ -389,20 +444,36 @@ function draw(ctx) {
   syncSheets();
 }
 
+function drawRun() {
+  const box = $("#chat-run", host), run = runSummary(S.data);
+  if (!box || !changed("run", [run, S.sid, !S.data])) return;
+  box.hidden = !run && (!S.sid || Boolean(S.data));
+  if (!run) { box.innerHTML = S.sid && !S.data ? '<span class="muted">Loading run…</span>' : ""; return; }
+  if (!box.querySelector(".chat-run-title")) box.innerHTML = `<span class="chat-run-title"></span><span aria-hidden="true">·</span><span class="chat-run-status"></span><span aria-hidden="true">·</span><span class="chat-run-count"></span><span aria-hidden="true">·</span><button type="button" class="chat-run-needs" data-chat="run-needs" aria-label="Show blockers and decisions"><span class="chat-run-flag"></span><span class="chat-run-needs-label"> need you</span></button><span class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>`;
+  const title = box.querySelector(".chat-run-title"), status = box.querySelector(".chat-run-status"), needs = box.querySelector(".chat-run-needs");
+  box.dataset.tone = run.tone;
+  title.textContent = run.title; title.title = run.fullTitle; title.setAttribute("aria-label", run.fullTitle);
+  status.textContent = run.status; status.style.color = `var(--chat-${run.tone})`;
+  box.querySelector(".chat-run-count").textContent = `${run.done}/${run.total} done`;
+  box.querySelector(".chat-run-flag").textContent = `⚑ ${run.needsUser}`;
+  needs.style.color = `var(--chat-${run.needsUser ? "warning" : "muted"})`; needs.setAttribute("aria-label", `${run.needsUser} items need you`);
+  const announcement = `${run.status} · ${run.done}/${run.total} done · ${run.needsUser} items need you`;
+  const live = box.querySelector('[role="status"]');
+  if (live.textContent !== announcement) live.textContent = announcement;
+}
+
 function drawInspector(ctx) {
   drawProgress(ctx);
   drawDecisions();
-  const scopeHtml = scope.html(S.data);
-  refreshHTML($("#chat-request-scope", host), scopeHtml);
   const request = scope.request(S.data);
   $("#chat-insp-panel", host).dataset.request = request || "all";
-  $("#chat-insp-panel", host).hidden = inspTab === "graph";
-  $(".chat-graph-card", host).hidden = inspTab !== "graph";
+  $("#chat-insp-panel", host).hidden = inspectorTabs.active() === "graph";
+  $(".chat-graph-card", host).hidden = inspectorTabs.active() !== "graph";
   const model = { ...graphModel(S.data?.graph, agents(), request, S.data?.requests), stream: S.sid, scope: `${S.sid}:${request || "all"}` };
-  if (inspTab === "graph") graph?.update(model, S.data ? S.task : null);
+  if (inspectorTabs.active() === "graph") graph?.update(model, S.data ? S.task : null);
   if (full?.host.isConnected) full.g.update(model, S.task); else full = null;
   drawFilesTab(ctx, request);
-  drawGoals({ host: inspTab === "goals" ? $("#chat-insp-panel", host) : null, state: S.data, project: S.project, sid: S.sid, request });
+  drawGoals({ host: inspectorTabs.active() === "goals" ? $("#chat-insp-panel", host) : null, state: S.data, project: S.project, sid: S.sid, request });
   drawTask(ctx);
 }
 
@@ -496,7 +567,7 @@ function drawHead(ctx) {
   if (!changed("head", [s?.title, s?.active_requests, S.sid, live, S.settingsError, S.data?.plan?.runner_alive, S.data?.plan?.status])) { drawCheckStatus(); return; }
   const focused = $("#chat-head", host).contains(document.activeElement) ? document.activeElement.dataset.chat : null;
   const flowing = ["live", "polling"].includes(live);
-  $("#chat-head", host).innerHTML = `<div class="chat-head-title"><button type="button" class="btn sm chat-nav-toggle" data-chat="sessions" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")} Chats</button><h3 class="grow">${s ? `<input id="chat-title-input" class="chat-title-input" data-sid="${esc(s.id)}" aria-label="Rename chat" title="Rename chat (Enter to save, Escape to cancel)" maxlength="120" value="${esc(s.title)}">` : esc(S.sid || "No session")}</h3>
+  $("#chat-head", host).innerHTML = `<div class="chat-head-title"><button type="button" class="icon-btn sm chat-nav-toggle" data-chat="sessions" aria-label="Show the chat list" aria-controls="chat-sessions" aria-expanded="false" title="Show the chat list">${icon("sidebar")}</button><h3 class="grow">${s ? `<input id="chat-title-input" class="chat-title-input" data-sid="${esc(s.id)}" aria-label="Rename chat" title="Rename chat (Enter to save, Escape to cancel)" maxlength="120" value="${esc(s.title)}">` : esc(S.sid || "No session")}</h3>
     <button type="button" class="icon-btn sm chat-inspect-toggle" aria-label="Show or hide the inspector" data-chat="inspect" aria-controls="chat-inspector" aria-expanded="${Boolean(insp?.isOpen())}" aria-keyshortcuts="Alt+Shift+I" title="Show or hide the inspector (${keyLabel("Alt+Shift+I")})">${icon("sidebar")}</button><button type="button" class="icon-btn sm" data-chat="refresh" aria-label="Refresh this session">${icon("sync")}</button><details class="chat-session-menu"><summary aria-label="Conversation actions" title="Conversation actions">${icon("more")}</summary><div><button type="button" class="btn sm" data-chat="skills" aria-haspopup="dialog">Skills</button>${s ? `<button type="button" class="btn sm" data-chat="rename" data-sid-act="${esc(s.id)}">${icon("edit")} Rename</button><button type="button" class="btn sm" data-chat="delete" data-sid-act="${esc(s.id)}" ${s.active_requests || s.schedule ? 'disabled title="Cancel the schedule before deleting this session"' : ""}>${icon("trash")} Delete</button>` : ""}</div></details></div>
     <div class="chat-head-status"><span class="chat-live tone-${flowing ? "ok" : "warn"}" role="status" title="${esc([flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected", ctx.state.liveStatus?.detail, S.data?.plan ? `runner ${S.data.plan.runner_alive ? "active" : "idle"} (plan ${S.data.plan.id})` : ""].filter(Boolean).join(" · "))}"><span class="sr-only">${flowing ? "Live" : live === "off" ? "Live updates off" : "Disconnected"}${S.data?.plan ? `, runner ${S.data.plan.runner_alive ? "active" : "idle"}` : ""}</span></span>
     ${S.sid ? `<button type="button" class="icon-btn sm" data-chat="check" aria-label="${S.checking === `${S.project}/${S.sid}` ? "Checking" : "Check for interrupted work and resume it; paused runners stay paused"}" aria-busy="${S.checking === `${S.project}/${S.sid}`}" ${S.checking === `${S.project}/${S.sid}` ? "disabled" : ""} aria-describedby="chat-check-feedback" aria-disabled="${S.checking === `${S.project}/${S.sid}`}" title="Check for interrupted work and resume it; paused runners stay paused">${icon(S.checking === `${S.project}/${S.sid}` ? "sync" : "check")}</button>` : ""}</div>
@@ -616,7 +687,6 @@ function drawProgress(ctx) {
   const pr = requestProgress(S.data, req);
   const u = S.data?.usage;
   const warned = req ? costWarnings(S.data, req.id) : [];
-  const promo = server.session?.mutations_enabled ? promotable(S.data) : null;
   const totals = requestTotals(S.data);
   const html = scope.isAll() ? `<h3 id="chat-progress-h">All requests</h3>
       <p class="small">${totals.count} request${totals.count === 1 ? "" : "s"}${totals.ongoing ? ` · ${totals.ongoing} ongoing` : ""}</p>
@@ -634,7 +704,7 @@ function drawProgress(ctx) {
       <p class="muted small" data-tokens="request">${esc(tokenLine(req?.usage) || "no tokens reported yet")}</p>
       <p class="muted small">${pr.calls} orchestrator call${pr.calls === 1 ? "" : "s"}${S.data?.settings?.orchestrator_model ? ` (${esc(S.data.settings.orchestrator_model)}, escalation ${esc(S.data.settings.escalation_model || "agent model")})` : ""}${req?.usage?.total_cost_usd == null ? " · cost not reported by these agents" : ""}</p>
       ${warned.length ? `<p class="small"><span class="badge tone-warn" role="status">${icon("alert")}<span>${warned.length} task${warned.length === 1 ? "" : "s"} over the ${money(S.data?.settings?.warn_task_cost_usd)} warning</span></span></p>` : ""}
-      ${promo ? `<button type="button" class="btn sm" data-chat="promote" data-request="${esc(promo.id)}" title="Add request ${esc(promo.id)}'s tasks to the active workflow (preview first)">${icon("workflow")} Promote to workflow</button>` : ""}`;
+      `;
   const total = u ? `<p class="muted small chat-total" data-tokens="session">Session: ${u.turns} turn${u.turns === 1 ? "" : "s"} · ${esc(tokenLine(u) || money(u.total_cost_usd))} · ${u.orchestrator_calls} orchestrator call${u.orchestrator_calls === 1 ? "" : "s"}</p>` : "";
   refreshHTML(box, html + total);
 }
@@ -811,6 +881,10 @@ function bind(el) {
     if (b.matches("a[data-sid]")) { e.preventDefault(); if (b.dataset.sid !== S.sid) { ctxRef.state.chatSession = b.dataset.sid; setRoute(routeHash(`chat/${b.dataset.sid}`, ctxRef.state.selectedProject, ctxRef.state.selectedTarget)); restore(root.parentElement, ctxRef); ctxRef.update(); } return; }
     if (b.dataset.chatPrompt) { composer.input.value = b.dataset.chatPrompt; draft.edit(composer.input.value); composer.refresh(); composer.input.focus(); return; }
     const a = b.dataset.chat;
+    if (a === "request-scope") {
+      ctxRef.menu(b, scope.items(S.data, () => { S.task = null; S.keys.task = null; draw(ctxRef); openInspector(); }));
+      return;
+    }
     if (a === "clear-filters") {
       needsOnly = false; S.sessionQuery = ""; queries.set(S.project, "");
       $("#chat-session-search", host).value = "";
@@ -854,7 +928,6 @@ function bind(el) {
     else if (a === "setup") command("setup");
     else if (a === "reload") loadSessions();
     else if (a === "close-task") { S.task = null; S.keys.task = null; ctxRef.update(); }
-    else if (a === "promote") promoteRequest(b.dataset.request);
     else if (a === "graph-full") openGraphFull();
     else if (a === "inspect") { closeSessions(); insp?.toggle(); syncSheets(); }
     else if (a === "sessions") {
@@ -863,13 +936,8 @@ function bind(el) {
       if (open) { insp?.close({ restoreFocus: false }); syncSheets(); sessionSheet = chatSheet($(".chat-sessions", host), closeSessions); }
       else closeSessions();
     }
-    else if (b.dataset.inspTab) {
-      inspTab = b.dataset.inspTab;
-      const box = $("#chat-insp-tabs", host);
-      box.innerHTML = tabsHtml(inspTab);
-      draw(ctxRef);
-      $(`[data-insp-tab="${b.dataset.inspTab}"]`, box)?.focus();
-    }
+    else if (a === "close-files") closeFilesView();
+    else if (b.dataset.inspTab) selectInspectorTab(b.dataset.inspTab);
     else if (b.dataset.mailJump) {
       const card = host.querySelector(`[data-mail-id="${CSS.escape(b.dataset.mailJump)}"]`);
       if (card) { closeInspector(); card.scrollIntoView({ block: "center" }); card.querySelector("button,textarea")?.focus(); }
@@ -881,10 +949,6 @@ function bind(el) {
     else if (b.dataset.artifact) viewArtifact(b.dataset.artifact);
     else if (b.dataset.taskAct) taskAction(b.dataset.taskAct, b.dataset.row, b);
     else if (b.dataset.delegate) delegateDecision(b.dataset.delegate, b);
-  });
-  el.addEventListener("change", (e) => {
-    if (!e.target.matches("[data-request-scope]")) return;
-    scope.select(e.target.value); S.task = null; draw(ctxRef);
   });
   el.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -930,41 +994,6 @@ async function taskAction(action, row, button) {
     ctxRef.toast(action === "cancel" ? `Task ${row} cancelled` : `Task ${row} queued again${out.requeued?.length > 1 ? ` with ${out.requeued.length - 1} dependent task(s)` : ""}`, "ok");
     loadSession();
   } catch (error) { ctxRef.toast(`${action === "cancel" ? "Cancel" : "Retry"}: ${error.message}`, "fail"); button.disabled = false; }
-}
-
-// --- promote to workflow ---------------------------------------------------------
-
-/** Preview request `rid`'s tasks as workflow steps (server: chat.promotion), then save them into the active alfrd.yaml. */
-async function promoteRequest(rid) {
-  const ctx = ctxRef, p = S.project, sid = S.sid;
-  const url = `/sessions/${encodeURIComponent(sid)}/requests/${encodeURIComponent(rid)}/promote`;
-  let preview;
-  try { preview = await post(p, url, { preview: true }); } catch (error) { ctx.toast(`Promote: ${error.message}`, "fail"); return; }
-  ctx.modal(`<header class="modal-h"><h2 id="promote-h">${icon("workflow")} Promote request ${esc(rid)} to workflow steps</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
-    <div class="modal-b"><p class="small">Adds ${preview.steps.length} Agent step${preview.steps.length === 1 ? "" : "s"} to workflow <b>${esc(preview.workflow)}</b> in <code>${esc(preview.file)}</code>, each with a prompt file written from its task. Nothing is saved until you press Save.</p>
-      <table class="tbl small"><caption class="sr-only">Steps to add</caption><thead><tr><th scope="col">Step</th><th scope="col">Agent</th><th scope="col">Waits on</th><th scope="col">Task</th></tr></thead><tbody>
-      ${preview.steps.map((st) => `<tr><td class="mono">${esc(st.id)}</td><td>@${esc(st.owner)}${st.model ? ` · ${esc(st.model)}` : ""}</td><td class="mono">${esc(st.depends_on.join(", ") || "—")}</td><td>${esc(st.label)} <span class="muted">(${esc(st.status || "")})</span></td></tr>`).join("")}</tbody></table>
-      ${preview.added_entrypoints?.length ? `<p class="muted small">Also adds the entrypoint(s) ${preview.added_entrypoints.map((e) => `<code>${esc(e)}</code>`).join(", ")}.</p>` : ""}
-      <details><summary class="small">Changes to ${esc(preview.file)}</summary><pre class="log chat-pre" aria-label="Diff">${esc(preview.diff)}</pre></details>
-      <p id="promote-error" class="fail-t small" role="alert"></p></div>
-    <footer class="modal-f row gap"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn primary" id="promote-save">${icon("save")} Save to alfrd.yaml</button></footer>`, (root, close) => {
-    root.setAttribute("aria-labelledby", "promote-h");
-    const save = $("#promote-save", root);
-    save.focus();
-    save.onclick = async () => {
-      save.disabled = true;
-      try {
-        const out = await post(p, url, { preview: false, base_hash: preview.base_hash });
-        close();
-        ctx.toast(`Added ${out.steps.length} workflow step${out.steps.length === 1 ? "" : "s"} to ${out.workflow}`, "ok");
-        await ctx.refreshProject?.(p);
-        loadSession();
-      } catch (error) {
-        $("#promote-error", root).textContent = /changed|409/.test(error.message) ? "alfrd.yaml changed since this preview. Close and promote again to see the current file." : error.message;
-        save.disabled = false;
-      }
-    };
-  }, "wide");
 }
 
 // --- slash commands, setup, full-screen graph --------------------------------------------
@@ -1032,7 +1061,8 @@ const prefetch = (event) => {
   prefetchTimer = setTimeout(() => { if (!suspended) { prefetchSid = sid; prefetchSnapshot(S.project, sid); } }, 125);
 };
 root.addEventListener("pointerover", prefetch); root.addEventListener("focusin", prefetch);
-return { root, render, suspend, resume, isSuspended: () => suspended, refresh: () => { if (!suspended) loadSession(); }, project: () => S.project, sid: () => S.sid,
+return { root, render, suspend, resume,
+  isSuspended: () => suspended, refresh: () => { if (!suspended) loadSession(); }, project: () => S.project, sid: () => S.sid,
   destroy() { suspend(); destroyed = true; unsubscribeProjects(); draft?.destroy(); act?.stop(); panelResizers.forEach((r) => r.destroy()); layoutObserver?.disconnect(); window.removeEventListener("alfrd-events", onEvents); window.removeEventListener("alfrd-chat-resync", onResync); window.removeEventListener("resize", onResize); root.remove(); },
 };
 }

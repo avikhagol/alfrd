@@ -223,7 +223,7 @@ function stepItems(ctx, api, s, anchor) {
     ])) });
     items.push({ label: "Add a step after it", icon: "plus", hint: "N", run: () => addStepAt(ctx, api, null, s.key) });
     items.push({ label: s.skipped ? "Run it again (unskip)" : "Skip it in the workflow", icon: s.skipped ? "play" : "pause", run: () => skip(ctx, api, s.key, !s.skipped) });
-    items.push({ label: "Delete step…", icon: "trash", hint: "Delete", run: () => remove(ctx, api, s.key) });
+    items.push({ label: "Delete step…", danger: true, icon: "trash", hint: "Delete", run: () => remove(ctx, api, s.key) });
   }
   return [...items, ...stepRunItems(ctx, api, s)];
 }
@@ -251,7 +251,7 @@ function workflowRunItems(ctx, api) {
     if (p.start_at) items.push({ label: `Start run ${p.id} now`, icon: "play", run: act("start-now") });
     else if (p.status === "running") items.push({ label: `Pause run ${p.id}`, icon: "pause", run: act("pause") });
     else items.push({ label: `Resume run ${p.id}`, icon: "play", run: act("resume") });
-    items.push({ label: `Cancel run ${p.id}…`, icon: "stop", run: act("cancel") });
+    items.push({ label: `Cancel run ${p.id}…`, danger: true, icon: "stop", run: act("cancel") });
   }
   return items;
 }
@@ -267,7 +267,7 @@ function stepRunItems(ctx, api, s) {
   if (!row || !v || !status?.plan) return items;
   const unit = (status.units || []).slice().reverse().find((u) => (u.rows || [u.row]).includes(row.key) && (u.steps || []).includes(s.key));
   const set = (value) => setCell(ctx, project, status, row.key, s.key, value);
-  if (v === "running" && unit?.status === "running") items.push({ label: `Stop ${s.key} for ${row.target}…`, icon: "stop", run: () => stopUnit(ctx, project, status.plan.id, unit) });
+  if (v === "running" && unit?.status === "running") items.push({ label: `Stop ${s.key} for ${row.target}…`, danger: true, icon: "stop", run: () => stopUnit(ctx, project, status.plan.id, unit) });
   if (["failed", "blocked", "interrupted", "cancelled", "done"].includes(v)) items.push({ label: `Retry ${s.key} for ${row.target}`, icon: "reset", run: () => set("todo") });
   if (v === "todo" && !status.plan.loop) items.push({ label: `Skip ${s.key} for ${row.target} in this run`, icon: "minus", run: () => set("skip") });
   if (unit?.log) items.push({ label: "Open its log", icon: "log", run: () => openLog(ctx, project, unit.log) });

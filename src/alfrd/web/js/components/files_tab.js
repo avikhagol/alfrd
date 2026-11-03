@@ -1,5 +1,5 @@
 import { sourceHTML } from "../utils/refresh.js";
-import { esc, copyText } from "../utils/dom.js";
+import { esc, copyText, icon } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { empty, loading, error } from "./state_view.js";
 
@@ -8,29 +8,41 @@ export function filesHtml(files) {
   return `<ul class="chat-arts">${files.map((f, i) => `<li>
     <strong>${esc(f.path)}</strong><p>Task: ${esc(f.producer_rows.join(", "))} · ${esc(f.state)}</p>
     <button type="button" class="btn sm" data-file-copy="${i}">Copy path</button>
-    <button type="button" class="btn sm" data-file-reveal="${i}">Reveal in explorer</button>
     ${f.ref && f.state === "recorded" ? `<button type="button" class="btn sm" data-file-view="${i}">View</button>` : ""}
     ${f.state === "changed" ? `<p>File changed.</p><button type="button" class="btn sm" data-file-current="${i}">View current</button><button type="button" class="btn sm" data-file-keep="${i}">Keep recorded</button>` : ""}
   </li>`).join("")}</ul>`;
 }
 
 export async function blobAdapter(path, blob, registry, urls = URL) {
-  const mime = blob.type || registry.mimeOf(path), viewer = registry.viewerFor(path, mime);
-  const text = ["image", "pdf"].includes(viewer.id) ? "" : await blob.text();
+  const mime = blob.type || registry.mimeOf(path);
+  let viewer = registry.viewerFor(path, mime), text = "";
+  if (!["image", "pdf"].includes(viewer.id)) {
+    if (mime.startsWith("application/") && !/json|javascript|xml/.test(mime)) {
+      viewer = registry.viewerFor("", "application/octet-stream");
+    } else {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      try {
+        if (bytes.includes(0)) throw new Error("binary");
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch { viewer = registry.viewerFor("", "application/octet-stream"); }
+    }
+  }
   const url = urls.createObjectURL(blob);
   return { file: { path, name: path.split("/").pop(), mime, url, text }, viewer, release: () => urls.revokeObjectURL(url) };
 }
 
-const modalHtml = (title, body) => `<header class="modal-h"><h2>${esc(title)}</h2><button class="btn" data-close>Close</button></header>${body}`;
+const modalHtml = (title, body) => `<header class="modal-h"><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="Close file">${icon("close")}</button></header>${body}`;
 
-export async function openBlob(ctx, path, blob, isCurrent = () => true) {
+export async function openBlob(ctx, path, blob, isCurrent = () => true, rawURL = null) {
   const registry = await import("./viewers.js");
   const adapted = await blobAdapter(path, blob, registry);
   if (!isCurrent()) { adapted.release(); return; }
+  // Blob links are download-only; server links retain MIME and SVG sandbox headers.
+  const action = `<a class="btn sm" href="${esc(rawURL || adapted.file.url)}" ${rawURL ? 'target="_blank" rel="noopener noreferrer"' : 'download'}>${rawURL ? "Open in new tab" : "Download"}</a>`;
   let observer;
   const release = () => { adapted.release(); observer?.disconnect(); };
   try {
-    ctx.modal(modalHtml(path, '<div class="modal-b viewer viewer-full"></div>'), (root) => {
+    ctx.modal(modalHtml(path, `${action}<div class="modal-b"><div class="viewer viewer-full"></div></div>`), (root) => {
       root.addEventListener("beforeclose", release, { once: true });
       observer = new MutationObserver(() => { if (!root.isConnected) release(); });
       observer.observe(document.body, { childList: true, subtree: true });
@@ -39,18 +51,6 @@ export async function openBlob(ctx, path, blob, isCurrent = () => true) {
       });
     }, "full");
   } catch (err) { release(); throw err; }
-}
-
-export async function revealFile(ctx, project, path, isCurrent) {
-  const { mountExplorer } = await import("./file_explorer.js");
-  if (!isCurrent()) return;
-  ctx.modal(modalHtml(`Explorer: ${path}`, '<div class="modal-b" data-file-explorer></div>'), (root) => {
-    const explorer = mountExplorer(root.querySelector("[data-file-explorer]"), {
-      start: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "",
-      list: async (folder) => (await response(`/api/studio/projects/${encodeURIComponent(project)}/files?${new URLSearchParams({ path: folder })}`)).json(), selectable: (entry) => entry.path === path, selectLabel: "Selected file",
-    });
-    root.addEventListener("beforeclose", () => explorer.destroy(), { once: true });
-  });
 }
 
 async function response(url) {
@@ -62,7 +62,7 @@ export async function rawBlob(url, ref) {
   return (await response(`${url}/artifacts/raw?${new URLSearchParams({ ref })}`)).blob();
 }
 
-export function mountFiles(host, { getOverview, raw, isCurrent, view, reveal, rows, copy = copyText }) {
+export function mountFiles(host, { getOverview, raw, isCurrent, view, rows, copy = copyText }) {
   let alive = true, files = [];
   const current = () => alive && host.isConnected && isCurrent();
   const status = () => host.querySelector("[data-file-status]");
@@ -87,10 +87,13 @@ export function mountFiles(host, { getOverview, raw, isCurrent, view, reveal, ro
     button.disabled = true;
     try {
       if (action === "fileCopy") {
-        const ok = await copy(f.path);
+        if (!f.absolute_path?.startsWith("/")) {
+          status().textContent = "Absolute file path unavailable; refresh and retry.";
+          return;
+        }
+        const ok = await copy(f.absolute_path);
         if (current()) status().textContent = ok ? "Copied path" : "Copy failed";
-      } else if (action === "fileReveal") await reveal(f.path, current);
-      else if (action === "fileKeep") status().textContent = "Kept recorded; no file opened.";
+      } else if (action === "fileKeep") status().textContent = "Kept recorded; no file opened.";
       else if (action === "fileView" || action === "fileCurrent") {
         let ref = f.ref;
         if (action === "fileCurrent") {
@@ -100,7 +103,7 @@ export function mountFiles(host, { getOverview, raw, isCurrent, view, reveal, ro
         }
         if (!current()) return;
         const blob = await raw(ref);
-        if (current()) await view(f.path, blob, current);
+        if (current()) await view(f.path, blob, current, ref);
       }
     } catch (err) {
       if (current()) {

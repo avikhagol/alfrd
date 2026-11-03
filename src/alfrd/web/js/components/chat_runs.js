@@ -105,7 +105,8 @@ export function renderPane(box, ctx, project, mode) {
           const res = await server.request(`/api/studio/projects/${encodeURIComponent(project)}/chat/sessions/${encodeURIComponent(sid)}`);
           if (!res.ok) throw new Error(`Refresh: ${res.status}`);
           e.data = await res.json(); ctx.update();
-        }, openLog: (rel) => dockLog(ctx, project, rel), files: () => { location.hash = chatHref(ctx, project, sid); } }), label: "Chat task graph", empty: "No tasks yet: they appear when the chat plans a request.",
+        }, openLog: (rel) => dockLog(ctx, project, rel),
+        openMarkdown: async (path, text) => (await import("./files_tab.js")).openBlob(ctx, path, new Blob([text], { type: "text/markdown" })) }), label: "Chat task graph", empty: "No tasks yet: they appear when the chat plans a request.",
         onOpen: () => { location.hash = chatHref(ctx, project, sid); } });
     }
     graph.update(graphModel(e.data.graph, agents));

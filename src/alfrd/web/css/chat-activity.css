@@ -2,15 +2,15 @@
 :is(.chat, .chat-dock) .chat-request-line { gap: 8px; overflow-wrap: anywhere; }
 :is(.chat, .chat-dock) .chat-request-line > :is([data-run-warning], [data-current-steps], [data-team-mailbox]):empty { display: none; }
 :is(.chat, .chat-dock) .chat-run-head { text-align: start; white-space: normal; height: auto; min-height: 34px; line-height: 20px; }
-:is(.chat, .chat-dock) .chat-details { padding: 12px; border-radius: var(--chat-radius-card, 8px); background: var(--chat-surface-2, var(--surface-2)); }
+:is(.chat, .chat-dock) .chat-details { padding: 12px 0; border: 0; border-top: 1px solid var(--border-faint); border-radius: 0; background: transparent; }
 :is(.chat, .chat-dock) .chat-details > summary,
 :is(.chat, .chat-dock) .chat-team > summary,
 :is(.chat, .chat-dock) [data-usage] > summary { min-height: 34px; align-content: center; cursor: pointer; }
 :is(.chat, .chat-dock) [data-task-progress] { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 12px; font-size: 12px; }
 :is(.chat, .chat-dock) [data-task-progress] label { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 :is(.chat, .chat-dock) [data-task-progress] progress { max-width: 100%; width: 120px; accent-color: var(--chat-live, var(--accent)); }
-:is(.chat, .chat-dock) .chat-islands { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
-:is(.chat, .chat-dock) .chat-task-island { min-width: 0; padding: 16px; border: 1px solid var(--chat-border-strong, var(--border-strong)); border-radius: var(--chat-radius-card, 8px); background: var(--chat-surface, var(--surface)); font-size: 12px; line-height: 16px; }
+:is(.chat, .chat-dock) .chat-islands { display: flex; flex-direction: column; gap: 0; }
+:is(.chat, .chat-dock) .chat-task-island { min-width: 0; padding: 16px 0; border: 0; border-top: 1px solid var(--border-faint); border-radius: 0; background: transparent; font-size: 12px; line-height: 16px; }
 :is(.chat, .chat-dock) .chat-task-island > header { display: flex; flex-wrap: wrap; gap: 8px; align-items: start; }
 :is(.chat, .chat-dock) .chat-task-island > header > div { flex: 1; min-width: 0; }
 :is(.chat, .chat-dock) .chat-island-avatar { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border: 1px solid currentColor; border-radius: 6px; color: var(--chat-agent-purple, var(--accent-text)); font-weight: 600; }

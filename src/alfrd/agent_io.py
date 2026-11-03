@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -158,10 +159,73 @@ def agent_totals(units):
         values = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
         return sum(values) if values else None
 
+    units = list(units)
     usages = [normalized_usage(unit) or {} for unit in units]
     result = {key: known_sum(usage.get(key) for usage in usages) for key in NORMALIZED_KEYS}
     result["total_cost_usd"] = known_sum(unit.get("total_cost_usd") for unit in units)
+    if result["total_cost_usd"] is None:
+        result["cost_reason"] = "; ".join(dict.fromkeys(cost_reason(u) for u in units)) or "Not reported by agent"
     return result
+
+
+def elapsed_seconds(unit, now=None):
+    """ALFRD wall time for one attempt, including failures and adopted runs.
+
+    Never use CLI duration or resource-usage wall time. Naive legacy stamps
+    retain local-time semantics; offset-aware stamps use their explicit offset.
+    """
+    try:
+        start = datetime.fromisoformat(str(unit.get("started")).replace("Z", "+00:00"))
+        finish = unit.get("finished")
+        if not finish and unit.get("status") != "running":
+            return None
+        end = datetime.fromisoformat(str(finish).replace("Z", "+00:00")) if finish else (now or datetime.now().timestamp())
+        return round(max(0.0, (end.timestamp() if isinstance(end, datetime) else end) - start.timestamp()), 1)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def cost_reason(unit):
+    return unit.get("cost_reason") or "Not reported by agent"
+
+
+def codex_model(argv, env=None):
+    """Snapshot the configured model, including CLI overrides and profiles.
+
+    Do not guess a CLI built-in default: it changes between releases. Without
+    a configured/reported model the cost remains explicitly unknown.
+    """
+    import os
+    from alfrd.chat import _codex_config_models
+
+    explicit = option(argv, "--model", "-m")
+    if explicit:
+        return explicit
+    overrides = []
+    for i, arg in enumerate(argv):
+        if arg in ("-c", "--config") and i + 1 < len(argv):
+            overrides.append(argv[i + 1])
+        elif arg.startswith("--config="):
+            overrides.append(arg.split("=", 1)[1])
+    for override in reversed(overrides):
+        match = re.fullmatch(r"model\s*=\s*[\"']?([^\"']+)[\"']?", override)
+        if match:
+            return match.group(1).strip()
+    home = (env or {}).get("CODEX_HOME") or os.environ.get("CODEX_HOME") or Path.home() / ".codex"
+    try:
+        text = (Path(home).expanduser() / "config.toml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    profile = option(argv, "--profile", "-p")
+    if profile:
+        # Read only the selected profile, never another profile's model.
+        section = re.search(r"(?m)^\s*\[profiles\." + re.escape(profile) + r"\]\s*$", text)
+        if section:
+            body = text[section.end():].split("\n[", 1)[0]
+            selected = _codex_config_models(body, lambda name: None)
+            if selected:
+                return selected
+    return _codex_config_models(text, lambda name: None)
 
 
 STARTUP_KEYS = ("lean", "mcp", "plugins", "skills")
@@ -288,6 +352,10 @@ def agent_command(argv, model=None, stream=False, access=None, adapter=None, fal
     args = list(argv or [])
     adapter = adapter or adapter_for(args)
     agent = adapter.name
+    # Keep the final response in its file; JSON stdout supplies itemized usage.
+    if agent == "codex" and option(args, "--output-last-message", "-o") and "--json" not in args:
+        at = len(args) - 1 if args and args[-1] == "-" else len(args)
+        args.insert(at, "--json")
     lean = startup_args(adapter, startup)
     if lean and not any(a.split("=")[0] in LEAN_FLAGS for a in args):  # a command that sets them itself wins
         at = len(args) - 1 if args and args[-1] == "-" else len(args)

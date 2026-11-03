@@ -61,7 +61,10 @@ test("HTML outlines precede data, replace each region in place, and defer closed
     assert.equal(await page.locator("#chat-log .skeleton-block").count(), 0);
     assert.equal(await page.locator("#chat-log").getAttribute("aria-busy"), "false");
     const after = await page.locator("#chat-log").boundingBox();
-    for (const key of ["x", "y", "width", "height"]) assert.ok(Math.abs(after[key] - before[key]) <= 1, `${key} stays fixed: ${before[key]} → ${after[key]}`);
+    for (const key of ["x", "width"]) assert.ok(Math.abs(after[key] - before[key]) <= 1, `${key} stays fixed: ${before[key]} → ${after[key]}`);
+    assert.ok(Math.abs(after.y + after.height - before.y - before.height) <= 1, "composer edge stays fixed");
+    assert.equal(await page.locator("#chat-run").isVisible(), false, "empty snapshot releases the loading Run line");
+    assert.ok(after.y <= before.y, "empty Run space returns to the transcript");
     assert.equal(await page.evaluate(() => logNode === document.querySelector("#chat-log") && listNode === document.querySelector("#chat-list") && roots.every((el) => el.isConnected)), true);
     const deferred = ["metadata.js", "results.js", "alfrd_config.js", "skills_explorer.js", "goals_tab.js", "graph_view.js"];
     for (const name of deferred) assert.equal(paths.some((p) => p.endsWith(`/${name}`)), false, `${name} stays deferred`);

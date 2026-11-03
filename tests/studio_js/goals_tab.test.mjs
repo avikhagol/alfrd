@@ -114,6 +114,6 @@ test("no session and pending snapshot use F2 states without fetching; integratio
   api.update({ host, project: "p", sid: "s" }); assert.match(host.innerHTML, /Loading session/);
   assert.equal(calls, 0); api.stop();
   const source = await readFile(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
-  assert.match(source, /drawGoals\(\{ host: inspTab === "goals"/);
+  assert.match(source, /drawGoals\(\{ host: inspectorTabs\.active\(\) === "goals"/);
   assert.match(source.slice(source.indexOf("function leave() {\n"), source.indexOf("function render(el, ctx) {\n  if (destroyed)")), /goals\?\.stop\(\)/);
 });

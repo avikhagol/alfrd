@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 let chromium;
@@ -25,6 +25,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
   const open = async (theme, width, dock = false) => {
     const page = await browser.newPage({ viewport: { width, height: 980 } });
     page.setDefaultTimeout(7000);
+    page.on("pageerror", (e) => console.error(e.stack));
     await page.goto(`http://127.0.0.1:${service.address().port}/?theme=${theme}`);
     await page.evaluate(async (dock) => {
       const { server } = await import("/js/data/server.js");
@@ -83,6 +84,35 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
     await page.locator('[data-key="run:r2"] .chat-run-row').first().waitFor();
     return page;
   };
+  for (const theme of ["obsidian-orbit", "daylight-orbit"]) await t.test(`Run card states: ${theme}`, async () => {
+    const page = await open(theme, 1440); t.after(() => page.close());
+    await page.evaluate(() => { document.getElementById("home").style.height = "100vh"; window.scrollTo(0, 0); });
+    const run = page.locator("#chat-run");
+    assert.match(await run.innerText(), /Redesign the chat.*Needs you.*0\/2 done/s);
+    assert.equal(await page.locator("[data-request-scope], [data-chat=promote], #promote-save").count(), 0);
+    assert.equal(await run.locator("button").count(), 0, "Run summary is informational");
+    const update = async (state) => {
+      await page.evaluate((state) => {
+        const req = fixture.requests.find((r) => r.id === "r2"); fixture.requests = [req];
+        req.status = state; req.mailbox.pending_user = state === "blocked" ? 1 : 0;
+        fixture.tasks.filter((t) => t.request === "r2").forEach((t) => { t.status = state === "done" ? "done" : "running"; });
+        if (state === "blocked") { req.status = "running"; fixture.tasks[1].status = "blocked"; }
+        if (state === "empty") { fixture.requests = []; fixture.tasks = []; fixture.messages = []; }
+        window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } }));
+      }, state);
+      if (state === "empty") await run.waitFor({ state: "hidden" });
+      else await page.waitForFunction((label) => document.querySelector("#chat-run").textContent.includes(label), state === "blocked" ? "Needs you" : state === "done" ? "Done" : "Running");
+    };
+    for (const state of ["running", "blocked", "done", "empty"]) {
+      await update(state);
+      if (state === "done") assert.match(await run.innerText(), /2\/2 done/);
+      if (process.env.ALFRD_RUN_SCREENSHOTS) {
+        await mkdir(process.env.ALFRD_RUN_SCREENSHOTS, { recursive: true });
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: `${process.env.ALFRD_RUN_SCREENSHOTS}/${theme}-${state}.png` });
+      }
+    }
+  });
   for (const dock of [false, true]) await t.test(`heartbeat preserves ${dock ? "dock" : "chat"} scroll, typing and native menus`, async () => {
     const page = await open("obsidian-orbit", 1440, dock); t.after(() => page.close());
     const id = dock ? "cd" : "chat";
@@ -111,23 +141,16 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
         input.style.height === kept.height, log.scrollTop === kept.top, log.querySelector('[data-key="m:long-1"]') === kept.first,
         log.querySelector(".chat-details") === kept.details, document.querySelector('[data-attach-chip="kept"]') === kept.chip];
     }, id), Array(10).fill(true));
-    // A real native select owns focus while the server changes its options.
-    if (!dock) await page.locator('[data-chat="inspect"]').click();
-    const select = page.locator(dock ? "#cd-session" : "[data-request-scope]");
-    await select.focus();
-    await page.evaluate((dock) => {
-      const select = document.querySelector(dock ? "#cd-session" : "[data-request-scope]");
-      window.keptSelect = { select, option: select.options[0], value: select.value, html: select.innerHTML };
-      if (dock) {
-        import("/js/data/chat_projects.js").then(({ chatProjects }) => { window.sessionTitle = "Changed title"; chatProjects.load("p", true, true); });
-      } else fixture.requests[1].text = "Updated request label";
-      window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } }));
-    }, dock);
-    await page.waitForTimeout(500);
-    assert.equal(await select.evaluate((el) => el === keptSelect.select && el.options[0] === keptSelect.option && el.innerHTML === keptSelect.html && el.value === keptSelect.value && document.activeElement === el), true);
-    await page.locator(`#${id}-input`).focus();
-    if (!dock) await page.waitForFunction(() => document.querySelector('[data-request-scope]').textContent.includes("Updated request label"));
-    else await page.waitForFunction(() => document.querySelector("#cd-session").textContent.includes("Changed title"));
+    if (dock) {
+      const select = page.locator("#cd-session"); await select.focus();
+      await page.evaluate(() => { import("/js/data/chat_projects.js").then(({ chatProjects }) => { window.sessionTitle = "Changed title"; chatProjects.load("p", true, true); }); });
+      await page.locator("#cd-input").focus();
+      await page.waitForFunction(() => document.querySelector("#cd-session").textContent.includes("Changed title"));
+    } else {
+      assert.equal(await page.locator("[data-request-scope], [data-chat=promote]").count(), 0);
+      await page.evaluate(() => { fixture.requests[1].text = "Updated request label"; window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })); });
+      await page.waitForFunction(() => document.querySelector("#chat-run").textContent.includes("Updated request label"));
+    }
     // New messages retain a reader's offset; only a reader already at the bottom follows.
     await page.evaluate((id) => { document.getElementById(`${id}-log`).scrollTop = 250; }, id);
     await page.evaluate(() => { fixture.messages.push({ id: "added-away", role: "user", request: "r2", text: "New while reading" }); window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })); });
@@ -172,7 +195,7 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       const row = active.locator('.chat-run-row').filter({ hasText: "Implement chat" });
       await row.locator('.chat-output > summary').click();
       await page.waitForFunction(() => document.querySelector('.chat-output[open] pre').textContent.includes('Public output'));
-      assert.equal(await row.locator('[data-cost]').innerText(), "— / Not reported");
+      assert.equal(await row.locator('[data-cost]').innerText(), "Not reported by agent");
       const pre = row.locator('.chat-act-tail');
       await pre.evaluate((el) => { document.activeElement.blur(); el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); });
       await page.evaluate(() => { window.tailVersion = 2; window.dispatchEvent(new CustomEvent('alfrd-events', { detail: { project: 'p', events: [{ plan: 'chat-s' }] } })); });

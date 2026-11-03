@@ -46,6 +46,7 @@ Try the demo at `http://127.0.0.1:5000/studio/`; **Ctrl+C** stops it. For your p
 - **Run and resume work:** select target × step cells in a plan CSV; resume unfinished steps.
 - **Extend your workflow:** Claude Code ↔ Codex handoffs, notifications, plugins and themes.
 
+
 ## Documentation
 
 | Start here | Go further |

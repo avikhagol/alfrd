@@ -69,3 +69,41 @@ test("scope changes render totals or the selected request and keep unknown total
     assert.doesNotMatch(box.innerHTML, /NaN|undefined|Infinity/);
   } finally { Date.now = realNow; }
 });
+
+
+test("scope defaults to latest even when an older request is active; explicit choices persist", () => {
+  const scope = createRequestScope(), s = state();
+  assert.equal(scope.request(s), "r3");
+  assert.match(scope.label(s), /Latest request.*r3/);
+  let selected;
+  scope.items(s, (id) => { selected = id; }).find((i) => i.label.startsWith("r1 ·")).run();
+  assert.equal(selected, "r1"); assert.equal(scope.request(s), "r1");
+  s.requests.push({ id: "r4" }); assert.equal(scope.request(s), "r1");
+  scope.items(s, () => {}).find((i) => i.label === "All requests").run();
+  assert.equal(scope.request(s), null); assert.equal(scope.isAll(), true);
+  scope.items(s, () => {}).find((i) => i.label === "Latest request").run();
+  assert.equal(scope.request(s), "r4");
+  assert.equal(createRequestScope().request({}), null);
+});
+
+test("one scope reaches Graph, Files and Goals through the inspector controller", async () => {
+  const source = await readFile(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
+  const start = source.indexOf("function drawInspector(ctx)");
+  const body = source.slice(start, source.indexOf("\n}\n", start) + 2);
+  const scope = createRequestScope(), panel = { dataset: {} }, card = {}, calls = {};
+  const S = { sid: "s", data: { requests: [{ id: "r0001" }, { id: "r0002" }], graph: {} } };
+  const deps = { S, scope, host: {}, inspectorTabs: { active: () => "graph" }, full: null, agents: () => ({}),
+    $: (sel) => sel === "#chat-insp-panel" ? panel : card,
+    drawProgress() {}, drawDecisions() {}, drawTask() {},
+    graphModel: (graph, agents, request) => { calls.graph = request; return {}; },
+    graph: { update() {} }, drawFilesTab: (ctx, request) => { calls.files = request; },
+    drawGoals: (args) => { calls.goals = args.request; } };
+  const draw = new Function(...Object.keys(deps), `${body}; return drawInspector;`)(...Object.values(deps));
+  for (const [choice, expected] of [["latest", "r0002"], ["r0001", "r0001"], ["all", null]]) {
+    scope.select(choice); draw({});
+    assert.deepEqual(calls, { graph: expected, files: expected, goals: expected });
+    assert.equal(panel.dataset.request, expected || "all");
+  }
+  assert.match(source, /aria-haspopup="menu"[^>]*aria-expanded="false"[^>]*aria-label="Request scope/);
+  assert.match(source, /ctxRef.menu\(b, scope.items/);
+});

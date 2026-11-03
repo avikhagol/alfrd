@@ -373,9 +373,7 @@ as the Chat page, and is a labelled landmark (`aria-expanded` on its button).
 Each chat session is also a run: Workflow → Runs lists it under *Chat sessions* (tasks × agents grid,
 logs, usage, Pause / Resume / Cancel, **Open in Chat**), and with it picked Graph and List show its
 tasks. It never counts as the active workflow run. Each task shows its attempts with **Open log**
-and its handoff folder, and **Promote to workflow** (Chat page) previews the request's tasks as
-workflow steps, then saves them into the active `alfrd.yaml` with the usual history, changed-on-disk
-and cycle checks.
+and its handoff folder. The Chat page shows the current request, status, task counts and items needing you in a compact Run line.
 
 Token and cost report: Chat shows, per task, request and session, new input, cache read, cache write,
 output and cost; Schedule shows the same per turn and for the plan (Agent tokens line, Usage table).

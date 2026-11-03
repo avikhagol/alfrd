@@ -10,8 +10,8 @@
   --chat-text: var(--text, #F8FAFC);
   --chat-text-2: var(--text-2, #C3CEDD);
   --chat-muted: var(--text-3, var(--muted, #A6B3C6));
-  --chat-live: var(--run-text, var(--accent-text, #4CD7F6));
-  --chat-live-bg: var(--run-bg, var(--accent-bg, #083344));
+  --chat-live: var(--accent-text, #4CD7F6);
+  --chat-live-bg: var(--accent-bg, #083344);
   --chat-action: var(--accent-control, var(--accent, #5B5EE6));
   --chat-on-action: var(--on-accent, #F8FAFC);
   --chat-agent-orchestrator: var(--accent-text, #B6B9FF);
@@ -56,14 +56,21 @@
   font: var(--chat-body-size)/var(--chat-body-leading) var(--chat-sans);
 }
 [data-theme="obsidian-orbit"] :is(.chat, .chat-dock) {
-  --chat-live: #4CD7F6;
-  --chat-live-bg: #083344;
+  --chat-bg: #090D14;
+  --chat-surface: #0D131F;
+  --chat-surface-2: #141C2C;
+  --chat-hover: #1A2336;
+  --chat-border: rgba(255,255,255,.07);
+  --chat-text-2: #CBD5E1;
+  --chat-muted: #94A3B8;
+  --chat-live: var(--run-text);
+  --chat-live-bg: var(--run-bg);
   --chat-agent-purple: #C084FC;
   --chat-agent-sky: #38BDF8;
 }
 [data-theme="daylight-orbit"] :is(.chat, .chat-dock) {
-  --chat-live: #00687A;
-  --chat-live-bg: #E0F7FA;
+  --chat-live: var(--run-text);
+  --chat-live-bg: var(--run-bg);
   --chat-agent-purple: #7E22CE;
   --chat-agent-sky: #0369A1;
 }
@@ -108,7 +115,14 @@
     --chat-warning-border: CanvasText;
     --chat-error-border: CanvasText;
   }
-  [data-theme] :is(.chat, .chat-dock), .chat, .chat-dock {
+  :is(html, [data-theme]) :is(.chat, .chat-dock), .chat, .chat-dock {
+    --chat-bg: Canvas;
+    --chat-surface: Canvas;
+    --chat-surface-2: Canvas;
+    --chat-hover: Canvas;
+    --chat-border: CanvasText;
+    --chat-text-2: CanvasText;
+    --chat-muted: CanvasText;
     --chat-live: CanvasText;
     --chat-live-bg: Canvas;
     --chat-agent-purple: LinkText;
