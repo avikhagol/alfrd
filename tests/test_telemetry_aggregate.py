@@ -152,6 +152,23 @@ def test_record_without_log_loads_as_null(project):
     assert state["tasks"][0]["telemetry"]["attempts"] == 1
 
 
+def test_session_metrics_include_failed_retried_and_adopted_attempts(project):
+    sid, store, req = make_session(project, "Metrics")
+    folder = chat._plan_folder(store)
+    row = req["rows"][0]
+    for index, (adapter, status) in enumerate([("claude", "failed"), ("codex", "interrupted"), ("generic", "done")]):
+        folder.save_unit({"id": f"u{index}", "row": row, "status": status, "adapter": adapter,
+                          "started": "2026-10-01T08:00:00Z", "finished": "2026-10-01T08:00:12Z",
+                          "retry_of": f"u{index - 1}" if index else None})
+    state = chat.session_state(project, sid)
+    task = next(t for t in state["tasks"] if t["row"] == row)
+    assert task["seconds"] == 36
+    assert [log["seconds"] for log in task["logs"]] == [12, 12, 12]
+    assert task["cost_reason"] == "Not reported by agent"
+    items = chat.activity(project, sid, units=["u0", "u1", "u2"])["items"]
+    assert [item["seconds"] for item in items] == [12, 12, 12]
+
+
 def test_log_without_sidecar_is_built_and_finished_zero_is_complete(project):
     sid, store, req = make_session(project, "Zero")
     row = req["rows"][0]

@@ -62,6 +62,7 @@ test("Skills Explorer in Chromium", { skip: !chromium && "Playwright not availab
       window.ctx = { state: { mode, selectedProject: project } };
       if (chat) {
         const { server } = await import("/js/data/server.js");
+        server.session = { mutations_enabled: true, csrf_token: "fixture-csrf" };
         const { DEFAULTS } = await import("/js/data/chat.js");
         const request = server.request.bind(server);
         server.request = (url, opts) => url.includes("/skills/") ? request(url, opts) : Promise.resolve(new Response(JSON.stringify(url.endsWith("/settings") ? DEFAULTS : { sessions: [] })));
@@ -194,6 +195,7 @@ test("Skills Explorer in Chromium", { skip: !chromium && "Playwright not availab
     // Recreate the app after a full browser reload and read saved API state.
     await page.evaluate(async () => {
       const { server } = await import("/js/data/server.js"), { DEFAULTS } = await import("/js/data/chat.js");
+      server.session = { mutations_enabled: true, csrf_token: "fixture-csrf" };
       const request = server.request.bind(server);
       server.request = (url, opts) => url.includes("/skills/") ? request(url, opts) : Promise.resolve(new Response(JSON.stringify(url.endsWith("/settings") ? DEFAULTS : { sessions: [] })));
       window.chat = await import("/js/components/chat_view.js");

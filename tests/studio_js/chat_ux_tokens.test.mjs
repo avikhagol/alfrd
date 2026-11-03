@@ -102,6 +102,8 @@ test('computed tokens, composited contrast, custom themes and forced colors on p
     assert.equal(await page.locator('.chat button').evaluate((el) => getComputedStyle(el).outlineStyle), 'solid');
     await page.emulateMedia({ forcedColors: 'none' });
   }
+  // Switching to a custom theme replaces the built-in theme stylesheet in the app.
+  await page.setContent(`<style>${studio}\n${tokens}\n${baseline.replace(/@import[^;]+;/g, '')}</style><main class="chat"></main><aside class="chat-dock"></aside>`);
   await page.evaluate(() => {
     document.documentElement.dataset.theme = 'custom';
     document.documentElement.style.cssText = '--bg:#123456;--surface:#234567;--accent-text:#abcdef;--accent-control:#345678;--focus:#fedcba;--console-bg:#112233;--ok-text:#aabbcc';

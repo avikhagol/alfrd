@@ -9,9 +9,37 @@ import secrets
 from collections import Counter
 
 from alfrd import chat
+from .schedule_control import ScheduleControl
 
 
-class ChatControl:
+class ChatControl(ScheduleControl):
+    def set_chat_mode(self, args, sender_id):
+        if not args:
+            mode = "legacy (/new activates prompts)" if self.chat_mode is None else "on" if self.chat_mode else "off"
+            return self.send(f"Chat mode: {mode}.")
+        # Private chat IDs identify people. Never grant group members admin
+        # rights just because the group itself is an allowed destination.
+        if not self.is_superuser(sender_id):
+            return self.send("Only a configured superuser can change chat mode.")
+        if len(args) != 1 or args[0].lower() not in ("on", "off"):
+            return self.send("Use /chatmode on or /chatmode off.")
+        previous = self.chat_mode
+        self.chat_mode = args[0].lower() == "on"
+        try:
+            self.save_state(strict=True)
+        except OSError:
+            self.chat_mode = previous
+            return self.send("Could not save chat mode. No change made; check the bot state file.")
+        self.send(f"Chat mode: {'on' if self.chat_mode else 'off'}.")
+
+    def mode_prompt(self, text, message_id):
+        if not self.active_chat:
+            # Resolve before creating anything: ambiguous/no projects are safe
+            # errors, with /status or /new as the existing selection flow.
+            self.project()
+            self.create_chat(self.selected)
+        self.chat_prompt(text, message_id)
+
     def text_parts(self, text):
         """Lossless plain-text chunks, bounded in UTF-16 units (including emoji)."""
         text = str(text).replace(self.token, "<token>")

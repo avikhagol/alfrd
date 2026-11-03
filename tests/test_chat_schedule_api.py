@@ -44,3 +44,35 @@ def test_api_validation_and_service_disabled(web):
     assert client.get(url.replace(sid, 'missing')).status_code == 404
     client.application.config['RUNTIME_MUTATIONS_ENABLED'] = False
     assert client.get(url).get_json()['schedule_service']['available'] is False
+
+
+def test_multi_schedule_api_targets_validation_and_transitions(web, monkeypatch):
+    client, headers, base, sid, root = web
+    monkeypatch.setattr(chat, 'resume', lambda *a, **kw: None)
+    url = f'{base}/sessions/{sid}'
+    def state():
+        return client.get(url + '/schedule').get_json()
+    def create(cid, at):
+        return client.post(url + '/schedule', headers=headers, json={'run_at': at, 'timezone': 'UTC',
+            'client_schedule_id': cid, 'expected_schedule_revision': state()['schedule_revision']})
+    first = create('first', '2099-01-01T00:00:00Z').get_json()['selected_schedule_id']
+    second = create('second', '2099-01-02T00:00:00Z').get_json()['selected_schedule_id']
+    assert len(state()['schedules']) == 2
+    assert create('same', '2099-01-01T02:00:00+02:00').get_json()['selected_schedule_id'] == first
+    assert create('past', '2000-01-01T00:00:00Z').status_code == 400
+    for bid, text in [(first, 'one'), (second, 'two'), (first, 'append')]:
+        res = client.post(url + '/messages', headers=headers, json={'text': text, 'schedule_id': bid,
+            'expected_schedule_revision': state()['schedule_revision'], 'client_message_id': text})
+        assert res.status_code == 201 and res.get_json()['queued']
+    def mutate(bid, action, method='post', **kw):
+        return getattr(client, method)(url + '/schedule/' + bid + action, headers=headers,
+            json={'expected_schedule_revision': state()['schedule_revision'], 'operation_id': str(state()['schedule_revision']) + action.replace('/', '.'), **kw})
+    assert mutate(second, '', 'patch', run_at='2000-01-01T00:00:00Z', timezone='UTC').status_code == 400
+    assert mutate(second, '', 'patch', run_at='2099-01-03T00:00:00Z', timezone='UTC').status_code == 200
+    assert mutate(first, '/run').status_code == 202
+    assert len(state()['schedules']) == 1 and state()['schedules'][0]['id'] == second
+    assert mutate(first, '/cancel').status_code == 409
+    assert mutate(second, '/cancel').status_code == 200
+    assert mutate(second, '', 'patch', run_at='2099-01-04T00:00:00Z', timezone='UTC').status_code == 409
+    assert client.post(url + '/messages', headers=headers, json={'text': 'late', 'schedule_id': second}).status_code == 409
+    assert len(chat.session(root, sid).requests()) == 1

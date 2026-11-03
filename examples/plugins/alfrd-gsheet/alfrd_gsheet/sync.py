@@ -470,12 +470,14 @@ class Sync:
             self.client.batch_update(state.config.spreadsheet_id, data, value_input_option=option, deadline=deadline)
             return SyncResult("ok", changes, len(changes), conflicts)
 
-    def _record(self, ctx: StepContext, state: Snapshot | None, result: SyncResult, *, error: str = "", phase: str = "after") -> None:
+    def _record(self, ctx: StepContext, state: Snapshot | None, result: SyncResult, *, error: str = "", phase: str = "after", error_code: str = "") -> None:
         path = Path(ctx.project_root) / ".alfrd" / "gsheet" / "sync.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         record = {"at": _now(), "plan_id": ctx.plan_id, "unit_id": ctx.unit_id, "steps": list(ctx.steps),
                   "phase": phase, "result": result.result, "cells_written": result.cells_written,
                   "conflicts": result.conflicts, "changed_cells": list(result.changes), "error": error}
+        if error_code in ("auth_required", "file_access"):
+            record["error_code"] = error_code
         if state is not None:
             record.update(spreadsheet_id=state.config.spreadsheet_id, worksheet=state.worksheet, read_at=state.read_at)
         # Deliberately omit values, context and settings: result/error fields can
@@ -499,5 +501,5 @@ class Sync:
         # fail-soft already recorded the conflict result in _write.
         if not isinstance(exc, ConflictError):
             with contextlib.suppress(OSError):
-                self._record(ctx, None, SyncResult("error"), error=message, phase=phase)
-        raise SyncError(message) from None
+                self._record(ctx, None, SyncResult("error"), error=message, phase=phase, error_code=getattr(exc, "code", ""))
+        raise SyncError(message, code=getattr(exc, "code", "")) from None

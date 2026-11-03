@@ -666,7 +666,7 @@ def list_sessions(root: str | Path) -> list[dict[str, Any]]:
         store = Session(Path(root).resolve(), data["id"])
         last = store.messages(1)
         attention = _session_attention(store)
-        out.append({**data, "messages": len(store.messages()), "last_message": last[0] if last else None,
+        out.append({**_display_session(store, data), "messages": len(store.messages()), "last_message": last[0] if last else None,
                     **attention,
                     "schedule": _schedule_summary(store),
                     "plan_status": (_read(_plan_folder(store).plan_file) or {}).get("status")})
@@ -703,7 +703,7 @@ def delete_session(root: str | Path, sid: str) -> dict[str, Any]:
     folder = _plan_folder(store)
     with store.lock():
         data = store.load()
-        if store.load_schedule().get("current_id"):
+        if _schedule_pending(store.load_schedule()):
             raise PermissionError("cancel the pending schedule before deleting this session")
         active = [r["id"] for r in store.requests() if r.get("status") in REQUEST_ACTIVE]
         if active:
@@ -815,7 +815,37 @@ def _replay(store: Session, message: dict[str, Any]) -> dict[str, Any]:
     return {"message": message, "request": req, "task": store.task(rows[0]) if rows else None, "replayed": True}
 
 
+def _scheduled_title(text):
+    """A display-only summary for old scheduler prompts; no stored text is changed."""
+    match = re.match(r"Scheduled batch sch_\S+ \((\d+) pending items\)", text)
+    if not match:
+        return None
+    items = re.findall(r"^\d+\. Added [^\n]*\n   ([^\n]*)", text, re.M)
+    return _batch_title(items, int(match[1]))
+
+
+def _batch_title(items, count):
+    summaries = []
+    for text in items[:3]:
+        text = " ".join(str(text).split()).strip("# ")
+        text = re.sub(r"\bsch_\S+|\bpending\b", "", text, flags=re.I).strip()
+        if text:
+            summaries.append(text[:28].rstrip())
+    if not summaries:
+        return f"Scheduled batch · {count} items"
+    extra = count - len(summaries)
+    return ", ".join(summaries) + (f" +{extra}" if extra > 0 else "")
+
+
+def _display_session(store, data):
+    if data.get("title_source") != "explicit" and re.match(r"Scheduled batch sch_", data.get("title", "")):
+        first = next((m for m in store.messages() if m.get("role") == "user"), {})
+        return {**data, "title": _scheduled_title(first.get("text", "")) or "Scheduled batch"}
+    return data
+
+
 def _prompt_title(text: str, agents) -> str:
+    text = _scheduled_title(text) or text
     text = unicodedata.normalize("NFC", text)
     mention = _MENTION.match(text)
     if mention and mention.group(1).lower() in agents:
@@ -3182,15 +3212,31 @@ def _task_units(store: Session, row: str) -> list[dict[str, Any]]:
     return [u for u in _plan_folder(store).units() if u.get("row") == row]
 
 
+def _transcript_path(store: Session, unit_id: str, part: str) -> Path:
+    """Only archive documents inside this session's plan; never follow symlinks."""
+    if (not unit_id or unit_id in (".", "..") or "/" in unit_id or "\\" in unit_id
+            or part not in TRANSCRIPT_PARTS):
+        raise LookupError("invalid transcript path")
+    path = _plan_folder(store).path / "handoffs" / unit_id / f"{part}.md"
+    relative = path.relative_to(store.root)
+    current = store.root
+    for component in relative.parts:
+        current = current / component
+        if current.is_symlink():
+            raise LookupError("transcript symlinks are not allowed")
+    if not path.resolve().is_relative_to(store.root.resolve()):
+        raise LookupError("transcript is outside the session plan")
+    return path
+
+
 def transcript(root: str | Path, sid: str, row: str) -> dict[str, Any]:
     """A task's attempts (one per unit) with the sizes of their archived prompt and reply; no content."""
     store = session(root, sid)
-    folder = _plan_folder(store)
     out = []
     for n, unit in enumerate(_task_units(store, row), 1):
         sizes = {}
         for part in TRANSCRIPT_PARTS:
-            path = folder.path / "handoffs" / unit["id"] / f"{part}.md"
+            path = _transcript_path(store, unit["id"], part)
             sizes[f"{part}_bytes"] = path.stat().st_size if path.is_file() else 0
         out.append({"unit": unit["id"], "attempt": n, "status": unit.get("status"), "started": unit.get("started"),
                     "finished": unit.get("finished"), "agent": unit.get("agent"), "model": unit.get("model"),
@@ -3206,11 +3252,7 @@ def transcript_part(root: str | Path, sid: str, row: str, unit_id: str, part: st
         raise LookupError(f"unknown transcript part {part!r}")
     if not any(u["id"] == unit_id for u in _task_units(store, row)):
         raise LookupError(f"{unit_id!r} is not an attempt of task {row!r}")
-    folder = _plan_folder(store)
-    base = (folder.path / "handoffs").resolve()
-    path = (base / unit_id / f"{part}.md").resolve()
-    if not path.is_relative_to(base):
-        raise LookupError("transcript is outside the session plan")
+    path = _transcript_path(store, unit_id, part)
     if not path.is_file():
         raise LookupError(f"no {part} archived for {unit_id}")
     limit = min(int(length or MAX_TRANSCRIPT_READ), MAX_TRANSCRIPT_READ)
@@ -3535,7 +3577,7 @@ def _write_graph(store: Session, conf: Mapping[str, Any] | None = None) -> None:
 def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev: int | None = None) -> dict[str, Any]:
     """The whole session state. ``rev`` is read before the rest, so a change landing mid-build only makes the next
     poll redundant. With ``since_rev`` equal to it the answer is just ``{rev, unchanged: True}``."""
-    from alfrd.agent_io import agent_totals
+    from alfrd.agent_io import agent_totals, elapsed_seconds, cost_reason
 
     store = session(root, sid)
     rev = store.rev
@@ -3552,13 +3594,19 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
     for rec in store.tasks():
         row = table.row(rec["row"])
         mine = [u for u in units if u.get("row") == rec["row"]]
+        durations = [elapsed_seconds(u) for u in mine]
+        missing_costs = list(dict.fromkeys(cost_reason(u) for u in mine if u.get("total_cost_usd") is None))
         tasks.append({**{k: v for k, v in rec.items() if k not in ("processed",)},
+                      "seconds": round(sum(durations), 1) if durations and all(s is not None for s in durations) else None,
+                      "cost_reason": "; ".join(missing_costs) if missing_costs else None,
                       "status": _cell_status(rec, row, table), "cell": row.cell(rec["owner"]) if row else None,
                       "attempts": len(mine), "usage": {**agent_totals(mine)} if mine else None,
                       "telemetry": totals(docs[u["id"]] for u in mine),
                       "units": [u["id"] for u in mine],
                       # each attempt's unit log and handoff folder (project-relative), for "Open log"
                       "logs": [{"unit": u["id"], "log": u.get("log"), "status": u.get("status"), "model": u.get("model") or u.get("requested_model"),
+                                "started": u.get("started"), "finished": u.get("finished"), "seconds": elapsed_seconds(u),
+                                "cost_reason": cost_reason(u) if u.get("total_cost_usd") is None else None,
                                 "handoff": f"{PLANS_REL}/{store.plan_id}/handoffs/{u['id']}", "total_cost_usd": u.get("total_cost_usd"),
                                 "usage": _usage(u)} for u in mine]})
     decisions = store.decisions()
@@ -3566,13 +3614,13 @@ def session_state(root: str | Path, sid: str, *, messages: int = 500, since_rev:
     from alfrd.events import EVENTS_FILE
     from alfrd.steps import steps_state
     steps = steps_state(folder.path / EVENTS_FILE)
-    requests = [{**r, "usage": request_usage(store, r, units), "telemetry": _request_telemetry(r, units, docs),
+    requests = [{**r, "title": _scheduled_title(r.get("text", "")), "usage": request_usage(store, r, units), "telemetry": _request_telemetry(r, units, docs),
                  "steps": [step for step in steps if step["request_id"] == r["id"]],
                  "mailbox": Mailbox(store.root, sid, r["id"]).summary()} for r in store.requests()]
     plan = _read(folder.plan_file) or {}
     return {
         **schedule_state(store.root, sid),
-        "session": store.load(), "messages": store.messages(messages), "requests": requests, "tasks": tasks,
+        "session": _display_session(store, store.load()), "messages": store.messages(messages), "requests": requests, "tasks": tasks,
         "graph": graph(store, conf), "decisions": decisions,
         "check": _read(store.dir / "check.json"),
         "blockers": [d for d in decisions if d.get("status") == "pending"],
@@ -4024,6 +4072,8 @@ def _request_telemetry(req: Mapping[str, Any], units: list[Mapping[str, Any]], d
 def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | None = None,
              units: list[str] | None = None) -> dict[str, Any]:
     """Bounded tails; explicit attempt ids also retrieve final output after completion."""
+    from alfrd.agent_io import elapsed_seconds, cost_reason
+
     store = session(root, sid)
     lines = max(1, min(int(lines or 60), ACTIVITY_MAX_LINES))
     scoped = None
@@ -4050,11 +4100,7 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
         kind = rec.get("kind") or "task"
         title = ((rec.get("task") or {}).get("title") if kind == "task"
                  else f"{ORCHESTRATOR_TITLES.get(kind, kind)} {rec.get('request') or ''}".strip())
-        try:
-            end = datetime.fromisoformat(str(unit["finished"])) if unit.get("finished") else current
-            seconds = round((end - datetime.fromisoformat(str(unit.get("started")))).total_seconds(), 1)
-        except (TypeError, ValueError):
-            seconds = None
+        seconds = elapsed_seconds(unit, current.timestamp())
         log = unit.get("log")
         path = (store.root / str(log)).resolve() if log else None
         if path is not None and not path.is_relative_to(store.root.resolve()):
@@ -4080,6 +4126,7 @@ def activity(root: str | Path, sid: str, *, lines: int = 60, request_id: str | N
                     "started": unit.get("started"), "seconds": seconds, "log": log, "bytes": size, "tail": tail,
                     "status": unit.get("status"), "finished": unit.get("finished"), "cost_usd": cost,
                     "cost_state": "recorded" if isinstance(cost, (float, int)) else "unavailable",
+                    "cost_reason": cost_reason(unit) if cost is None else None,
                     "usage_updated_at": unit.get("usage_updated_at") or unit.get("finished"),
                     "tail_revision": revision, "tail_truncated": size > min(ACTIVITY_READ, max(16384, lines * 600)) or len(tail) >= lines,
                     "tail_state": state, "display_tail": display_tail})
@@ -4126,8 +4173,13 @@ class ScheduleConflictError(PermissionError):
         self.state = schedule_state(store.root, store.id)
 
 
+def _schedule_pending(data):
+    return sorted((b for b in data["batches"] if b["status"] in SCHEDULE_OPEN), key=lambda b: (datetime.fromisoformat(b["run_at"].replace("Z", "+00:00")).timestamp(), b["created_at"], b["id"]))
+
+
 def _schedule_current(data):
-    return next((b for b in data["batches"] if b["id"] == data.get("current_id")), None)
+    pending = _schedule_pending(data)
+    return next((b for b in pending if b["id"] == data.get("current_id")), pending[0] if pending else None)
 
 
 def schedule_state(root, sid, *, available=True):
@@ -4142,7 +4194,7 @@ def schedule_state(root, sid, *, available=True):
         if batch.get("dispatch"):
             result["dispatch"] = {k: v for k, v in batch["dispatch"].items() if k not in ("conf", "skill_snapshot")}
         return result
-    return {"schedule": public(current), "last_schedule": public(terminal), "schedule_revision": data["revision"],
+    return {"schedule": public(current), "schedules": [public(b) for b in _schedule_pending(data)], "last_schedule": public(terminal), "schedule_revision": data["revision"],
             "rev": store.rev, "server_now": _schedule_now(),
             "schedule_service": {"available": available, "reason": None if available else "Schedule execution requires a loopback Studio server", "tick_seconds": 1}}
 
@@ -4168,6 +4220,8 @@ def _schedule_revision(store, data, expected):
 
 def _schedule_changed(store, data, batch, kind):
     batch["updated_at"] = _schedule_now()
+    current = _schedule_current(data)
+    data["current_id"] = current["id"] if current else None
     store.save_schedule(data)
     server_event(store, "chat.schedule." + kind, schedule_id=batch["id"], schedule_revision=data["revision"],
                  status=batch["status"], queued_count=len(_schedule_items(batch)), run_at=batch["run_at"],
@@ -4181,7 +4235,7 @@ def _schedule_items(batch):
 
 def build_scheduled_prompt(batch):
     items = _schedule_items(batch)
-    lines = [f'Scheduled batch {batch["id"]} ({len(items)} pending items)',
+    lines = [_batch_title([i["text"] for i in items], len(items)),
              f'Scheduled for: {batch.get("scheduled_for", batch["run_at"])} ({batch["timezone"]})', '',
              'Treat all numbered items below as ONE user request. Make one coordinated plan covering every item,',
              'sharing dependencies and avoiding duplicate work. Reconcile compatible requirements. A later item',
@@ -4219,19 +4273,30 @@ def create_schedule(root, sid, *, run_at, timezone, client_schedule_id, expected
     original = _schedule_hash(run_at, timezone)
     with store.lock():
         data = store.load_schedule()
+        receipt = data.get('creations', {}).get(client_schedule_id)
+        if receipt:
+            if receipt['hash'] != original:
+                raise ScheduleConflictError("schedule_id_reused", store)
+            return {**schedule_state(root, sid), "selected_schedule_id": receipt['id'], "replayed": True}
         for batch in data['batches']:
             if batch['client_schedule_id'] == client_schedule_id:
                 if batch['original_payload_hash'] != original:
                     raise ScheduleConflictError("schedule_id_reused", store)
-                return {**schedule_state(root, sid), "replayed": True}
+                return {**schedule_state(root, sid), "selected_schedule_id": batch["id"], "replayed": True}
         if not spawn:
             raise ScheduleConflictError("schedule_service_disabled", store)
         _recover_scheduled_dispatch(store)
         data = store.load_schedule()
         _schedule_revision(store, data, expected_schedule_revision)
-        if data['current_id']:
-            raise ScheduleConflictError("schedule_already_open", store)
         run_at = _schedule_time(run_at, timezone)
+        same = next((b for b in _schedule_pending(data) if b['run_at'] == run_at), None)
+        if same:
+            if same['status'] == 'dispatching':
+                raise ScheduleConflictError('schedule_dispatching', store)
+            data.setdefault('creations', {})[client_schedule_id] = {'hash': original, 'id': same['id']}
+            data['current_id'] = same['id']
+            _schedule_changed(store, data, same, 'selected')
+            return {**schedule_state(root, sid), 'selected_schedule_id': same['id'], 'appended': True}
         batch = {'id': 'sch_' + uuid.uuid4().hex, 'client_schedule_id': client_schedule_id,
                  'original_payload_hash': original, 'status': 'scheduled', 'run_at': run_at, 'scheduled_for': run_at, 'timezone': timezone,
                  'created_at': _schedule_now(), 'updated_at': _schedule_now(), 'trigger': 'time', 'items': [],
@@ -4239,7 +4304,7 @@ def create_schedule(root, sid, *, run_at, timezone, client_schedule_id, expected
         data['batches'].append(batch)
         data['current_id'] = batch['id']
         _schedule_changed(store, data, batch, 'created')
-        return schedule_state(root, sid)
+        return {**schedule_state(root, sid), 'selected_schedule_id': batch['id']}
 
 
 def enqueue_message(store, text, images, cid, schedule_id=None, expected=None):
@@ -4250,13 +4315,13 @@ def enqueue_message(store, text, images, cid, schedule_id=None, expected=None):
         for batch in data['batches']:
             for item in batch['items']:
                 if item.get('client_message_id') == cid:
-                    if item['original_payload_hash'] != payload_hash:
+                    if item['original_payload_hash'] != payload_hash or (schedule_id and schedule_id != batch['id']):
                         raise ScheduleConflictError('message_id_reused', store)
                     return {**schedule_state(store.root, store.id), 'queued': True, 'item': item, 'request': None, 'task': None, 'replayed': True}
         if any(m.get('client_message_id') == cid for m in store.messages()):
             raise ScheduleConflictError('message_id_reused', store)
-    batch = _schedule_current(data)
-    if schedule_id and (not batch or batch['id'] != schedule_id):
+    batch = next((b for b in _schedule_pending(data) if b['id'] == schedule_id), None) if schedule_id else _schedule_current(data)
+    if schedule_id and not batch:
         raise ScheduleConflictError('schedule_no_longer_open', store)
     if not batch:
         return None
@@ -4329,12 +4394,14 @@ def mutate_schedule(root, sid, schedule_id, action, *, expected_schedule_revisio
             _schedule_validate(store, batch)
             kind = 'item_updated' if action == 'edit' else 'item_removed'
         elif action == 'time':
-            batch.update(run_at=_schedule_time(run_at, timezone), scheduled_for=_schedule_time(run_at, timezone), timezone=timezone, status='scheduled',
+            resolved = _schedule_time(run_at, timezone)
+            if any(b['id'] != schedule_id and b['run_at'] == resolved for b in _schedule_pending(data)):
+                raise ScheduleConflictError('schedule_time_already_used; append to the existing schedule instead', store)
+            batch.update(run_at=resolved, scheduled_for=resolved, timezone=timezone, status='scheduled',
                          hold_reason=None, waiting_on_requests=[], error=None, trigger='time')
             kind = 'changed'
         elif action == 'cancel':
             batch['status'] = 'cancelled'
-            data['current_id'] = None
             kind = 'cancelled'
         elif action == 'run':
             if not spawn:
@@ -4435,7 +4502,6 @@ def _recover_scheduled_dispatch(store):
         if rec:
             _publish_scheduled_row(store, req, rec, snap['conf'])
         batch.update(status='submitted', request_id=req['id'])
-        data['current_id'] = None
         _schedule_changed(store, data, batch, 'submitted')
         server_event(store, 'task.created', task=req['id'] + '.plan', request=req['id'], task_kind='plan', owner=req['agent'])
         recovered.append(req['id'])
@@ -4455,8 +4521,12 @@ def dispatch_due_schedules(root, sid=None, *, now=None, spawn=True):
                 if spawn:
                     launch = bool(_recover_scheduled_dispatch(store))
                 data = store.load_schedule()
-                batch = _schedule_current(data)
-                if batch and batch['status'] != 'dispatching' and batch['status'] != 'error' and datetime.fromisoformat(batch['run_at'].replace('Z', '+00:00')).timestamp() <= instant:
+                for candidate in _schedule_pending(data):
+                    # Recovery writes its own journal; reload before each independent transition.
+                    data = store.load_schedule()
+                    batch = next(b for b in data['batches'] if b['id'] == candidate['id'])
+                    if batch['status'] in ('dispatching', 'error') or datetime.fromisoformat(batch['run_at'].replace('Z', '+00:00')).timestamp() > instant:
+                        continue
                     active = [r['id'] for r in store.requests() if r.get('status') in REQUEST_ACTIVE]
                     plan = _read(_plan_folder(store).plan_file) or {}
                     reason = 'schedule_service_disabled' if not spawn else 'active_requests' if active else 'workflow_resume' if (plan.get('status') in ('paused', 'cancelled') or _plan_folder(store).control() in ('pause', 'cancel')) else None
@@ -4466,7 +4536,6 @@ def dispatch_due_schedules(root, sid=None, *, now=None, spawn=True):
                             _schedule_changed(store, data, batch, 'waiting')
                     elif not _schedule_items(batch):
                         batch['status'] = 'expired_empty'
-                        data['current_id'] = None
                         _schedule_changed(store, data, batch, 'expired_empty')
                     else:
                         try:
@@ -4477,7 +4546,7 @@ def dispatch_due_schedules(root, sid=None, *, now=None, spawn=True):
                         else:
                             launch = bool(_recover_scheduled_dispatch(store)) or launch
                 # Recovery can finish a submission whose runner was never launched.
-                if spawn and not launch and not batch:
+                if spawn and not launch and not _schedule_pending(store.load_schedule()):
                     launch = any(r.get('schedule_id') and r.get('status') in REQUEST_ACTIVE for r in store.requests()) and not _plan_folder(store).runner_alive()
             if launch and spawn:
                 plan = _read(_plan_folder(store).plan_file) or {}

@@ -195,3 +195,39 @@ test("only the composer files and its stylesheet carry composer rules; Stop neve
   const source = readFileSync(new URL("../../src/alfrd/web/js/components/chat_composer.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /onDraft\(""\)[^;]*onStop/);
 });
+
+
+test("Shift+Enter continues bullet and numbered lists and persists the draft", () => {
+  for (const [text, expected] of [["- a", "- a\n- "], ["* a", "* a\n* "], ["1. a", "1. a\n2. "], ["9. a", "9. a\n10. "]]) {
+    const m = mount(); m.type(text);
+    assert.equal(m.key("Enter", { shiftKey: true }).prevented, true);
+    assert.equal(m.c.input.value, expected);
+    assert.equal(m.c.input.selectionStart, expected.length);
+    assert.equal(m.calls.drafts.at(-1), expected);
+    assert.equal(m.calls.send, 0);
+    m.key("Enter"); assert.equal(m.calls.send, 1, "plain Enter still sends list drafts");
+  }
+});
+
+test("empty list newline exits and restored markdown drafts stay plain", () => {
+  const m = mount(); m.type("- a\n- ");
+  m.key("Enter", { shiftKey: true });
+  assert.equal(m.c.input.value, "- a\n");
+  for (const text of ["3. restored", "* item", "# Heading", "**bold**", "```js\ncode\n```", "- <script>alert(1)</script>"]) {
+    m.c.input.value = text; m.c.refresh();
+    assert.equal(m.c.input.value, text);
+    assert.equal(m.root.nodes.has("#chat-list-preview"), false);
+  }
+  for (const id of ["chat", "dock"]) assert.doesNotMatch(composerHtml(id), /list-preview|Message list preview/);
+  m.type("* "); m.key("Enter", { shiftKey: true });
+  assert.equal(m.c.input.value, "");
+});
+
+test("list newline preserves selections, IME and native ordinary newlines", () => {
+  const m = mount(); m.type("- item");
+  m.key("Enter", { shiftKey: true, isComposing: true }); assert.equal(m.c.input.value, "- item");
+  m.c.input.setSelectionRange(2, 6);
+  assert.equal(m.key("Enter", { shiftKey: true }).prevented, undefined);
+  assert.equal(m.c.input.value, "- item");
+  m.type("ordinary"); assert.equal(m.key("Enter", { shiftKey: true }).prevented, undefined);
+});

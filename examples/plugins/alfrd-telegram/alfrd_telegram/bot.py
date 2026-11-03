@@ -26,9 +26,16 @@ VERSION = "0.3.0"
 HELP = (
     "🤖 <b>ALFRD commands</b>\n" + view.RULE + "\n\n"
     "📊 <b>Status</b>\n"
+    "/chatmode on|off — superuser: toggle plain-text requests\n"
+    "/chatmode — show the current mode\n"
+    "/schedule in 2h TEXT — superuser: schedule a request (m/h/d)\n"
+    "/schedule YYYY-MM-DD HH:MM TEXT — default Europe/Athens; ISO offsets supported\n"
+    "/scheduled — list your pending schedules\n"
+    "/unschedule ID — cancel your pending schedule\n"
     "/new — create and activate a chat session\n"
     "/resume_chat (or /resume-chat) — choose a recent session\n"
-    "Plain text goes to the active session orchestrator.\n"
+    "Chat mode on creates a session for plain text; off disables prompts.\n"
+    "The legacy default sends plain text to an active session.\n"
     "/status — menu: session, tasks, logs, pipeline, switch session\n"
     "/status last — remembered pipeline targets\n"
     "/status NAME — pick targets in project NAME\n"
@@ -48,13 +55,17 @@ HELP = (
     "💡 Tap a list number or reply with it to pick one.\n"
     "For several targets, reply <code>1 3</code> or <code>1,3</code>; <b>All</b> picks every target "
     "across all pages.\n"
-    "Without an active chat, number replies select from an open list; <code>more</code> shows the next 5.\n"
-    "With an active chat, use list buttons; all plain text goes to the orchestrator.\n"
+    "When prompts are disabled, number replies select from an open list; <code>more</code> shows the next 5.\n"
+    "When prompts are enabled, use list buttons; all plain text goes to the orchestrator.\n"
     "Pause and resume ask for Yes/No before changing anything.\n"
     "🏁 When an agent loop ends, its final handoff is posted here."
 )
 #: Telegram's ``/`` menu (setMyCommands).
-MENU = [("new", "Create a chat session"), ("resume_chat", "Choose a recent chat session"),
+MENU = [("chatmode", "Show mode; admins can set on or off"),
+        ("schedule", "Superuser: schedule a request for later"),
+        ("scheduled", "Superuser: list your pending schedules"),
+        ("unschedule", "Superuser: cancel your schedule by ID"),
+        ("new", "Create a chat session"), ("resume_chat", "Choose a recent chat session"),
         ("status", "Session, tasks, logs and pipeline menu"), ("log", "Pick a target and step: last log lines"),
         ("runs", "Recent plans"), ("handoff", "Latest agent-loop handoff"),
         ("pause", "Pause the plan (asks first)"), ("resume", "Resume the plan (asks first)"),
@@ -151,6 +162,8 @@ class Bot(ChatControl):
         # Kept in ``state`` across restarts: the selected project and its tracked targets (row keys).
         self.state = Path(state) if state else None
         self.selected, self.tracked = None, []
+        # None retains pre-toggle routing for existing /new users.
+        self.chat_mode = {"on": True, "off": False}.get(route.get("chat_mode"))
         self.active_chat = None
         self.chat_cursors = {}
         self.chat_buttons = {}
@@ -172,6 +185,8 @@ class Bot(ChatControl):
             self.selected = data["project"]
             self.tracked = [k for k in data.get("targets") or [] if isinstance(k, str)]
         if isinstance(data, dict):
+            if isinstance(data.get("chat_mode"), bool):
+                self.chat_mode = data["chat_mode"]
             active = data.get("active_chat")
             if isinstance(active, dict) and all(isinstance(active.get(k), str) for k in ("project", "session")):
                 self.active_chat = active
@@ -183,16 +198,19 @@ class Bot(ChatControl):
         self.selected, self.tracked = project, list(keys)
         self.save_state()
 
-    def save_state(self):
+    def save_state(self, *, strict=False):
         if self.state is None:
             return
         try:
             self.state.parent.mkdir(parents=True, exist_ok=True)
             temp = self.state.with_suffix(".tmp")
             temp.write_text(json.dumps({"project": self.selected, "targets": self.tracked,
-                                        "active_chat": self.active_chat, "chat_cursors": self.chat_cursors}))
+                                        "active_chat": self.active_chat, "chat_cursors": self.chat_cursors,
+                                        **({"chat_mode": self.chat_mode} if self.chat_mode is not None else {})}))
             temp.replace(self.state)
         except OSError as exc:
+            if strict:
+                raise
             self.log(f"Could not save the /status selection ({type(exc).__name__}).")
 
     def reason(self, exc):
@@ -565,13 +583,13 @@ class Bot(ChatControl):
 
     # -- commands -------------------------------------------------------------
 
-    def command(self, text, message_id=None):
+    def command(self, text, message_id=None, sender_id=None):
         words = text.split()
         if not words:
             return
         if not words[0].startswith("/"):
-            if self.active_chat:
-                self.guarded(lambda: self.chat_prompt(text, message_id))
+            if self.chat_mode is True or (self.chat_mode is None and self.active_chat):
+                self.guarded(lambda: self.mode_prompt(text, message_id))
                 return
             # A bare reply answers the open list ("2", "1 3", "all", "more").
             if [w.lower() for w in words] == ["more"] and (self.picker or self.view):
@@ -585,6 +603,13 @@ class Bot(ChatControl):
             return
         command = words[0].split("@")[0].lower()
         args = words[1:]
+        if command in ("/schedule", "/scheduled", "/unschedule"):
+            value = text.strip()[len(words[0]):].strip()
+            self.guarded(lambda: self.schedule_command(command, value, sender_id, message_id))
+            return
+        if command == "/chatmode":
+            self.guarded(lambda: self.set_chat_mode(args, sender_id))
+            return
         if command in ("/new", "/resume-chat", "/resume_chat"):
             self.picker = self.view = None
             self.guarded(self.new_chat if command == "/new" else self.resume_chats)
@@ -693,7 +718,7 @@ class Bot(ChatControl):
         if query:
             self.callback(query)
         elif isinstance(message.get("text"), str):
-            self.command(message["text"], message.get("message_id"))
+            self.command(message["text"], message.get("message_id"), message.get("from", {}).get("id"))
 
     def poll(self):
         updates = self.call("getUpdates", {

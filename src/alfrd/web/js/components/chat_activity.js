@@ -52,7 +52,7 @@ export function mountActivity(box, o) {
     const ended = req?.finished ? Date.parse(req.finished) : Date.now();
     setText(header, !req ? "" : [req?.status ? label : "", p && Array.isArray(state().tasks) ? (progress.total ? `${progress.done}/${progress.total} tasks complete` : "Planning tasks…") : "",
       Number.isFinite(started) && Number.isFinite(ended) ? duration(Math.max(0, Math.round((ended - started) / 1000))) : "",
-      (req?.usage?.total_cost_usd == null ? "Cost — / Not reported" : money(req.usage.total_cost_usd)), quietCounts(snapshot.telemetry?.requests?.[rid()] || req?.telemetry)].filter((s) => s && s !== "—").join(" · "));
+      (req?.usage?.total_cost_usd == null ? `Cost: ${req?.usage?.cost_reason || "Not reported by agent"}` : money(req.usage.total_cost_usd)), quietCounts(snapshot.telemetry?.requests?.[rid()] || req?.telemetry)].filter((s) => s && s !== "—").join(" · "));
     const warned = costWarnings(state(), rid());
     setText($("[data-run-warning]", box), [p?.costRatio >= 0.8 ? `${p.costRatio >= 1 ? "Cost cap reached" : "Approaching cost cap"}: ${money(req?.usage?.total_cost_usd)} / ${money(p.maxCost)}` : "",
       p?.timeRatio >= 0.8 ? `${p.timeRatio >= 1 ? "Time limit reached" : "Approaching time limit"}: ${duration(p.seconds)} / ${duration(p.maxSeconds)}` : "",
@@ -92,7 +92,7 @@ export function mountActivity(box, o) {
       sourceHTML(stepEl, steps);
       const deps = Array.isArray(task.dependencies) ? task.dependencies : [task.dependencies];
       setText($("[data-dependencies]", el), deps.length ? `Depends on: ${deps.join(", ")}` : "No dependencies");
-      setText($(".chat-island-metrics", el), `Elapsed ${task.metrics.seconds == null ? "— / Not reported" : duration(Math.round(task.metrics.seconds))} · Cost ${task.metrics.cost == null ? "— / Not reported" : money(task.metrics.cost)}`);
+      setText($(".chat-island-metrics", el), `Elapsed ${task.metrics.seconds == null ? (task.units?.length ? "ALFRD timestamps unavailable" : "Not started") : duration(Math.round(task.metrics.seconds))} · Cost ${task.metrics.cost == null ? task.metrics.costReason : money(task.metrics.cost)}`);
       setText($("[data-task-error]", el), ["failed", "blocked"].includes(task.status) ? String(task.error || task.result?.summary || statusInfo(task.status).label) : "");
     }
     const data = activityRows(state(), snapshot.items, rid()), keys = new Set(data.map(activityKey));
@@ -128,7 +128,7 @@ export function mountActivity(box, o) {
       setText($(".chat-task-select", row.el), `${isTask(r) ? activityLabel(r) + " · Attempt " + (r.attempt || 1) : "Orchestrator · " + activityLabel(r)}${r.unit ? " · " + r.unit : ""}`);
       const info = statusInfo(r.status), status = `${icon(info.icon)} ${esc(info.label)}${r.seconds != null ? ` · ${duration(Math.round(r.seconds))}` : ""}`;
       const statusEl = $("[data-status]", row.el); if (statusEl.dataset.html !== status) { statusEl.dataset.html = status; statusEl.innerHTML = sanitizeHtml(status); }
-      setText($("[data-cost]", row.el), r.cost_usd == null ? "— / Not reported" : money(r.cost_usd));
+      setText($("[data-cost]", row.el), r.cost_usd == null ? (r.cost_reason || "Not reported by agent") : money(r.cost_usd));
       $("[data-log]", row.el).hidden = !r.log;
       $("[data-cancel]", row.el).hidden = !["running", "retrying", "waiting", "queued"].includes(r.status);
       const text = Array.isArray(r.display_tail) ? r.display_tail.slice(-row.lines).join("\n") : "No recorded output yet";

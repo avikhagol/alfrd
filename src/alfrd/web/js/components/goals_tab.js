@@ -6,13 +6,13 @@ export function goalsHtml(overview, state, request = null) {
   const tasks = (state.tasks || []).filter((t) => t.kind === "task" && (!request || t.request === request));
   const goal = overview.goal || {};
   const requests = (state.requests?.length ? state.requests : goal.text ? [{ id: goal.source?.slice(8) || "", text: goal.text }] : []).filter((r) => !request || r.id === request);
-  const requestHtml = requests.map((r) => `<section><h3>Request ${esc(r.id)}</h3><p class="chat-text">${esc(r.text || (goal.source === `request:${r.id}` ? goal.text : "") || "Not specified")}</p></section>`).join("");
+  const requestHtml = requests.map((r) => `<section><h3>Request ${esc(r.id)}</h3><blockquote class="chat-text">${esc(r.text || (goal.source === `request:${r.id}` ? goal.text : "") || "Not specified")}</blockquote></section>`).join("");
   if (!requestHtml && !tasks.length) return empty("No goals yet", "No request or criteria recorded.");
-  return requestHtml + tasks.map((t) => {
+  return `<div class="chat-goals">` + requestHtml + tasks.map((t) => {
     const criteria = (overview.criteria || []).filter((c) => c.task_rows?.includes(t.row));
-    return `<section><h3>${esc(t.task?.title || t.row)}</h3><p class="small">${esc(t.row)} · Request ${esc(t.request || "Not specified")}</p><p>Task status: ${esc(t.status || "Unknown")}</p>` +
-      (criteria.length ? `<ul>${criteria.map((c) => `<li><span class="chat-text">${esc(c.text)}</span> <span class="badge">Criterion: ${esc(["verified", "failed"].includes(c.status) ? c.status : "unverified")}</span></li>`).join("")}</ul>` : "<p>Not specified</p>") + "</section>";
-  }).join("");
+    return `<section><h3>${esc(t.task?.title || t.row)}</h3><p class="small">${esc(t.row)} · Request ${esc(t.request || "Not specified")}</p><p class="chat-goal-status">Task status: ${esc(t.status || "Unknown")}</p>` +
+      (criteria.length ? `<ul>${criteria.map((c) => `<li><span class="chat-text">${esc(c.text)}</span> <span class="chat-goal-status tone-${c.status === "verified" ? "ok" : c.status === "failed" ? "fail" : "warn"}">Criterion: ${esc(["verified", "failed"].includes(c.status) ? c.status : "unverified")}</span></li>`).join("")}</ul>` : "<p>Not specified</p>") + "</section>";
+  }).join("") + "</div>";
 }
 
 export function createGoalsTab({ get, refresh = () => {}, timeoutMs = 10000 }) {

@@ -4,7 +4,7 @@ import { stepsHtml } from "./chat_steps.js";
 // New-project canvas (editable draft). Select with a background drag; hold Space or use Pan to navigate. Ctrl/Cmd+wheel or +/- to zoom, 0 fits.
 // Keyboard: arrows move between nodes (pan without selection), Enter opens one; editable: N adds, C connects, Delete removes.
 import { $, $$, esc, icon, storage } from "../utils/dom.js";
-import { edgePath, NODE_H } from "./canvas.js";
+import { edgePath, NODE_H } from "../utils/graph_geometry.js";
 import { layoutGraph } from "../data/chat.js";
 import { createGraphGroups, renderGraphGroups, createGraphUpdates } from "./graph_groups.js";
 import { createTaskMenu } from "./task_menu.js";
@@ -31,17 +31,17 @@ export function mountGraph(host, opts = {}) {
   host.innerHTML = `<div class="gv">
     <div class="gv-tools" role="toolbar" aria-label="${esc(opts.label || "Graph")} controls">
       ${opts.editable ? `<button type="button" class="btn sm" data-gv="add" aria-keyshortcuts="N">${icon("plus")} Add step</button><button type="button" class="btn sm" data-gv="connect" aria-keyshortcuts="C">${icon("link")} Connect</button>` : ""}
-      ${opts.editable ? "" : `<button type="button" class="btn sm" data-gv-mode="select" aria-pressed="true">Select</button><button type="button" class="btn sm" data-gv-mode="pan" aria-pressed="false">Pan</button>`}
+      ${opts.editable ? "" : `<span class="seg" role="group" aria-label="Graph interaction"><button type="button" data-gv-mode="select" aria-pressed="true">Select</button><button type="button" data-gv-mode="pan" aria-pressed="false">Pan</button></span>`}
       <span class="grow"></span>
       <span data-gv-layout>${layoutButton()}</span>
       <button type="button" class="icon-btn sm" data-gv="out" aria-label="Zoom out">${icon("minus")}</button><span class="gv-zoom muted small tabular" aria-live="off">100%</span>
       <button type="button" class="icon-btn sm" data-gv="in" aria-label="Zoom in">${icon("plus")}</button>
       <button type="button" class="icon-btn sm" data-gv="fit" aria-label="Fit to view" aria-keyshortcuts="0">${icon("fit")}</button>
     </div>
-    ${opts.editable ? "" : `<details><summary>Status legend and keyboard help</summary><div style="display:flex;flex-wrap:wrap;gap:12px">${STATUS_ICON_STATES.map((s) => statusIcon(s)).join("")}</div><p>Tab to a node; arrows move between nodes. Enter opens it. Shift+F10 opens task actions. Shift+click toggles selection. Drag the background to select; hold Space to pan. Escape clears selection; arrows then pan. 0 fits.</p></details>`}
+    ${opts.editable ? "" : `<details class="gv-legend"><summary>Status legend and keyboard help</summary><div style="display:flex;flex-wrap:wrap;gap:12px">${STATUS_ICON_STATES.map((s) => statusIcon(s)).join("")}</div><p>Tab to a node; arrows move between nodes. Enter opens it. Shift+F10 opens task actions. Shift+click toggles selection. Drag the background to select; hold Space to pan. Escape clears selection; arrows then pan. 0 fits.</p></details>`}
     <div class="canvas gv-canvas" tabindex="0" role="group" aria-roledescription="graph" aria-label="${esc(opts.label || "Graph")}. Tab to a node; arrows pan without a selection or move between selected nodes. Enter opens it; Escape clears selection${opts.editable ? "; N adds a step, C connects, Delete removes" : ""}." >
       <div class="world"></div><div data-gv-box hidden style="position:absolute;pointer-events:none;border:2px dashed var(--accent);background:var(--accent);opacity:0.25"></div><p class="gv-empty muted" hidden></p>
-    </div><div data-gv-menu role="menu" aria-label="Task actions" hidden></div><p class="sr-only" aria-live="polite" data-gv-live></p></div>`;
+    </div><div id="${id}-menu" class="task-menu" data-gv-menu role="menu" aria-label="Task actions" hidden></div><p class="sr-only" aria-live="polite" data-gv-live></p></div>`;
   const canvas = $(".gv-canvas", host), world = $(".world", host), live = $("[data-gv-live]", host);
   const say = (text) => { live.textContent = text; };
   let drag = null, hovering = false, mode = "select", space = false;
@@ -80,7 +80,7 @@ export function mountGraph(host, opts = {}) {
   const nodeEl = (key) => key && world.querySelector(`.node[data-key="${CSS.escape(key)}"]`);
 
   const menu = opts.editable ? null : createTaskMenu($("[data-gv-menu]", host), {
-    target: (row) => view.model.nodes.some((n) => n.id === row) ? (opts.taskMenu ? opts.taskMenu.target(row) : view.model.nodes.find((n) => n.id === row)) : null,
+    target: (row) => view.model.nodes.some((n) => n.id === row) ? (opts.taskMenu?.target(row) || view.model.nodes.find((n) => n.id === row)) : null,
     revision: () => view.model.rev,
     preview: (row) => opts.taskMenu?.preview(row),
     refresh: () => opts.taskMenu?.refresh(),
@@ -89,10 +89,10 @@ export function mountGraph(host, opts = {}) {
     error: say,
     closed: () => updates.flush(),
   });
-  const openMenu = (key) => { if (!menu || !key) return; select(key); menu.open(key); };
+  const openMenu = (key, anchor = nodeEl(key)) => { if (!menu || !key) return; select(key); menu.open(key, "", anchor); };
   canvas.addEventListener("contextmenu", (e) => {
-    const key = e.target.closest(".node")?.dataset.key;
-    if (menu && key) { e.preventDefault(); e.stopPropagation(); openMenu(key); }
+    const key = e.target.closest(".node")?.dataset.key || e.target.closest("[data-gv-menu-for]")?.dataset.gvMenuFor;
+    if (menu && key) { e.preventDefault(); e.stopPropagation(); openMenu(key, { left: e.clientX, top: e.clientY, bottom: e.clientY }); }
   });
 
   function draw() {
@@ -119,7 +119,7 @@ export function mountGraph(host, opts = {}) {
           ${n.st === "running" ? '<div class="node-prog"><i style="width:60%"></i></div>' : ""}
           <div class="node-h"><span class="node-ic">${icon(n.nodeIcon || "pipeline")}</span><div class="node-t"><b class="mono">${esc(n.id)}</b><span>${esc(n.title)}</span></div>${n.badge ? `<span class="badge tone-muted gv-badge"><span>${esc(n.badge)}</span></span>` : ""}</div>
           <div class="node-b"><span class="small muted grow gv-sub">${esc(n.sub || "")}</span><span class="badge tone-${esc(n.tone)}">${n.status ? statusIcon(n.status, n.label) : `${icon(n.icon || "info")}<span>${esc(n.label)}</span>`}</span></div>
-        </div>${opts.editable || !n.steps?.length ? "" : `<div id="${id}-${esc(n.id)}-steps" class="small" style="position:absolute;left:${p.x}px;top:${p.y + NODE_H}px;width:${p.w}px;max-height:52px;overflow:auto">${stepsHtml(n.steps, n.request)}</div>`}${opts.editable ? "" : `<button type="button" class="icon-btn sm gv-overflow" data-gv-menu-for="${esc(n.id)}" aria-label="Actions for ${esc(n.title)}" aria-haspopup="menu" style="left:${p.x + p.w - 32}px;top:${p.y + 4}px">⋯</button>`}`;
+        </div>${opts.editable || !n.steps?.length ? "" : `<div id="${id}-${esc(n.id)}-steps" class="small" style="position:absolute;left:${p.x}px;top:${p.y + NODE_H}px;width:${p.w}px;max-height:52px;overflow:auto">${stepsHtml(n.steps, n.request)}</div>`}${opts.editable ? "" : `<button type="button" class="icon-btn sm gv-overflow" data-gv-menu-for="${esc(n.id)}" aria-label="Actions for ${esc(n.title)}" aria-haspopup="menu" aria-expanded="false" aria-controls="${id}-menu" style="left:${p.x + p.w - 32}px;top:${p.y + 4}px">⋯</button>`}`;
       }).join("");
     // Revision-only updates must not replace running SVGs and restart their animations.
     if (worldHtml !== html) { world.innerHTML = html; worldHtml = html; }
@@ -150,7 +150,7 @@ export function mountGraph(host, opts = {}) {
     const modeButton = e.target.closest("[data-gv-mode]");
     if (modeButton) { end(null); mode = modeButton.dataset.gvMode; showMode(); return; }
     const overflow = e.target.closest("[data-gv-menu-for]");
-    if (overflow) { e.stopPropagation(); openMenu(overflow.dataset.gvMenuFor); return; }
+    if (overflow) { e.stopPropagation(); openMenu(overflow.dataset.gvMenuFor, overflow); return; }
     if (!e.target.closest("[data-gv-menu]")) menu?.close(false);
     const b = e.target.closest("[data-gv]");
     if (!b) return;

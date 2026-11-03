@@ -37,6 +37,28 @@ test("renders titles, kinds, all statuses, escaping and accessible switch descri
   assert.match(html, /role="status" aria-live="polite"/);
 });
 
+test("fresh Settings lists bundled defaults and built-ins without enable controls or diagnostics", () => {
+  const list = { plugins: [], defaults: [
+    { id: "telegram", title: "Telegram", package: "alfrd-telegram", description: "Chat control", example: "examples/plugins/alfrd-telegram", installed: false, enabled: false },
+    { id: "gsheet", title: "Google Sheet", description: "Two-way sync <sheets>", installed: false, enabled: false },
+    { id: "obsidian", title: "Obsidian", description: "Built-in theme", installed: true, enabled: true },
+    { id: "daylight", title: "Daylight", description: "Light theme", installed: true, enabled: false },
+  ] };
+  const html = setup().renderPlugins(list, true);
+  for (const text of ["Default plugins", "alfrd-telegram", "Chat control", "Google Sheet", "Available", "Enabled", "Installed", "examples/plugins/alfrd-telegram"]) assert.ok(html.includes(text));
+  assert.match(html, /Two-way sync &lt;sheets>/);
+  assert.doesNotMatch(html, /data-plug-toggle|class="plug-diag"|No plugins installed/);
+});
+
+test("installed defaults render once with their installed controls and actual status", () => {
+  const list = sample();
+  list.defaults = [{ ...list.plugins[0], installed: true }];
+  const html = setup().renderPlugins(list, true);
+  assert.equal(html.match(/<b>Markdown<\/b>/g)?.length, 1);
+  assert.match(html, /data-plug-toggle="markdown"/);
+  assert.match(html, /plug-status-markdown" class="badge tone-ok">Active/);
+});
+
 test("browser activation failures show Error; disabling the plugin shows Off and retains details", () => {
   const f = setup(), list = sample();
   const errors = [{ id: "markdown", title: "Markdown", message: "activation failed" }];

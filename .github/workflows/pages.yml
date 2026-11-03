@@ -1,12 +1,14 @@
-name: Deploy Workflow Studio to GitHub Pages
+name: Deploy ALFRD website and Workflow Studio to GitHub Pages
 
-# Publishes the static, browser-only Workflow Studio (src/alfrd/web).
+# Publishes website/public and the browser-only Workflow Studio (src/alfrd/web).
 # Enable once: Settings → Pages → Build and deployment → Source: "GitHub Actions".
+# Custom domain: alfrd.avikhagol.dev in Settings → Pages (no CNAME needed).
 
 on:
   push:
     branches: [main, master]
     paths:
+      - "website/public/**"
       - "src/alfrd/web/**"
       - "src/alfrd/schemas/project-manifest-v1.schema.json"
       - "tests/studio_js/**"
@@ -39,6 +41,8 @@ jobs:
         run: |
           mkdir -p _site/schemas
           rsync -a --exclude '*.py' --exclude '__pycache__' src/alfrd/web/ _site/
+          mv _site/index.html _site/studio.html
+          rsync -a website/public/ _site/
           cp src/alfrd/schemas/project-manifest-v1.schema.json _site/schemas/
           cmp src/alfrd/schemas/project-manifest-v1.schema.json _site/schemas/project-manifest-v1.schema.json
           touch _site/.nojekyll

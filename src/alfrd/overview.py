@@ -76,6 +76,7 @@ def _files(root: Path, tasks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     for entry in found.values():
         sha, rel = entry.pop("_sha"), entry["path"]
         entry.pop("_expected")
+        entry["absolute_path"] = str(root.resolve() / rel)
         actual = _current_hash(root, rel)
         if actual is None:
             entry["state"] = "expected" if sha is None and not _done(tasks, entry["producer_rows"]) else "missing"

@@ -1,1 +1,16 @@
 :root { color-scheme: dark; }
+
+/* Built-in dark workbench palette. Theme CSS is swapped without a data-theme attribute. */
+:root :is(.chat, .chat-dock) {
+  --chat-bg: #090D14;
+  --chat-surface: #0D131F;
+  --chat-surface-2: #141C2C;
+  --chat-hover: #1A2336;
+  --chat-border: rgba(255,255,255,.07);
+  --chat-text-2: #CBD5E1;
+  --chat-muted: #94A3B8;
+  --chat-live: var(--run-text);
+  --chat-live-bg: var(--run-bg);
+  --chat-agent-purple: #C084FC;
+  --chat-agent-sky: #38BDF8;
+}

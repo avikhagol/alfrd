@@ -1,4 +1,18 @@
 :root {
+  --run-text: #0E7490;
+  --run-dot: #0891B2;
+  --run-bg: rgba(8,145,178,.10);
+  --run-border: rgba(8,145,178,.35);
+  --ghost-hover: rgba(15,23,42,.05);
+  --border-faint: rgba(15,23,42,.06);
+  --border-hover: rgba(15,23,42,.18);
+  --menu-bg: #FFFFFF;
+  --text-4: #64748B;
+  --grid-dot: rgba(79,70,229,.08);
+  --r-md: 6px;
+  --r-xl: 12px;
+  --fs-micro: 11px;
+
   color-scheme: light;
   --bg: #F6F7FB;
   --surface: #FFFFFF;
@@ -56,4 +70,11 @@
   --ok-pulse-soft: rgba(5, 150, 105, .18);
   --chart-area: rgba(82, 96, 117, .12);
   --btn-primary-border: rgba(15, 23, 42, .12);
+}
+
+:root :is(.chat, .chat-dock) {
+  --chat-live: var(--run-text);
+  --chat-live-bg: var(--run-bg);
+  --chat-agent-purple: #7E22CE;
+  --chat-agent-sky: #0369A1;
 }

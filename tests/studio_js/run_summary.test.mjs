@@ -27,7 +27,7 @@ function summary(state, extra) {
   api.kick();
   const head = box.querySelector(".chat-run-head");
   api.stop();
-  return { head, text: head.textContent, calls };
+  return { box, head, text: head.textContent, calls };
 }
 const task = (row, status, request = "r") => ({ row, request, status, kind: "task" });
 const req = (extra) => ({ id: "r", status: "running", created_ts: 1000, finished: new Date(1000 * 1000 + 125000).toISOString(), ...extra });
@@ -39,8 +39,8 @@ test("summary shows status, task count, duration and reported cost", () => {
 
 test("a recorded zero cost is shown, an absent cost is explicitly not reported", () => {
   assert.match(summary({ requests: [req({ usage: { total_cost_usd: 0 } })], tasks: [] }).text, /\$0\.000$/);
-  assert.match(summary({ requests: [req()], tasks: [] }).text, /Cost — \/ Not reported$/);
-  assert.match(summary({ requests: [req({ usage: { total_cost_usd: null } })], tasks: [] }).text, /Cost — \/ Not reported$/);
+  assert.match(summary({ requests: [req()], tasks: [] }).text, /Cost: Not reported by agent$/);
+  assert.match(summary({ requests: [req({ usage: { total_cost_usd: null } })], tasks: [] }).text, /Cost: Not reported by agent$/);
 });
 
 test("a non-numeric cost is omitted, not shown as a dash", () => {
@@ -48,7 +48,7 @@ test("a non-numeric cost is omitted, not shown as a dash", () => {
 });
 
 test("legacy request without timestamps or task list omits those fields", () => {
-  assert.equal(summary({ requests: [{ id: "r", status: "done" }] }).text, "Run completed · Cost — / Not reported");
+  assert.equal(summary({ requests: [{ id: "r", status: "done" }] }).text, "Run completed · Cost: Not reported by agent");
 });
 
 test("empty state: no request yields an empty line, not placeholders", () => {
@@ -56,7 +56,7 @@ test("empty state: no request yields an empty line, not placeholders", () => {
 });
 
 test("an unparsable created time omits duration instead of showing a dash", () => {
-  assert.equal(summary({ requests: [{ id: "r", status: "done", created: "garbage" }] }).text, "Run completed · Cost — / Not reported");
+  assert.equal(summary({ requests: [{ id: "r", status: "done", created: "garbage" }] }).text, "Run completed · Cost: Not reported by agent");
 });
 
 test("activating the summary opens the inspector, falling back to the graph", () => {
@@ -67,4 +67,16 @@ test("activating the summary opens the inspector, falling back to the graph", ()
   const b = summary(state);
   b.head.onclick();
   assert.deepEqual(b.calls, [["graph", "r"]]);
+});
+
+test("Details uses session metrics without a live poll and explains missing cost", () => {
+  const tasks = [{ ...task("a", "failed"), seconds: 37, units: ["u1", "u2"],
+    cost_reason: "Unknown model price: custom", usage: { total_cost_usd: null },
+    logs: [{ unit: "u1", status: "failed", seconds: 12 }, { unit: "u2", status: "failed", seconds: 25 }] }];
+  const { box } = summary({ requests: [req()], tasks });
+  const host = box.querySelector(".chat-details").querySelector(".chat-run-rows").querySelector(".chat-islands");
+  assert.equal(host.children[0].querySelector(".chat-island-metrics").textContent,
+    "Elapsed 37s · Cost Unknown model price: custom");
+  assert.match(summary({ requests: [req({ usage: { cost_reason: "Incomplete token usage reported by agent" } })], tasks: [] }).text,
+    /Cost: Incomplete token usage reported by agent/);
 });

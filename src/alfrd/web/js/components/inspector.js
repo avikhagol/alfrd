@@ -2,8 +2,8 @@
 // browser preference. Docked beside the conversation above 1280 px, an overlay at or below it.
 // Alt+Shift+I toggles, Escape closes and focus goes back to where it was. A background update
 // (events, polling, a task changing) never opens it. No DOM lookups at import: Node tests load this alone.
+import { icon } from "../utils/dom.js";
 import { activeRequest } from "../data/chat.js";
-import { esc } from "../utils/dom.js";
 import { empty } from "./state_view.js";
 import { DEFAULTS, readPrefs, writePrefs } from "../data/prefs.js";
 
@@ -29,9 +29,27 @@ export function placeholderHtml(id) {
 
 export function tabsHtml(active = TABS[0].id) {
   const on = TABS.some((t) => t.id === active) ? active : TABS[0].id;
-  return `<div class="chat-insp-tabs" role="tablist" aria-label="Inspector">${TABS.map((t) =>
-    `<button type="button" role="tab" class="btn sm" id="chat-insp-tab-${t.id}" data-insp-tab="${t.id}" aria-selected="${t.id === on}" aria-controls="chat-insp-panel" tabindex="${t.id === on ? 0 : -1}">${t.label}</button>`).join("")}</div>
+  return `<div class="row gap"><div class="chat-insp-tabs seg" role="tablist" aria-label="Inspector">${TABS.map((t) =>
+    `<button type="button" role="tab" id="chat-insp-tab-${t.id}" data-insp-tab="${t.id}" aria-selected="${t.id === on}" aria-controls="chat-insp-panel" tabindex="${t.id === on ? 0 : -1}">${t.label}</button>`).join("")}</div>${on === "files" ? `<span class="grow"></span><button type="button" class="icon-btn sm" data-chat="close-files" aria-label="Close Files" title="Close Files (Esc)">${icon("close")}</button>` : ""}</div>
     <div id="chat-insp-panel" role="tabpanel" aria-labelledby="chat-insp-tab-${on}">${placeholderHtml(on)}</div>`;
+}
+
+/** Files is temporary: closing it returns to the last non-Files inspector view. */
+export function createInspectorTabs() {
+  let active = "graph", previous = "graph";
+  return {
+    active: () => active,
+    select(id) {
+      if (!TABS.some((tab) => tab.id === id)) return;
+      if (id === "files" && active !== "files") previous = active;
+      active = id;
+    },
+    closeFiles() {
+      if (active !== "files") return false;
+      active = previous;
+      return true;
+    },
+  };
 }
 
 /**
@@ -100,18 +118,19 @@ export function createInspector({ chat, button, panel, store = prefsStore(), wid
 
 /** Current follows activity; explicit choices persist. */
 export function createRequestScope() {
-  let choice = "current";
+  let choice = "latest";
   return {
     select(value) { choice = value; },
-    isAll() { return choice === "all"; },
-    request(state) { return choice === "all" ? null : choice === "current" ? activeRequest(state)?.id || null : choice; },
-    html(state) {
-      const current = activeRequest(state);
-      const options = [["all", "All requests"], ["current", `Current request: ${current?.text || current?.id || "None"}`],
-        ...(state?.requests || []).slice().reverse().map((r) => [r.id, `${r.id}: ${r.text || "Request"}`])];
-      if (!options.some(([id]) => id === choice)) options.push([choice, `${choice} (unavailable)`]);
-      return `<label>Request scope <select data-request-scope aria-label="Request scope" style="max-width:100%">${options.map(([id, text]) =>
-        `<option value="${esc(id)}"${choice === id ? " selected" : ""}>${esc(String(text).replace(/\s+/g, " ").slice(0, 100))}</option>`).join("")}</select></label>`;
+    label(state) {
+      const id = this.request(state);
+      return choice === "all" ? "All requests" : choice === "latest" ? `Latest request · ${id || "None yet"}` : id || "No requests yet";
     },
+    items(state, onSelect) {
+      return [["latest", "Latest request"], ["all", "All requests"],
+        ...(state?.requests || []).slice().reverse().map((r) => [r.id, `${r.id} · ${String(r.title || r.text || "Request").replace(/\s+/g, " ").slice(0, 90)}`])]
+        .map(([value, label]) => ({ label, hint: value === choice ? "Selected" : "", run: () => { this.select(value); onSelect(value); } }));
+    },
+    isAll() { return choice === "all"; },
+    request(state) { return choice === "all" ? null : choice === "latest" ? state?.requests?.at(-1)?.id || null : choice === "current" ? activeRequest(state)?.id || null : choice; },
   };
 }

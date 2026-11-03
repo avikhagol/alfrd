@@ -254,7 +254,23 @@ def chat_skill_activations(project_name: str):
                                           base_hash=payload["base_hash"])
             _poke(project_name)
         roles = [role for agent in conf["agents"].values() for role in agent.get("roles", [])]
-        return jsonify(saved_skills.activation_state(root, conf.get("skill_selection"), roles=roles))
+        state = saved_skills.activation_state(root, conf.get("skill_selection"), roles=roles)
+        scope_models = {}
+        for agent in conf["agents"].values():
+            if agent.get("model"):
+                label = agent.get("label") or agent["model"]
+                for role in agent.get("roles", []):
+                    labels = scope_models.setdefault("role:" + role, [])
+                    if label not in labels:
+                        labels.append(label)
+        orchestrator = conf["agents"].get(conf["orchestrator"], {})
+        model = conf.get("orchestrator_model") or orchestrator.get("model")
+        if model:
+            # An override can differ from the model described by the agent's label.
+            label = orchestrator.get("label") if model == orchestrator.get("model") else None
+            scope_models["orchestrator"] = [label or model]
+        state["scope_models"] = {scope: ", ".join(labels) for scope, labels in scope_models.items()}
+        return jsonify(state)
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 
@@ -514,10 +530,15 @@ def chat_artifact_raw(project_name: str, session_id: str):
         data, media_type, path = chat.raw_artifact(_project_root(project_name), session_id, request.args.get("ref", ""))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
+    # SVG must remain sandboxed when opened as a document in the app origin.
+    inline = request.args.get("inline") == "1" and media_type in {
+        "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml",
+        "image/bmp", "image/x-icon", "image/vnd.microsoft.icon", "application/pdf"}
+    disposition = "inline" if inline else "attachment"
     return Response(data, mimetype=media_type,
                     headers={"Cache-Control": "private, max-age=31536000, immutable",
-                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'",
-                             "Content-Disposition": "attachment; filename*=UTF-8''" + quote(Path(path).name)})
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+                             "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(Path(path).name)})
 
 
 __all__: list[str] = []

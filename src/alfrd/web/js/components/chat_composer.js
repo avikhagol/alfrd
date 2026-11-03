@@ -1,3 +1,4 @@
+import { listNewline } from "./chat_lists.js";
 // The chat composer (Chat page and chat dock): a textarea where Enter sends, Shift+Enter adds a line,
 // `@` at the start completes agent keys and `/` at the start lists the slash commands (listbox, arrows,
 // Enter/Tab inserts the pick, Esc closes). Commands (/setup, /help, /new, /graph) run here and are never sent.
@@ -112,7 +113,15 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
   input.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== input) close(); }, 150));
   input.addEventListener("keydown", (e) => {
     if (composing(e)) return; // IME: never send, pick or dismiss
-    if (e.key === "Enter" && e.shiftKey) return; // newline, even with hints visible
+    if (e.key === "Enter" && e.shiftKey) {
+      const edit = listNewline(input.value, input.selectionStart, input.selectionEnd);
+      if (edit) {
+        e.preventDefault();
+        input.value = edit.text; input.setSelectionRange(edit.caret, edit.caret);
+        onDraft(input.value); update();
+      }
+      return; // newline, even with hints visible
+    }
     if (menu.items.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); menu.active = (menu.active + (e.key === "ArrowDown" ? 1 : -1) + menu.items.length) % menu.items.length; update(); return; }
       if ((e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.altKey) || e.key === "Tab") { e.preventDefault(); pick(menu.items[menu.active].key); return; }

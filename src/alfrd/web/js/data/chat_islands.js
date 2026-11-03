@@ -13,11 +13,18 @@ export function taskMetrics(task, attempts = [], now = Date.now()) {
   const last = attempts.at(-1) || {};
   const start = task.started_ts != null ? Number(task.started_ts) * 1000 : Date.parse(task.started || last.started);
   const end = task.finished_ts != null ? Number(task.finished_ts) * 1000 : Date.parse(task.finished || last.finished);
-  const seconds = reported(task.seconds) ? Number(task.seconds)
+  let seconds = reported(task.seconds) ? Number(task.seconds)
     : Number.isFinite(start) && (Number.isFinite(end) || !terminal(task.status)) ? Math.max(0, ((Number.isFinite(end) ? end : now) - start) / 1000)
     : reported(last.seconds) ? Number(last.seconds) : null;
+  // Session totals are authoritative at rest. While running, advance only the
+  // active attempts from their ALFRD start stamps; keep completed retries fixed.
+  if (!terminal(task.status) && attempts.some((a) => a.status === "running")) {
+    const durations = attempts.map((a) => a.status === "running" && Number.isFinite(Date.parse(a.started))
+      ? Math.max(0, (now - Date.parse(a.started)) / 1000) : reported(a.seconds) ? Number(a.seconds) : null);
+    if (durations.every((s) => s != null)) seconds = durations.reduce((a, b) => a + b, 0);
+  }
   const cost = task.usage?.total_cost_usd ?? task.total_cost_usd ?? task.cost_usd;
-  return { seconds, cost: reported(cost) ? Number(cost) : null };
+  return { seconds, cost: reported(cost) ? Number(cost) : null, costReason: task.cost_reason || task.usage?.cost_reason || last.cost_reason || "Not reported by agent" };
 }
 
 export function taskIslands(state, items, request) {

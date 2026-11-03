@@ -10,9 +10,11 @@ the same loopback + CSRF gate as the rest of the server.
 
 from __future__ import annotations
 
+import gzip
 import re
 import subprocess
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, jsonify, request, send_file, send_from_directory
@@ -24,6 +26,12 @@ studio = Blueprint("studio", __name__, url_prefix="/studio")
 studio_api = Blueprint("studio_api", __name__, url_prefix="/api")
 
 
+@lru_cache(maxsize=128)
+def _gzip_asset(body: bytes) -> bytes:
+    # Static assets are small; cache by content so source edits cannot serve stale bytes.
+    return gzip.compress(body, compresslevel=6, mtime=0)
+
+
 def _send(filename: str):
     root = web_root()
     # send_from_directory rejects traversal (``..``) and absolute paths.
@@ -32,6 +40,20 @@ def _send(filename: str):
     if mime:
         response.mimetype = mime
     response.headers["X-Content-Type-Options"] = "nosniff"
+    if Path(filename).suffix.lower() in {".html", ".js", ".mjs", ".css", ".svg", ".json"}:
+        response.vary.add("Accept-Encoding")
+        # Leave ranges and conditional 304s to send_file. Images/fonts are already compressed.
+        if response.status_code == 200 and not request.headers.get("Range") and request.accept_encodings["gzip"] > 0:
+            response.direct_passthrough = False
+            body = response.get_data()
+            if len(body) >= 1024:
+                compressed = _gzip_asset(body)
+                if len(compressed) < len(body):
+                    response.set_data(compressed)
+                    response.headers["Content-Encoding"] = "gzip"
+                    etag, _ = response.get_etag()
+                    if etag:
+                        response.set_etag(etag, weak=True)
     return response
 
 
@@ -400,9 +422,10 @@ def _allowed_cached(root: Path, rel: str) -> Path:
     return path
 
 
-#: Types ``/file?raw=1`` serves as bytes (the image and PDF viewers); never HTML or SVG.
+#: Inert previews only; SVG documents are additionally sandboxed.
 RAW_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-             ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf"}
+             ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf",
+             ".svg": "image/svg+xml", ".ico": "image/vnd.microsoft.icon"}
 
 
 def _project_file_raw(project_name: str, rel: str):
@@ -428,6 +451,7 @@ def _project_file_raw(project_name: str, rel: str):
     response = send_file(path, mimetype=mimetype, conditional=True, max_age=0)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "no-cache"
+    response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
     return response
 
 

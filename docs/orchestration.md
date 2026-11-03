@@ -434,10 +434,6 @@ messages.
   `chat.warn_task_cost_usd`;
 * each task lists its attempts with **Open log** (the unit log) and the handoff folder
   (`.alfrd/plans/chat-<s>/handoffs/<unit>`); chat tasks never appear in the Schedule plan list;
-* **Promote to workflow**: previews the request's tasks as workflow steps (agent entrypoint and model,
-  prompt file, `depends_on` from the task graph) with the diff of alfrd.yaml, then saves through the
-  version history; a dependency cycle or an alfrd.yaml that changed since the preview is refused.
-  Agent-loop (`repeat`) workflows are not promoted into.
 * the **chat dock** on every project view (see the Studio guide).
 
 **Settings → Agent chat** edits this `chat:` block (agents with entrypoint / model / adapter / persona /
