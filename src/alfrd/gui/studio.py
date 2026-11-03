@@ -190,6 +190,12 @@ def create_project_api():
         why = ("is hidden by the superuser (studio.hidden_templates)" if payload.get("template") in superuser.load()["studio"]["hidden_templates"]
                else "needs alfrd serve --experimental-features")
         return _json_error(ValueError(f"the {payload.get('template')} template {why}"), 400)
+    for key in ("agents", "custom"):
+        if payload.get(key) is not None and not isinstance(payload[key], list):
+            return _json_error(ValueError(f"{key} must be a list"), 400)
+    if payload.get("agents") is not None and not all(isinstance(a, str) for a in payload["agents"]):
+        return _json_error(ValueError("agents must be a list of option ids"), 400)
+    warnings: list[str] = []
     try:
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
@@ -197,7 +203,8 @@ def create_project_api():
                                     sequence=payload.get("sequence"),
                                     # the Studio keeps ALFRD's config in .alfrd/ unless asked for a root alfrd.yaml
                                     manifest=payload.get("manifest") or DEFAULT_NEW_MANIFEST,
-                                    draft=payload.get("draft"))
+                                    draft=payload.get("draft"), agents=payload.get("agents"),
+                                    custom=payload.get("custom"), warnings=warnings)
     except FileExistsError as error:
         return _json_error(error, 409)
     except (ValueError, OSError, TypeError) as error:
@@ -211,7 +218,8 @@ def create_project_api():
     save(current_app)
     draft = payload.get("draft") if isinstance(payload.get("draft"), dict) else {}
     return jsonify(name=project.name, identifier=project.identifier, root=project.root_path,
-                   template=payload.get("template", "basic"), targets=draft.get("targets") or []), 201
+                   template=payload.get("template", "basic"), targets=draft.get("targets") or [],
+                   warnings=warnings), 201
 
 
 def _template_offered(name) -> bool:
@@ -231,6 +239,52 @@ def project_templates():
     return jsonify(templates=[{"name": path.stem, "description": (yaml.safe_load(path.read_text()) or {}).get("description", "")}
                               for path in sorted((web_root() / "assets" / "templates").glob("*.yaml"))
                               if _template_offered(path.stem)])
+
+
+_OPTIONS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+@studio_api.get("/studio/entrypoint-options")
+def entrypoint_options_api():
+    """The New-project wizard's agent-command checkboxes for ``?template=`` (what is installed here, why an
+    option is hidden); ``experimental`` tells the wizard agent-loop needs ``--experimental-features``.
+    Cached for 30 s (the Ollama probe is a 1 s GET)."""
+    import time
+
+    from alfrd import entrypoint_options, superuser
+    from alfrd.gui.security import EXPERIMENTAL_TEMPLATES, experimental_enabled
+
+    template = request.args.get("template") or "basic"
+    template = template if template in entrypoint_options.DEFAULTS else "basic"  # only the defaults differ
+    hit = _OPTIONS_CACHE.get(template)
+    if hit is None or time.monotonic() - hit[0] > 30:
+        hit = _OPTIONS_CACHE[template] = (time.monotonic(), entrypoint_options.options_for(template))
+    # templates this server would offer with --experimental-features (not the ones the superuser hides)
+    needs_flag = [] if experimental_enabled() else sorted(set(EXPERIMENTAL_TEMPLATES) - set(superuser.load()["studio"]["hidden_templates"]))
+    return jsonify(options=hit[1], experimental=bool(needs_flag), experimental_templates=needs_flag)
+
+
+@studio_api.post("/studio/entrypoint-check")
+def entrypoint_check_api():
+    """``{path, custom: [{name, cmd, model_option?}]}`` → ``{entries, warnings}`` or 400 with the first problem:
+    the wizard's Review step checks custom commands against the folder before creating anything."""
+    from alfrd import entrypoint_options
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
+        return _json_error(ValueError("path is required"), 400)
+    custom = payload.get("custom") or []
+    if not isinstance(custom, list) or len(custom) > entrypoint_options.MAX_CUSTOM:
+        return _json_error(ValueError(f"custom must be a list of at most {entrypoint_options.MAX_CUSTOM} commands"), 400)
+    entries, warnings = [], []
+    try:
+        for spec in custom:
+            entry, more = entrypoint_options.validate_custom(payload["path"], spec, taken=[e["name"] for e in entries])
+            entries.append(entry)
+            warnings += more
+    except ValueError as error:
+        return _json_error(error, 400)
+    return jsonify(entries=entries, warnings=warnings)
 
 
 # ---------------------------------------------------------------------------

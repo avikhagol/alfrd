@@ -63,7 +63,7 @@ def chat_settings(project_name: str):
 @studio_api.post(_BASE + "/settings")
 def chat_settings_save(project_name: str):
     """``{chat: <block>, base_hash?, force?}``: validate and replace the ``chat:`` block of the active alfrd.yaml
-    through its history. 200 ``{settings, hash, version}``; 400 invalid; 409 ``{current_hash, current_text, diff}``."""
+    through its history. 200 ``{settings, hash, version, warnings}`` (commands that will not start here); 400 invalid; 409 ``{current_hash, current_text, diff}``."""
     from alfrd import history
 
     payload = request.get_json(silent=True) or {}
@@ -80,7 +80,7 @@ def chat_settings_save(project_name: str):
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
-    return jsonify(settings=view, hash=view["hash"], version=saved["version"])
+    return jsonify(settings=view, hash=view["hash"], version=saved["version"], warnings=saved.get("warnings") or [])
 
 
 @studio_api.get(_BASE + "/probe")

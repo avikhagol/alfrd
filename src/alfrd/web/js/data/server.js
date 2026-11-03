@@ -135,6 +135,8 @@ export const server = {
   },
 
   projectTemplates() { return getJson("/studio/project-templates"); },
+  entrypointOptions(template) { return getJson(`/studio/entrypoint-options?${new URLSearchParams({ template })}`); },
+  entrypointCheck(path, custom) { return this.mutate("/studio/entrypoint-check", { path, custom }); },
   async createProject(payload) {
     const project = await this.mutate("/studio/projects/create", payload);
     if (Array.isArray(this.session.projects)) this.session.projects.push(project.identifier);

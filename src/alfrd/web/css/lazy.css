@@ -458,3 +458,18 @@ details.yf-group > summary .icon-btn { margin-left: 4px; }
 .cr-banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cr-graph { flex: 1; display: flex; min-height: 360px; } .cr-graph .gv { flex: 1; } .cr-graph .gv-canvas { height: 60vh; flex: none; }
 [data-cr-task] { cursor: pointer; } [data-cr-cell] { cursor: pointer; }
+/* create_wizard.js: New project wizard (steps, agent-command checkboxes, review) */
+.cw-steps { display: flex; gap: 6px; flex-wrap: wrap; list-style: none; margin: 0 0 12px; padding: 0; counter-reset: cw; }
+.cw-steps li { counter-increment: cw; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--subtle); }
+.cw-steps li::before { content: counter(cw) ". "; }
+.cw-steps li.on { color: var(--text); font-weight: 600; border-color: var(--accent); background: var(--accent-bg); }
+.cw-steps li.done::after { content: " ✓"; }
+.cw-step { border: 0; margin: 0; padding: 0; min-width: 0; }
+.cw-opts { display: flex; flex-direction: column; gap: 6px; }
+.cw-opt { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; }
+.cw-opt-b { display: flex; flex-direction: column; gap: 2px; }
+.cw-adv > .cw-opt { margin-top: 6px; }
+.cw-custom { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--border); }
+.cw-review { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.cw-review dt { color: var(--subtle); } .cw-review dd { margin: 0; min-width: 0; }
+.cw-cmds { margin: 0; padding-left: 16px; } .cw-cmds pre { white-space: pre-wrap; word-break: break-all; margin: 2px 0 6px; }

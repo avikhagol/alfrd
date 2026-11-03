@@ -18,19 +18,35 @@ const DELEGATE_OPTIONS = [["off", "Off: ask me"], ["questions", "Questions (not 
 // description and the announcement only carry the warning when it applies.
 const delegateWarn = (v) => (v === "all" ? `<p class="callout warn small">${icon("alert")}<span>The orchestrator may grant the folders and commands a blocked task asks for, without asking you.</span></p>` : "");
 
+/** Agent `key`'s row of GET chat/probe (the saved file) while the draft `agent` still runs the same command
+ *  (entrypoint name and its draft `entrypoint:` cmd, or its own cmd); else null: "not checked". */
+export function probeFor(probe, key, agent = {}, entries = []) {
+  const p = probe?.agents?.[key], name = agent?.entrypoint || key;
+  const cmd = agent?.cmd || (Array.isArray(entries) ? entries : []).find((e) => e?.name === name)?.cmd;
+  return p && p.entrypoint === name && JSON.stringify(p.cmd ?? null) === JSON.stringify(cmd ? cmd.map(String) : null) ? p : null;
+}
+
 /** Open the editor for draft `text`; `apply(text, save)` writes the new text into the Settings draft (and saves). */
 export function openChatSettings(ctx, project, text, apply) {
   let data;
   try { data = parseYaml(text) || {}; } catch (error) { ctx.toast(`Fix the YAML first: ${error.message}`, "fail"); return; }
   let s = mergeChat(data.chat || {});
   const personas = Object.keys(data.project_settings?.personas || {});
-  const entrypoints = (data.entrypoint || []).map((e) => e?.name).filter(Boolean);
+  const own = (data.entrypoint || []).map((e) => e?.name).filter(Boolean);
+  // Until GET chat/settings answers with the server's list (the project's + built-ins): own names and the two common CLIs.
+  let entrypoints = [...new Set([...own, "claude", "codex"])];
+  let probe = null; // GET chat/probe: is each agent's program installed here (saved file)
   let catalogue = {}; // GET chat/settings → presets (Ollama, Claude on Ollama, Hugging Face, OpenAI-compatible)
   const num = (name, label, value, attrs = "") => `<label class="field small"><span>${label}</span><input class="input sm" type="number" data-s="${name}" value="${esc(value)}" ${attrs}></label>`;
+  const epChip = (key) => {
+    const found = probeFor(probe, key, s.agents[key], data.entrypoint);
+    return found ? `<span id="cs-ep-${esc(key)}" class="badge ${found.available ? "tone-ok" : "tone-warn"}" title="${esc(found.detail || "")}">${found.available ? "found" : "missing"}</span>` : `<span id="cs-ep-${esc(key)}"></span>`;
+  };
+  const datalist = () => entrypoints.map((e) => `<option value="${esc(e)}">`).join("");
   const row = (key, a) => `<tr data-agent="${esc(key)}">
     <th scope="row"><span class="mono">@${esc(key)}</span></th>
     <td><input class="input sm" data-a="label" value="${esc(a.label || "")}" aria-label="Label of @${esc(key)}"></td>
-    <td><input class="input sm mono" data-a="entrypoint" value="${esc(a.entrypoint || "")}" list="cs-entrypoints" placeholder="${esc(key)}" aria-label="Entrypoint of @${esc(key)}" ${a.cmd ? `disabled title="Uses its own cmd from alfrd.yaml"` : ""}></td>
+    <td><input class="input sm mono" data-a="entrypoint" value="${esc(a.entrypoint || "")}" list="cs-entrypoints" placeholder="${esc(key)}" aria-label="Entrypoint of @${esc(key)}" aria-describedby="cs-ep-${esc(key)}" ${a.cmd ? `disabled title="Uses its own cmd from alfrd.yaml"` : ""}>${epChip(key)}</td>
     <td><input class="input sm" data-a="model" value="${esc(a.model || "")}" placeholder="CLI default" aria-label="Model of @${esc(key)}"></td>
     <td><select class="input sm" data-a="adapter" aria-label="Adapter of @${esc(key)}">${ADAPTERS.map((x) => `<option value="${x}" ${x === (a.adapter || "") ? "selected" : ""}>${x || "auto"}</option>`).join("")}</select></td>
     <td><select class="input sm" data-a="persona" aria-label="Persona of @${esc(key)}"><option value="">none</option>${personas.map((p) => `<option ${p === a.persona ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></td>
@@ -42,7 +58,7 @@ export function openChatSettings(ctx, project, text, apply) {
     <div class="modal-b cs">
       <p class="small" data-permissions role="status"></p>
       <p class="muted small">Who does what in the project chat: roles are words the orchestrator reads when it assigns tasks, not capabilities. Writes the <code>chat:</code> block of this project's alfrd.yaml.</p>
-      <datalist id="cs-entrypoints">${[...new Set([...entrypoints, "claude", "codex", "agy"])].map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
+      <datalist id="cs-entrypoints">${datalist()}</datalist>
       <div class="row gap wrap">
         <label class="field small"><span>Orchestrator</span><select class="input sm" data-s="orchestrator" id="cs-orch"></select></label>
         <label class="field small"><span>Orchestrator model</span><input class="input sm" data-s="orchestrator_model" value="${esc(s.orchestrator_model || "")}" placeholder="agent's own model" title="Plans (and the summary call)"></label>
@@ -92,8 +108,15 @@ export function openChatSettings(ctx, project, text, apply) {
       .then((r) => (r.ok ? r.json() : null)).then((body) => {
         const list = body?.presets;
         catalogue = Array.isArray(list) ? Object.fromEntries(list.map((x) => [x.key || x.id, x])) : list || {};
+        if (Array.isArray(body?.entrypoints)) { entrypoints = [...new Set([...own, ...body.entrypoints])]; if (root.isConnected) $("#cs-entrypoints", root).innerHTML = datalist(); }
         if (root.isConnected && Object.keys(catalogue).length) presets();
       }).catch(() => {});
+    // found/missing per agent (the saved alfrd.yaml; an agent added here shows after saving)
+    const chip = (key) => { const old = root.querySelector(`[id="cs-ep-${CSS.escape(key)}"]`); if (old) old.outerHTML = epChip(key); };
+    server.chatProbe?.(project).then((result) => {
+      probe = result;
+      if (root.isConnected) for (const key of Object.keys(s.agents)) chip(key);
+    }).catch(() => {});
     root.addEventListener("input", (e) => {
       const t = e.target;
       if (t.dataset.s) {
@@ -106,6 +129,7 @@ export function openChatSettings(ctx, project, text, apply) {
       if (tr && t.dataset.a) {
         const a = s.agents[tr.dataset.agent];
         a[t.dataset.a] = t.dataset.a === "roles" ? t.value.split(",").map((r) => r.trim()).filter(Boolean) : t.type === "checkbox" ? t.checked : t.value;
+        if (t.dataset.a === "entrypoint") chip(tr.dataset.agent);
       }
     });
     root.addEventListener("change", (e) => {

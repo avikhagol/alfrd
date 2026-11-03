@@ -107,6 +107,15 @@ def test_scaffold_and_register_ordered_workflow(service, tmp_path):
     assert (project_manifest(root)).read_bytes() == before
 
 
+def test_creation_without_wizard_agents_keeps_the_template_commands(service, tmp_path):
+    root = tmp_path / "p"
+    create_project(service, root, template="agent-loop", task="Build it")
+    data = yaml.safe_load(project_manifest(root).read_text())
+    assert [e["name"] for e in data["entrypoint"]] == ["claude", "codex"]
+    assert data["workflows"][0]["repeat"]["sequence"] == ["claude", "codex"]
+    assert "chat" not in data
+
+
 @pytest.mark.parametrize("iterations", [0, -1, 201, True, "5"])
 def test_invalid_iterations_leave_no_files(service, tmp_path, iterations):
     root = tmp_path / "p"

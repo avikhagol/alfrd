@@ -132,7 +132,8 @@ def test_probe_finds_programs_on_path_and_no_ollama(project, tmp_path, monkeypat
     out = chat.probe(project)
     assert out["agents"]["claude"]["available"] and out["agents"]["claude"]["path"].endswith("/bin/claude")
     assert out["agents"]["ghost"] == {"available": False, "program": "no-such-agent-program", "path": None,
-                                      "detail": "no-such-agent-program is not on PATH"}
+                                      "detail": "no-such-agent-program is not on PATH", "entrypoint": "ghost",
+                                      "cmd": ["no-such-agent-program"]}
     assert out["agents"]["pathy"]["available"] and out["agents"]["pathy"]["path"] == str(tmp_path / "bin" / "codex")
     assert out["presets"]["local-llm"]["available"] and out["presets"]["local-llm"]["path"] == sys.executable
     assert out["ollama"]["url"] == "http://127.0.0.1:9" and not out["ollama"]["reachable"] and out["ollama"]["error"]

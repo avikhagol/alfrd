@@ -3670,7 +3670,20 @@ def settings_view(root: str | Path) -> dict[str, Any]:
     return {**conf, "agents": agents, "protocol": proto.PROTOCOL, "hash": history.text_hash(text),
             "file": path.relative_to(base).as_posix() if path is not None and path.is_file() else None,
             "block": json.loads(json.dumps(block, default=str)) if isinstance(block, Mapping) else {},
-            "presets": json.loads(json.dumps(PRESETS)), "roles": list(ROLE_WORDS)}
+            "presets": json.loads(json.dumps(PRESETS)), "roles": list(ROLE_WORDS),
+            "entrypoints": _entrypoint_names(base)}
+
+
+def _entrypoint_names(root: Path) -> list[str]:
+    """Names a chat agent can point at: the project's entrypoints, then the built-ins."""
+    from alfrd.execution import merged_manifest
+
+    try:
+        merged = merged_manifest(root)
+    except ValueError:
+        merged = {}
+    own = [str(e["name"]) for e in merged.get("entrypoint") or [] if isinstance(e, Mapping) and e.get("name")]
+    return list(dict.fromkeys([*own, *BUILTIN_ENTRYPOINTS]))
 
 
 def _check_entrypoints(root: Path, conf: Mapping[str, Any]) -> None:
@@ -3716,7 +3729,14 @@ def save_settings(root: str | Path, block: Any, *, base_hash: str | None = None,
     new_text = replace_sections(text, data, new)
     entry = history.save(base, "alfrd.yaml", new_text, source="studio", message="chat settings",
                          base_hash=base_hash, force=force)
-    return {"version": entry, "hash": history.text_hash(_manifest_text(base)[1])}
+    from alfrd.entrypoint_options import entrypoint_warnings
+    from alfrd.execution import merged_manifest
+
+    try:  # saved anyway: a program may be installed later; the warnings say what will not start yet
+        warnings = entrypoint_warnings({**merged_manifest(base), "chat": new.get("chat") or {}}, base)
+    except ValueError:
+        warnings = []
+    return {"version": entry, "hash": history.text_hash(_manifest_text(base)[1]), "warnings": warnings}
 
 
 def _agent_argv(conf_agent: Mapping[str, Any], key: str, entries: Mapping[str, Mapping[str, Any]]) -> list[str]:
@@ -3773,7 +3793,8 @@ def _ollama_probe(url: str, timeout: float = 1.0) -> dict[str, Any]:
 
 
 def probe(root: str | Path) -> dict[str, Any]:
-    """What can run here: each chat agent's program (and each preset's), Ollama, a Hugging Face token.
+    """What can run here: each chat agent's program (and each preset's), each manifest entrypoint's program
+    (``entrypoints``, with ``warnings`` for commands that will not start), Ollama, a Hugging Face token.
 
     Nothing is sent anywhere but a GET to the local Ollama (1 s timeout); tokens are only checked for presence."""
     from alfrd.execution import merged_manifest
@@ -3784,14 +3805,27 @@ def probe(root: str | Path) -> dict[str, Any]:
         merged = merged_manifest(base)
     except ValueError as exc:
         raise ExecutionError(str(exc)) from exc
+    from alfrd.entrypoint_options import entrypoint_status, entrypoint_warnings, local_argv
+
     entries = {str(e["name"]): e for e in merged.get("entrypoint") or [] if isinstance(e, Mapping) and e.get("name")}
-    agents = {key: _program(_agent_argv(agent, key, entries)) for key, agent in conf["agents"].items()}
+
+    def agent_probe(agent: Mapping[str, Any], key: str) -> dict[str, Any]:
+        # {project_dir}/bin/agent.sh is probed where it runs; entrypoint + cmd say which saved command this was
+        name = agent.get("entrypoint") or key
+        own = agent.get("cmd") or (entries.get(name) or {}).get("cmd")
+        return {**_program(local_argv(_agent_argv(agent, key, entries), base)), "entrypoint": name,
+                "cmd": [str(a) for a in own] if own else None}
+
+    agents = {key: agent_probe(agent, key) for key, agent in conf["agents"].items()}
     presets = {key: _program(_agent_argv(p["agent"], key, entries)) for key, p in PRESETS.items()}
     token = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
     if not token:
         presets["hf"] = {**presets["hf"], "detail": presets["hf"]["detail"] + "; HF_TOKEN is not set"}
+
+    # the project's own commands (Settings → Entrypoints card) and what will not start here
     return {"agents": agents, "presets": presets, "ollama": _ollama_probe(ollama_url()),
-            "huggingface": {"token": token}, "codex": codex_models()}
+            "huggingface": {"token": token}, "codex": codex_models(),
+            "entrypoints": entrypoint_status(merged, base), "warnings": entrypoint_warnings(merged, base)}
 
 
 _TOML_SECTION = re.compile(r"^\s*\[\s*([^\]]+?)\s*\]\s*(?:#.*)?$")
