@@ -18,7 +18,7 @@ test("Files preview: markdown layout, images and raw actions", { skip: !chromium
     const send = (body, type = "text/html", code = 200) => { res.writeHead(code, { "Content-Type": type }); res.end(body); };
     if (url.pathname === "/") {
       const theme = url.searchParams.get("theme") || "obsidian-orbit";
-      return send(`<!doctype html><link rel="stylesheet" href="/css/studio.css"><link rel="stylesheet" href="/css/lazy.css"><link rel="stylesheet" href="/css/themes/${theme}/theme.css"><link rel="stylesheet" href="/plugin/index.css"><body style="display:block;height:auto"><button id="home">Files</button><div id="modal-host" hidden></div></body>`);
+      return send(`<!doctype html><link rel="stylesheet" href="/css/studio.css"><link rel="stylesheet" href="/css/lazy.css"><link rel="stylesheet" href="/css/chat.css"><link rel="stylesheet" href="/css/themes/${theme}/theme.css"><link rel="stylesheet" href="/plugin/index.css"><body style="display:block;height:auto"><button id="home">Files</button><div id="modal-host" hidden></div></body>`);
     }
     if (url.pathname === "/shell.js") return send(`import { $ } from "/js/utils/dom.js"; let clearModalKeys; export ${shell}`, "text/javascript");
     const [root, rel] = url.pathname.startsWith("/plugin/") ? [plugin, url.pathname.slice(8)] : [web, url.pathname.slice(1)];
@@ -39,6 +39,41 @@ test("Files preview: markdown layout, images and raw actions", { skip: !chromium
       const page = await browser.newPage({ viewport: { width, height: 844 } });
       t.after(() => page.close());
       await page.goto(`http://127.0.0.1:${service.address().port}/?theme=${theme}`);
+      const mountList = async () => page.evaluate(async () => {
+        const host = document.createElement('div'); host.id = 'files';
+        host.style.cssText = 'width:100%;max-width:420px'; document.body.append(host);
+        const path = 'src/' + 'long-directory/'.repeat(8) + 'components/chat_view.js';
+        window.filePath = '/project/' + path;
+        window.filesController = (await import('/js/components/files_tab.js')).mountFiles(host, {
+          getOverview: async () => ({ files: [{ path, absolute_path: window.filePath, producer_rows: ['task-12'], state: 'recorded', ref: 'recorded' }] }),
+          isCurrent: () => true, copy: async value => { window.copied = value; return true; },
+          raw: async () => new Blob(['preview']), view: async path => { window.previewed = path; },
+        });
+      });
+      await mountList();
+      await page.locator('.chat-files-list').waitFor();
+      assert.equal(await page.getByRole('button', { name: 'List view', exact: true }).getAttribute('aria-pressed'), 'true');
+      assert.match(await page.locator('.chat-file-dir').innerText(), /…/);
+      for (const selector of ['.chat-file-name', '.chat-file-dir']) {
+        assert.equal(await page.locator(selector).evaluate(el => getComputedStyle(el).whiteSpace), 'nowrap');
+      }
+      assert.equal(await page.locator('.chat-file-open').getAttribute('title'), await page.evaluate(() => window.filePath));
+      assert.equal(await page.locator('.chat-file-task').innerText(), 'task-12');
+      await page.getByRole('button', { name: 'Grid view', exact: true }).click();
+      assert.equal(await page.locator('.chat-files-grid').evaluate(el => getComputedStyle(el).display), 'grid');
+      assert.equal(await page.locator('.chat-file-format').innerText(), 'JS');
+      assert.ok(await page.locator('.chat-file').evaluate(el => el.getBoundingClientRect().right <= innerWidth));
+      const copy = page.getByRole('button', { name: 'Copy path', exact: true });
+      assert.equal(await copy.innerText(), ''); await copy.click();
+      assert.equal(await page.evaluate(() => window.copied), await page.evaluate(() => window.filePath));
+      assert.match(await page.locator('[data-file-status]').innerText(), /Copied/);
+      await page.locator('.chat-file-open').click();
+      assert.equal(await page.evaluate(() => '/project/' + window.previewed), await page.evaluate(() => window.filePath));
+      await page.reload(); await mountList();
+      await page.locator('.chat-files-grid').waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Grid view', exact: true }).getAttribute('aria-pressed'), 'true');
+      await page.getByRole('button', { name: 'List view', exact: true }).click();
+      await page.evaluate(() => { window.filesController.destroy(); document.querySelector('#files').remove(); });
       const source = '# Heading\n\nParagraph\n\n> Quoted\n\n- first\n- second\n\n| Name | Result |\n| --- | --- |\n| A | B |\n\n```py\n' + 'x'.repeat(300) + '\n  print(1)\n```';
       await page.locator('#home').focus();
       await page.evaluate(async ({ source }) => {

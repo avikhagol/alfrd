@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { viewerFor, registerViewer, renderViewer, fileObject, openViewer } from "../../src/alfrd/web/js/components/viewers.js";
+import { viewerFor, registerViewer, renderViewer, fileObject, openViewer, mountViewerTabs } from "../../src/alfrd/web/js/components/viewers.js";
 import { activate } from "../../examples/plugins/alfrd-markdown/alfrd_markdown/web/index.js";
 
 // Exercise each private click handler without starting the chat pollers.
@@ -14,17 +14,20 @@ async function handler(component, deps) {
   return new Function(...Object.keys(deps), `${body}; return viewArtifact;`)(...Object.values(deps));
 }
 
-const element = () => ({ textContent: "", innerHTML: "", dataset: {}, classList: { add() {} } });
+const element = () => ({ setAttribute() {}, append() {}, before() {}, removeAttribute() {}, textContent: "", innerHTML: "", dataset: {}, classList: { add() {} } });
+globalThis.document = { createElement: element };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 for (const component of ["chat_view", "chat_dock"]) {
   test(`${component}: artifact Markdown uses the installed plugin and verified bytes; other files retain text routing`, async () => {
     const el = element(), more = {}, seen = [], urls = [], textViews = [], warnings = [];
+    const body = { children: [el], before() {}, append() {} }; el.parentElement = body;
+    const root = { classList: { add() {} }, querySelector: (selector) => selector === ".viewer-full" ? el : null };
     let html, path, eof = false;
     const ctx = {
       modal(markup, setup) {
         html = markup;
-        setup({ querySelector: (selector) => selector === ".viewer-full" ? el : null });
+        setup(root);
       },
       toast: (message) => warnings.push(message),
     };
@@ -36,7 +39,7 @@ for (const component of ["chat_view", "chat_dock"]) {
     const view = await handler(component, {
       ctxRef: ctx, S: { project: "p", sid: "s" }, D: { project: "p", sid: "s" },
       base: () => "/chat", URLSearchParams, viewerFor, renderViewer, fileObject, openViewer,
-      viewers: { viewerFor, renderViewer, fileObject },
+      viewers: { viewerFor, renderViewer, fileObject, mountViewerTabs },
       esc: (s) => String(s), icon: () => "", $: (selector) => selector === "#chat-art" ? el : more,
       logview: { openFull: (...args) => textViews.push(args) },
       get: async (url) => {

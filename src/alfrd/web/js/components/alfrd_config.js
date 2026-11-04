@@ -211,7 +211,6 @@ export function mount(el, ctx) {
       try { if (!(await ui.formReady)?.openSection(el, "entrypoint")) ctx.toast("Open All settings, then Advanced… → Entrypoint", "info"); }
       catch (error) { ctx.toast(error.message, "fail"); }
     }
-    if (a === "entrypoints-goto") { const card = $("#ps-entrypoints-card", el); card?.scrollIntoView({ block: "start" }); card?.querySelector("h4")?.focus(); }
     if (a === "chat") {
       const st = stateOf(p, SETTINGS);
       import("./chat_settings.js").then((m) => m.openChatSettings(ctx, p, st.text, (text, andSave) => {
@@ -349,7 +348,6 @@ export function render(el, ctx) {
       <button class="btn sm" data-act="download">${icon("download")} Download</button>
       ${ctx.state.mode === "server" && tree.provider === "server" ? `<button class="btn sm" data-act="history" title="Earlier versions of alfrd.yaml: diff and restore">${icon("clock")} History</button>` : ""}
       <button class="btn sm ${ui.dirty ? "primary" : ""}" data-act="save">${icon("save")} Save alfrd.yaml</button></div>
-      ${ui.text ? '<p class="small"><button type="button" class="link-btn" data-act="entrypoints-goto">Entrypoints (agent commands)</button> — which programs the agents run.</p>' : ""}
       <div id="ps-loc"></div>
       <p class="muted small">${esc(where)} Ctrl+S saves. After saving, the workflow, stages, metadata health, logs and field aliases are re-read from the file.</p>
       ${ui.previewTpl ? `<p class="callout warn small" role="status">Previewing template <b>${esc(ui.previewTpl)}</b>. Save to apply, Revert to discard.</p>` : ""}

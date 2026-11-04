@@ -287,7 +287,7 @@ async function viewArtifact(ref) {
       return openViewer(ctxRef, project, page.path, viewer, { text: page.content, mime: "text/markdown" });
     }
     const { openFull } = await import("./logview.js");
-    await openFull(ctxRef, page.path, page.content, page.eof ? ref : `${ref} · Partial text; Open full Chat for more`, null);
+    await openFull(ctxRef, page.path, page.content, page.eof ? ref : `${ref} · Partial text; Open full Chat for more`, null, { reading: true });
   } catch (error) { ctxRef.toast(`Artifact: ${error.message}`, "fail"); }
 }
 

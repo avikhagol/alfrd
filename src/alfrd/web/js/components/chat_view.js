@@ -422,7 +422,7 @@ function drawFilesTab(ctx, request) {
     m.drawFiles(panel, { key, isCurrent: current,
       rows: request ? (S.data?.graph?.nodes || []).filter((n) => n.request === request).map((n) => n.id) : null,
       getOverview: () => sid ? get(`${url}/overview`) : Promise.resolve({ files: [] }),
-      raw: (ref) => m.rawBlob(url, ref), view: (path, blob, guard, ref) => m.openBlob(ctx, path, blob, guard, `${url}/artifacts/raw?${new URLSearchParams({ ref, inline: "1" })}`) });
+      raw: (ref) => m.rawBlob(url, ref), view: (path, blob, guard, ref) => m.openBlob(ctx, path, blob, guard, `${url}/artifacts/raw?${new URLSearchParams({ ref, inline: "1" })}`, project) });
   }).catch((err) => { if (current()) panel.textContent = err.message; });
 }
 
@@ -819,17 +819,19 @@ async function viewArtifact(ref) {
     info = page; text += page.content ?? ""; offset = page.offset + page.length; eof = page.eof;
   };
   try { await more(); } catch (error) { ctx.toast(`Artifact: ${error.status === 409 ? "the file changed since this version was recorded" : error.message}`, "fail"); return; }
-  const { viewerFor, renderViewer, fileObject } = await import("./viewers.js");
+  const { viewerFor, renderViewer, fileObject, mountViewerTabs } = await import("./viewers.js");
   const viewer = /\.(md|markdown)$/i.test(info.path) ? viewerFor(info.path, "text/markdown") : null;
   const markdown = viewer && viewer.id !== "text";
   ctx.modal(`<header class="modal-h"><h2 class="mono">${esc(info.path)}</h2><span class="muted small mono">${esc(String(info.sha256).slice(0, 12))} · ${Math.ceil(info.size / 1024)} KiB</span><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b">${markdown ? '<div class="viewer viewer-full" id="chat-art"></div>' : '<pre class="log log-full" id="chat-art"></pre>'}<button type="button" class="btn sm" id="chat-art-more" hidden>Load more</button></div>`, (root) => {
+    root.classList.add("file-viewer-modal");
+    const openTextLink = markdown ? mountViewerTabs(root, S.project, $("#chat-art", root), info.path) : null;
     const show = async () => {
       const el = $("#chat-art", root);
       el.textContent = text; $("#chat-art-more", root).hidden = eof;
       // Render the verified artifact bytes, including any pages already loaded.
       if (markdown) {
-        try { await renderViewer(viewer, fileObject(S.project, info.path, { text, mime: "text/markdown" }), el); }
+        try { await renderViewer(viewer, fileObject(S.project, info.path, { text, mime: "text/markdown", openTextLink }), el); }
         catch (error) { el.textContent = text; ctx.toast(error.message, "warn"); }
       }
     };

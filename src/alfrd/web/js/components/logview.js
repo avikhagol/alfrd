@@ -211,6 +211,7 @@ export async function openFull(ctx, title, text, sub = "", live = null, meta = n
       <button class="btn sm" data-log-dock="${esc(live.rel)}" data-log-project="${esc(live.project)}" title="Minimize to a Log Stream tab: keep following it while you use the other views">${icon("minus")} Minimize to Log Stream</button>` : ""}
       <button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b">${textFindHtml()}<div class="log-wrap full"><pre class="log log-full" ${live ? `data-live-log data-log-key="${esc(key)}"` : ""}>${esc(text)}</pre><button class="log-jump" data-log-jump hidden>${icon("chevron")} New output</button></div></div>`, (root) => {
+    if (meta?.reading) root.classList.add("file-viewer-modal");
     const pre = root.querySelector("pre");
     pre.dataset.follow = "1";
     pre.scrollTop = pre.scrollHeight;

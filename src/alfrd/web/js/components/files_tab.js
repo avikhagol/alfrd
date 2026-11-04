@@ -1,16 +1,40 @@
 import { sourceHTML } from "../utils/refresh.js";
-import { esc, copyText, icon } from "../utils/dom.js";
+import { esc, copyText, icon, storage } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { empty, loading, error } from "./state_view.js";
 
-export function filesHtml(files) {
-  if (!files.length) return empty("No files yet");
-  return `<ul class="chat-arts">${files.map((f, i) => `<li>
-    <strong>${esc(f.path)}</strong><p>Task: ${esc(f.producer_rows.join(", "))} · ${esc(f.state)}</p>
-    <button type="button" class="btn sm" data-file-copy="${i}">Copy path</button>
-    ${f.ref && f.state === "recorded" ? `<button type="button" class="btn sm" data-file-view="${i}">View</button>` : ""}
-    ${f.state === "changed" ? `<p>File changed.</p><button type="button" class="btn sm" data-file-current="${i}">View current</button><button type="button" class="btn sm" data-file-keep="${i}">Keep recorded</button>` : ""}
-  </li>`).join("")}</ul>`;
+/** Keep useful path ends; CSS handles narrower panels and unusually long names. */
+export function shortenPath(path, max = 48) {
+  path = String(path || "");
+  max = Math.max(5, max);
+  if (path.length <= max) return path;
+  const parts = path.split("/");
+  const tail = parts.slice(-2).join("/");
+  const head = parts[0];
+  if (parts.length > 2 && head.length + tail.length + 3 <= max) return `${head}/…/${tail}`;
+  const end = Math.ceil((max - 1) * .65);
+  return `${path.slice(0, max - end - 1)}…${path.slice(-end)}`;
+}
+
+export function filesHtml(files, layout = "list") {
+  layout = layout === "grid" ? "grid" : "list";
+  const toggle = `<div class="chat-files-tools" role="group" aria-label="Files view">${["list", "grid"].map((mode) =>
+    `<button type="button" class="icon-btn" data-file-layout="${mode}" aria-label="${mode === "list" ? "List" : "Grid"} view" title="${mode === "list" ? "List" : "Grid"} view" aria-pressed="${layout === mode}">${icon(mode)}</button>`).join("")}</div>`;
+  if (!files.length) return toggle + empty("No files yet");
+  return toggle + `<ul class="chat-arts chat-files chat-files-${layout}">${files.map((f, i) => {
+    const name = f.path.split("/").pop();
+    const dir = f.path.slice(0, f.path.length - name.length).replace(/\/$/, "");
+    const ext = name.includes(".") && !name.startsWith(".") ? name.split(".").pop().toUpperCase() : "FILE";
+    const glyph = /^(PNG|JPE?G|GIF|WEBP|SVG|ICO|AVIF)$/.test(ext) ? "image" : "file";
+    const label = `<span class="chat-file-format" title="${esc(ext)}">${layout === "grid" ? esc(ext) : icon(glyph)}</span><strong class="chat-file-name">${esc(name)}</strong>${layout === "list" && dir ? `<span class="chat-file-dir muted">${esc(shortenPath(dir))}</span>` : ""}`;
+    return `<li class="chat-file">
+      ${f.ref && f.state === "recorded" ? `<button type="button" class="chat-file-open" data-file-view="${i}" title="${esc(f.absolute_path || f.path)}">${label}</button>` : `<div class="chat-file-open" title="${esc(f.absolute_path || f.path)}">${label}</div>`}
+      <span class="chip chat-file-task" title="Task: ${esc(f.producer_rows.join(", "))}">${esc(f.producer_rows.join(", ") || "No task")}</span>
+      <span class="small muted chat-file-state">${esc(f.state)}</span>
+      <button type="button" class="icon-btn" data-file-copy="${i}" aria-label="Copy path" title="Copy path">${icon("copy")}</button>
+      ${f.state === "changed" ? `<div class="chat-file-changed"><span class="small">File changed.</span><button type="button" class="btn sm" data-file-current="${i}">View current</button><button type="button" class="btn sm" data-file-keep="${i}">Keep recorded</button></div>` : ""}
+    </li>`;
+  }).join("")}</ul>`;
 }
 
 export async function blobAdapter(path, blob, registry, urls = URL) {
@@ -33,7 +57,7 @@ export async function blobAdapter(path, blob, registry, urls = URL) {
 
 const modalHtml = (title, body) => `<header class="modal-h"><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="Close file">${icon("close")}</button></header>${body}`;
 
-export async function openBlob(ctx, path, blob, isCurrent = () => true, rawURL = null) {
+export async function openBlob(ctx, path, blob, isCurrent = () => true, rawURL = null, project = ctx.activeProject?.() || ctx.state?.selectedProject) {
   const registry = await import("./viewers.js");
   const adapted = await blobAdapter(path, blob, registry);
   if (!isCurrent()) { adapted.release(); return; }
@@ -43,11 +67,15 @@ export async function openBlob(ctx, path, blob, isCurrent = () => true, rawURL =
   const release = () => { adapted.release(); observer?.disconnect(); };
   try {
     ctx.modal(modalHtml(path, `${action}<div class="modal-b"><div class="viewer viewer-full"></div></div>`), (root) => {
+      root.classList.add("file-viewer-modal");
+      const host = root.querySelector(".viewer");
+      const openTextLink = project && !["image", "pdf", "binary"].includes(adapted.viewer.id)
+        ? registry.mountViewerTabs(root, project, host, path) : null;
       root.addEventListener("beforeclose", release, { once: true });
       observer = new MutationObserver(() => { if (!root.isConnected) release(); });
       observer.observe(document.body, { childList: true, subtree: true });
-      registry.renderViewer(adapted.viewer, adapted.file, root.querySelector(".viewer")).catch((err) => {
-        if (root.isConnected) root.querySelector(".viewer").innerHTML = error(err);
+      registry.renderViewer(adapted.viewer, { ...adapted.file, project, openTextLink }, host).catch((err) => {
+        if (root.isConnected) host.innerHTML = error(err);
       });
     }, "full");
   } catch (err) { release(); throw err; }
@@ -63,10 +91,11 @@ export async function rawBlob(url, ref) {
 }
 
 export function mountFiles(host, { getOverview, raw, isCurrent, view, rows, copy = copyText }) {
-  let alive = true, files = [];
+  let alive = true, files = [], copiedTimer;
+  let layout = storage.get("ui:chat-files-layout") === "grid" ? "grid" : "list";
   const current = () => alive && host.isConnected && isCurrent();
   const status = () => host.querySelector("[data-file-status]");
-  const draw = () => { sourceHTML(host, filesHtml(files) + '<div role="status" data-file-status></div>'); };
+  const draw = () => { sourceHTML(host, filesHtml(files, layout) + '<div role="status" data-file-status></div>'); };
   const load = async () => {
     if (!host.innerHTML || !host.querySelector("[data-file-status]")) sourceHTML(host, loading("Loading files…"));
     try {
@@ -81,6 +110,13 @@ export function mountFiles(host, { getOverview, raw, isCurrent, view, rows, copy
     if (!current() || !button || !host.contains(button)) return;
     const d = button.dataset;
     if (d.stateRetry != null) { load(); return; }
+    if (d.fileLayout === "list" || d.fileLayout === "grid") {
+      layout = d.fileLayout;
+      storage.set("ui:chat-files-layout", layout);
+      draw();
+      host.querySelector(`[data-file-layout="${layout}"]`)?.focus?.();
+      return;
+    }
     const action = Object.keys(d).find((k) => k.startsWith("file"));
     const f = files[d[action]];
     if (!f) return;
@@ -92,7 +128,11 @@ export function mountFiles(host, { getOverview, raw, isCurrent, view, rows, copy
           return;
         }
         const ok = await copy(f.absolute_path);
-        if (current()) status().textContent = ok ? "Copied path" : "Copy failed";
+        if (current()) {
+          clearTimeout(copiedTimer);
+          status().textContent = ok ? "Copied path" : "Copy failed";
+          if (ok) copiedTimer = setTimeout(() => { if (current()) status().textContent = ""; }, 2000);
+        }
       } else if (action === "fileKeep") status().textContent = "Kept recorded; no file opened.";
       else if (action === "fileView" || action === "fileCurrent") {
         let ref = f.ref;
@@ -113,7 +153,7 @@ export function mountFiles(host, { getOverview, raw, isCurrent, view, rows, copy
     } finally { if (current()) button.disabled = false; }
   };
   load();
-  return { destroy() { alive = false; host.onclick = null; } };
+  return { destroy() { alive = false; clearTimeout(copiedTimer); host.onclick = null; } };
 }
 
 let mounted = null;

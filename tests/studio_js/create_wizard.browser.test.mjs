@@ -131,7 +131,8 @@ test("New project wizard: steps, checkboxes, turn order, review, create; Setting
   assert.deepEqual(await card.locator("tbody td.mono:first-child").allInnerTexts(), ["claude", "mine"]);
   assert.equal(await card.getByRole("button", { name: "Edit commands" }).isVisible(), true);
   assert.equal(await card.getByRole("button", { name: "Choose chat agents" }).isVisible(), true);
-  await page.getByRole("button", { name: "Entrypoints (agent commands)" }).click();
+  await card.scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('[data-act="entrypoints-goto"]').count(), 0);
 
   // Agent chat: @mine's found chip is the saved command's; changing its entrypoint clears it
   await page.evaluate(async () => {
