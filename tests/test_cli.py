@@ -19,6 +19,13 @@ def test_cli_help_smoke():
     assert "studio" in result.output
 
 
+def test_removed_mode_is_not_a_command():
+    assert "harness" not in runner.invoke(alfrd_cli, ["--help"]).output.lower()
+    result = runner.invoke(alfrd_cli, ["harness"])
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
 def test_cli_command_help_smoke():
     for command in (
         "serve",

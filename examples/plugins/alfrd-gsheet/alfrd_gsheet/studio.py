@@ -103,7 +103,9 @@ def evaluate(root, panel, values, spec):
                              "conflicts": len(conflicts) if isinstance(conflicts, list) else 0,
                              "result": record["result"],
                              # Never replay arbitrary error text/values into the browser.
-                             "error": "Sync failed. Validate the mapping to check the connection." if record["result"] == "error" else ""})
+                             "error": ({"auth_required": "Sign in to Google again from the Google Sheet dialog.",
+                                        "file_access": "ALFRD lost access to the spreadsheet; choose it again."}.get(record.get("error_code") if isinstance(record.get("error_code"), str) else "",
+                                        "Sync failed. Validate the mapping to check the connection.")) if record["result"] == "error" else ""})
         model.update(rows=rows[:10], more_rows=rows[10:], total=len(rows))
         return model
     except mapping.MappingError:

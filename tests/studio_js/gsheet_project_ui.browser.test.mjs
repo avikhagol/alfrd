@@ -51,6 +51,17 @@ test("Google Sheet project UI: attach, edit, validate, conflict, guard, themes",
         comments_notice: "Saving rewrites the file; comments are removed.", last_sync: {}, ...(window.stateOverrides || {}) });
       window.isAttached = attached; window.canWrite = true;
       const backend = {
+        auth_start: () => ({ session: "auth-test", auth_url: "https://accounts.example.test/consent", expires_in: 300 }),
+        auth_status: () => {
+          if (window.authWaiting) return { state: "waiting" };
+          window.stateOverrides = { ...window.stateOverrides, credentials: true, auth: { ...window.stateOverrides.auth, signed_in: true, status: "ok", email: "ada@example.org" } };
+          return { state: "signed_in", email: "ada@example.org" };
+        },
+        auth_cancel: () => ({ state: "cancelled" }),
+        picker_start: () => ({ session: "picker-test", picker_url: "http://127.0.0.1:9/picker?n=test", expires_in: 600 }),
+        picker_status: () => ({ state: "picked", file: { id: SID, name: "Lab runs", can_edit: true } }),
+        picker_cancel: () => ({ state: "cancelled" }),
+        create_spreadsheet: (p) => ({ id: SID, name: p.title, url: `https://docs.google.com/spreadsheets/d/${SID}/edit` }),
         state: () => { if (window.stateFailure) throw new Error("Connection read failed"); return state(); },
         sheet_info: () => { if (window.metadataFailure) throw new Error("No access"); return { spreadsheet_id: SID, title: window.missingTitle ? "" : "Research targets", tabs: [{ title: "Other", gid: 0 }, { title: "Targets", gid: 5 }] }; },
         headers: (p) => ({ headers: [{ letter: "A", name: "TARGET_NAME" }, { letter: "B", name: evil }, { letter: "C", name: "calibrate" }, { letter: "D", name: "image" }, { letter: "E", name: "FILENAMES" }, ...window.createdHeaders.map((name, i) => ({ letter: ["AA", "AB"][i], name }))],
@@ -83,6 +94,30 @@ test("Google Sheet project UI: attach, edit, validate, conflict, guard, themes",
     return page;
   };
 
+  await t.test("OAuth account, Picker and Create use actions without exposing tokens", async () => {
+    const page = await open(false); t.after(() => page.close());
+    await page.evaluate(() => {
+      // No Google URLs are visited: a fake browser tab records only navigation.
+      window.open = () => ({ opener: null, location: {}, close() {} });
+      window.stateOverrides = { credentials: false, auth: { mode: "oauth", available: true, signed_in: false, status: "signed_out", picker: true, create: true } };
+      window.showConnection();
+    });
+    await page.getByRole("button", { name: "Sign in with Google" }).click();
+    await page.getByText("✓ Signed in as ada@example.org").waitFor();
+    await page.getByRole("button", { name: "Connect sheet" }).click();
+    await page.getByRole("button", { name: "Choose from Google Drive" }).click();
+    await page.getByText("Selected Lab runs").waitFor();
+    assert.equal(await page.getByLabel("Sheet URL or ID").inputValue(), SID);
+    await page.getByLabel("New spreadsheet title").fill("New lab runs");
+    await page.getByRole("button", { name: "Create new spreadsheet", exact: true }).click();
+    await page.getByText("Created New lab runs", { exact: false }).waitFor();
+    const calls = await page.evaluate(() => window.calls);
+    assert.equal(calls.filter(([id]) => id === "create_spreadsheet").length, 1);
+    assert(calls.some(([id]) => id === "auth_cancel"));
+    assert(calls.some(([id]) => id === "picker_cancel"));
+    assert.equal(await page.locator('script[src*="google.com"]').count(), 0);
+  });
+
   await t.test("attach flow: gid preselects the tab, guessed key, plan matches, inert header text, opens editor", async () => {
     const page = await open(false); t.after(() => page.close());
     await page.getByRole("button", { name: "Connect sheet" }).click();
@@ -99,7 +134,7 @@ test("Google Sheet project UI: attach, edit, validate, conflict, guard, themes",
     assert.deepEqual(attach, { spreadsheet: `https://docs.google.com/spreadsheets/d/${SID}/edit#gid=5`, worksheet: "Targets", header_row: 1, key_column: "TARGET_NAME", match_against: "target" });
     assert.equal(await page.evaluate(() => !!window.xss || !!document.querySelector("img")), false);
     assert.deepEqual(await page.evaluate(() => window.commands().map((c) => c.label).sort()),
-      ["Google Sheet: attach…", "Google Sheet: open mapping editor", "Google Sheet: validate mapping"]);
+      ["Google Sheet: attach…", "Google Sheet: open mapping editor", "Google Sheet: sign in / account…", "Google Sheet: validate mapping"]);
   });
 
   await t.test("filenames: explicit mode, backend samples, ambiguity gates attachment, mobile fits", async () => {

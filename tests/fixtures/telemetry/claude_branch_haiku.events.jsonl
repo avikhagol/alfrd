@@ -1,0 +1,26 @@
+{"type":"system","subtype":"init"}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_0154uMaF8jFqo1PiTorV93ek","name":"Bash","input":{}}}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_0154uMaF8jFqo1PiTorV93ek","name":"Bash","input":{"command":"git -C /work/alfrd rev-parse ..."}}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_013yPUXTtP9xCYwqBA2AHdoY","name":"Bash","input":{}}}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_0154uMaF8jFqo1PiTorV93ek","is_error":false,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_013yPUXTtP9xCYwqBA2AHdoY","name":"Bash","input":{"command":"git -C /work/alfrd rev-parse ..."}}]}}
+{"type":"rate_limit_event"}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_013yPUXTtP9xCYwqBA2AHdoY","is_error":false,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"text","text":"sanitized prose"}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_01EURywJbF8FET8Z8nZRV7v6","name":"Bash","input":{}}}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01EURywJbF8FET8Z8nZRV7v6","name":"Bash","input":{"command":"git -C /work/alfrd switch ..."}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01EURywJbF8FET8Z8nZRV7v6","is_error":false,"content":"sanitized output"}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_01MZMzK1anDPD314SscRb6oF","name":"Bash","input":{}}}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01MZMzK1anDPD314SscRb6oF","name":"Bash","input":{"command":"git -C /work/alfrd branch ..."}}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_01E61giwujFgCKqDNYRogqgs","name":"Bash","input":{}}}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01MZMzK1anDPD314SscRb6oF","is_error":false,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01E61giwujFgCKqDNYRogqgs","name":"Bash","input":{"command":"git -C /work/alfrd rev-parse ..."}}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_01CPMTk31HSHHBRhDYwB45gv","name":"Bash","input":{}}}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01E61giwujFgCKqDNYRogqgs","is_error":false,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01CPMTk31HSHHBRhDYwB45gv","name":"Bash","input":{"command":"git -C /work/alfrd status ..."}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01CPMTk31HSHHBRhDYwB45gv","is_error":false,"content":"sanitized output"}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_01GnMcpZaF1E12eZC8W4htTA","name":"Bash","input":{}}}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01GnMcpZaF1E12eZC8W4htTA","name":"Bash","input":{"command":"alfrd mailbox read"}}]}}
+{"type":"user","uuid":"uuid","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01GnMcpZaF1E12eZC8W4htTA","is_error":false,"content":"sanitized output"}]}}
+{"type":"assistant","uuid":"uuid","message":{"role":"assistant","content":[{"type":"text","text":"sanitized prose"}]}}
+{"type":"result","subtype":"success","uuid":"result-851e9d89","is_error":false,"num_turns":8}

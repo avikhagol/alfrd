@@ -84,8 +84,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Parallel by default (pytest-xdist); "serial" tests measure real time and run alone afterwards:
-#   pytest -n auto -m "not serial" && pytest -m serial
+# Parallelism is opt-in (pytest-xdist); "serial" tests measure real time and run alone afterwards:
+#   .venv/bin/python -m pytest -n 4 -m "not serial" && .venv/bin/python -m pytest -m serial
 markers = [
   "slow: builds and installs the alfrd wheel (skip while iterating: -m 'not slow')",
   "serial: depends on wall-clock timing; run without other tests competing for the CPU",

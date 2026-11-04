@@ -283,6 +283,8 @@ def _headline_icon(message: Mapping[str, Any]) -> str:
 def _event_line(event: Mapping[str, Any]) -> str:
     from alfrd.notify import _phrase
 
+    if event.get("notification_id"):
+        return _esc(event.get("body") or event.get("title") or "Open chat")
     kind = str(event.get("kind") or "")
     parts = [f"{_KIND_ICONS.get(kind, '•')} {_esc(_phrase(kind, 1))}"]
     if event.get("unit"):
@@ -505,7 +507,7 @@ def telegram_flush(token: str, chat_id: Any, hold_seconds: float, timeout: float
         return sent
 
 
-def telegram(route: Mapping[str, Any], message: Mapping[str, Any], timeout: float) -> None:
+def _telegram(route: Mapping[str, Any], message: Mapping[str, Any], timeout: float) -> None:
     """``sendMessage`` to ``chat_id`` with bot ``token``; 400/401/403/404 are skipped, 429/5xx retried.
 
     A route without ``token`` / ``chat_id`` uses the values saved in Settings → Plugins → Telegram;
@@ -524,6 +526,7 @@ def telegram(route: Mapping[str, Any], message: Mapping[str, Any], timeout: floa
     muted = route.get("mute_when_active", saved.get("mute_when_active")) is True and presence.active()
     if muted:
         raise Skip("muted while you use ALFRD Studio (mute_when_active)")
+    route = {"studio_url": saved.get("studio_url"), **route}
     text, plain = telegram_html(route, message), telegram_text(route, message)
     hold = hold_minutes(route.get("hold_minutes", saved.get("hold_minutes")))
     if hold > 0:
@@ -539,6 +542,31 @@ def telegram(route: Mapping[str, Any], message: Mapping[str, Any], timeout: floa
         if exc.status in _TELEGRAM_SKIP:
             raise Skip(str(exc)) from None
         raise
+
+
+def telegram(route: Mapping[str, Any], message: Mapping[str, Any], timeout: float) -> None:
+    """Share attention deduplication between event routes and the bot watcher."""
+    ids = [str(e["notification_id"]) for e in message.get("events", []) if e.get("notification_id")]
+    if not ids:
+        return _telegram(route, message, timeout)
+    saved = telegram_settings()
+    chat_id = route.get("chat_id", saved.get("chat_id"))
+    path = outbox_file(chat_id).with_suffix(".attention.json")
+    with _Locked(path):
+        try:
+            seen = set(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            seen = set()
+        if all(identity in seen for identity in ids):
+            return
+        if any(identity in seen for identity in ids):
+            from alfrd.notify import build_message
+            message = build_message([e for e in message["events"] if e.get("notification_id") not in seen])
+        _telegram(route, message, timeout)
+        seen.update(ids)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(sorted(seen)))
+        temp.replace(path)
 
 
 SENDERS.update(desktop=desktop, webhook=webhook, command=command, telegram=telegram)

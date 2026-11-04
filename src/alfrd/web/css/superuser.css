@@ -1,0 +1,35 @@
+/* Superuser page (components/superuser.js), loaded on its first visit. */
+.su { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px 32px; max-width: 1180px; margin-inline: auto; }
+.su-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.su-head h2 { margin: 0; display: inline-flex; align-items: center; gap: 8px; }
+.su-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.su-grid fieldset.card { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.su-grid legend { font-weight: 650; padding: 0 4px; }
+.su-grid .check { align-items: flex-start; }
+.su-grid .check input { margin-top: 3px; }
+.su-grid .check small { display: block; color: var(--text-3); font-size: 12px; }
+.su-grid .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+.su-grid .field .input { max-width: 260px; }
+.su-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 16px; }
+.su-grid fieldset:has([data-path^="lockdown."]) .su-checks { grid-template-columns: 1fr; }
+.su-eff { grid-column: 1 / -1; }
+.su-bar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-float, var(--surface)); box-shadow: var(--shadow); }
+.su-h { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 15px; }
+.su-h .grow { flex: 1; }
+.su .kpis.small { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-top: 0; }
+.su-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.su-table th, .su-table td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.su-table .mono { overflow-wrap: anywhere; }
+.su-unit { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 2px 0; }
+.su-acts { white-space: nowrap; }
+.su-acts .btn + .btn { margin-left: 6px; }
+.su-servers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.su .set-facts b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) {
+  .su { padding: 12px 16px 24px; }
+  .su-table thead { display: none; }
+  .su-table, .su-table tbody, .su-table tr, .su-table td { display: block; width: 100%; }
+  .su-table tr { border: 1px solid var(--border); border-radius: var(--r-md, 8px); margin-bottom: 8px; padding: 4px 0; }
+  .su-table td { border: 0; padding: 4px 10px; }
+  .su-acts { white-space: normal; }
+}

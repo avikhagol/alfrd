@@ -1,4 +1,4 @@
-"""Injected Sheets contract and deadline-bounded service-account REST client.
+"""Injected Sheets contract and deadline-bounded Google REST client.
 
 All calls receive an absolute monotonic deadline. A transport must cap *all*
 attempts, authentication, backoff and request timeouts by that deadline, and
@@ -22,6 +22,10 @@ from urllib.parse import quote
 class SyncError(ValueError):
     """A safe, one-line message suitable for the runner and sync history."""
 
+    def __init__(self, message, *, code=""):
+        super().__init__(message)
+        self.code = code
+
 
 class SheetsClient(Protocol):
     def get(self, spreadsheet_id: str, range_: str, *, deadline: float) -> list[list[Any]]: ...
@@ -39,8 +43,9 @@ class SheetsClient(Protocol):
                        start: int, names: list[str], deadline: float) -> None: ...
 
 
-SCOPES = ("https://www.googleapis.com/auth/spreadsheets",
+SA_SCOPES = ("https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive.metadata.readonly")
+SCOPES = SA_SCOPES  # public compatibility alias
 _cache: OrderedDict[str, tuple[Any, threading.Lock]] = OrderedDict()
 _cache_lock = threading.Lock()
 
@@ -152,11 +157,13 @@ def _credentials(raw: str, deadline: float):
 class RestClient:
     """Lazy REST client with a fresh session per API call and cached credentials.
 
-    Factories are injectable so tests exercise the real REST/retry paths offline.
+    The first argument is service-account JSON or an OAuth CredentialSource
+    paired with its credential_factory. Factories keep REST/retry tests offline.
     """
 
-    def __init__(self, credentials_json: str, request_timeout: float = 15, *,
+    def __init__(self, credentials_json, request_timeout: float = 15, *,
                  session_factory=None, credential_factory=None):
+        self.oauth = not isinstance(credentials_json, str)
         self._raw = credentials_json
         self.request_timeout = request_timeout
         self._session_factory = session_factory
@@ -197,6 +204,8 @@ class RestClient:
                     except SyncError:
                         raise
                     except Exception:  # noqa: BLE001
+                        if self.oauth:
+                            raise SyncError("Google sign-in authentication failed. Try signing in again.", code="auth_required") from None
                         raise SyncError("Service-account authentication failed; check the key and account.") from None
                     finally:
                         lock.release()
@@ -214,10 +223,21 @@ class RestClient:
                                 raise SyncError("Google returned an invalid response.")
                             return data
                         if status == 403:
-                            raise SyncError(_denied(url, response))
+                            message = _denied(url, response)
+                            if self.oauth:
+                                if "share the sheet with" in message:
+                                    raise SyncError("ALFRD can no longer open this spreadsheet (403). Choose it again with Choose from Google Drive.", code="file_access")
+                                message = message.replace("the key's Google Cloud project", "ALFRD's Google Cloud project")
+                            raise SyncError(message)
                         if status == 404:
+                            if self.oauth:
+                                raise SyncError("ALFRD can no longer open this spreadsheet (404). Choose it again with Choose from Google Drive.", code="file_access")
                             raise SyncError("Google Sheet not found (404): check the id and service-account sharing.")
                         if status == 401:
+                            if self.oauth:
+                                from . import oauth
+                                oauth.mark_needs_reauth(getattr(creds, "refresh_token", None))
+                                raise SyncError("Google rejected the sign-in (401). Sign in again.", code="auth_required")
                             raise SyncError("Google rejected the service-account credentials (401).")
                         if status != 429 and not 500 <= status < 600:
                             raise SyncError(f"Google Sheet request failed (HTTP {status}).")
@@ -298,6 +318,25 @@ class RestClient:
             if props.get("sheetId") == gid and isinstance(props.get("title"), str):
                 return props["title"]
         raise SyncError("Worksheet gid was not found in the Google Sheet.")
+
+    def create_spreadsheet(self, title, *, deadline):
+        if not isinstance(title, str) or not title.strip() or len(title) > 100:
+            raise SyncError("Spreadsheet title must contain 1–100 characters.")
+        data = self._request("POST", "https://sheets.googleapis.com/v4/spreadsheets", deadline=deadline,
+                             attempts=1, json={"properties": {"title": title.strip()}})
+        from .mapping import spreadsheet_id
+        sid = spreadsheet_id(data.get("spreadsheetId"))
+        return {"id": sid, "name": title.strip(), "url": f"https://docs.google.com/spreadsheets/d/{sid}/edit"}
+
+    def drive_file(self, spreadsheet_id, *, deadline):
+        data = self._request("GET", "https://www.googleapis.com/drive/v3/files/" + quote(spreadsheet_id, safe=""),
+                             deadline=deadline, params={"fields": "id,name,mimeType,trashed,capabilities/canEdit",
+                                                        "supportsAllDrives": "true"})
+        if (data.get("id") != spreadsheet_id or data.get("mimeType") != "application/vnd.google-apps.spreadsheet"
+                or data.get("trashed") is not False or not isinstance(data.get("name"), str)
+                or type(data.get("capabilities", {}).get("canEdit")) is not bool):
+            raise SyncError("The chosen file is not an available Google spreadsheet.", code="file_access")
+        return {"id": spreadsheet_id, "name": data["name"], "can_edit": data["capabilities"]["canEdit"]}
 
     def can_edit(self, spreadsheet_id, *, deadline):
         data = self._request("GET", "https://www.googleapis.com/drive/v3/files/" + quote(spreadsheet_id, safe=""),

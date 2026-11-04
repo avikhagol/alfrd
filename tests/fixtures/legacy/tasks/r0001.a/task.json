@@ -1,0 +1,13 @@
+{
+  "row": "r0001.a",
+  "kind": "task",
+  "owner": "codex",
+  "status": "done",
+  "task": {
+    "id": "a",
+    "title": "Inspect old output",
+    "description": "Read a text-only result",
+    "role": "development"
+  },
+  "units": ["0001-r0001.a-codex"]
+}

@@ -10,7 +10,7 @@ try { ({ chromium } = await import(process.env.ALFRD_PLAYWRIGHT || "playwright")
 const source = readFileSync(new URL("../../src/alfrd/web/js/utils/keep_view.js", import.meta.url), "utf8");
 
 test("keep_view in a browser", { skip: chromium ? false : "Playwright not available" }, async (t) => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ ...(process.env.ALFRD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.ALFRD_CHROMIUM_EXECUTABLE } : {}) });
   const page = await browser.newPage();
   t.after(() => browser.close());
   await page.setContent(`<!doctype html><input id="outside"><div id="scroller" style="height:200px;overflow:auto"><div id="main"></div></div>`);

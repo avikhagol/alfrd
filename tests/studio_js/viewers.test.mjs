@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { viewerFor, registerViewer, fileObject, rawUrl } from "../../src/alfrd/web/js/components/viewers.js";
+import { viewerFor, registerViewer, fileObject, rawUrl, textLink } from "../../src/alfrd/web/js/components/viewers.js";
 import { panelRenderers, registerPanel, renderPanels } from "../../src/alfrd/web/js/components/panels.js";
 
 test("viewerFor matches extension, then mime, then type/*; text is the fallback", () => {
@@ -11,7 +11,7 @@ test("viewerFor matches extension, then mime, then type/*; text is the fallback"
   assert.equal(viewerFor("PLOT.JPEG", "text/plain").id, "image"); // extension beats the mime
   assert.equal(viewerFor("Report.PDF").id, "pdf");
   assert.equal(viewerFor("download", "application/pdf").id, "pdf");
-  assert.equal(viewerFor("icon.svg").id, "text"); // never rendered as an image
+  assert.equal(viewerFor("icon.svg").id, "image");
   assert.equal(viewerFor("data.unknown").id, "text");
 });
 
@@ -34,6 +34,13 @@ test("file objects carry the raw URL", () => {
 });
 
 const view = (panel, inst) => ({ levels: [], panels: [{ index: 0, panel, title: "T", scope: "workdir", instances: [inst] }] });
+
+test("text links resolve against the file directory without bypassing endpoint path checks", () => {
+  assert.deepEqual(textLink("../notes/a%20b.MD#heading", "docs/sub/readme.md"), { path: "docs/notes/a b.MD", hash: "heading" });
+  assert.deepEqual(textLink("/project/notes.txt", "docs/readme.md"), { path: "/project/notes.txt", hash: "" });
+  assert.deepEqual(textLink("../../secret.txt", "docs/readme.md"), { path: "../secret.txt", hash: "" });
+  for (const href of ["#heading", "https://example.com/a.md", "//example.com/a.md", "mailto:a@b.com", "image.png", "bad%ZZ.md", "file:///etc/a.txt", "a.md?raw=1", "a%00.md"]) assert.equal(textLink(href, "docs/a.md"), null, href);
+});
 
 test("panels render through the registry; custom and client kinds included", async () => {
   assert.deepEqual(Object.keys(panelRenderers).slice(0, 6), ["file_status", "files", "json_fields", "csv_table", "text", "image"]);

@@ -1,0 +1,30 @@
+.skills-modal { height: min(800px, calc(100vh - 48px)); }
+.skills-explorer-grid { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); gap: 16px; align-items: start; }
+.skills-explorer-grid > * { min-width: 0; }
+.skills-explorer-list { list-style: none; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.skills-explorer-item { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-width: 0; height: auto; padding: 8px 10px; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.skills-explorer-item[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: -2px; }
+.skills-explorer-detail { overflow-wrap: anywhere; }
+.skills-explorer-detail dd { margin: 0 0 12px; }
+.skills-explorer-detail pre { max-width: 100%; }
+@media (max-width: 800px) { .skills-explorer-grid { grid-template-columns: minmax(0, 1fr); } }
+.skills-explorer-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+
+.skills-explorer-name, .skills-explorer-description { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skills-explorer-badges, .skills-explorer-meta { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; max-width: 100%; }
+.skills-explorer-badges .badge, .skills-explorer-meta .badge { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.skills-explorer-meta { margin: 8px 0; }
+.skills-explorer-help { margin-bottom: 12px; }
+.skills-explorer-help summary { cursor: pointer; }
+.skills-explorer-detail fieldset { min-width: 0; }
+.skills-explorer-detail label { overflow-wrap: anywhere; }
+.skills-explorer-detail input[type="checkbox"] { flex-shrink: 0; }
+
+.skills-explorer-list > li { min-width: 0; }
+
+.skills-explorer-detail label { display: block; margin-block: .6rem; }
+.skills-explorer-detail .input { width: 100%; max-width: 100%; box-sizing: border-box; }
+.skills-author-text { min-height: 23rem; font-family: var(--font-mono, monospace); resize: vertical; white-space: pre; }
+.skills-explorer-detail pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.skills-explorer-detail dd, [data-author-target] { overflow-wrap: anywhere; }
+@media (max-width: 600px) { .skills-author-text { min-height: 18rem; font-size: 16px; } }

@@ -32,7 +32,8 @@ def configured_route():
 
     saved = settings.values(PLUGIN_ID)
     if saved.get("token") and saved.get("chat_id"):
-        return {"via": "telegram", "token": str(saved["token"]), "chat_id": str(saved["chat_id"])}, "settings"
+        return {"via": "telegram", "token": str(saved["token"]), "chat_id": str(saved["chat_id"]),
+                "admin_chat_ids": saved.get("admin_chat_ids", ""), "chat_mode": saved.get("chat_mode", "")}, "settings"
     routes, _ = notify.load_routes([], user_file=notify.user_config_file())
     route = next((r for r in routes if r["via"] == "telegram" and r.get("token") and r.get("chat_id")), None)
     return route, "notify.json" if route else None
@@ -134,6 +135,14 @@ plugin = Plugin(
         SettingField("chat_id", "Allowed chat id", required=True, pattern=CHAT_ID,
                      help="The numeric id of your private chat with the bot (see the getUpdates step in the README)",
                      placeholder="123456789"),
+        SettingField("admin_chat_ids", "Superuser private chat IDs", pattern=r"[0-9]{1,20}(?:[\s,]+[0-9]{1,20})*",
+                     help="Comma or space separated private chat IDs (Telegram user IDs) allowed to change chat mode. "
+                          "Empty denies everyone; group IDs never grant admin rights.", placeholder="123456789"),
+        SettingField("chat_mode", "Initial chat mode", pattern=r"on|off|legacy",
+                     help="on creates a session for plain text; off keeps pipeline commands. Empty or legacy retains "
+                          "existing /new routing. A saved per-chat /chatmode choice takes precedence.", placeholder="legacy"),
+        SettingField("studio_url", "Studio URL", help="Reachable Studio base URL for chat decision links.",
+                     placeholder="https://studio.example"),
         SettingField("hold_minutes", "Digest every (minutes)", kind="number", pattern=r"[0-9]{1,4}(\.[0-9]+)?",
                      help="Empty or 0 sends notifications immediately. Otherwise, collect a digest until the oldest "
                           "notification reaches this age. Keep the Bot service running for delivery on time.",

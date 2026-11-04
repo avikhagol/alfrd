@@ -20,8 +20,10 @@ test("progressive startup, failures, retry and persistent picker in Chromium", {
     } catch { res.writeHead(404); res.end(); }
   });
   await new Promise((r) => http.listen(0, "127.0.0.1", r));
-  const browser = await chromium.launch();
-  t.after(async () => { await browser.close(); await new Promise((r) => http.close(r)); });
+  // Register server cleanup before browser launch, which can fail.
+  t.after(() => new Promise((done) => { http.close(done); http.closeAllConnections(); }));
+  const browser = await chromium.launch({ ...(process.env.ALFRD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.ALFRD_CHROMIUM_EXECUTABLE } : {}) });
+  t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce", hasTouch: true, isMobile: true });
   const errors = []; page.on("pageerror", (e) => errors.push(e.message));
   const held = new Map(), counts = new Map();

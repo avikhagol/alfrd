@@ -1,7 +1,7 @@
 import { agentRows, reviewRows, applyAgentSettings, replaceSection, personaRows, turnRoleRows, applyPersonaSettings, nextTaskName, turnSettingRows, applyTurnSettings } from "../data/agent_settings.js";
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
-import { DEFAULT_ITERATIONS, MAX_TURNS, loadTemplate, isSequence, sequenceAgents } from "../data/defs.js";
-import { loopTurnCount, hasDirtyHandoff } from "./loop_helpers.js";
+import { DEFAULT_ITERATIONS, MAX_TURNS, sequenceAgents } from "../data/defs.js";
+import { hasDirtyHandoff } from "./loop_helpers.js";
 import { dockLog } from "./logview.js";
 import { activePlan } from "./plans.js";
 import { mountMarkdown } from "./handoff_markdown.js";
@@ -33,76 +33,137 @@ export async function openProject(ctx, onOpened, path, create) {
   });
 }
 
+/** New project: a four-step wizard (Folder → Agent commands → Agents (loops only) → Review & create).
+ *  One <form>; each step is a <fieldset hidden>. The agent-command checkboxes come from the server
+ *  (GET /studio/entrypoint-options), so they show what is installed here. */
 export async function openCreateProject(ctx, onCreated, path = "") {
+  loadCss("css/lazy.css");
+  const wizard = await import("./create_wizard.js");
   const { templates } = await server.projectTemplates();
   const canOpen = server.canBrowse();
   ctx.modal(`<header class="modal-h"><h2>New project</h2><span class="grow"></span>${canOpen ? `<button class="btn sm" id="create-open" title="Open a folder that already has alfrd.yaml">${icon("folder")} Open existing project…</button>` : ""}<a class="btn sm" href="#/new-project" id="create-canvas" title="Plan steps, dependencies, agents and targets on a canvas first">${icon("workflow")} Design on canvas…</a><button class="btn" data-close>Close</button></header>
-    <form id="create-project"><div class="modal-b">
-    <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project" value="${esc(path)}"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
-    <label class="field"><span>Name</span><input class="input" name="name" placeholder="Folder name"></label>
-    <label class="field"><span>Template</span><select class="input" name="template">${templates.map((t) => `<option value="${esc(t.name)}" ${t.name === "basic" ? "selected" : ""}>${esc(t.name)} — ${esc(t.description)}</option>`).join("")}</select></label>
-    <label class="field"><span>Configuration file</span><select class="input" name="manifest"><option value=".alfrd/alfrd.yaml" selected>.alfrd/alfrd.yaml (default)</option><option value="alfrd.yaml">alfrd.yaml in the project root (lower precedence)</option></select></label>
-    <label class="field" data-loop-field><span>Initial task (for agent workflows)</span><textarea class="input" name="task" rows="5"></textarea></label>
-    <label class="field" data-loop-field><span>Agent sequence (one pass, repeats)</span><input class="input" name="sequence" placeholder="claude, codex" value="claude, codex"></label>
-    <label class="field" data-loop-field><span>Iterations (total turns; the project maximum)</span><input class="input" name="iterations" type="number" min="1" max="${MAX_TURNS}" value="${DEFAULT_ITERATIONS}"></label>
-    <p id="loop-preview" data-loop-field class="muted small"></p><p class="muted small">Each iteration is one agent turn; the sequence repeats until the total is reached. Start runs in Workflow.</p>
-    <p id="create-error" class="callout fail" role="alert" hidden></p></div><footer class="modal-f"><button class="btn primary" type="submit">Create project</button></footer></form>`, (root, close) => {
-    let browser;
-    const alert = root.querySelector("#create-error");
-    root.querySelector("#create-canvas").addEventListener("click", () => close());
-    root.querySelector("#create-open")?.addEventListener("click", () => { close(); openProject(ctx, onCreated, "", (folder) => openCreateProject(ctx, onCreated, folder)); });
+    <form id="create-project" novalidate><div class="modal-b">
+    <ol class="cw-steps" aria-label="Steps"></ol>
+    <fieldset data-step="folder" class="cw-step"><legend class="sr-only">Folder</legend><h3 tabindex="-1">Folder</h3>
+      <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project" value="${esc(path)}"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
+      <label class="field"><span>Name</span><input class="input" name="name" placeholder="Folder name" maxlength="200"></label>
+      <label class="field"><span>Template</span><select class="input" name="template">${templates.map((t) => `<option value="${esc(t.name)}" ${t.name === "basic" ? "selected" : ""}>${esc(t.name)} — ${esc(t.description)}</option>`).join("")}</select></label>
+      <p class="muted small" id="create-experimental" hidden></p>
+      <label class="field"><span>Configuration file</span><select class="input" name="manifest"><option value=".alfrd/alfrd.yaml" selected>.alfrd/alfrd.yaml (default)</option><option value="alfrd.yaml">alfrd.yaml in the project root (lower precedence)</option></select></label></fieldset>
+    <fieldset data-step="commands" class="cw-step" hidden><legend class="sr-only">Agent commands</legend><h3 tabindex="-1">Agent commands <span class="muted small">(entrypoints)</span></h3>
+      <p class="muted small">An agent command is the program ALFRD starts for an agent's turn or chat task. Each ticked command is written to this project's alfrd.yaml with a chat agent of the same name. You can change them later in Settings → Entrypoints.</p>
+      <div id="cw-options" class="cw-opts" role="group" aria-label="Agent commands"><p class="muted">Checking what is installed…</p></div>
+      <div id="cw-custom" class="cw-custom" hidden>
+        <label class="field"><span>Custom command name</span><input class="input mono" id="cw-custom-name" maxlength="40" placeholder="my-agent" aria-describedby="cw-custom-hint"></label>
+        <label class="field"><span>Command (program and arguments; quote paths with spaces; no shell)</span><input class="input mono" id="cw-custom-cmd" placeholder="./scripts/agent.sh --flag" aria-describedby="cw-custom-hint"></label>
+        <label class="field"><span>Model option (optional)</span><input class="input mono" id="cw-custom-model" placeholder="--model"></label>
+        <p class="muted small" id="cw-custom-hint">A script in this project, run directly or as python3 script.py: use a relative path (it is checked and stored as {project_dir}/…, so the project keeps working when moved). The prompt arrives on stdin; the response is read from stdout.</p></div></fieldset>
+    <fieldset data-step="agents" class="cw-step" hidden><legend class="sr-only">Agents</legend><h3 tabindex="-1">Agents</h3>
+      <label class="field"><span>Initial task</span><textarea class="input" name="task" rows="5"></textarea></label>
+      <div class="field"><span id="cw-order-label">Agents in turn order (one pass; it repeats)</span><div id="cw-order" class="row gap wrap" role="list" aria-labelledby="cw-order-label"></div><div id="cw-order-add" class="row gap wrap small"></div></div>
+      <label class="field"><span>Iterations (total turns; the project maximum)</span><input class="input" name="iterations" type="number" min="1" max="${MAX_TURNS}" value="${DEFAULT_ITERATIONS}"></label>
+      <p id="loop-preview" class="muted small" role="status"></p><p class="muted small">Each iteration is one agent turn; the order repeats until the total is reached. Start runs in Workflow.</p></fieldset>
+    <fieldset data-step="review" class="cw-step" hidden><legend class="sr-only">Review and create</legend><h3 tabindex="-1">Review &amp; create</h3><div id="cw-review"></div></fieldset>
+    <ul id="cw-problems" class="msgs" role="alert"></ul>
+    <p id="create-error" class="callout fail" role="alert" hidden></p></div>
+    <footer class="modal-f row gap"><button class="btn" type="button" id="cw-back">Back</button><span class="grow"></span><button class="btn primary" type="submit" id="cw-next">Next</button></footer></form>`, (root, close) => {
+    let browser, options = [], steps = [], at = 0, order = [], orderFor = null, optionsGeneration = 0; // orderFor: the agents `order` was drawn for
+    const $r = (s) => root.querySelector(s);
+    const alert = $r("#create-error"), form = $r("form"), template = $r('[name="template"]'), iterations = $r('[name="iterations"]');
+    $r("#create-canvas").addEventListener("click", () => close());
+    $r("#create-open")?.addEventListener("click", () => { close(); openProject(ctx, onCreated, "", (folder) => openCreateProject(ctx, onCreated, folder)); });
     const open = (folder) => openPath(ctx, onCreated, close, alert, folder);
-    root.querySelector("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder(root.querySelector("#create-folders"), root.querySelector('[name="path"]'), { connect: (paths) => open(paths[0]) }); };
+    $r("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder($r("#create-folders"), $r('[name="path"]'), { connect: (paths) => open(paths[0]) }); };
     root.addEventListener("beforeclose", () => browser?.destroy());
-    const template = root.querySelector('[name="template"]');
-    const iterations = root.querySelector('[name="iterations"]');
-    const sequence = root.querySelector('[name="sequence"]');
-    const agentsOf = () => sequence.value.split(/[\s,→>]+/).map((a) => a.trim()).filter(Boolean);
-    let previewGeneration = 0;
-    const preview = async () => {
-      const generation = ++previewGeneration;
-      const looping = template.value === "agent-loop";
-      root.querySelectorAll("[data-loop-field]").forEach((field) => { field.hidden = !looping; });
-      iterations.disabled = !looping;
-      root.querySelector('[name="task"]').disabled = !looping;
-      if (looping) {
-        try {
-          const info = await loadTemplate(template.value, parseYaml);
-          if (generation !== previewGeneration) return;
-          const workflow = info?.workflows?.[0];
-          if (isSequence(workflow)) {
-            const agents = sequenceAgents({ sequence: agentsOf(), iterations: Number(iterations.value) }).slice(0, -1);
-            const shown = agents.slice(0, 12).join(" → ") + (agents.length > 12 ? " → …" : "");
-            root.querySelector("#loop-preview").textContent = `${agents.length} turns: ${shown}`;
-          } else {
-            const count = workflow?.steps?.length || 0;
-            root.querySelector("#loop-preview").textContent = `${iterations.value} iterations × ${count} agents = ${loopTurnCount(Number(iterations.value), count)} turns`;
-          }
-        } catch (error) { root.querySelector("#loop-preview").textContent = error?.message || "Unable to load workflow preview"; }
-      }
+    const selected = () => [...root.querySelectorAll('[name="agent"]:checked')].map((i) => i.value);
+    const custom = () => (selected().includes("custom") ? { name: $r("#cw-custom-name").value.trim(), cmd: $r("#cw-custom-cmd").value, model_option: $r("#cw-custom-model").value.trim() } : null);
+    const agents = () => wizard.loopAgents(options, new Set(selected()), custom()?.name ? [custom().name] : []);
+    const state = () => {
+      const fields = Object.fromEntries(new FormData(form));
+      return { ...fields, template: template.value, iterations: Number(iterations.value), maxTurns: MAX_TURNS, selected: selected(), custom: custom(),
+        agents: agents(), sequence: wizard.sequenceFrom(agents(), order), taken: options.map((o) => o.id) };
     };
-    template.addEventListener("change", preview);
-    iterations.addEventListener("input", preview);
-    sequence.addEventListener("input", preview);
-    preview();
-    root.querySelector("form").addEventListener("submit", async (event) => {
+    const turnsText = () => {
+      const turns = sequenceAgents({ sequence: wizard.sequenceFrom(agents(), order), iterations: Number(iterations.value) }).slice(0, -1);
+      return `${turns.length} turns: ${turns.slice(0, 12).join(" → ")}${turns.length > 12 ? " → …" : ""}`;
+    };
+    const drawOrder = () => {
+      const list = agents();
+      order = wizard.sequenceFrom(list, order, orderFor); orderFor = list;
+      $r("#cw-order").innerHTML = order.map((a, i) => `<span class="chip" role="listitem">${i + 1}. ${esc(a)} <button type="button" class="icon-btn xs" data-order-rm="${i}" ${order.length > 1 ? "" : "disabled"} aria-label="Remove turn ${i + 1} (${esc(a)})">${icon("close")}</button></span>`).join("") || '<span class="muted small">No turns.</span>';
+      $r("#cw-order-add").innerHTML = list.map((a) => `<button type="button" class="btn sm" data-order-add="${esc(a)}">${icon("plus")} ${esc(a)}</button>`).join("");
+      $r("#loop-preview").textContent = order.length ? turnsText() : "";
+    };
+    const loadOptions = async () => {
+      const generation = ++optionsGeneration;
+      $r("#cw-options").innerHTML = '<p class="muted">Checking what is installed…</p>';
+      try {
+        const body = await server.entrypointOptions(template.value);
+        if (generation !== optionsGeneration) return;
+        options = body.options;
+        $r("#cw-options").innerHTML = wizard.optionRows(options, new Set(options.filter((o) => o.default).map((o) => o.id)));
+        const hint = $r("#create-experimental");
+        hint.hidden = !body.experimental;
+        hint.textContent = body.experimental ? `${body.experimental_templates.join(", ")} is not offered here: it needs alfrd serve --experimental-features.` : "";
+        syncCustom(); order = []; orderFor = null; drawOrder();
+      } catch (error) { if (generation === optionsGeneration) $r("#cw-options").innerHTML = `<p class="fail-t">${esc(error.message)}</p>`; }
+    };
+    const syncCustom = () => { $r("#cw-custom").hidden = !selected().includes("custom"); };
+    const problems = (list) => { $r("#cw-problems").innerHTML = list.map((m) => `<li class="lvl-error">${esc(m)}</li>`).join(""); return list.length; };
+    const show = async (index, { focus = true } = {}) => {
+      at = index;
+      root.querySelectorAll("fieldset[data-step]").forEach((f) => { f.hidden = f.dataset.step !== steps[at].id; });
+      $r(".cw-steps").innerHTML = steps.map((s, i) => `<li ${i === at ? 'aria-current="step" class="on"' : i < at ? 'class="done"' : ""}>${esc(s.title)}</li>`).join("");
+      $r("#cw-back").hidden = at === 0;
+      $r("#cw-next").textContent = at === steps.length - 1 ? "Create project" : "Next";
+      problems([]);
+      if (steps[at].id === "agents") drawOrder();
+      if (steps[at].id === "review") {
+        const s = state(), payload = wizard.createPayload(s);
+        $r("#cw-review").innerHTML = '<p class="muted">Checking the commands in this folder…</p>';
+        let reviewed = { entries: [], warnings: [] }; // the server's check of the custom command in this folder
+        if (payload.custom) {
+          try { reviewed = await server.entrypointCheck(payload.path, payload.custom); }
+          catch (error) { $r("#cw-review").innerHTML = ""; problems([error.message]); $r("#cw-next").disabled = true; return; }
+        }
+        $r("#cw-next").disabled = false;
+        $r("#cw-review").innerHTML = wizard.reviewSummary(payload, options, { ...reviewed, turns: s.template === "agent-loop" ? turnsText() : "" });
+      } else $r("#cw-next").disabled = false;
+      if (focus) root.querySelector(`fieldset[data-step="${steps[at].id}"] h3`)?.focus();
+    };
+    const restep = () => { steps = wizard.stepsFor(template.value); if (at >= steps.length) at = steps.length - 1; };
+    template.addEventListener("change", () => { restep(); show(at, { focus: false }); loadOptions(); });
+    root.addEventListener("change", (event) => {
+      if (event.target.name === "agent") { syncCustom(); drawOrder(); problems([]); }
+    });
+    iterations.addEventListener("input", drawOrder);
+    $r("#cw-custom-name").addEventListener("input", drawOrder);
+    root.addEventListener("click", (event) => {
+      const rm = event.target.closest("[data-order-rm]"), add = event.target.closest("[data-order-add]");
+      if (rm && order.length > 1) { order.splice(Number(rm.dataset.orderRm), 1); drawOrder(); }
+      if (add) { order = [...wizard.sequenceFrom(agents(), order), add.dataset.orderAdd]; drawOrder(); }
+    });
+    $r("#cw-back").addEventListener("click", () => { if (at > 0) show(at - 1); });
+    restep(); show(0, { focus: false }); loadOptions();
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const button = root.querySelector("button[type=submit]");
+      const s = state();
+      if (problems(wizard.stepProblems(steps[at].id, s))) return;
+      if (at < steps.length - 1) { show(at + 1); return; }
+      const button = $r("#cw-next");
       button.disabled = true;
       try {
-        const payload = Object.fromEntries(new FormData(event.target));
-        if (payload.iterations !== undefined) payload.iterations = Number(payload.iterations);
-        if (payload.sequence !== undefined) payload.sequence = agentsOf();
-        if (payload.template !== "agent-loop") delete payload.sequence;
+        const payload = wizard.createPayload(s);
         const project = await server.createProject(payload);
         close();
         await onCreated(project, payload.template);
-        ctx.toast(payload.template === "agent-loop" ? "Project created · start a run in Workflow" : "Project created · follow Get started on Overview", "ok");
+        ctx.toast(payload.template === "agent-loop" ? "Project created · start a run in Workflow" : "Project created · follow Get started on Overview", "ok", { link: "#/config", linkLabel: "Review agent commands" });
+        if (project.warnings?.length) ctx.toast(project.warnings.join(" "), "warn", { sticky: true });
       } catch (error) {
         alert.hidden = false; alert.textContent = error.message;
         // 409: the folder already holds ALFRD files (alfrd.yaml): offer to register it instead.
         if (error.status === 409) {
-          const folder = root.querySelector('[name="path"]').value;
+          const folder = $r('[name="path"]').value;
           alert.insertAdjacentHTML("beforeend", ` <button type="button" class="btn sm">Open it instead</button>`);
           alert.lastChild.onclick = () => open(folder);
         }

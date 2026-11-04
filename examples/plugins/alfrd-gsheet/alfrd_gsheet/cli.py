@@ -183,3 +183,92 @@ def status(project: Project,
         if entry.get("error"):
             parts.append(str(entry["error"]))
         typer.echo("  ".join(p for p in parts if p))
+
+
+# Browser login is always explicit; hooks never open a listener or a browser.
+auth = typer.Typer(help="Manage desktop Google sign-in (servers should use a service account).")
+cli.add_typer(auth, name="auth")
+
+
+def _oauth_values():
+    from alfrd.extensions import settings as store
+    from . import actions
+    values = store.values("gsheet")
+    actions._oauth_mode(values)
+    return values
+
+
+@auth.command("login")
+def auth_login(no_browser: Annotated[bool, typer.Option("--no-browser", help="Print the URL; manually forward its loopback port if remote.")] = False,
+               timeout: Annotated[int, typer.Option("--timeout", min=1, max=300)] = 300):
+    """Sign in with Google on this computer."""
+    import time
+    import webbrowser
+    from . import actions, loopback, oauth
+    with errors():
+        values = _oauth_values()
+        if not no_browser and not oauth.browser_available():
+            raise SyncError(oauth.HEADLESS)
+        result = actions.auth_start(Path.cwd(), values, {})
+        session = loopback.get(result["session"], "auth")
+        try:
+            if no_browser:
+                typer.echo(result["auth_url"])
+            elif not webbrowser.open(result["auth_url"]):
+                raise SyncError(oauth.HEADLESS)
+            until = time.monotonic() + timeout
+            while session.status()["state"] == "waiting" and time.monotonic() < until:
+                time.sleep(.25)
+            status = session.status()
+            if status["state"] != "signed_in":
+                raise SyncError(status.get("message") or "Sign-in did not complete. Try again; servers should use a service account.")
+            typer.echo("Signed in" + (f" as {status['email']}" if status.get("email") else " to Google"))
+        finally:
+            session.finish("cancelled")
+
+
+@auth.command("status")
+def auth_status():
+    """Show the local account state without making a network request."""
+    from alfrd.extensions import settings as store
+    from . import oauth
+    from .client import credentials_info
+    with errors():
+        values = store.values("gsheet")
+        if plugin_settings.auth_mode(values) == "service_account":
+            typer.echo("service_account: " + credentials_info(values.get("credentials_json"))["client_email"])
+            return
+        state = oauth.account()
+        if not state["available"]:
+            typer.echo("oauth: not available in this build")
+        elif state["status"] == "needs_reauth":
+            typer.echo(f"oauth: sign-in expired ({state['status_reason']})")
+        elif state["signed_in"]:
+            typer.echo("oauth: signed in" + (f" as {state['email']}" if state.get("email") else ""))
+        else:
+            typer.echo("oauth: not signed in")
+
+
+@auth.command("logout")
+def auth_logout(yes: Annotated[bool, typer.Option("--yes", help="Confirm revoking access on all computers.")] = False):
+    """Revoke the Google grant and delete this computer's refresh token."""
+    from . import oauth
+    with errors():
+        _oauth_values()
+        if not yes:
+            typer.confirm("Revoke ALFRD access for this Google project on all computers?", abort=True)
+        revoked = oauth.sign_out()
+        typer.echo("Signed out." if revoked else
+                   "Signed out locally. Couldn't reach Google; remove ALFRD at https://myaccount.google.com/connections.")
+
+
+@cli.command("create")
+def create(title: Annotated[str, typer.Option("--title", help="New spreadsheet title (1–100 characters).")],
+           project: Project = Path(".")):
+    """Create a spreadsheet, then use its ID with `alfrd gsheet init`."""
+    import time
+    from alfrd.extensions import settings as store
+    with errors():
+        result = plugin_settings.make_client(store.values("gsheet")).create_spreadsheet(title, deadline=time.monotonic() + 25)
+        typer.echo(result["id"])
+        typer.echo(result["url"])

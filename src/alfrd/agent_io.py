@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -158,10 +159,73 @@ def agent_totals(units):
         values = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
         return sum(values) if values else None
 
+    units = list(units)
     usages = [normalized_usage(unit) or {} for unit in units]
     result = {key: known_sum(usage.get(key) for usage in usages) for key in NORMALIZED_KEYS}
     result["total_cost_usd"] = known_sum(unit.get("total_cost_usd") for unit in units)
+    if result["total_cost_usd"] is None:
+        result["cost_reason"] = "; ".join(dict.fromkeys(cost_reason(u) for u in units)) or "Not reported by agent"
     return result
+
+
+def elapsed_seconds(unit, now=None):
+    """ALFRD wall time for one attempt, including failures and adopted runs.
+
+    Never use CLI duration or resource-usage wall time. Naive legacy stamps
+    retain local-time semantics; offset-aware stamps use their explicit offset.
+    """
+    try:
+        start = datetime.fromisoformat(str(unit.get("started")).replace("Z", "+00:00"))
+        finish = unit.get("finished")
+        if not finish and unit.get("status") != "running":
+            return None
+        end = datetime.fromisoformat(str(finish).replace("Z", "+00:00")) if finish else (now or datetime.now().timestamp())
+        return round(max(0.0, (end.timestamp() if isinstance(end, datetime) else end) - start.timestamp()), 1)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def cost_reason(unit):
+    return unit.get("cost_reason") or "Not reported by agent"
+
+
+def codex_model(argv, env=None):
+    """Snapshot the configured model, including CLI overrides and profiles.
+
+    Do not guess a CLI built-in default: it changes between releases. Without
+    a configured/reported model the cost remains explicitly unknown.
+    """
+    import os
+    from alfrd.chat import _codex_config_models
+
+    explicit = option(argv, "--model", "-m")
+    if explicit:
+        return explicit
+    overrides = []
+    for i, arg in enumerate(argv):
+        if arg in ("-c", "--config") and i + 1 < len(argv):
+            overrides.append(argv[i + 1])
+        elif arg.startswith("--config="):
+            overrides.append(arg.split("=", 1)[1])
+    for override in reversed(overrides):
+        match = re.fullmatch(r"model\s*=\s*[\"']?([^\"']+)[\"']?", override)
+        if match:
+            return match.group(1).strip()
+    home = (env or {}).get("CODEX_HOME") or os.environ.get("CODEX_HOME") or Path.home() / ".codex"
+    try:
+        text = (Path(home).expanduser() / "config.toml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    profile = option(argv, "--profile", "-p")
+    if profile:
+        # Read only the selected profile, never another profile's model.
+        section = re.search(r"(?m)^\s*\[profiles\." + re.escape(profile) + r"\]\s*$", text)
+        if section:
+            body = text[section.end():].split("\n[", 1)[0]
+            selected = _codex_config_models(body, lambda name: None)
+            if selected:
+                return selected
+    return _codex_config_models(text, lambda name: None)
 
 
 STARTUP_KEYS = ("lean", "mcp", "plugins", "skills")
@@ -170,7 +234,7 @@ STARTUP_KEYS = ("lean", "mcp", "plugins", "skills")
 def startup_options(spec):
     """Validated lean-startup options of an entrypoint or step (``lean``, ``mcp``, ``plugins``, ``skills``).
 
-    ``lean: true`` means ``mcp: none``, ``plugins: false`` and ``skills: false`` unless one is given.
+    ``lean: true`` means ``mcp: none``, ``plugins: false`` unless overridden. Native skills stay on unless ``skills: false`` is explicit.
     Returns {} when nothing is asked for (existing projects start agents unchanged). Raises ValueError.
     """
     spec = spec or {}
@@ -179,7 +243,7 @@ def startup_options(spec):
     lean = spec.get("lean", False)
     if not isinstance(lean, bool):
         raise ValueError("lean must be true or false")
-    out = {"mcp": "none", "plugins": False, "skills": False} if lean else {}
+    out = {"mcp": "none", "plugins": False} if lean else {}
     mcp = spec.get("mcp")
     if mcp is not None:
         if isinstance(mcp, str) and mcp in ("none", "default"):
@@ -221,10 +285,77 @@ def startup_args(adapter, startup):
     return args
 
 
+# Read-only shell commands a Claude agent may always run once agent_access.bash_commands is set
+# (agent_access.default_readonly: false turns this off). Claude Code checks every part of
+# `a && b` / `a | b` separately, so `cd X && ls | head` needs cd and head too.
+READONLY_COMMANDS = ("cd *", "pwd", "ls *", "cat *", "head *", "tail *", "wc *", "sha256sum *")
+# The mailbox protocol every chat task prompt describes; without it `alfrd mailbox read` is denied.
+MAILBOX_COMMAND = "alfrd mailbox *"
+
+
+def claude_bash_rules(commands, readonly=False):
+    """``Bash(...)`` rules for --allowedTools. A pattern without a wildcard (``npm``) matches only that
+    exact command line in Claude Code, so ``npm install`` would still be denied: such a pattern also
+    gets ``<pattern> *``."""
+    rules = []
+    for command in commands or []:
+        command = str(command).strip()
+        if not command:
+            continue
+        rules.append(command)
+        if "*" not in command and ":" not in command:
+            rules.append(command + " *")
+    if readonly:
+        rules.extend(READONLY_COMMANDS)
+    return [f"Bash({rule})" for rule in dict.fromkeys(rules)]
+
+
+def access_folders(base, folders):
+    """agent_access folders as absolute paths: ``~`` expanded, relative to ``base``, globs expanded (a
+    pattern that matches nothing is dropped), each kept both as written and resolved (symlinks), so an
+    agent that types /home/... and one that types the real /mnt/... path are both allowed."""
+    import glob
+    import os
+
+    out = []
+    for raw in folders or []:
+        path = Path(str(raw)).expanduser()
+        path = path if path.is_absolute() else Path(base) / path
+        text = str(path)
+        if any(ch in text for ch in "*?["):
+            paths = [Path(m) for m in sorted(glob.glob(text)) if Path(m).is_dir()]
+        else:
+            paths = [path]
+        for found in paths:
+            for form in (os.path.normpath(str(found)), str(found.resolve())):
+                if form not in out:
+                    out.append(form)
+    return out
+
+
+def merge_access(*parts):
+    """Several agent_access mappings as one (folders and commands added up; the first sandbox wins)."""
+    out = {"folders": [], "bash_commands": []}
+    for part in parts:
+        if not part:
+            continue
+        out["folders"] = list(dict.fromkeys([*out["folders"], *(part.get("folders") or [])]))
+        out["bash_commands"] = list(dict.fromkeys([*out["bash_commands"], *(part.get("bash_commands") or [])]))
+        if part.get("sandbox") and not out.get("sandbox"):
+            out["sandbox"] = part["sandbox"]
+        if "default_readonly" in part and "default_readonly" not in out:
+            out["default_readonly"] = part["default_readonly"]
+    return out
+
+
 def agent_command(argv, model=None, stream=False, access=None, adapter=None, fallback=None, startup=None):
     args = list(argv or [])
     adapter = adapter or adapter_for(args)
     agent = adapter.name
+    # Keep the final response in its file; JSON stdout supplies itemized usage.
+    if agent == "codex" and option(args, "--output-last-message", "-o") and "--json" not in args:
+        at = len(args) - 1 if args and args[-1] == "-" else len(args)
+        args.insert(at, "--json")
     lean = startup_args(adapter, startup)
     if lean and not any(a.split("=")[0] in LEAN_FLAGS for a in args):  # a command that sets them itself wins
         at = len(args) - 1 if args and args[-1] == "-" else len(args)
@@ -247,7 +378,9 @@ def agent_command(argv, model=None, stream=False, access=None, adapter=None, fal
         if agent == "claude" and access.get("bash_commands"):
             existing = option(args, "--allowedTools", "--allowed-tools")
             tools = [existing] if existing else []
-            tools.extend(f"Bash({command})" for command in access["bash_commands"])
+            known = set(",".join(tools).split(",")) if tools else set()
+            tools.extend(rule for rule in claude_bash_rules(access["bash_commands"], access.get("default_readonly", True))
+                         if rule not in known)
             args = set_option(args, "--allowedTools", ",".join(tools), "--allowed-tools")
         if agent == "codex" and access.get("sandbox"):
             args = set_option(args, "--sandbox", access["sandbox"], "-s")

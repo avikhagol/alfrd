@@ -11,10 +11,12 @@ from .client import RestClient, SyncError, credentials_info
 from .mapping import spreadsheet_id
 
 FIELDS = (
-    SettingField("credentials_json", "Service-account key JSON", kind="secret", required=True,
-                 help="Paste the JSON key contents. Share your sheet with the key's client_email."),
+    SettingField("auth_mode", "Sign-in method", pattern="oauth|service_account",
+                 help="oauth for desktop Google sign-in; service_account for Advanced / headless. Empty preserves existing keys."),
+    SettingField("credentials_json", "Service-account key JSON (Advanced)", kind="secret", required=False,
+                 help="Only for service_account mode. Share your sheet with the key's client_email."),
     SettingField("default_spreadsheet_id", "Default spreadsheet id or URL",
-                 help="Used when the project mapping has no spreadsheet_id. Required for Test."),
+                 help="Used when the project mapping has no spreadsheet_id. Required for service-account Test."),
     SettingField("value_input_option", "Value input option", pattern="RAW|USER_ENTERED",
                  help="RAW (default) stores literal values; USER_ENTERED lets Google interpret them."),
     SettingField("conflict_policy", "Conflict policy", pattern="overwrite|skip|fail-soft",
@@ -28,9 +30,28 @@ FIELDS = (
 )
 
 
+def auth_mode(values):
+    mode = values.get("auth_mode")
+    if mode in (None, ""):
+        return "service_account" if values.get("credentials_json") else "oauth"
+    if mode not in ("oauth", "service_account"):
+        raise SyncError("Invalid auth_mode; choose oauth or service_account.")
+    return mode
+
+
+def auth_state(values):
+    if auth_mode(values) == "service_account":
+        return {"mode": "service_account", "available": True, "signed_in": bool(values.get("credentials_json")),
+                "status": "ok" if values.get("credentials_json") else "signed_out", "picker": False, "create": True}
+    from . import oauth
+    return oauth.account()
+
+
 def normalize(values):
     out = dict(values)
-    credentials_info(out.get("credentials_json"))
+    out["auth_mode"] = auth_mode(out)
+    if out["auth_mode"] == "service_account":
+        credentials_info(out.get("credentials_json"))
     if out.get("default_spreadsheet_id"):
         out["default_spreadsheet_id"] = spreadsheet_id(out["default_spreadsheet_id"])
     for key, default, allowed in (
@@ -59,6 +80,9 @@ def normalize(values):
 
 def make_client(values):
     saved = normalize(values)
+    if saved["auth_mode"] == "oauth":
+        from . import oauth
+        return RestClient(oauth.CredentialSource(), saved["request_timeout"], credential_factory=oauth.credentials)
     return RestClient(saved["credentials_json"], saved["request_timeout"])
 
 
@@ -93,6 +117,19 @@ def check(values):
     deadline = time.monotonic() + 25
     saved = normalize(values)
     sid = saved.get("default_spreadsheet_id")
+    if saved["auth_mode"] == "oauth":
+        from . import oauth
+        oauth.credentials(oauth.CredentialSource(), deadline)
+        identity = oauth.account().get("email") or "Google account"
+        if not sid:
+            oauth.access_token(deadline=deadline)
+            return f"ok: signed in as {identity}. Set a default spreadsheet to test sheet access."
+        client = make_client(saved)
+        metadata = client.metadata(sid, deadline=deadline)
+        if saved["check_drive"] and not client.can_edit(sid, deadline=deadline):
+            raise SyncError("The Google account has read-only access. Choose a sheet you can edit.")
+        access = "edit" if saved["check_drive"] else "read"
+        return f"ok: signed in as {identity}; can {access} the default spreadsheet ({len(metadata.get('sheets', []))} sheets)."
     if not sid:
         raise SyncError("Set a default spreadsheet id or URL before running Test.")
     client = make_client(saved)

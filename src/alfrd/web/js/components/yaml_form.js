@@ -185,6 +185,14 @@ function openAdvanced(el, query) {
   }, "set-dlg yf-adv-dlg");
 }
 
+/** Open the Advanced dialog at section `key` (e.g. "entrypoint"); the form must be shown in `el`. */
+export function openSection(el, key) {
+  if (!drafts.has(el)) return false;
+  section = key;
+  openAdvanced(el, "");
+  return true;
+}
+
 /** Draw the form for `text` into `host` inside `el` (listeners bound once). hooks: { setText(text), rebuild(), modal(html, setup, cls) } */
 export function showYamlForm(el, host, text, hooks) {
   if (!drafts.has(el)) {

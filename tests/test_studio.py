@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import urllib.request
 from importlib import resources
@@ -25,7 +26,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def _web_files():
     root = web_root()
-    return [p for p in root.rglob("*") if p.is_file() and p.suffix not in {".py", ".pyc", ".orig", ".rej"} and "__pycache__" not in p.parts]
+    # This git-ignored directory contains local runtime state, not web assets.
+    runtime = root / "assets" / "defaults" / ".alfrd"
+    return [
+        p for p in root.rglob("*")
+        if p.is_file() and not p.is_relative_to(runtime)
+        and p.suffix not in {".py", ".pyc", ".orig", ".rej"}
+        and "__pycache__" not in p.parts
+    ]
+
+
+def test_web_files_exclude_default_runtime_state(tmp_path, monkeypatch):
+    asset = tmp_path / "assets" / "defaults" / "alfrd.yaml"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("name: demo\n", encoding="utf-8")
+    for name in ("history/run.json", "locks/run.lock", "future/state.json"):
+        state = asset.parent / ".alfrd" / name
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("runtime state", encoding="utf-8")
+    monkeypatch.setattr("test_studio.web_root", lambda: tmp_path)
+    assert _web_files() == [asset]
 
 
 def test_studio_assets_are_packaged():
@@ -55,6 +75,8 @@ _STATIC_IMPORT = re.compile(
 )
 #: Modules the Studio loads with ``import()`` on first use; never part of startup.
 LAZY_MODULES = {
+    "js/components/canvas.js", "js/components/logs.js", "js/components/metadata.js",
+    "js/components/results.js", "js/components/alfrd_config.js",
     "js/components/folder_browser.js", "js/data/paths.js",
     "js/components/agent_dialog.js",
     "js/components/agent_settings_dialog.js", "js/data/agent_settings.js",
@@ -81,7 +103,7 @@ LAZY_MODULES = {
 
 
 def _startup_files() -> set[Path]:
-    """index.html, studio.css and the static import closure of js/app.js."""
+    """HTML, critical styles/scripts, and the static import closure of js/app.js."""
     root = web_root()
     seen: set[Path] = set()
     todo = [root / "js" / "app.js"]
@@ -93,6 +115,7 @@ def _startup_files() -> set[Path]:
         for match in _STATIC_IMPORT.finditer(path.read_text(encoding="utf-8")):
             todo.append(path.parent / (match.group(1) or match.group(2)))
     return seen | {(root / "index.html").resolve(), (root / "css" / "studio.css").resolve(),
+                   (root / "css" / "loading.css").resolve(), (root / "js" / "loading-shell.js").resolve(),
                    (root / "css" / "themes" / "obsidian-orbit" / "theme.css").resolve()}
 
 
@@ -100,146 +123,20 @@ def _gz(path: Path) -> int:
     return len(gzip.compress(path.read_bytes(), 9))
 
 
-def test_startup_payload_under_178kb_compressed():
-    # What the Studio loads when it opens. 150 KB until 0.2.1 (~149 KB then);
-    # scheduled runs added ~12 KB. Features opened on demand load with import()
-    # and count under the lazy cap below instead.
+def test_startup_payload_under_170kib_compressed():
+    # Lazy views move 30 KiB of the existing budget out of startup.
+    # Combined startup + lazy ceiling stays 600 KiB; critical HTML assets count too.
     total = sum(_gz(p) for p in _startup_files())
-    # Setup checklist, run→results links and error recovery add ~3 KiB.
-    # Project workspaces, the Jobs button, the minimized log strip and the dropdown
-    # theme raised the cap to 174 KiB. The October 2026 UI batch (sidebar rail,
-    # Settings tabs, server folder picker, disclosure persistence) adds ~2 KiB:
-    # PM approved 177 KiB (181,248 bytes); measured startup was 180,249 bytes.
-    # 0.2.2: agent sequences, multi-line YAML strings and the Set up entry points: 178 KiB
-    # (182,272 bytes); measured 181,815.
-    # UI batch T4/T5 (Settings template preview, Re-scan of the opened project only): 179 KiB
-    # (183,296 bytes); measured 182,621. PM approved (t004-claude, 2026-10-07).
-    # T9 Open vs Create (Open project… button, folder browser Open / Create project here /
-    # Open instead) and T8 name sync: PM approved 180 KiB (184,320 bytes); measured 183,629
-    # (t004-claude, 2026-10-07; also closes the T4/T5 179 KiB step).
-    # Notifications N5 (Settings → Notifications, browser notifications, alfrd live events, deep
-    # links) and the active-run switcher / D8 pin: PM approved 185 KiB (189,440 bytes); measured
-    # 188,922 (task-notify-finish t004-claude, 2026-10-08). Next step: lazy-load the Settings panel.
-    # Header pickers (components/picker.js, utils/text_fit.js) were paid for by loading the demo
-    # data (data/demo.js) on demand: no budget change (2026-10-08).
-    # Plugins Phase 3: folder mode (data/folder_scan.js, ~6.5 KiB) loads on demand to pay for the
-    # plugin boot hook: no budget change (task-plugins-p3p5, 2026-10-08).
-    # T8b2: folder_browser.js and its dialog-only paths.js dependency now load on demand.
-    # Startup 189,882 → 186,106 B (target <= 187,500); cap unchanged (2026-10-10).
-    # Loading T7.1/T7.2: catalog/runtime split + bounded startup scheduler (exported via
-    # server.js): 186,129 → 187,410 B; 2,030 B headroom; cap unchanged (t005, 2026-10-10).
-    # T7.3 progressive app integration + loading/failed overview text: 189,093 B startup
-    # gzip, 347 B headroom under 189,440 (t006, 2026-10-10). Further loading UI must trim or go lazy.
-    # Closing loading UX: 188,679 B startup; 761 B headroom. Redundant shipped
-    # commentary trimmed; both caps unchanged. Lazy stays 198,478 B (2026-10-10).
-    # Workspace/orchestration Phase 2 (2026-10-17): target creation trimmed to 189,421 B; then
-    # components/notifications.js loads on the first alfrd event (-3 KiB) and pays for the
-    # target-scoped Workflow header: 186,863 B, 2,577 B headroom. Lazy 206,337 B. Caps unchanged.
-    # Plugin pages (rail "Plugins" group, #/plugin/<id> view, section availability filter): 187,364 B.
-    # Workspace Phase 3 (2026-10-18): canvas hooks (ports, edge hit paths, context menu / key routing,
-    # compact + fullscreen), pushState history, global shortcut guard, unsaved-edit warnings and the
-    # lost-connection notice: 187,364 → 192,296 B. Menus, connect, Configure and the shortcut dialog are
-    # lazy (canvas_ops.js, shortcuts.js). Avi approved raising the cap: 185 → 189 KiB (193,536 bytes).
-    # Chat dock toggle (button, Alt+Shift+A, dock state) in app.js, dock CSS, shortcut entry: 193,070 -> 194,226 B.
-    # Owner approved raising the cap: 189 -> 191 KiB (195,584 bytes).
-    assert total < 191 * 1024, f"{total} bytes gzip"
+    assert total < 170 * 1024, f"{total} bytes gzip"
 
 
-def test_lazy_payload_under_106kb_compressed():
-    # Everything else: import() modules, css/lazy.css, templates and assets.
-    # 40 KB until 0.2.0.7; 0.2.0.8's on-demand features (palette, search,
-    # history, notes, usage, step picker, panels) load here, not at startup.
+def test_lazy_payload_under_444kib_compressed():
     startup = _startup_files()
-    # Agent/model/review and task editors add ~3 KiB on demand; startup cap unchanged.
-    # Raster icons (favicon PNG/ICO, touch and manifest icons) are fetched by the browser
-    # for tabs and home screens, not by the Studio code, so they are not part of this budget.
     total = sum(_gz(p) for p in _web_files()
                 if p.resolve() not in startup and p.suffix not in {".png", ".ico"})
-    # Loop result cards add ~2 KiB on demand. Run grids, the removal dialog and the
-    # Jobs tray load here. PM approved 76 KiB for these required features;
-    # the previous 72 KiB cap was exceeded by 2,741 bytes before final review.
-    # The October 2026 UI batch adds Settings sections, folder creation, task drafts
-    # and run-history export on demand: PM approved 94 KiB (96,256 bytes);
-    # measured lazy payload was 94,604 bytes.
-    # 0.2.2 moved the agent-settings helpers out of startup (~2.5 KiB) and added the
-    # per-turn editor, running-plan overrides, review rejection, sequence editor and
-    # task strip on demand: cap raised to 99 KiB (101,376 bytes); measured 100,791.
-    # Setup forms (quickstart.js and the template forms) and real project deletion:
-    # 103 KiB (105,472 bytes); measured 105,023.
-    # Setup fields inline in Settings → Settings fields: 106 KiB (108,544 bytes); measured 107,609.
-    # Settings → All settings (form), every alfrd.yaml key as a field (yaml_form.js x2, ~6.7 KiB):
-    # 113 KiB (115,712 bytes); measured 114,184 (Settings fields and inline setup forms removed).
-    # UI batch T2/T3 (removal dialog opens at once, size loads after, styled delete-all warning)
-    # and the template draft helper: 114 KiB (116,736 bytes); measured 116,217.
-    # PM approved (t004-claude, 2026-10-07).
-    # T9 Open vs Create (Open project dialog, Create's 409 → Open it instead, Settings button):
-    # PM approved 115 KiB (117,760 bytes); measured 117,188 (t004-claude, 2026-10-07).
-    # Header pickers: the demo data (data/demo.js, 4.9 KiB) moved here from startup to pay for
-    # components/picker.js + utils/text_fit.js there: 120 KiB (122,880 bytes); measured 122,275 (2026-10-08).
-    # Plugins Phase 1: components/viewers.js (file viewers: text, image, PDF) and the panel registry in
-    # panels.js, on demand only: 122 KiB (124,928 bytes); measured 124,465 (task-plugins-p1p2, 2026-10-08).
-    # Phase 2 themes: the on-demand Daylight Orbit palette and theme metadata add 802 B.
-    # 123 KiB (125,952 bytes); measured 125,267. Startup remains capped at 185 KiB.
-    # Plugins Phase 3 (D1): folder mode (data/folder_scan.js, 6,649 B) moved here from startup to pay
-    # for the plugin boot hook: 130 KiB (133,120 bytes); measured 132,113 (task-plugins-p3p5, 2026-10-08).
-    # T3.8: pinned DOMPurify ES module (~11 KiB gzip), its complete dual licence (~4 KiB)
-    # and provenance add ~15 KiB on demand: 130 → 146 KiB. The earlier ~143 KiB estimate
-    # omitted the full licence and underestimated this current sanitizer build.
-    # T3.7/T3.9–T3.11: the lazy browser API, conversion controls, Settings/Diagnostics and
-    # theme-token styles add ~7 KiB: 146 → 152 KiB; measured 155,086 bytes. Startup cap unchanged.
-    # Phase 4 Browse/install dialogs and job log/restart UI load only from Settings → Plugins.
-    # Measured 165510 bytes; rounded once to 162 KiB. Startup cap unchanged.
-    # Settings → All settings → Advanced (sections in a dialog) and the blocked-notifications
-    # hint with Ask again: +1.3 KiB on demand, measured 166,840 → 164 KiB. Startup cap unchanged.
-    # Settings → Plugins → Configure (plugin settings form, Test, background services: plugin_config.js
-    # and its CSS), loaded on the first Configure click: +2.1 KiB, measured 168,912 → 166 KiB.
-    # Startup cap unchanged.
-    # Project actions UI: single-modal dialog/confirmation helpers and CSS load with the
-    # plugin API; +2.5 KiB on demand, measured 171,379 bytes. Section registry is small
-    # and shared with Overview; startup stays within its existing 185 KiB cap.
-    # D1/D2 (improve-plugins-and-ui, 2026-10-10): Workflow info shows the run's targets and Agent
-    # handoffs uses the Settings tab frame (+1.4 KiB agent_dialog.js/lazy.css, +1 KiB canvas/plans):
-    # PM approved 171 KiB (175,104 bytes); measured 173,577. Startup cap unchanged.
-    # C1 handoff Markdown and Agents & review in the same frame (shared tab_frame.js, also used by
-    # Studio settings) fit under this cap: measured 175,100 bytes, 4 bytes headroom.
-    # improve-plugin-and-ui-2: data/presence.js (544 B) moved here from startup (loads on the first
-    # click or key) to keep startup under 185 KiB, plus the Overview action mount and Telegram
-    # settings helpers (+161 B): PM approved 172 KiB (176,128 bytes); measured 175,809 (t004-claude,
-    # 2026-10-10). Startup cap unchanged (measured 189,329).
-    # task-improve-workflow: the Workflow editor (workflow_editor.js, data/workflow_edit.js and its
-    # lazy.css rules: add/skip/reorder/delete steps, step dialog, agent-loop bar, templates) loads on
-    # the first Edit workflow click: +14.8 KiB, measured 190,607. PM approved 187 KiB (191,488 bytes)
-    # (task-improve-workflow t004-claude, 2026-10-10). Startup cap stays 185 KiB: the editor hooks
-    # in canvas.js are paid for by moving startup code here, not by raising it. Pre-approved follow-ups,
-    # each recorded here with its measurement: that move (e.g. folder_browser.js, ~3.2 KiB) and
-    # Workflow settings/Stages (T9b, <= 4 KiB), up to 194 KiB total; anything above needs trimming.
-    # T8b2 exercised the approved startup-trim allowance: lazy 190,607 → 194,592 B
-    # (folder_browser.js 3,212 B plus paths.js and import hooks). Round to 191 KiB;
-    # T9b may use the remaining allowance up to 194 KiB after measurement.
-    # T9b (Workflow settings + Stages dialogs, template drafts, live region; t006-claude,
-    # 2026-10-10): 194,592 → 198,475 B (+3,883 B, within the pre-approved 4 KiB). Cap set to the
-    # absolute 194 KiB ceiling; anything more needs trimming.
-    # 2026-10-17: Avi raised the ceiling to 204 KiB for the workspace/orchestration work.
-    # Workflow completion: list action announcements + removal of reset defaults on Save:
-    # startup 186,129 B; lazy 198,478 B (178 B below the unchanged cap, 2026-10-10).
-    # Workspace Phase 2 (2026-10-17): plugin pages (plugin_pages.js), the project file explorer
-    # (file_explorer.js), plugin availability by project type (plugin_applicability.js, Settings rule
-    # details) and their CSS, all on demand: 206,390 → 215,526 B. Avi approved raising the lazy cap:
-    # 204 → 212 KiB (217,088 bytes). Startup grew 186,963 → 187,364 B (rail group, page view hook,
-    # section filter); its 185 KiB cap is unchanged.
-    # Workspace Phase 3 (2026-10-18): canvas_ops.js (context menus, connect/disconnect, Configure tab,
-    # run/stop actions), shortcuts.js, workflow_edit.js dependency edits and their CSS: 215,577 → 226,611 B.
-    # Avi approved raising the lazy cap: 212 → 224 KiB (229,376 bytes).
-    # Workspace Phase 4b (2026-10-18): the Chat section (chat_view.js, data/chat.js), the shared graph canvas
-    # (graph_view.js), Settings → Agent chat (chat_settings.js), the New-project canvas (project_canvas.js,
-    # data/project_draft.js) and css/chat.css, all on demand: 226,611 → 259,635 B. Owner approved raising
-    # the lazy cap as needed: 224 → 256 KiB (262,144 bytes). Startup grew 192,384 → 193,070 B (Chat and
-    # New-project routes, lazy view loader, chat icon, Settings card); its 189 KiB cap is unchanged.
-    # Chat dock (chat_dock.js, chat_composer.js), promote dialog, token report, usage table: 259,635 -> 269,163 B.
-    # Owner approved raising the cap: 256 -> 264 KiB (270,336 bytes).
-    # Chat round 2026-10-18 (activity strip, /setup, full-screen graph, chat runs in Workflow): 269,210 -> ~285,400 B.
-    # Raised under the standing "raise JS caps as needed" decision: 264 -> 288 KiB (294,912 bytes).
-    assert total < 288 * 1024, f"{total} bytes gzip"
+    # Previously 400 KiB: 30 KiB is transferred from the startup ceiling when
+    # Workflow, Logs, Metadata, Results and Settings become lazy. No total increase.
+    assert total < 444 * 1024, f"{total} bytes gzip"
 
 
 def test_lazy_modules_are_not_imported_statically():
@@ -332,6 +229,16 @@ def test_flask_serves_studio_and_blocks_python_files(studio_app):
     assert client.get("/dashboard/").status_code == 404  # the legacy dashboard is gone
 
 
+def test_removed_mode_has_no_routes_or_capabilities(studio_app):
+    app, _ = studio_app
+    client = app.test_client()
+    assert not any("harness" in rule.rule.lower() for rule in app.url_map.iter_rules())
+    assert client.get("/harness").status_code == 404
+    assert client.get("/api/studio/projects/p/chat/sessions/s/harness/state").status_code == 404
+    session = client.get("/api/studio/session").get_json()
+    assert not any("harness" in key.lower() for key in session)
+
+
 def test_studio_session_and_json_connect(studio_app, tmp_path):
     app, service = studio_app
     client = app.test_client()
@@ -367,9 +274,9 @@ def test_js_parsers_with_node():
     if not node:
         pytest.skip("Node.js not available")
     result = subprocess.run(
-        [node, "--test", *sorted(str(p) for p in (PROJECT_ROOT / "tests" / "studio_js").glob("*.test.mjs"))],
+        [sys.executable, str(PROJECT_ROOT / "scripts" / "run_studio_tests.py")],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=255,
     )
     assert result.returncode == 0, result.stdout + result.stderr

@@ -121,6 +121,7 @@ class StepCommand:
     loop_options: Mapping[str, Any] = field(default_factory=dict)
     introduce_roles: bool = False      # full persona instructions (first appearance) instead of the summary
     adapter: str = "generic"
+    native_skills: bool = True
     model_option: str | None = None    # a generic agent's model flag (entrypoint ``model_option``)
     fallback_models: tuple[str, ...] = ()
     after: float | None = None         # seconds to wait after the previous step finishes
@@ -340,8 +341,12 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
             raise ExecutionError(f"agent_access.{key} must be a list of nonempty strings")
     if access.get("sandbox") not in (None, "read-only", "workspace-write"):
         raise ExecutionError("agent_access.sandbox must be read-only or workspace-write")
+    if not isinstance(access.get("default_readonly", True), bool):
+        raise ExecutionError("agent_access.default_readonly must be true or false")
+    from alfrd.agent_io import access_folders
+
     access = dict(access)
-    access["folders"] = [str((base / Path(p).expanduser()).resolve()) for p in access.get("folders", [])]
+    access["folders"] = access_folders(base, access.get("folders", []))
     loop_options = merged.get("loop") or {}
     if not isinstance(loop_options, Mapping):
         raise ExecutionError("loop must be a mapping")
@@ -509,6 +514,7 @@ def load_execution(root: str | Path, *, iterations: int | None = None, cap: bool
             env={str(k): str(v) for k, v in {**(entries.get(entry, {}).get("env") or {}), **(spec.get("env") or {})}.items()},
             stdin_file=io.get("stdin_file"), output_file=io.get("output_file"),
             output_capture=io.get("output_capture", "file"), cwd=io.get("cwd"), handoff=dict(handoff),
+            native_skills=startup.get("skills") is not False,
             iteration=int(spec.get("iteration") or 0), iterations=int(spec.get("iterations") or 0),
             base_step=spec.get("base_step", sid),
             first_turn=sid == (merged.get("step_order") or [None])[0],

@@ -157,7 +157,7 @@ test("editable fields: text inputs, textareas, selects and contenteditable, not 
 test("global shortcuts (?, Ctrl/Cmd+K, Alt+Shift+C, Alt+Shift+A) are ignored while typing in a field", () => {
   const app = readFileSync(new URL("../../src/alfrd/web/js/app.js", import.meta.url), "utf8");
   const start = app.indexOf("// Global keys never act while typing");
-  const source = app.slice(start, app.indexOf("function toggleCompact()", start));
+  const source = app.slice(start, app.indexOf("async function toggleCompact()", start));
   const handlers = [], opened = [];
   const sandbox = {
     document: { addEventListener: (t, fn) => handlers.push([t, fn]) }, isEditable, $: () => ({ hidden: true }),

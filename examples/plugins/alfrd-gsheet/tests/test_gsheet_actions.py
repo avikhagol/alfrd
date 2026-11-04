@@ -280,9 +280,9 @@ def test_transport_errors_never_expose_body(actions, finished, name):  # noqa: F
 
 def test_manifest_mutation_flags_and_timeouts(actions):
     assert {name for name, action in actions.registered.items() if action.mutating} == {
-        "save", "attach", "detach", "backfill", "create_columns"}
+        "save", "attach", "detach", "backfill", "create_columns", "auth_start", "sign_out", "create_spreadsheet"}
     assert actions.registered["backfill"].timeout == 300
-    assert len(actions.registered) == 11
+    assert len(actions.registered) == 19
 
 
 def test_auto_panel_only_with_mapping_and_no_network(actions):

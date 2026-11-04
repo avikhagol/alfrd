@@ -286,6 +286,9 @@ def connect_manifest_path(path: str):
     scope = current_app.config.get("STUDIO_PROJECTS")
     if isinstance(scope, list) and identifier not in scope:
         scope.append(identifier)
+    from alfrd.gui.project_selection import save
+
+    save(current_app)
     return project, [], 200
 
 

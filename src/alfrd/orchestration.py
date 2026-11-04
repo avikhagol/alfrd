@@ -268,3 +268,19 @@ __all__ = [
     "envelope", "extract", "find_cycle", "format_ref", "has_envelope", "make_ref", "parse_ref", "read_ref",
     "schema", "validate",
 ]
+
+
+def validate_mailbox_blocker(blocker, store, run_id: str, unit_id: str) -> None:
+    """Validate optional durable-mail linkage against the originating execution."""
+    mid = blocker.get("mailbox_message_id")
+    if not mid:
+        return
+    from alfrd.mailbox import Mailbox, MailboxError
+    try:
+        box = Mailbox(store.root, store.id, run_id)
+        with box.locked():
+            message = box._find(mid)
+            if message["sender"].get("unit_id") != unit_id or message["kind"] not in ("question", "permission_request"):
+                raise MailboxError("blocker mailbox message must originate from this attempt")
+    except MailboxError as exc:
+        raise ProtocolError([str(exc)]) from exc

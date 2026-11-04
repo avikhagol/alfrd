@@ -104,7 +104,10 @@ def test_raw_file_serves_images_and_pdf_only(served):
     assert png.headers["X-Content-Type-Options"] == "nosniff"
     pdf = client.get(url, query_string={"path": "plots/report.pdf", "raw": "1"})
     assert pdf.status_code == 200 and pdf.mimetype == "application/pdf"
-    for name in ("page.html", "icon.svg"):
+    svg = client.get(url, query_string={"path": "plots/icon.svg", "raw": "1"})
+    assert svg.status_code == 200 and svg.mimetype == "image/svg+xml"
+    assert "sandbox;" in svg.headers["Content-Security-Policy"]
+    for name in ("page.html",):
         assert client.get(url, query_string={"path": f"plots/{name}", "raw": "1"}).status_code == 415
     assert client.get(url, query_string={"path": "../x.png", "raw": "1"}).status_code == 400
     (root / "secret.png").write_bytes(b"x")
@@ -130,7 +133,7 @@ def test_raw_file_serves_view_panel_sources(served):
     assert png.status_code == 200 and png.mimetype == "image/png"
     assert png.headers["X-Content-Type-Options"] == "nosniff"
     assert client.get(url, query_string={"path": "notes/report.pdf", "raw": "1"}).status_code == 200
-    assert client.get(url, query_string={"path": "notes/page.svg", "raw": "1"}).status_code == 415
+    assert client.get(url, query_string={"path": "notes/page.svg", "raw": "1"}).status_code == 200
     assert client.get(url, query_string={"path": "other.png", "raw": "1"}).status_code == 403
     assert client.get(url, query_string={"path": "diag/a/b/amp.png", "raw": "1"}).status_code in (403, 404)
     assert client.get(url, query_string={"path": "notes/../other.png", "raw": "1"}).status_code == 400

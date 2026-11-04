@@ -12,8 +12,7 @@ from alfrd.project_creation import apply_draft
 pytest.importorskip("flask")
 
 
-@pytest.fixture
-def client(tmp_path):
+def make_client(tmp_path, experimental=True):
     from alfrd.gui import create_app
     from alfrd.gui.services import RuntimeCatalogReader
     from alfrd.runtime import RuntimeService, RuntimeStore
@@ -23,10 +22,16 @@ def client(tmp_path):
     service = RuntimeService(store)
     app = create_app({"TESTING": True, "SECRET_KEY": "k", "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'c.sqlite'}",
                       "RUNTIME_SERVICE": service, "CATALOG_READER": RuntimeCatalogReader(service),
-                      "STUDIO_DEMO": False, "STUDIO_LIVE_INTERVAL": 0})
+                      "STUDIO_DEMO": False, "STUDIO_LIVE_INTERVAL": 0,
+                      "STUDIO_EXPERIMENTAL": experimental})
     c = app.test_client()
     c.h = {"X-CSRF-Token": c.get("/api/studio/session").get_json()["csrf_token"]}
     return c
+
+
+@pytest.fixture
+def client(tmp_path):
+    return make_client(tmp_path)
 
 
 def create(client, path, **payload):
@@ -107,3 +112,19 @@ def test_agent_loop_draft_names_the_first_task(client, tmp_path):
 def test_apply_draft_without_draft_changes_nothing():
     data = {"steps": {}, "workflows": []}
     assert apply_draft(data, None, looping=False) == [] and data == {"steps": {}, "workflows": []}
+
+
+def test_agent_loop_template_needs_experimental_features(tmp_path):
+    plain = make_client(tmp_path, experimental=False)
+    assert plain.get("/api/studio/session").get_json()["experimental"] is False
+    names = [t["name"] for t in plain.get("/api/studio/project-templates").get_json()["templates"]]
+    assert names == ["avica", "basic"]
+    refused = create(plain, tmp_path / "loop", template="agent-loop", task="x")
+    assert refused.status_code == 400 and "--experimental-features" in refused.get_json()["error"]["message"]
+    assert not (tmp_path / "loop").exists()
+    assert create(plain, tmp_path / "plain", template="basic").status_code == 201
+
+    exp = make_client(tmp_path / "exp", experimental=True)
+    assert exp.get("/api/studio/session").get_json()["experimental"] is True
+    names = [t["name"] for t in exp.get("/api/studio/project-templates").get_json()["templates"]]
+    assert names == ["agent-loop", "avica", "basic"]

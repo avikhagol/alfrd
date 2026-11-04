@@ -79,10 +79,14 @@ appear on the command line, in the bot's output or in its replies.
 
 | Command | Reply |
 |---|---|
-| `/status` | Shows the remembered project and targets; opens the picker if nothing is remembered |
-| `/status last` | Same as `/status`; if nothing is remembered, says "Nothing remembered yet." and opens the picker |
+| `/chatmode` | Shows the current mode |
+| `/chatmode on`, `/chatmode off` | Configured superusers only: enable or disable plain-text chat requests |
+| `/new` | Creates and activates a chat session in the selected project (asks for a project if needed) |
+| `/resume-chat`, `/resume_chat` | Recent sessions across remembered projects: title, activity, state, Previous/Next buttons; tap to activate |
+| Plain text with an active session | Sends a prompt to that session using the same orchestrator API as Studio; acknowledges and relays replies, plans and task results |
+| `/status` | Inline menu: active chat status, tasks/progress, task log tails, pipeline/targets, pipeline logs, switch session or new session |
+| `/status last` | Remembered pipeline targets; opens the picker if no choice is remembered |
 | `/status latest` | Shows the most recently active target in the most recently active project; keeps your remembered choice |
-| `/status new` | Starts over: pick a project, then one or more targets |
 | `/status NAME` | Selects a project by id or name (case-insensitive; a unique prefix is enough), then asks for targets |
 | `/status more` or reply `more` | Shows the next 5 entries of the open list, or the next 5 target cards |
 | Reply `2`, `1 3`, `1,3` or `all` | Answers the open list; tappable numbers select one, **All** selects every target across all pages, and **More ▸** shows the next page |
@@ -98,11 +102,77 @@ appear on the command line, in the bot's output or in its replies.
 At start the bot also fills Telegram's `/` command menu (`setMyCommands`), so
 typing `/` in the chat lists the commands.
 
+### Superuser chat mode
+
+In **Settings → Plugins → Telegram → Configure**, set **Superuser private chat
+IDs** (`admin_chat_ids`) to comma or space separated positive private chat IDs
+(the same numeric IDs as Telegram user IDs). For example: `123456789, 987654321`.
+Empty denies all toggle attempts. In a group, the sender's ID must match; the
+group ID never grants its members superuser rights. Messages still must arrive
+in the configured **Allowed chat id** (`chat_id`). This adds no new allowed chats.
+Restart the bot after changing settings.
+
+An admin sends `/chatmode on` in the allowed chat. Ordinary messages from anyone
+already authorized in that chat now use the Studio orchestrator API. With no
+active session, the first message creates one in the selected project (or the
+only remembered project). With several projects, select one through `/status`
+→ **Pipeline / targets**, or create a session with `/new`, then resend the
+message. Plans, answers and task results return to that same Telegram chat via
+the existing durable transcript relay and request notifications. `/status`
+provides task status and log controls.
+
+`/chatmode off` stops new plain-text requests, including for an active session;
+plain text again answers pipeline lists. Existing work continues and its
+replies/results still arrive. `/new` and `/resume_chat` remain available, but
+plain-text requests stay disabled until an admin turns mode on again. `/chatmode`
+without arguments shows the mode and requires no admin rights.
+
+The toggle is stored atomically alongside the active session and cursors in
+`<plugins_dir>/telegram/status-<chat-id-hash>.json` and survives bot restarts.
+A failed state write refuses the change. **Initial chat mode** (`chat_mode`)
+accepts `on`, `off` or `legacy`; a saved per-chat toggle takes precedence. Empty
+or `legacy` is the compatibility default: no automatic session creation, and
+existing `/new` sessions still accept messages exactly as before. An explicit
+`off` disables those prompts too. Settings are changed through the existing
+local Studio plugin settings controls; Telegram users cannot change admin IDs.
+For `notify.json` configuration, the same keys can be placed on the Telegram
+route, for example `"admin_chat_ids": "123456789", "chat_mode": "off"`.
+
+### Chat sessions
+
+`/new` uses the selected project, or asks you to choose one when several are
+remembered. `/resume_chat` is the spelling registered with Telegram
+(`setMyCommands` permits underscores); manually typed `/resume-chat` also works.
+With an active session and chat mode on (or the legacy default), **every plain text message is a prompt**, including
+numbers and `more`. Use inline buttons to navigate pipeline lists while chatting.
+The backend uses the same project settings, agents, orchestration and permission
+gates as Studio. Telegram message IDs provide durable prompt replay protection.
+
+The active session and delivery cursors survive restarts in the per-chat state
+file described below. New transcript entries from all sessions activated here
+are relayed on polling, even after switching sessions; existing history is not
+replayed on first selection. Replies use plain text chunks of at most 4,000
+UTF-16 units, preserving long text and emoji below Telegram’s 4,096 limit.
+Delivery can repeat a message if the bot crashes between sending and saving its
+cursor. Interactive replies are independent of notification mute/digest filters.
+
+`/status` always opens a menu, even when a project or session was previously
+selected. Its chat status shows request states and blockers. Tasks show progress
+and scoped log buttons; logs show the last 30 lines per attempt, including
+completed attempts. Pending approvals and permission requests must be reviewed
+in Studio; Telegram does not grant permissions automatically. Existing pipeline
+pause/resume controls retain their Yes/No confirmation.
+
+Only the configured numeric `chat_id` can use commands, send prompts or invoke
+callbacks. Other chats are silently ignored, including copied callback payloads.
+For a group ID, every member able to message the bot in that group shares this
+authority; use a private chat ID when that is not desired. No extra chat IDs are
+authorized by selecting a session.
+
 ### Picking and remembering status
 
-Pick a project, then one or more targets. While a list is open, a bare number
-answers that list. To select several targets, type `1 3` or `1,3`; number buttons
-select one target immediately. With only one project, `/status new` skips the
+Pick a project, then one or more targets. When no chat session is active, a bare number answers the open list. To select several targets, type `1 3` or `1,3`; number buttons
+select one target immediately. With only one project, the **Pipeline / targets** menu option skips the
 project list. A project with only one target skips the target list.
 
 Lists and target cards show 5 entries at a time, most recently active first.
@@ -248,8 +318,52 @@ This doesn't restart after a failure or a reboot; read the log if replies stop.
 From the ALFRD checkout, no installation needed:
 
 ```bash
-uv run pytest -q tests/test_telegram_plugin.py tests/test_telegram_notifier.py tests/test_studio_notify.py
+uv run pytest -q tests/test_telegram_chat.py tests/test_telegram_plugin.py tests/test_telegram_notifier.py tests/test_studio_notify.py
 PYTHONPATH=examples/plugins/alfrd-telegram uv run pytest -q examples/plugins/alfrd-telegram/tests
 ```
 
 The tests fake the Telegram API; they make no network calls.
+
+### Chat decisions
+
+The running bot watches chat requests as well as agent loops. Pending approvals,
+ASK questions and permission blockers receive their own notification, including
+mailbox-only requests on idle plans. A finished chat alert requires a terminal
+successful request; failures say failed. Each decision is sent once across polls
+and bot restarts, and shared deduplication prevents a matching Telegram event
+route from sending it again. Old terminal requests are not replayed on startup.
+
+Set **Studio URL** in plugin settings to a base URL reachable from your phone
+(for example `https://studio.example`) for chat links. Approval alerts show the
+action and a 12-digit hash prefix, with no approval callback or full action hash.
+Review and approve in Studio through the existing secure mailbox path. Digest
+and mute preferences apply to these alerts. Browser notification preferences
+remain independent. See [notification kinds](../../../docs/notifications.md#chat-requests-and-human-decisions).
+
+## Scheduled requests from Telegram
+
+Configured superusers (`admin_chat_ids`) can schedule requests in the allowed
+destination chat, even when plain-text chat mode is off:
+
+- `/schedule in 2h Build the report` — relative duration; positive integer `m`, `h` or `d`.
+- `/schedule 2027-01-02 09:00 Build the report` — local Europe/Athens time.
+- `/schedule 2027-01-02T09:00:00+00:00 Build the report` — explicit UTC offset (`Z` also works).
+- `/schedule 2027-01-02 09:00 Europe/London Build the report` — named timezone.
+- `/scheduled` — list your pending items, IDs, text, times and statuses across remembered projects.
+- `/unschedule sch_…` — cancel your pending batch using its full ID.
+
+Select a project with `/status` first if several projects are remembered. Invalid,
+past, nonexistent or ambiguous local times are rejected; use an explicit offset
+for daylight-saving transitions. Requests retain multiline text. Empty admin
+configuration and missing sender identities deny access. List and cancel require
+the original sender in the original destination chat; other superusers cannot
+cancel that sender's batches through Telegram.
+
+Each command uses a dedicated chat session in Studio and its existing scheduled
+queue, without changing your active Telegram session. Telegram update redelivery
+does not create another batch or move a relative deadline. Execution uses the
+existing Studio scheduler: keep the loopback Studio server running with this
+project in its scope. The bot must also be running to deliver results; saved
+session cursors resume delivery after restart and after switching sessions.
+Agent answers, plans and task results return to the originating destination chat.
+Cancellation affects pending work; it does not stop a request already dispatched.

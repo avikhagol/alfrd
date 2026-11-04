@@ -10,9 +10,11 @@ the same loopback + CSRF gate as the rest of the server.
 
 from __future__ import annotations
 
+import gzip
 import re
 import subprocess
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, jsonify, request, send_file, send_from_directory
@@ -24,6 +26,12 @@ studio = Blueprint("studio", __name__, url_prefix="/studio")
 studio_api = Blueprint("studio_api", __name__, url_prefix="/api")
 
 
+@lru_cache(maxsize=128)
+def _gzip_asset(body: bytes) -> bytes:
+    # Static assets are small; cache by content so source edits cannot serve stale bytes.
+    return gzip.compress(body, compresslevel=6, mtime=0)
+
+
 def _send(filename: str):
     root = web_root()
     # send_from_directory rejects traversal (``..``) and absolute paths.
@@ -32,6 +40,20 @@ def _send(filename: str):
     if mime:
         response.mimetype = mime
     response.headers["X-Content-Type-Options"] = "nosniff"
+    if Path(filename).suffix.lower() in {".html", ".js", ".mjs", ".css", ".svg", ".json"}:
+        response.vary.add("Accept-Encoding")
+        # Leave ranges and conditional 304s to send_file. Images/fonts are already compressed.
+        if response.status_code == 200 and not request.headers.get("Range") and request.accept_encodings["gzip"] > 0:
+            response.direct_passthrough = False
+            body = response.get_data()
+            if len(body) >= 1024:
+                compressed = _gzip_asset(body)
+                if len(compressed) < len(body):
+                    response.set_data(compressed)
+                    response.headers["Content-Encoding"] = "gzip"
+                    etag, _ = response.get_etag()
+                    if etag:
+                        response.set_etag(etag, weak=True)
     return response
 
 
@@ -73,10 +95,28 @@ def studio_system():
                    mem_used=mem.total - mem.available, mem_total=mem.total)
 
 
+def live_interval() -> float:
+    """Seconds between checks of a busy project tree: the superuser's ``studio.live_interval``, else --live-interval."""
+    from alfrd import superuser
+
+    chosen = superuser.load()["studio"]["live_interval"]
+    return max(0.0, float(chosen if chosen is not None else current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0))
+
+
+def superuser_view() -> dict:
+    """What the Studio needs from the superuser settings: hidden sections and the lockdown switches."""
+    from alfrd import superuser
+
+    data = superuser.load()
+    lock = data["lockdown"]
+    return {"hidden_sections": data["studio"]["hidden_sections"], "read_only": lock["read_only"],
+            "allowed": {name: superuser.allowed(name, data) for name in superuser.LOCKS}, "error": superuser.error()}
+
+
 @studio_api.get("/studio/session")
 def studio_session():
     """Tell the Studio it is served by ALFRD and hand it a CSRF token."""
-    from alfrd.gui.security import csrf_token, mutations_enabled, runtime_enabled
+    from alfrd.gui.security import csrf_token, experimental_enabled, mutations_enabled, runtime_enabled
 
     return jsonify(
         app="alfrd",
@@ -85,6 +125,11 @@ def studio_session():
         mutations_enabled=mutations_enabled(),
         csrf_token=csrf_token(),
         demo=bool(current_app.config.get("STUDIO_DEMO")),
+        # --experimental-features: Chat mode can be turned on and the agent-loop template is offered.
+        experimental=experimental_enabled(),
+        # Superuser settings (alfrd su, /superuser): hidden sections, read-only, locked actions.
+        superuser=superuser_view(),
+        can_superuser=mutations_enabled(),
         default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"),
         projects=current_app.config.get("STUDIO_PROJECTS"),
         can_quit=bool(current_app.config.get("STUDIO_SHUTDOWN")) and mutations_enabled(),
@@ -95,9 +140,9 @@ def studio_session():
         # Folders without alfrd.yaml can be connected with the default manifest.
         default_manifest=_default_manifest_available(),
         live={
-            "enabled": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0) > 0
+            "enabled": live_interval() > 0
             and current_app.config.get("RUNTIME_SERVICE") is not None,
-            "interval": float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0),
+            "interval": live_interval(),
             "idle": float(current_app.config.get("STUDIO_LIVE_IDLE", 5.0)),
         },
     )
@@ -139,6 +184,18 @@ def create_project_api():
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
         return _json_error(ValueError("path is required"), 400)
+    if not _template_offered(payload.get("template", "basic")):
+        from alfrd import superuser
+
+        why = ("is hidden by the superuser (studio.hidden_templates)" if payload.get("template") in superuser.load()["studio"]["hidden_templates"]
+               else "needs alfrd serve --experimental-features")
+        return _json_error(ValueError(f"the {payload.get('template')} template {why}"), 400)
+    for key in ("agents", "custom"):
+        if payload.get(key) is not None and not isinstance(payload[key], list):
+            return _json_error(ValueError(f"{key} must be a list"), 400)
+    if payload.get("agents") is not None and not all(isinstance(a, str) for a in payload["agents"]):
+        return _json_error(ValueError("agents must be a list of option ids"), 400)
+    warnings: list[str] = []
     try:
         project, _ = create_project(service, payload["path"], name=payload.get("name"),
                                     template=payload.get("template", "basic"), task=payload.get("task", ""),
@@ -146,7 +203,8 @@ def create_project_api():
                                     sequence=payload.get("sequence"),
                                     # the Studio keeps ALFRD's config in .alfrd/ unless asked for a root alfrd.yaml
                                     manifest=payload.get("manifest") or DEFAULT_NEW_MANIFEST,
-                                    draft=payload.get("draft"))
+                                    draft=payload.get("draft"), agents=payload.get("agents"),
+                                    custom=payload.get("custom"), warnings=warnings)
     except FileExistsError as error:
         return _json_error(error, 409)
     except (ValueError, OSError, TypeError) as error:
@@ -155,9 +213,23 @@ def create_project_api():
     if isinstance(scope, list) and project.identifier not in scope:
         scope.append(project.identifier)
     current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
+    from alfrd.gui.project_selection import save
+
+    save(current_app)
     draft = payload.get("draft") if isinstance(payload.get("draft"), dict) else {}
     return jsonify(name=project.name, identifier=project.identifier, root=project.root_path,
-                   template=payload.get("template", "basic"), targets=draft.get("targets") or []), 201
+                   template=payload.get("template", "basic"), targets=draft.get("targets") or [],
+                   warnings=warnings), 201
+
+
+def _template_offered(name) -> bool:
+    """Experimental templates (agent-loop) are offered only under --experimental-features."""
+    from alfrd import superuser
+    from alfrd.gui.security import EXPERIMENTAL_TEMPLATES, experimental_enabled
+
+    if name in superuser.load()["studio"]["hidden_templates"]:
+        return False
+    return name not in EXPERIMENTAL_TEMPLATES or experimental_enabled()
 
 
 @studio_api.get("/studio/project-templates")
@@ -165,7 +237,54 @@ def project_templates():
     import yaml
 
     return jsonify(templates=[{"name": path.stem, "description": (yaml.safe_load(path.read_text()) or {}).get("description", "")}
-                              for path in sorted((web_root() / "assets" / "templates").glob("*.yaml"))])
+                              for path in sorted((web_root() / "assets" / "templates").glob("*.yaml"))
+                              if _template_offered(path.stem)])
+
+
+_OPTIONS_CACHE: dict[str, tuple[float, list]] = {}
+
+
+@studio_api.get("/studio/entrypoint-options")
+def entrypoint_options_api():
+    """The New-project wizard's agent-command checkboxes for ``?template=`` (what is installed here, why an
+    option is hidden); ``experimental`` tells the wizard agent-loop needs ``--experimental-features``.
+    Cached for 30 s (the Ollama probe is a 1 s GET)."""
+    import time
+
+    from alfrd import entrypoint_options, superuser
+    from alfrd.gui.security import EXPERIMENTAL_TEMPLATES, experimental_enabled
+
+    template = request.args.get("template") or "basic"
+    template = template if template in entrypoint_options.DEFAULTS else "basic"  # only the defaults differ
+    hit = _OPTIONS_CACHE.get(template)
+    if hit is None or time.monotonic() - hit[0] > 30:
+        hit = _OPTIONS_CACHE[template] = (time.monotonic(), entrypoint_options.options_for(template))
+    # templates this server would offer with --experimental-features (not the ones the superuser hides)
+    needs_flag = [] if experimental_enabled() else sorted(set(EXPERIMENTAL_TEMPLATES) - set(superuser.load()["studio"]["hidden_templates"]))
+    return jsonify(options=hit[1], experimental=bool(needs_flag), experimental_templates=needs_flag)
+
+
+@studio_api.post("/studio/entrypoint-check")
+def entrypoint_check_api():
+    """``{path, custom: [{name, cmd, model_option?}]}`` → ``{entries, warnings}`` or 400 with the first problem:
+    the wizard's Review step checks custom commands against the folder before creating anything."""
+    from alfrd import entrypoint_options
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
+        return _json_error(ValueError("path is required"), 400)
+    custom = payload.get("custom") or []
+    if not isinstance(custom, list) or len(custom) > entrypoint_options.MAX_CUSTOM:
+        return _json_error(ValueError(f"custom must be a list of at most {entrypoint_options.MAX_CUSTOM} commands"), 400)
+    entries, warnings = [], []
+    try:
+        for spec in custom:
+            entry, more = entrypoint_options.validate_custom(payload["path"], spec, taken=[e["name"] for e in entries])
+            entries.append(entry)
+            warnings += more
+    except ValueError as error:
+        return _json_error(error, 400)
+    return jsonify(entries=entries, warnings=warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -357,9 +476,10 @@ def _allowed_cached(root: Path, rel: str) -> Path:
     return path
 
 
-#: Types ``/file?raw=1`` serves as bytes (the image and PDF viewers); never HTML or SVG.
+#: Inert previews only; SVG documents are additionally sandboxed.
 RAW_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-             ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf"}
+             ".webp": "image/webp", ".bmp": "image/bmp", ".pdf": "application/pdf",
+             ".svg": "image/svg+xml", ".ico": "image/vnd.microsoft.icon"}
 
 
 def _project_file_raw(project_name: str, rel: str):
@@ -385,6 +505,7 @@ def _project_file_raw(project_name: str, rel: str):
     response = send_file(path, mimetype=mimetype, conditional=True, max_age=0)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "no-cache"
+    response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
     return response
 
 
@@ -445,9 +566,12 @@ def project_file(project_name: str):
 def live_hub():
     """The server's LiveHub (created on first use); None when live updates are off."""
     hub = current_app.extensions.get("alfrd_live")
-    if hub is not None:
-        return hub or None
-    interval = float(current_app.config.get("STUDIO_LIVE_INTERVAL", 2.0) or 0)
+    interval = live_interval()  # the superuser may change it while the server runs
+    if hub:
+        if interval <= 0:
+            return None  # off now: new streams are refused; open ones end with their lease
+        hub.interval = interval
+        return hub
     service = current_app.config.get("RUNTIME_SERVICE")
     if interval <= 0 or service is None:
         current_app.extensions["alfrd_live"] = False
@@ -878,6 +1002,9 @@ def _forget(service, project_name: str, row) -> dict:
         scope[:] = [key for key in scope if key not in aliases]
     if current_app.config.get("STUDIO_DEFAULT_PROJECT") in aliases:
         current_app.config["STUDIO_DEFAULT_PROJECT"] = None
+    from alfrd.gui.project_selection import save
+
+    save(current_app)
     return counts
 
 
@@ -1019,8 +1146,8 @@ PROJECT_VISIBILITY = ("hidden", "shown", "opened")
 def project_visibility(project_name: str):
     """Show, hide or open a remembered project in this server's Studio (loopback + CSRF).
 
-    ``{"state": "hidden" | "shown" | "opened"}``. Only the server's scope
-    (``STUDIO_PROJECTS``) and opened project (``STUDIO_DEFAULT_PROJECT``) change:
+    ``{"state": "hidden" | "shown" | "opened"}``. The server's scope
+    (``STUDIO_PROJECTS``), its persisted selection and opened project change:
     the runtime database and the project folder are not touched, so a hidden
     project is shown again without Import → Connect.
     """
@@ -1053,6 +1180,9 @@ def project_visibility(project_name: str):
         current_app.config["STUDIO_DEFAULT_PROJECT"] = key
     elif default == key:
         current_app.config["STUDIO_DEFAULT_PROJECT"] = None
+    from alfrd.gui.project_selection import save
+
+    save(current_app)
     return jsonify(project=key, state=state, projects=current_app.config.get("STUDIO_PROJECTS"),
                    default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"))
 
@@ -1118,6 +1248,10 @@ def project_rediscover():
             current_app.config["STUDIO_DEFAULT_PROJECT"] = project.identifier
         current_app.extensions["alfrd_forgotten"] = [f for f in current_app.extensions.get("alfrd_forgotten", []) if f["root"] != item["root"]]
         restored.append({"root": item["root"], "name": project.name, "identifier": project.identifier, "default_manifest": used_default})
+    from alfrd.gui.project_selection import save
+
+    if restored:
+        save(current_app)
     return jsonify(restored=restored, failed=failed, projects=scope,
                    default_project=current_app.config.get("STUDIO_DEFAULT_PROJECT"))
 

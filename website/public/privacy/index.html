@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ALFRD privacy policy for the locally run Google Sheet plugin, Google permissions, and local token storage.">
+  <title>Privacy policy — ALFRD</title>
+  <link rel="stylesheet" href="../public.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header>
+    <a class="brand" href="../">ALFRD</a>
+    <nav aria-label="Main navigation">
+      <a href="./" aria-current="page">Privacy policy</a>
+      <a href="../terms/">Terms of service</a>
+    </nav>
+  </header>
+  <main id="main">
+    <h1>Privacy policy</h1>
+    <p>Effective date: <time datetime="2026-11-01">November 1, 2026</time>.</p>
+    <h2>What this policy covers</h2>
+    <p>ALFRD is a locally run, open source application. This policy describes how its optional Google Sheet plugin handles your Google account information and spreadsheet data. The public ALFRD website does not perform Google sign-in or store your Google credentials.</p>
+    <h2>Google permissions we request</h2>
+    <p>ALFRD requests only these three OAuth scopes:</p>
+    <ul>
+      <li><code>openid</code> — identify your signed-in Google account.</li>
+      <li><code>https://www.googleapis.com/auth/userinfo.email</code> — display the email address of the connected account.</li>
+      <li><code>https://www.googleapis.com/auth/drive.file</code> — access only spreadsheets you pick or create with ALFRD.</li>
+    </ul>
+    <p>ALFRD does not request access to all files in your Google Drive. The plugin reads and writes the selected spreadsheets to carry out the workflow actions you request.</p>
+    <h2>Local storage and use</h2>
+    <p>OAuth access and refresh tokens are stored locally on your machine in a file with permissions <code>0600</code> (owner read/write). Tokens are never sent to the maintainer or stored on any server. The local app sends tokens directly to Google only as required to authenticate and make the Google API requests you authorize; there is no ALFRD server receiving them.</p>
+    <p>Your connected account email and spreadsheet data are used only to show the connected account and provide the Google Sheet features you choose. Any local workflow files remain under your control. Spreadsheet content you sync is sent directly between your machine and Google.</p>
+    <h2>No sale or sharing</h2>
+    <p>ALFRD does not sell or share your Google user data with the maintainer or third parties. It does not use that data for advertising or to train AI models. The maintainer does not receive your tokens, account information, or spreadsheet contents through the plugin. Google processes requests to its services under its own policies.</p>
+    <h2>Google API Services User Data Policy / Limited Use</h2>
+    <p>ALFRD's use of information received from Google APIs follows the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including its Limited Use requirements. Google user data is used only to provide the user-facing Google Sheet features described here.</p>
+    <h2>Disconnect, revoke access, and delete local data</h2>
+    <p>You can revoke ALFRD's access at any time in <a href="https://myaccount.google.com/connections">Google Account connections</a>. Revoking access stops future authorized API access; it does not delete spreadsheets in Google Drive or copies already saved locally.</p>
+    <p>To remove locally retained credentials, disconnect the Google account in ALFRD and remove any remaining local token file from ALFRD's configuration directory. Delete local workflow files separately if you no longer need them. Manage or delete your spreadsheets directly in Google Drive.</p>
+    <h2>Contact</h2>
+    <p><code>avialxee@gmail.com</code> with a monitored contact email before publication for OAuth verification.</strong></p>
+  </main>
+  <footer>
+    <a href="../">Home</a>
+    <a href="../terms/">Terms of service</a>
+    <a href="https://github.com/avikhagol/alfrd">Source code</a>
+  </footer>
+</body>
+</html>

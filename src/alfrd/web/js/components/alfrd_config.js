@@ -75,6 +75,41 @@ function parse(text) {
   }
 }
 
+// Settings → Entrypoints card: the draft's agent commands, with found/missing from the saved file's probe.
+let probed = { project: null, at: 0, data: null, loading: false };
+
+/** The Entrypoints card body: one row per `entrypoint:` entry of the draft (name, program, status). */
+export function entrypointRows(data, probe = null) {
+  const entries = (Array.isArray(data?.entrypoint) ? data.entrypoint : []).filter((e) => e && e.name);
+  const status = Object.fromEntries((probe?.entrypoints || []).map((e) => [e.name, e]));
+  const rows = entries.map((e) => {
+    const cmd = Array.isArray(e.cmd) ? e.cmd.map(String) : [];
+    const program = cmd[0] || "";
+    // the probe is of the saved file: an edited command is "not checked" until saved
+    const p = status[e.name];
+    const s = p && (p.cmd ? JSON.stringify(p.cmd) === JSON.stringify(cmd) : p.program === program) ? p : null;
+    const chip = !s ? '<span class="badge" title="Save alfrd.yaml to check this command">not checked</span>'
+      : s.available ? `<span class="badge tone-ok" title="${esc(s.detail)}">found</span>` : `<span class="badge tone-warn" title="${esc(s.detail)}">missing</span>`;
+    return `<tr><td class="mono">${esc(e.name)}</td><td class="mono small">${esc(program)}</td><td>${chip}${s && !s.available ? ` <span class="muted small">${esc(s.detail)}</span>` : ""}</td></tr>`;
+  });
+  const warnings = probe?.warnings || [];
+  return `${rows.length ? `<table class="tbl small"><caption class="sr-only">Agent commands</caption><thead><tr><th scope="col">Name</th><th scope="col">Program</th><th scope="col">Here</th></tr></thead><tbody>${rows.join("")}</tbody></table>` : '<p class="muted small">No agent commands yet. Add one with Edit commands, or use a chat agent on a built-in (claude, codex).</p>'}
+    ${warnings.length ? `<ul class="msgs">${warnings.map((w) => `<li class="lvl-warn">${esc(w)}</li>`).join("")}</ul>` : ""}`;
+}
+
+function drawEntrypoints(el, ctx) {
+  const box = $("#ps-entrypoints", el);
+  if (!box) return;
+  const p = project(ctx);
+  const { data } = parse(ui.text);
+  box.innerHTML = entrypointRows(data, probed.project === p ? probed.data : null);
+  if (ctx.state.mode !== "server" || !p || probed.loading || (probed.project === p && Date.now() - probed.at < 30000)) return;
+  probed = { project: p, at: Date.now(), data: null, loading: true };
+  server.chatProbe(p).then((result) => { if (probed.project === p) probed = { ...probed, data: result, loading: false }; })
+    .catch(() => { if (probed.project === p) probed.loading = false; })
+    .finally(() => { if (el.isConnected && project(ctx) === p) drawEntrypoints(el, ctx); });
+}
+
 function aliasRows(text) {
   const { data } = parse(text);
   const map = data?.project_settings?.field_aliases || {};
@@ -170,6 +205,12 @@ export function mount(el, ctx) {
         }
       } catch (error) { ctx.toast(error.message, "fail"); }
     }
+    if (a === "entrypoints-edit") {
+      // Advanced → Entrypoint is the full editor (cmd, adapter, stdin/output, lean, manual, review)
+      if (ui.mode !== "form") { ui.mode = "form"; render(el, ctx); }
+      try { if (!(await ui.formReady)?.openSection(el, "entrypoint")) ctx.toast("Open All settings, then Advanced… → Entrypoint", "info"); }
+      catch (error) { ctx.toast(error.message, "fail"); }
+    }
     if (a === "chat") {
       const st = stateOf(p, SETTINGS);
       import("./chat_settings.js").then((m) => m.openChatSettings(ctx, p, st.text, (text, andSave) => {
@@ -214,6 +255,7 @@ async function save(el, ctx) {
   const saved = st.text;
   const done = () => {
     if (st.text === saved) { setDirty(p, st, false); st.base = saved; st.previewTpl = null; }
+    server.invalidateChatProbes?.(); probed = { project: null, at: 0, data: null, loading: false };
     ctx.toast(`${ctx.projectName(p)}: alfrd.yaml saved${ctx.state.mode === "server" ? " (a version is kept in History)" : ""}`, "ok");
     ctx.update();
   };
@@ -244,6 +286,7 @@ function renderStatus(el, ctx) {
       ${[...r.errors.map((m) => `<li class="lvl-error">${esc(m)}</li>`), ...r.warnings.map((m) => `<li class="lvl-warn">${esc(m)}</li>`)].length ? `<ul class="msgs">${[...r.errors.map((m) => `<li class="lvl-error">${esc(m)}</li>`), ...r.warnings.map((m) => `<li class="lvl-warn">${esc(m)}</li>`)].join("")}</ul>` : ""}`;
   const saveBtn = $("[data-act=save]", el);
   if (saveBtn) saveBtn.classList.toggle("primary", ui.dirty);
+  drawEntrypoints(el, ctx);
 }
 
 /** Everything besides the editor text that the panel shows; a change means rebuild. */
@@ -318,6 +361,9 @@ export function render(el, ctx) {
     <div class="ps-grid">
       <section class="card">${ui.mode === "form" ? '<div id="ps-form-host"></div>' : `<textarea id="ps-yaml" class="yaml-editor" spellcheck="false" aria-label="alfrd.yaml">${esc(ui.text)}</textarea>`}</section>
       <div>
+        <section class="card" id="ps-entrypoints-card"><h4 tabindex="-1">${icon("gear")} Entrypoints (agent commands)</h4><p class="muted small">The programs ALFRD starts for workflow turns and chat agents (<code>entrypoint:</code>). A chat agent picks one by name in Agent chat.</p>
+          <div id="ps-entrypoints"></div>
+          <div class="row gap wrap"><button class="btn" data-act="entrypoints-edit">Edit commands</button><button class="btn" data-act="chat">Choose chat agents</button></div></section>
         <section class="card"><h4>Agents &amp; review</h4><p class="muted small">Choose models, enable human adjustments after selected turns, or edit the goal for the next run.</p>
           <div class="row gap wrap"><button class="btn" data-act="agents">Agents &amp; review</button>${ctx.state.mode === "server" ? '<button class="btn" data-act="task">Edit task</button>' : ''}</div>
         </section>
@@ -351,9 +397,9 @@ export function render(el, ctx) {
     import("./manifest_location.js").then((m) => m.showLocation($("#ps-loc", el), ctx, p, () => { shown = null; if (el.isConnected) render(el, ctx); })).catch(() => {});
   }
   const formHost = $("#ps-form-host", el);
-  if (formHost) import("./yaml_form.js").then((m) => m.showYamlForm(el, formHost, ui.text, {
+  if (formHost) ui.formReady = import("./yaml_form.js").then((m) => { m.showYamlForm(el, formHost, ui.text, {
     setText: (text) => { ui.text = text; setDirty(p, ui, true); ui.report = ui.aliases = null; shown = signature(ctx, p); shownText = text; renderStatus(el, ctx); },
     rebuild: () => { shown = null; render(el, ctx); },
     modal: ctx.modal,
-  })).catch((error) => { formHost.textContent = error.message; });
+  }); return m; }).catch((error) => { formHost.textContent = error.message; });
 }

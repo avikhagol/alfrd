@@ -1,3 +1,4 @@
+import { refreshHTML } from "../utils/refresh.js";
 // Job log and restart state survive closing Settings.
 import { $, esc, icon } from "../utils/dom.js";
 import { server } from "../data/server.js";
@@ -62,9 +63,9 @@ export function renderJob(panel, restartTitles) {
       const old = $("pre", host), atBottom = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 20, top = old?.scrollTop || 0;
       const elapsed = Math.max(0, Math.floor(((s.ended || Date.now()) - Date.parse(job.started)) / 1000));
       const label = job.status === "running" ? `${({ install: "Installing", "install-pinned": "Installing", update: "Updating", remove: "Removing" })[job.action] || "Installing"} ${job.target}…` : job.status === "done" ? `${job.action === "remove" ? "Removed" : job.action === "update" ? "Updated" : "Installed"} ${job.target}` : job.status === "timeout" ? "Stopped after 10 min" : "Failed";
-      host.innerHTML = `<div class="plug-job"><p role="status" aria-live="polite"><span class="badge tone-${job.status === "done" ? "ok" : job.status === "running" ? "run" : "fail"}">${job.status === "running" ? icon("sync", "spin") : ""}${esc(label)}</span> <span class="tabular">${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}</span>${button("×", 'data-dismiss aria-label="Dismiss plugin job"', "ghost")}</p>${job.status === "failed" ? `<p class="plug-failure">${esc(s.text.trim().split("\n").at(-1) || "Job failed")}</p>` : ""}${s.error ? `<p class="callout warn">${esc(s.error)}</p>` : ""}<details ${s.open ? "open" : ""}><summary>Show log</summary><pre class="mono small">${esc(s.text)}</pre></details></div>`;
+      refreshHTML(host, `<div class="plug-job"><p role="status" aria-live="polite"><span class="badge tone-${job.status === "done" ? "ok" : job.status === "running" ? "run" : "fail"}">${job.status === "running" ? icon("sync", "spin") : ""}${esc(label)}</span> <span class="tabular">${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}</span>${button("×", 'data-dismiss aria-label="Dismiss plugin job"', "ghost")}</p>${job.status === "failed" ? `<p class="plug-failure">${esc(s.text.trim().split("\n").at(-1) || "Job failed")}</p>` : ""}${s.error ? `<p class="callout warn">${esc(s.error)}</p>` : ""}<details ${s.open ? "open" : ""}><summary>Show log</summary><pre class="mono small">${esc(s.text)}</pre></details></div>`);
       $("details", host).ontoggle = e => { s.open = e.target.open; };
       const pre = $("pre", host); pre.scrollTop = atBottom ? pre.scrollHeight : top;
-    } else host.innerHTML = "";
-    restart.innerHTML = !later && (restartNeeded || restartTitles.size) ? `<p class="callout warn"><b>Restart <code>alfrd serve</code> to load the change.</b> ${server.session?.can_restart ? button("Restart now", "data-restart-now", "primary") : "Restart it in the terminal where it runs."} ${button("Later", "data-later", "ghost")}</p>` : "";
+    } else refreshHTML(host, "");
+    refreshHTML(restart, !later && (restartNeeded || restartTitles.size) ? `<p class="callout warn"><b>Restart <code>alfrd serve</code> to load the change.</b> ${server.session?.can_restart ? button("Restart now", "data-restart-now", "primary") : "Restart it in the terminal where it runs."} ${button("Later", "data-later", "ghost")}</p>` : "");
   }

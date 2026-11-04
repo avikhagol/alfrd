@@ -312,7 +312,11 @@ server's runtime database. Settings shows its state (`starting`, `running`,
 
 The reference is `examples/plugins/alfrd-telegram` (a token, a chat id, a Test
 that calls `getMe`/`getChat`, and the bot as a service).
-Its `/status` picker remembers a project and one or more targets across restarts;
+Its `/new` and `/resume_chat` (also `/resume-chat`) commands activate Studio chat
+sessions; plain text goes to their orchestrator and replies are relayed in chunks.
+`/status` opens a menu for session status, tasks, log tails, pipeline targets and
+session switching. Only the configured numeric Telegram chat ID can control it.
+The active session, delivery cursors and pipeline selection survive restarts;
 see the [Telegram command reference](../examples/plugins/alfrd-telegram/README.md#commands)
 for cards, paging and the saved selection file.
 

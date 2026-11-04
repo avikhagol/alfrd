@@ -78,7 +78,10 @@ def _themes() -> list[dict]:
 def gui_install(state: dict | None = None) -> bool:
     """Studio installs are on unless ``alfrd serve --no-gui-install`` or ``"gui_install": false``."""
     state = state or extensions.read_state()
-    return bool(current_app.config.get("PLUGINS_GUI_INSTALL", True) and state["gui_install"])
+    from alfrd import superuser
+
+    return bool(current_app.config.get("PLUGINS_GUI_INSTALL", True) and state["gui_install"]
+                and superuser.allowed("plugins"))
 
 
 def _scope(project_name: str | None) -> tuple[Path | None, dict]:
@@ -120,12 +123,13 @@ def _applies(rec: extensions.Record, root: Path | None, state: dict) -> dict:
 
 @studio_api.get("/studio/plugins")
 def plugins_list():
-    """Installed plugins, their state and browser files, and the selectable themes.
+    """Installed plugins, their state and browser files, defaults, and selectable themes.
 
     ``?project=<p>`` adds whether each plugin applies to that project (``available``, ``unavailable_reason``,
-    ``applicability``) and the project's type.
+    ``applicability``) and the project's type. ``defaults`` includes bundled examples
+    (even before installation) and built-ins, overlaid with installed state by id.
     """
-    from alfrd.extensions import jobs
+    from alfrd.extensions import defaults, jobs
 
     state = extensions.read_state()
     from alfrd.extensions import installer
@@ -134,7 +138,17 @@ def plugins_list():
     root, scope = _scope(request.args.get("project"))
     # ``job``: the running (or last) plugin job, so a reloaded Studio can show its progress.
     job = jobs.runner.get(jobs.runner.last) if jobs.runner.last else None
-    return jsonify(plugins=[{**_entry(r, disabled), "managed": r.id in inventory, **_applies(r, root, state)} for r in _records()],
+    plugins = [{**_entry(r, disabled), "installed": True, "managed": r.id in inventory, **_applies(r, root, state)}
+               for r in _records()]
+    by_id = {p["id"]: p for p in plugins}
+    default_plugins = defaults.discover()
+    for default in default_plugins:
+        if default["id"] in by_id:
+            entry = by_id[default["id"]]
+            entry["title"] = entry["title"] if entry["title"] != entry["id"] else default["title"]
+            entry["description"] = entry["description"] or default["description"]
+            default.update(entry)
+    return jsonify(plugins=plugins, defaults=default_plugins,
                    theme=state["theme"], themes=_themes(), safe_mode=extensions.safe_mode(), gui_install=gui_install(state),
                    plugin_actions=plugin_actions(state), job=job, **scope)
 
@@ -513,7 +527,10 @@ MAX_ACTION_RESULT = 2 * 1024 * 1024
 def plugin_actions(state: dict | None = None) -> bool:
     """Mutating project actions are on unless ``alfrd serve --no-plugin-actions`` or ``"plugin_actions": false``."""
     state = state or extensions.read_state()
-    return bool(current_app.config.get("PLUGINS_ACTIONS", True) and state["plugin_actions"])
+    from alfrd import superuser
+
+    return bool(current_app.config.get("PLUGINS_ACTIONS", True) and state["plugin_actions"]
+                and superuser.allowed("plugin_actions"))
 
 
 def _run_action(action: extensions.ProjectAction, root: Path, values: dict, payload: dict) -> tuple[bool, object]:
