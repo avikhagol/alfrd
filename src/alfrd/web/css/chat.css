@@ -51,7 +51,7 @@
 .chat-files-list .chat-file-changed { grid-column: 1 / -1; }
 .chat-file-open { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 120px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
 button.chat-file-open { cursor: pointer; }
-button.chat-file-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.chat-file-open:focus-visible { outline: 2px solid var(--chat-focus, var(--focus)); outline-offset: 2px; }
 button.chat-file-open:hover .chat-file-name { text-decoration: underline; }
 .chat-file-name, .chat-file-dir, .chat-file-task, .chat-file-format { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .chat-file-name { flex: 0 1 auto; }
