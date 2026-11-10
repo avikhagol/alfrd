@@ -8,7 +8,7 @@ const [tokens, baseline, studio, daylight, obsidian] = await Promise.all([
   read('css/chat-tokens.css'), read('css/chat.css'), read('css/studio.css'),
   read('css/themes/daylight-orbit/theme.css'), read('css/themes/obsidian-orbit/theme.css'),
 ]);
-const imports = ['tokens', 'thread', 'composer', 'activity', 'dock'].map((s) => `chat-${s}.css`);
+const imports = ['tokens', 'conversation', 'composer', 'activity', 'dock'].map((s) => `chat-${s}.css`);
 const declarations = (css) => Object.fromEntries([...css.matchAll(/(--[\w-]+)\s*:\s*([^;{}]+);/g)].map((m) => [m[1], m[2].trim()]));
 const base = declarations(tokens.match(/\.chat, \.chat-dock\s*\{([^}]+)\}/)[1]);
 const required = [
@@ -43,7 +43,7 @@ test('chat lazy entry point begins with the five ordered quoted imports', () => 
   assert.ok(baseline.startsWith(imports.map((s) => `@import "${s}";`).join('\n') + '\n'));
   assert.equal([...baseline.matchAll(/@import\b/g)].length, 5);
   assert.doesNotMatch(baseline, /@import\s+url\(/);
-  assert.doesNotMatch(studio, /chat-(?:tokens|thread|composer|activity|dock)\.css|chat\.css/);
+  assert.doesNotMatch(studio, /chat-(?:tokens|conversation|composer|activity|dock)\.css|chat\.css/);
   assert.match(baseline, /\.su-agent/);
   assert.match(baseline, /\.cs-table/);
   assert.match(baseline, /\.gv-canvas/);
@@ -92,7 +92,8 @@ test('computed tokens, composited contrast, custom themes and forced colors on p
       }
       check(rgb('on-action'), rgb('action'), 4.5);
       check(rgb('action'), rgb('surface'), 3);
-      check(rgb('live'), rgb('live-bg'), 4.5);
+      // The running tint is translucent and painted over the chat surface.
+      check(rgb('live'), blend(rgb('live-bg'), rgb('surface')), 4.5);
       assert.equal(await page.locator('#outside').evaluate((el) => getComputedStyle(el).getPropertyValue('--chat-bg')), '');
       t.diagnostic(`${theme} ${host} ${JSON.stringify({ body: report.body, meta: report.meta, code: report.code, shapes: Object.fromEntries(Object.entries(report.values).filter(([k]) => k.includes('radius'))), surfaces: ['bg', 'surface', 'surface-2', 'code-bg'].map((k) => [k, report.values[`--chat-${k}`]]) })}`);
     }

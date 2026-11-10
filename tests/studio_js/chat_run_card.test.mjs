@@ -52,3 +52,18 @@ test("Run uses the server's display summary for legacy scheduled requests", () =
   assert.equal(runSummary(s).fullTitle, "Stitch theme, Files tab, Graph menu");
   assert.doesNotMatch(runSummary(s).title, /sch_|pending/);
 });
+
+test("Needs you clears for recorded answers, survives snapshot reload, and returns for a new ask", () => {
+  for (const mailbox of [false, true]) {
+    const s = fixture();
+    s.decisions = [{ id: "d", request: "r0001", needs: "user", status: "pending", ...(mailbox ? { mailbox_message_id: "m" } : {}) }];
+    s.requests[0].mailbox.pending_user = mailbox ? 1 : 0;
+    assert.equal(runSummary(s).status, "Needs you");
+    s.decisions[0].status = "resolved"; s.requests[0].mailbox.pending_user = 0;
+    for (const snapshot of [s, JSON.parse(JSON.stringify(s))]) {
+      assert.equal(runSummary(snapshot).needsUser, 0); assert.equal(runSummary(snapshot).status, "Running");
+    }
+    s.requests[0].mailbox.pending_user = 1;
+    assert.equal(runSummary(s).status, "Needs you");
+  }
+});

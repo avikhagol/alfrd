@@ -46,7 +46,7 @@ test("Agents & review: tab frame, themes, mobile, validation and apply", { skip:
       ] }] });
       window.applied = [];
       const ctx = { modal, toast() {}, update() {} };
-      await (await import("/js/components/agent_dialog.js")).openAgentSettings(ctx, "p", text, async (updated) => { window.applied.push(updated); });
+      await (await import("/js/components/agent_modal.js")).openAgentSettings(ctx, "p", text, async (updated) => { window.applied.push(updated); });
     });
     return page;
   };

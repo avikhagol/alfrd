@@ -1,4 +1,4 @@
-import { outlineHtml } from "./utils/loading.js";
+import { outlineHtml } from "./utils/startup.js";
 import { refreshProtected, refreshHTML, sourceHTML } from "./utils/refresh.js";
 import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget, setRoute, isEditable, keyLabel, loadCss } from "./utils/dom.js";
 import { projectLabels } from "./utils/text_fit.js";
@@ -20,8 +20,8 @@ import { server, createProjectLoader, projectLoadInfo } from "./data/server.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
 import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
 import { projectNotes } from "./data/notes.js";
-import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull, dockedLogs, undockLog, mountDock, dockInfo, setDockFollow, onDock } from "./components/logview.js";
-const loadLogs = () => import("./components/logs.js");
+import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull, dockedLogs, undockLog, mountDock, dockInfo, setDockFollow, onDock } from "./components/tails.js";
+const loadLogs = () => import("./components/streams.js");
 import * as overview from "./components/overview.js";
 let canvas = null;
 const loadCanvas = () => import("./components/canvas.js").then((m) => (canvas = m));
@@ -50,7 +50,7 @@ function lazyView(load, styles = []) {
 const VIEWS = [
   { id: "overview", label: "Overview", icon: "overview", mod: overview },
   { id: "workflow", label: "Workflow", icon: "workflow", mod: lazyView(loadCanvas) },
-  { id: "metadata", label: "Metadata", icon: "metadata", mod: lazyView(() => import("./components/metadata.js")) },
+  { id: "metadata", label: "Metadata", icon: "metadata", mod: lazyView(() => import("./components/details.js")) },
   { id: "results", label: "Results", icon: "results", mod: lazyView(() => import("./components/results.js").then((m) => (results = m))) },
   { id: "logs", label: "Logs", icon: "log", mod: lazyView(loadLogs) },
   { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js"), ["css/chat.css"]) },
@@ -87,7 +87,7 @@ const state = {
   selectedTarget: null,
   consoleLines: [],
   consoleOpen: false,
-  consoleTab: "studio", // "studio" or the key of a docked log (see logview.js dockLog)
+  consoleTab: "studio", // "studio" or the key of a docked log (see tails.js dockLog)
   notes: storage.get("notes", {}),
   prefs: { pageSize: readPrefs()["ui.rows_per_page"], live: readPrefs()["ui.live_updates"] },
   scans: {}, // server mode: ALFRD project -> last /scan JSON (patched by live updates)
@@ -227,7 +227,7 @@ export const ctx = {
 
   async openTargets(action = "import", project = null, names = []) {
     try {
-      lazy.targets ||= import("./components/targets_dialog.js");
+      lazy.targets ||= import("./components/targets_modal.js");
       return await (await lazy.targets).openTargets(ctx, action, project, names);
     } catch (error) {
       lazy.targets = null;
@@ -1348,7 +1348,7 @@ ctx.menu = menu;
 
 async function openSettings() {
   try {
-    lazy.settings ||= import("./components/settings_dialog.js");
+    lazy.settings ||= import("./components/settings_modal.js");
     (await lazy.settings).openSettings(ctx, { live, setLive, newProject, openProject, quitServer, loadServer, loadDemo, switchProject, removeWorkspace, resetAttachments, forgetFolderHandles });
   } catch (error) { lazy.settings = null; ctx.toast(`Settings: ${error.message}`, "fail"); }
 }
@@ -1359,7 +1359,7 @@ const showProject = async (project, template) => {
   ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
 };
 async function newProject(path, open) {
-  try { await (await import("./components/agent_dialog.js"))[open ? "openProject" : "openCreateProject"](ctx, showProject, path, newProject); }
+  try { await (await import("./components/agent_modal.js"))[open ? "openProject" : "openCreateProject"](ctx, showProject, path, newProject); }
   catch (error) { ctx.toast(error.message, "fail"); }
 }
 const openProject = () => newProject("", 1);
@@ -1829,16 +1829,19 @@ function renderLiveBadge() {
   if (!b) return;
   const st = state.liveStatus || {};
   const kind = st.state || "off";
-  b.className = `live-badge live-${kind}`;
-  b.querySelector("span").textContent = LIVE_LABEL[kind] || kind;
+  const cls = `live-badge live-${kind}`, label = LIVE_LABEL[kind] || kind;
+  if (b.className !== cls) b.className = cls;
+  if (b.querySelector("span").textContent !== label) b.querySelector("span").textContent = label;
   const ago = st.last ? Math.max(0, Math.round((Date.now() - st.last.getTime()) / 1000)) : null;
-  b.title = [
+  const title = [
     kind === "permission" ? "Click to allow reading the folder again" : live.enabled ? "Click to turn live updates off" : "Click to turn live updates on",
     st.detail,
     ago != null ? `last check ${ago < 2 ? "just now" : `${ago} s ago`}` : "",
     st.interval ? `every ${st.interval < 10 ? st.interval.toFixed(1) : Math.round(st.interval)} s while busy` : "",
   ].filter(Boolean).join(" · ");
-  b.setAttribute("aria-pressed", live.enabled ? "true" : "false");
+  if (b.title !== title) b.title = title;
+  const pressed = live.enabled ? "true" : "false";
+  if (b.getAttribute("aria-pressed") !== pressed) b.setAttribute("aria-pressed", pressed);
   const lost = state.mode === "server" && (kind === "reconnecting" || navigator.onLine === false);
   const notice = $("#conn-notice");
   if (notice && notice.hidden === lost) {
@@ -2077,7 +2080,7 @@ async function pollSystem() {
     systemHtml = sysMeter("CPU", s.cpu) + sysMeter("RAM", s.mem_total ? (100 * s.mem_used) / s.mem_total : 0);
     systemTitle = `${SYSTEM_HINT}\nCPU ${Math.round(s.cpu)}% · RAM ${gib(s.mem_used)} / ${gib(s.mem_total)} GB`;
     const el = $("#foot-mode .sys");
-    if (el) { el.title = systemTitle; sourceHTML(el.lastElementChild, systemHtml); }
+    if (el) { if (el.title !== systemTitle) el.title = systemTitle; refreshHTML(el.lastElementChild, systemHtml); }
   } catch { clearInterval(systemTimer); systemTimer = null; } // older server or offline: keep the label
 }
 function startSystemPoll() {
@@ -2461,7 +2464,7 @@ async function boot() {
 
 window.alfrdStudio = { ctx, loadDemo, loadServer, applyBundle, rescan, importEntries };
 
-server.onAuthRequired(() => location.replace("/login"));
+server.onAuthRequired(() => location.replace(new URL("../login", location.href || "http://localhost/studio/").pathname));
 
 boot().catch((error) => {
   if (server.authRequired) return;

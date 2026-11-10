@@ -1,5 +1,5 @@
 // Keep what the reader opened across re-renders (Metadata). Loaded with import()
-// alongside panels.js / metadata_avica.js, so it never counts toward startup.
+// alongside panels.js / details_avica.js, so it never counts toward startup.
 
 /**
  * Replace `el`'s HTML without losing what the reader opened. Native <details> with a

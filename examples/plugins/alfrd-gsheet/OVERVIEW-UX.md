@@ -48,7 +48,7 @@ Keep stable action nodes and focus across refresh; isolate plugin errors.
 
 ## Connection dialog
 
-Reuse `api.dialog` / `plugin_dialogs.js`, the shell modal, close button, scrollable
+Reuse `api.dialog` / `plugin_modals.js`, the shell modal, close button, scrollable
 body and sticky footer. Title **Google Sheet**, with the project name directly
 below. Recommended body structure: intro, connection status, sheet facts,
 validation result, Automatic sync, secondary management actions. Footer: Close

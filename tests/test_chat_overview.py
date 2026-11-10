@@ -58,11 +58,12 @@ def test_overview_goal_criteria_and_files_are_deduplicated(project, client):
     (project / "out.txt").write_text("v1")
     ref = f"out.txt@{sha(b'v1')}"
     store.save_task(task("r0001.a", criteria=["It builds", "It is fast"], artifacts=[ref],
-                         evidence=[{"criterion": 0, "verdict": "verified"}]))
+                         evidence=[{"criterion": 0, "verdict": "verified", "evidence": "Build check passed"}]))
     store.save_task(task("r0001.b", criteria=["It builds"], artifacts=[ref, f"gone.txt@{sha(b'x')}"],
                          expected=["later.txt"], status="queued"))
     body = client.get(client.base + sid + "/overview").get_json()
     assert body["goal"]["text"] == "@codex build the report" and body["goal"]["source"] == "request:r0001"
+    assert next(c for c in body["criteria"] if c["id"] == "r0001.a.c1")["evidence"] == "Build check passed"
     status = {c["id"]: c["status"] for c in body["criteria"]}
     assert status == {"r0001.t1.c1": "unverified", "r0001.a.c1": "verified", "r0001.a.c2": "unverified",
                       "r0001.b.c1": "unverified"}  # t1 is the real @codex task: no evidence, so unverified

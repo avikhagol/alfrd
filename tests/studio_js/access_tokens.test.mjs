@@ -94,7 +94,8 @@ test("Studio startup 401 goes to the shared landing page without restoring data 
   let authHandler;
   const context = {
     server: { authRequired: false, onAuthRequired(fn) { authHandler = fn; }, async detect() { this.authRequired = true; authHandler(); return null; } },
-    location: { replace: (url) => redirects.push(url) },
+    URL,
+    location: { href: "http://localhost/studio/", replace: (url) => redirects.push(url) },
     window: { addEventListener() {} }, document: { body: {}, addEventListener() {} },
     renderShell() {}, bindLogs() {}, consoleHeight() {}, consoleUi: {}, route() {},
     ctx: { log() { assert.fail("must not start the workspace"); } },
@@ -106,4 +107,18 @@ test("Studio startup 401 goes to the shared landing page without restoring data 
   };
   await runInNewContext(`${source}; boot()`, context);
   assert.deepEqual(redirects, ["/login"]);
+});
+
+
+test("auth-required navigation retains the deployment prefix and drops credentials", () => {
+  const app = readFileSync(new URL("../../src/alfrd/web/js/app.js", import.meta.url), "utf8");
+  const callback = app.match(/server.onAuthRequired\((\(\) => location.replace.*)\);/)[1];
+  for (const prefix of ["", "/alfrd"]) {
+    const redirects = [];
+    const fn = runInNewContext(callback, { URL, location: {
+      href: `http://localhost${prefix}/studio/?token=stale#settings`, replace: (url) => redirects.push(url),
+    } });
+    fn();
+    assert.deepEqual(redirects, [`${prefix}/login`]);
+  }
 });

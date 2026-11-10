@@ -26,10 +26,11 @@ test("request, every task and missing criteria; task completion never verifies a
   assert.match(html, /class="chat-text"/);
   assert.match(html, /Build &lt;thing&gt;/);
   assert.match(html, /Task status: done/);
-  assert.match(html, /Escape &lt;script&gt;.*Criterion: unverified/);
-  assert.match(html, /Evidence checked.*Criterion: verified/);
-  assert.match(html, /Evidence failed.*Criterion: failed/);
-  assert.match(html, /Unknown verdict.*Criterion: unverified/);
+  assert.match(html, /Escape &lt;script&gt;<\/span><\/li>/);
+  assert.match(html, /Evidence checked.*Criterion: Pass/);
+  assert.match(html, /Evidence failed.*Criterion: Fail/);
+  assert.match(html, /Unknown verdict<\/span><\/li>/);
+  assert.doesNotMatch(html, /unverified/);
   assert.match(html, /No criteria<\/h3>.*Task status: running<\/p><p>Not specified/);
   assert.doesNotMatch(html, /r1.plan|<script>/);
 });
@@ -116,4 +117,16 @@ test("no session and pending snapshot use F2 states without fetching; integratio
   const source = await readFile(new URL("../../src/alfrd/web/js/components/chat_view.js", import.meta.url), "utf8");
   assert.match(source, /drawGoals\(\{ host: inspectorTabs\.active\(\) === "goals"/);
   assert.match(source.slice(source.indexOf("function leave() {\n"), source.indexOf("function render(el, ctx) {\n  if (destroyed)")), /goals\?\.stop\(\)/);
+});
+
+ test("running criteria wait for checks; finished criteria retain pass/fail and escaped evidence", () => {
+  const data = overview(); data.criteria[1].evidence = "Checks passed <script>";
+  data.criteria.push({ text: "Live criterion", task_rows: ["r1.b"] });
+  const html = goalsHtml(data, state());
+  assert.match(html, /Live criterion.*Criterion: Not checked yet/);
+  assert.match(html, /Criterion: Pass.*Checks passed &lt;script&gt;/);
+  for (const status of ["done", "failed", "cancelled", "stopped", "skipped", "blocked", undefined]) {
+    const s = state(); s.tasks[0].status = status;
+    assert.match(goalsHtml(data, s), /Escape &lt;script&gt;<\/span><\/li>/);
+  }
 });

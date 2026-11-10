@@ -193,7 +193,7 @@ export function mount(el, ctx) {
     if (a === "save") save(el, ctx);
     if (a === "agents" || a === "task") {
       try {
-        const dialog = await import("./agent_settings_dialog.js");
+        const dialog = await import("./agent_settings_modal.js");
         if (a === "task") await dialog.openTask(ctx, p);
         else {
           const st = stateOf(p, SETTINGS); // the dialog may close after a project switch

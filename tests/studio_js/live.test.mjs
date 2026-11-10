@@ -22,7 +22,7 @@ globalThis.EventSource = FakeES;
 
 const { createLive } = await import(path.join(web, "data/live.js"));
 const { diffFingerprints } = await import(path.join(web, "data/folder_scan.js"));
-const { _internals } = await import(path.join(web, "components/logview.js"));
+const { _internals } = await import(path.join(web, "components/tails.js"));
 
 function harness(scanState = { ts: 100 }) {
   const calls = [];

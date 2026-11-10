@@ -220,7 +220,7 @@ export function mount(el, ctx) {
     ctx.navigate("results");
   });
   on(el, "click", "[data-rh-task]", async (e, b) => {
-    try { await (await import("./agent_settings_dialog.js")).openTask(ctx, b.dataset.rhTask); } catch (error) { ctx.toast(error.message, "fail"); }
+    try { await (await import("./agent_settings_modal.js")).openTask(ctx, b.dataset.rhTask); } catch (error) { ctx.toast(error.message, "fail"); }
   });
   on(el, "click", "[data-rh-workflow]", (e, b) => { ctx.switchProject?.(b.dataset.rhWorkflow, { restoreView: false }); ctx.navigate("workflow"); });
   on(el, "click", "[data-rh-page]", (e, b) => { histPage.set(b.dataset.rhPage, (histPage.get(b.dataset.rhPage) || 0) + Number(b.dataset.step)); renderGrid(el, ctx); });

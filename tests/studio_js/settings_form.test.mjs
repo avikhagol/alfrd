@@ -10,7 +10,7 @@ globalThis.localStorage = {
   removeItem: (k) => items.delete(k),
 };
 const { prefsRevision, readPrefs } = await import("../../src/alfrd/web/js/data/prefs.js");
-const { fieldState, reasonText, saveSection, SECTIONS, visibleSections, rowShown } = await import("../../src/alfrd/web/js/components/settings_dialog.js");
+const { fieldState, reasonText, saveSection, SECTIONS, visibleSections, rowShown } = await import("../../src/alfrd/web/js/components/settings_modal.js");
 
 const flag = (over) => ({ key: "ui.live_updates", scope: "browser", locked: false, disabled: false, reason: null, ...over });
 

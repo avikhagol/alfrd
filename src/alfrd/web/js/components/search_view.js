@@ -4,7 +4,7 @@
 
 import { $, $$, esc, icon, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
-import { openFileFull } from "./logview.js";
+import { openFileFull } from "./tails.js";
 
 const words = (q) => (String(q).match(/[\w+.-]+/g) || []).filter((w) => w.replace(/[.-]/g, ""));
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

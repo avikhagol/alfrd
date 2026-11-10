@@ -202,8 +202,38 @@ def test_a_mailbox_linked_access_blocker_keeps_the_grant_with_the_user(project, 
     assert d["needs"] == "user" and "delegated" not in d
     assert [c["kind"] for c in orchestrator_calls(project)] == ["plan"]
     grant = next(o for o in d["options"] if o.startswith("Grant this task access"))
+    from alfrd.mailbox import Mailbox, USER
+    from test_agent_mailbox import AGENT, question
+    store = chat.session(project, sid)
+    box = Mailbox(project, sid, "r0001")
+    assert box.status(d["superseded_mailbox_message_id"], USER)["state"] == "cancelled"
+    assert chat._session_attention(store)["pending_user"] == 1
     chat.decide(project, sid, d["id"], choice=grant, spawn=False)
     assert str(outside) in chat.session(project, sid).task("r0001.a")["access_extra"]["folders"]
+    assert chat._session_attention(chat.session(project, sid))["pending_user"] == 0
+    assert chat.session_state(project, sid)["requests"][0]["mailbox"]["pending_user"] == 0
+    # Recovery also cleans up pre-fix records without the retained supersession field.
+    old = dict(d); old.pop("superseded_mailbox_message_id")
+    stale = box.send({**AGENT, "unit_id": store.task("r0001.a")["units"][-1]}, question("old-stale"))["message"]["id"]
+    import json
+    from alfrd import orchestration as proto
+    rec = store.task("r0001.a")
+    rel = f".alfrd/plans/{store.plan_id}/handoffs/{rec['units'][-1]}/response.md"
+    (project / rel).write_text(json.dumps(result("blocked", blockers=[{
+        "id": d["blocker"], "reason": d["reason"], "needs": "user", "requires": d["requires"],
+        "mailbox_message_id": stale}])["json"]))
+    rec["result"]["artifacts"] = [proto.make_ref(project, rel)]; store.save_task(rec)
+    old.update(status="resolved"); store.save_decision(old)
+    assert box.summary()["pending_user"] == 1
+    rev = store.rev
+    chat.process_mailbox(chat.session(project, sid))
+    assert store.rev > rev
+    assert not chat.session_state(project, sid, since_rev=rev).get("unchanged")
+    assert Mailbox(project, sid, "r0001").summary()["pending_user"] == 0
+    # A separate real question remains pending; cleanup is scoped to the superseded ID.
+    box.send({**AGENT, "unit_id": rec["units"][-1]}, question("new-real"))
+    chat.process_mailbox(chat.session(project, sid))
+    assert chat._session_attention(chat.session(project, sid))["pending_user"] == 1
 
 
 def test_questions_mode_keeps_a_mailbox_linked_permission_blocker_with_the_user(project, monkeypatch):

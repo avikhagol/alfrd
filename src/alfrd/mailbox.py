@@ -457,13 +457,17 @@ class Mailbox:
             self._event("resolved", original, actor, {"reply_id": message["id"]})
             return {"message": message, "resolution": self._state(original), "delivery": "recorded"}
 
-    def cancel(self, task_id=None):
+    def cancel(self, task_id=None, *, message_id=None):
+        changed = False
         with self.locked():
             for message in self.messages:
                 if message["kind"] in ("question", "permission_request") and (self._state(message)["state"] == "pending" or
                      (message["kind"] == "permission_request" and self._state(message)["state"] == "resolved")) and \
-                        (task_id is None or message["sender"].get("task_id") == task_id):
+                        (task_id is None or message["sender"].get("task_id") == task_id) and \
+                        (message_id is None or message["id"] == message_id):
                     self._event("cancelled", message, {"kind": "orchestrator"}, {})
+                    changed = True
+        return changed
 
 
 def execution_env(store, rec, unit):

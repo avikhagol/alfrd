@@ -21,5 +21,7 @@
   "theme_color": "#0E1116",
   "background_color": "#0E1116",
   "display": "standalone",
-  "start_url": "../"
+  "start_url": "../",
+  "id": "/studio/",
+  "scope": "../"
 }

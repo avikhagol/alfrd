@@ -252,7 +252,7 @@ def _reexec_server(token: str, secret_key: str, no_token: bool) -> None:
     os.environ["ALFRD_SECRET_KEY"] = secret_key
     if not no_token:
         os.environ["ALFRD_TOKEN"] = token
-    argv = list(sys.orig_argv)
+    argv = [arg for arg in sys.orig_argv if arg != "--rotate-token"]
     if "--no-browser" not in argv:  # the Studio tab is already open
         argv.append("--no-browser")
     print("Restarting alfrd serve…", flush=True)
@@ -325,7 +325,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
                live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2,
                token: str | None = None, no_token: bool = False, gui_install: bool = True,
-               plugin_actions: bool = True, experimental: bool = False) -> None:
+               plugin_actions: bool = True, experimental: bool = False,
+               rotate_token: bool = False, persist_credentials: bool = False) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -343,6 +344,14 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         raise typer.BadParameter("Debug mode is only available on a loopback interface.")
     if no_token and not loopback:
         raise typer.BadParameter("--no-token is only available on a loopback interface.")
+    if debug and os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        rotate_token = False  # the parent already rotated; the child inherits its credentials
+    fixed_token = token or os.environ.get("ALFRD_TOKEN")
+    fixed_secret = os.environ.get("ALFRD_SECRET_KEY")
+    if rotate_token and (fixed_token or fixed_secret or no_token):
+        raise typer.BadParameter("--rotate-token cannot be combined with --token, ALFRD_TOKEN, ALFRD_SECRET_KEY or --no-token.")
+    if rotate_token and not (loopback or persist_credentials):
+        raise typer.BadParameter("Non-loopback rotation requires --persist-credentials.")
     if no_token:
         typer.echo("Warning: --no-token disables access-token protection; any local user can access this server.", err=True)
     elif not loopback:
@@ -389,12 +398,32 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         if others:
             print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
     from alfrd.gui import auth
+    from alfrd.gui.project_selection import restore as restore_selection
+    from types import SimpleNamespace
 
-    # One token and session secret per server. Under --debug the reloader
-    # re-runs this function in a child process: the environment carries both
-    # over, so the printed link and the cookies stay valid.
-    token = token or os.environ.get("ALFRD_TOKEN") or auth.new_token()
-    secret_key = os.environ.get("ALFRD_SECRET_KEY") or secrets.token_hex(32)
+    # create_app restores this selection too. Fingerprint the effective scope,
+    # including changes saved by Studio, rather than just the initial CLI list.
+    restore_selection(SimpleNamespace(config=config))
+    # Policy changes create a new generation rather than widening old sessions.
+    if not no_token and (loopback or persist_credentials):
+        from alfrd import superuser
+
+        policy = {"host": host.lower(), "database": str(database), "start": str(start),
+                  "projects": sorted(config["STUDIO_PROJECTS"]) if config["STUDIO_PROJECTS"] is not None else None,
+                  "all_projects": all_projects, "discover": discover, "discover_depth": discover_depth,
+                  "mutations": loopback, "gui_install": gui_install, "plugin_actions": plugin_actions,
+                  "experimental": experimental, "debug": debug,
+                  "trust_proxy": os.environ.get("ALFRD_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes"},
+                  "lockdown": superuser.load()["lockdown"]}
+        try:
+            token, secret_key = auth.durable_credentials(
+                port, policy, token=fixed_token, secret_key=fixed_secret, rotate=rotate_token)
+        except (OSError, ValueError) as error:
+            raise typer.BadParameter(f"Cannot safely load server credentials: {error}") from error
+        print("Access credentials persist after stop. Use --rotate-token to revoke saved links and cookies.")
+    else:
+        token = fixed_token or auth.new_token()
+        secret_key = fixed_secret or secrets.token_hex(32)
     if debug:
         os.environ["ALFRD_TOKEN"] = token
         os.environ["ALFRD_SECRET_KEY"] = secret_key
@@ -608,6 +637,8 @@ def serve(
     ),
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    rotate_token: bool = typer.Option(False, "--rotate-token", help="Replace saved credentials; revoke saved links and cookies. Incompatible with fixed credentials."),
+    persist_credentials: bool = typer.Option(False, "--persist-credentials", help="Keep credentials after stop on non-loopback too (use TLS/tunnel). Loopback persists by default."),
     safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
     no_gui_install: bool = typer.Option(
         False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
@@ -627,7 +658,7 @@ def serve(
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
                discover=discover, discover_depth=discover_depth, token=token, no_token=no_token,
                gui_install=not no_gui_install, plugin_actions=not no_plugin_actions,
-               experimental=experimental_features)
+               experimental=experimental_features, rotate_token=rotate_token, persist_credentials=persist_credentials)
 
 
 @alfrd_cli.command()
@@ -641,6 +672,8 @@ def gui(
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the Studio in a browser."),
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    rotate_token: bool = typer.Option(False, "--rotate-token", help="Replace saved credentials; revoke saved links and cookies. Incompatible with fixed credentials."),
+    persist_credentials: bool = typer.Option(False, "--persist-credentials", help="Keep credentials after stop on non-loopback too (use TLS/tunnel). Loopback persists by default."),
     safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
     no_gui_install: bool = typer.Option(
         False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
@@ -659,7 +692,7 @@ def gui(
         os.environ["ALFRD_NO_PLUGINS"] = "1"
     _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token,
                gui_install=not no_gui_install, plugin_actions=not no_plugin_actions,
-               experimental=experimental_features)
+               experimental=experimental_features, rotate_token=rotate_token, persist_credentials=persist_credentials)
 
 
 @alfrd_cli.command()
@@ -705,6 +738,7 @@ def studio(
     export: Optional[str] = typer.Option(
         None, "--export", help="Copy the static Studio into this directory (e.g. for GitHub Pages) and exit."
     ),
+    hosting_base: str = typer.Option("/", "--hosting-base", help="URL path for the exported static Studio, e.g. /alfrd/."),
     demo: bool = typer.Option(False, "--demo", help="Open the Studio with the built-in demo data."),
     ):
     """Launch ALFRD Studio locally (browser-only, no backend)."""
@@ -716,7 +750,7 @@ def studio(
     if missing:
         raise typer.BadParameter(f"Studio assets missing from this installation: {', '.join(missing)}")
     if export:
-        target = export_site(export)
+        target = export_site(export, base_path=hosting_base)
         print(f"Studio exported to {target}")
         return
     try:

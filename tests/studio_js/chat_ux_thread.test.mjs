@@ -77,7 +77,7 @@ test("thread in Chromium: identity, code recovery, themes and 60-second concurre
     const path = new URL(req.url, "http://localhost").pathname;
     if (path === "/") {
       res.setHeader("Content-Type", "text/html");
-      return res.end('<!doctype html><link rel="stylesheet" href="/css/studio.css"><link rel="stylesheet" href="/css/chat.css"><link rel="stylesheet" href="/css/chat-thread.css"><link id="theme" rel="stylesheet"><body><section class="chat" style="display:block;width:100%;height:100%"><div id="log" tabindex="-1" aria-label="Conversation" style="height:600px;overflow:auto"></div></section></body>');
+      return res.end('<!doctype html><link rel="stylesheet" href="/css/studio.css"><link rel="stylesheet" href="/css/chat.css"><link rel="stylesheet" href="/css/chat-conversation.css"><link id="theme" rel="stylesheet"><body><section class="chat" style="display:block;width:100%;height:100%"><div id="log" tabindex="-1" aria-label="Conversation" style="height:600px;overflow:auto"></div></section></body>');
     }
     const file = resolve(web, path.slice(1));
     if (!file.startsWith(resolve(web) + "/")) { res.writeHead(404); return res.end(); }

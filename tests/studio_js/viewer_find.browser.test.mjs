@@ -30,7 +30,7 @@ test("Log and Reply Find layout, focus, navigation and highlights", { skip: !chr
     try {
       await page.goto(`http://127.0.0.1:${service.address().port}/?theme=${theme}`);
       await page.evaluate(async (kind) => {
-        const { openFileFull } = await import("/js/components/logview.js");
+        const { openFileFull } = await import("/js/components/tails.js");
         const text = kind === "log" ? "Task build · attempt 2\nStarting build\nChecking search layout\nBuild completed\n" : "# Reply\n\nBuild completed successfully.\nThe build is ready for review.\n";
         await openFileFull({ state: { trees: {} },
           readLogRange: async () => ({ text, offset: text.length, live: false, id: "t", size: text.length, mtime: 0 }),

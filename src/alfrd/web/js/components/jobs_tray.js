@@ -5,7 +5,7 @@ import { refreshHTML } from "../utils/refresh.js";
 import { esc, icon, short, loadCss, routeHash } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { activeJobs } from "./plans.js";
-import { dockLog } from "./logview.js";
+import { dockLog } from "./tails.js";
 
 const TONE = { Running: "run", Waiting: "warn", Paused: "warn", Interrupted: "warn" };
 

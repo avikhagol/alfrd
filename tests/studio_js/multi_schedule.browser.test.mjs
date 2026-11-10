@@ -78,6 +78,7 @@ test("multiple scheduled blocks: append, new time, edit retention, change time, 
     await panel.locator("[name=time]").fill(value);
     await panel.locator("[name=zone]").fill("UTC");
     await panel.locator("[data-save-time]").click();
+    await panel.locator("dialog").waitFor({ state: "hidden" });
   };
   await page.waitForFunction(() => !document.getElementById("chat-schedule-toggle").disabled);
   const structure = () => page.locator("#chat-form .chat-composer-row").evaluate((row) => [...row.children].map((e) => [e.tagName, e.id, e.className]));
@@ -86,6 +87,7 @@ test("multiple scheduled blocks: append, new time, edit retention, change time, 
   await setTime("2099-10-28T17:00");
   const send = async (text) => {
     await page.locator("#chat-input").fill(text);
+    await page.waitForFunction(() => !document.getElementById("chat-send").disabled);
     assert.equal(await page.locator("#chat-send").isDisabled(), false, await page.locator("#chat-form").innerText());
     await page.locator("#chat-send").click();
     await page.waitForFunction(() => document.getElementById("chat-input").value === "");
@@ -141,6 +143,7 @@ test("multiple scheduled blocks: append, new time, edit retention, change time, 
   const updated = panel.locator("[data-batch]").filter({ hasText: "unsaved first edit" });
   await updated.locator("[data-run]").click();
   await page.waitForFunction(() => requests.length === 1);
+  await page.waitForFunction(() => document.querySelectorAll("#chat-schedule [data-batch]").length === 1);
   assert.deepEqual(await page.evaluate(() => requests[0]), ["unsaved first edit", "append first", "same time append"]);
   assert.equal(await panel.locator("[data-batch]").count(), 1);
   assert.match(await second.innerText(), /second block edited/);

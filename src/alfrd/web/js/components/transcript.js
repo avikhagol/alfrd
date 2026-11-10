@@ -1,7 +1,7 @@
 import { $ } from "../utils/dom.js";
 import { presentMessage, threadGroups } from "../data/chat.js";
 import { renderMessageMarkdown } from "./handoff_markdown.js";
-import { mountRequestLine } from "./chat_thread.js";
+import { mountRequestLine } from "./chat_conversation.js";
 import { messageHtml, enhanceCode, copyCode, fencedCodeHtml } from "./chat_message.js";
 import { adjacentMessages, messageTime } from "../data/chat_identity.js";
 

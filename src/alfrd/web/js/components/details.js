@@ -3,8 +3,8 @@
 //   • alfrd serve: the panels the template (or alfrd.yaml) declares under
 //     views.metadata, evaluated by the server (alfrd.layout_generic) and drawn by
 //     the lazy panels.js. Nothing here knows a pipeline; AVICA's configuration and
-//     rPicard inputs are client panels drawn by the lazy metadata_avica.js.
-//   • a folder opened in the browser: the AVICA reader (metadata_avica.js).
+//     rPicard inputs are client panels drawn by the lazy details_avica.js.
+//   • a folder opened in the browser: the AVICA reader (details_avica.js).
 
 import { $, on, esc, icon, loadUi, saveUi } from "../utils/dom.js";
 import { avicaIndex, codeChips, detachCode, ensureServerIndex, loadView, openAttachPicker, targetCodes, clearWorkdirCache, workdirGeneration } from "./attach.js";
@@ -32,11 +32,11 @@ const ui = scoped("metadata", () => {
 });
 const remember = () => saveUi("metadata", ui, UI_FIELDS);
 
-let avica = null; // metadata_avica.js once loaded
+let avica = null; // details_avica.js once loaded
 let panels = null; // panels.js once loaded
 let kept = null; // utils/keep_view.js: loaded with either, before any panel is shown
 const loadKept = () => import("../utils/keep_view.js").then((m) => { kept = m; });
-const loadAvica = () => Promise.all([import("./metadata_avica.js"), loadKept()]).then(([m]) => { m.useState(ui); avica = m; return m; });
+const loadAvica = () => Promise.all([import("./details_avica.js"), loadKept()]).then(([m]) => { m.useState(ui); avica = m; return m; });
 const loadPanels = () => Promise.all([import("./panels.js"), loadKept()]).then(([m]) => { panels = m; return m; });
 
 /** Put a render into #md-main keeping open/closed disclosures and the reading position. */

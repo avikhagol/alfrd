@@ -308,6 +308,7 @@ def test_cancel_pending_human_review_preserves_handoff(project):
     assert len(folder.units()) == 1
 
 
+@pytest.mark.serial
 def test_review_wait_respects_total_runtime_budget(project):
     configure(project, review=True)
     path = project_manifest(project)

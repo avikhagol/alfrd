@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 from alfrd import get_alfrd_dir
@@ -12,6 +13,8 @@ class DefaultConfig:
     JSON_SORT_KEYS = False
     CATALOG_CREATE_SCHEMA = True
     RUNTIME_MUTATIONS_ENABLED = True
+    PERMANENT_SESSION_LIFETIME = timedelta(days=30)
+    SESSION_REFRESH_EACH_REQUEST = False
     SESSION_COOKIE_HTTPONLY = True
     # Strict: the session holds the access-token login and the CSRF token, and
     # no other site should ever send it along. `alfrd serve` names it per port.

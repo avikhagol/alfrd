@@ -324,7 +324,7 @@ test("scan bundle: a picked scan.json is read whole, not dropped by the layout f
 });
 
 test("results: calibration counted once per target, calibrators unique", async () => {
-  const { resultStats, calibratedSources } = await import(path.join(web, "data/results_stats.js"));
+  const { resultStats, calibratedSources } = await import(path.join(web, "data/results_summary.js"));
   const head = "name,success_count,failed_count,start_stamp,detail,desc,success,end_stamp\n";
   const row = (step, ok, bad, t0, t1, desc = "") => `${step},${ok},${bad},${t0},,"${desc.replace(/"/g, '""')}",[],${t1}\n`;
   const csvA = head

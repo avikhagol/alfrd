@@ -243,3 +243,11 @@ test("Files close returns to the previous tab, including repeated Files selectio
   assert.match(tabsHtml("files"), /class="icon-btn sm" data-chat="close-files" aria-label="Close Files"/);
   assert.doesNotMatch(tabsHtml("graph"), /data-chat="close-files"/);
 });
+
+test("saved desktop inspector never opens a narrow overlay on mount", () => {
+  store.set("alfrd-studio:chat.inspector", "1");
+  for (const width of [1100, 900, 700]) {
+    const r = rig({ width }); assert.equal(r.insp.restore(), false);
+    r.insp.toggle(); assert.equal(r.insp.isOpen(), true);
+  }
+});

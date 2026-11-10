@@ -2,7 +2,7 @@ import { agentRows, reviewRows, applyAgentSettings, replaceSection, personaRows,
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { DEFAULT_ITERATIONS, MAX_TURNS, sequenceAgents } from "../data/defs.js";
 import { hasDirtyHandoff } from "./loop_helpers.js";
-import { dockLog } from "./logview.js";
+import { dockLog } from "./tails.js";
 import { activePlan } from "./plans.js";
 import { mountMarkdown } from "./handoff_markdown.js";
 import { tabFrame, tabRail } from "./tab_frame.js";

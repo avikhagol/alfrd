@@ -5,7 +5,7 @@ import { refreshHTML } from "../utils/refresh.js";
 import { $, esc, icon, loadCss, routeHash, short } from "../utils/dom.js";
 import { server } from "../data/server.js";
 import { CELL, RUN_STATUS, loadPlan, logButtons, planOf, releasePlanPin, runPicker, usageButton } from "./plans.js";
-import { dockLog } from "./logview.js";
+import { dockLog } from "./tails.js";
 import { taskMenuApi } from "./task_menu_api.js";
 import { mountGraph } from "./graph_view.js";
 import { graphModel, money, statusInfo } from "../data/chat.js";

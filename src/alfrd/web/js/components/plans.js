@@ -1,7 +1,7 @@
 
 import { $, $$, esc, icon, short, bytes, keepScroll, storage } from "../utils/dom.js";
 import { server } from "../data/server.js";
-import { addLogSource, dockLog, openFileFull } from "./logview.js";
+import { addLogSource, dockLog, openFileFull } from "./tails.js";
 import { notesAt } from "../data/notes.js";
 
 async function attachFits(ctx, project, root) {
@@ -299,7 +299,7 @@ function moreMenu(ctx, project, anchor) {
   const log = `.alfrd/plans/${p.id}/runner.log`;
   ctx.menu(anchor, [
     canAct && !p.loop && { icon: "plus", label: "Add target…", hint: "append a row to this run's CSV", run: act("add-row") },
-    p.loop && { icon: "file", label: "Handoffs…", run: async () => { try { const { openHandoffs } = await import("./agent_dialog.js"); await openHandoffs(ctx, project, p.id); } catch (error) { ctx.toast(error.message, "fail"); } } },
+    p.loop && { icon: "file", label: "Handoffs…", run: async () => { try { const { openHandoffs } = await import("./agent_modal.js"); await openHandoffs(ctx, project, p.id); } catch (error) { ctx.toast(error.message, "fail"); } } },
     canAct && { icon: "play", label: "New run…", run: act("new") },
     (s.units || []).some((u) => u.usage || u.agent_usage || u.handoff) && { icon: "graph", label: "Usage", hint: "Tokens, cost, CPU / memory", run: act("usage") },
     { icon: "log", label: "Runner log", hint: "follow in the Log Stream", run: () => { dockLog(ctx, project, log); } },
@@ -469,7 +469,7 @@ export async function planAct(ctx, project, action, el, opts = {}) {
   const id = s?.plan?.id;
   try {
     if (action === "task" || action === "agents") {
-      const dialog = await import("./agent_settings_dialog.js");
+      const dialog = await import("./agent_settings_modal.js");
       if (action === "task") return dialog.openTask(ctx, project);
       const text = ctx.state.trees?.[project]?.manifestText || ctx.state.workflowFile.text;
       return dialog.openAgentSettings(ctx, project, text, async (updated) => {
@@ -479,7 +479,7 @@ export async function planAct(ctx, project, action, el, opts = {}) {
         ctx.toast("Agent and review settings saved", "ok");
       });
     }
-    if (action === "handoffs") return (await import("./agent_dialog.js")).openHandoffs(ctx, project, id);
+    if (action === "handoffs") return (await import("./agent_modal.js")).openHandoffs(ctx, project, id);
     if (action === "new") return openRunDialog(ctx, project, opts);
     if (action === "dry") return openRunDialog(ctx, project, { ...opts, dry: true });
     if (action === "refresh") return loadPlan(ctx, project);
@@ -809,7 +809,7 @@ export async function openLinkedRun(ctx, project, plan, unit = null) {
   const item = status.units?.find((u) => u.id === unit);
   if (!item) { ctx.toast?.("This turn is no longer available.", "warn"); return; }
   if (item.handoff) {
-    const { openHandoffs } = await import("./agent_dialog.js");
+    const { openHandoffs } = await import("./agent_modal.js");
     await openHandoffs(ctx, project, plan, { unit });
   } else if (item.log) await openLog(ctx, project, item.log);
 }

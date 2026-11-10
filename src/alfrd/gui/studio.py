@@ -11,6 +11,7 @@ the same loopback + CSRF gate as the rest of the server.
 from __future__ import annotations
 
 import gzip
+import json
 import re
 import subprocess
 import threading
@@ -34,6 +35,14 @@ def _gzip_asset(body: bytes) -> bytes:
 
 def _send(filename: str):
     root = web_root()
+    if filename == "assets/site.webmanifest":
+        manifest = json.loads((root / filename).read_text())
+        manifest["id"] = request.script_root + "/studio/"
+        response = jsonify(manifest)
+        response.mimetype = "application/manifest+json"
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
     # send_from_directory rejects traversal (``..``) and absolute paths.
     response = send_from_directory(root, filename, max_age=0)
     mime = MIME_TYPES.get(Path(filename).suffix.lower())

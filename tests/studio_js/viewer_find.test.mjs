@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 globalThis.document ||= { hidden: false, addEventListener() {}, querySelectorAll: () => [], getElementById: () => null };
 const { findSpans, attemptLabel, textToolsHtml, textFindHtml } = await import("../../src/alfrd/web/js/components/viewers.js");
-const { logItem, openFull, openFileFull } = await import("../../src/alfrd/web/js/components/logview.js");
+const { logItem, openFull, openFileFull } = await import("../../src/alfrd/web/js/components/tails.js");
 
 /** A ctx whose modal() keeps the HTML it is given; the setup callback needs a DOM, so it is not run. */
 function ctxWithModal(text = "alpha\nBeta beta\n") {

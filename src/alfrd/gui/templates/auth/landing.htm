@@ -5,18 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
     <meta name="theme-color" content="#0E1116">
+    <link rel="manifest" href="{{ request.script_root }}/studio/assets/site.webmanifest">
     <title>ALFRD | Access link needed</title>
-    <link rel="icon" href="/studio/assets/favicon.svg" type="image/svg+xml">
-    <link rel="alternate icon" href="/studio/assets/favicon.ico" sizes="16x16 32x32 48x48">
-    <link rel="apple-touch-icon" href="/studio/assets/apple-touch-icon.png" sizes="180x180">
-    <link rel="stylesheet" href="/studio/css/studio.css">
-    <link rel="stylesheet" href="/studio/theme.css">
+    <link rel="icon" href="{{ request.script_root }}/studio/assets/favicon.svg" type="image/svg+xml">
+    <link rel="alternate icon" href="{{ request.script_root }}/studio/assets/favicon.ico" sizes="16x16 32x32 48x48">
+    <link rel="apple-touch-icon" href="{{ request.script_root }}/studio/assets/apple-touch-icon.png" sizes="180x180">
+    <link rel="stylesheet" href="{{ request.script_root }}/studio/css/studio.css">
+    <link rel="stylesheet" href="{{ request.script_root }}/studio/theme.css">
 </head>
 <body class="access-page">
     <main class="access-card" aria-labelledby="access-title">
-        <h1 class="access-brand"><img src="/studio/assets/favicon.svg" alt="" width="28" height="28">ALFRD</h1>
+        <h1 class="access-brand"><img src="{{ request.script_root }}/studio/assets/favicon.svg" alt="" width="28" height="28">ALFRD</h1>
         <h2 id="access-title">Access link needed</h2>
-        <p>This ALFRD server needs its access link. Open the link printed by <code>alfrd serve</code>, or run <code>alfrd url --port {{ port }}</code>.</p>
+        <p>Run <code>alfrd url --port {{ port }}</code> in your terminal, then paste the access link here to continue inside this app.</p>
+        {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+        <form method="post" action="{{ url_for('system.login') }}">
+            <input type="hidden" name="login_nonce" value="{{ nonce }}">
+            <p><label for="credential">Access link or token</label><br>
+            <input class="input" style="width:100%;min-width:0" id="credential" name="credential" type="password" required maxlength="4096" autocomplete="off" spellcheck="false" autofocus></p>
+            <p><label><input type="checkbox" name="remember"> Remember this device for 30 days</label></p>
+            <button class="btn primary" type="submit">Open Studio</button>
+        </form>
+        <p>Install the clean <code>{{ request.script_root }}/studio/</code> address as a Firefox or Chrome app once. Normal server restarts keep access; after expiry, clearing browser data or rotating credentials, paste a fresh link here. You can keep the installed app.</p>
+        <p>Use Remember only on a trusted device. Keep the same hostname, port, browser profile and container.</p>
     </main>
 </body>
 </html>

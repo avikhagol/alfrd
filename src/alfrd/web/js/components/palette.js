@@ -6,7 +6,7 @@
 
 import { $, esc, icon, loadCss, storage } from "../utils/dom.js";
 import { fuzzyRank } from "../data/fuzzy.js";
-import { projectLogs, openFileFull } from "./logview.js";
+import { projectLogs, openFileFull } from "./tails.js";
 import { planAct, planOf, plansAvailable } from "./plans.js";
 import { showCode } from "./overview.js";
 import { showStep } from "./canvas.js";

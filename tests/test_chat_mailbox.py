@@ -135,12 +135,20 @@ def test_continuation_outbox_replay_and_mailbox_prompt(project):
     d = store.decisions()[0]
     d["mailbox_message_id"] = mid
     store.save_decision(d)
+    assert chat._session_attention(store)["pending_user"] == 1
+    assert chat.session_state(project, sid)["blockers"][0]["status"] == "pending"
     box.reply(mid, USER, answer())  # crash before delivery: no in-memory callback
     unit["status"] = "running"
     folder = scheduler.PlanDir(project, store.plan_id)
     folder.save_unit(unit)
     assert not chat.process_mailbox(store)
-    assert store.decision(d["id"])["status"] == "pending"
+    assert store.decision(d["id"])["status"] == "resolved"
+    assert store.decision(d["id"])["mailbox_delivery_pending"]
+    # Resolution survives reload while scheduling still waits for the active attempt.
+    reloaded = chat.session_state(project, sid)
+    assert not reloaded["blockers"]
+    assert reloaded["requests"][0]["mailbox"]["pending_user"] == 0
+    assert chat._session_attention(chat.session(project, sid))["pending_user"] == 0
     unit["status"] = "done"
     folder.save_unit(unit)
     assert chat.process_mailbox(store)
@@ -215,3 +223,44 @@ def test_display_stream_deltas_join_and_hide_private_or_tool_data():
         {"type": "input_json_delta", "partial_json": "SECRET"},
         {"type": "text_delta", "text": "world"}]]
     assert chat._display_log("\n".join(json.dumps(e) for e in events)) == ["Hello world"]
+
+@pytest.mark.parametrize("kind", ["question", "permission"])
+def test_attention_clears_durably_and_new_question_still_needs_user(project, kind):
+    sid, _, box = setup(project)
+    data = permission() if kind == "permission" else question()
+    mid = box.send(AGENT, data)["message"]["id"]
+    assert chat._session_attention(chat.session(project, sid))["pending_user"] == 1
+    # Prime the summary cache before the response is stored.
+    assert box.summary()["pending_user"] == 1
+    payload = ({"idempotency_key": "approve", "outcome": "approve", "action_hash": data["payload"]["action_hash"]}
+               if kind == "permission" else answer())
+    box.reply(mid, USER, payload)
+    assert box.summary()["pending_user"] == 0
+    assert chat.session_state(project, sid)["requests"][0]["mailbox"]["pending_user"] == 0
+    assert chat._session_attention(chat.session(project, sid))["pending_user"] == 0
+    restarted = Mailbox(project, sid, "r0001")
+    assert restarted.summary()["pending_user"] == 0
+    restarted.send(AGENT, question("new-question"))
+    assert chat._session_attention(chat.session(project, sid))["pending_user"] == 1
+
+@pytest.mark.parametrize("archive_state", ["changed", "foreign_attempt"])
+def test_attention_recovery_does_not_cancel_without_matching_archive_proof(project, archive_state):
+    from alfrd import orchestration as proto
+    sid, _, box = setup(project)
+    store = chat.session(project, sid)
+    mid = box.send(AGENT, question())["message"]["id"]
+    rec = store.task("r0001.a")
+    unit = "foreign-attempt" if archive_state == "foreign_attempt" else AGENT["unit_id"]
+    rec["units"] = list(set([*rec["units"], unit]))
+    rel = f".alfrd/plans/{store.plan_id}/handoffs/{unit}/response.md"
+    path = project / rel; path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result("blocked", blockers=[{
+        "id": "access", "reason": "needs folder", "needs": "user", "mailbox_message_id": mid,
+        "requires": {"folders": [str(project)]}}])["json"]))
+    rec["result"] = {"artifacts": [proto.make_ref(project, rel)]}; store.save_task(rec)
+    store.save_decision({"id": "r0001.a.access", "task": rec["row"], "request": "r0001", "blocker": "access",
+                         "status": "resolved", "requires": {"folders": [str(project)]}})
+    if archive_state == "changed": path.write_text(path.read_text() + "changed")
+    chat.process_mailbox(store)
+    assert Mailbox(project, sid, "r0001").summary()["pending_user"] == 1
+    assert "superseded_mailbox_message_id" not in store.decision("r0001.a.access")

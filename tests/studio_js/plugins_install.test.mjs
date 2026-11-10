@@ -15,7 +15,7 @@ const catalog = () => ({ catalog_url: "file:///tmp/catalog.json", name: "Local",
   { id: "update", title: "Update", latest: "2", installed: "1", update_available: true, kinds: ["converter"], compatible: true, missing_bin: ["gs"] },
   { id: "future", title: "Future", latest: "3", kinds: ["panel"], compatible: false, alfrd_api: ">=3" },
 ] });
-const ui = load(["plugins_install_dialog.js", "plugins_browse.js"], "filterCatalog,renderCatalog,validSource");
+const ui = load(["plugins_install_modal.js", "plugins_browse.js"], "filterCatalog,renderCatalog,validSource");
 
 test("catalog shows install/update/current/incompatible/missing-binary states", () => {
   const html = ui.renderCatalog(catalog());

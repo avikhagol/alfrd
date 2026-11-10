@@ -17,14 +17,15 @@ MAX_RAW_BYTES = 20 * 1024 * 1024
 _VERDICTS = ("verified", "failed")
 
 
-def _evidence(rec: Mapping[str, Any], index: int, text: str) -> str:
-    """``verified``/``failed`` only when the task's result carries evidence naming this criterion."""
+def _evidence(rec: Mapping[str, Any], index: int, text: str) -> dict[str, str]:
+    """A verdict and optional human-readable evidence naming this criterion."""
     for item in (rec.get("result") or {}).get("evidence") or []:
         if not isinstance(item, Mapping) or item.get("verdict") not in _VERDICTS:
             continue
         if item.get("criterion") in (index, text):
-            return item["verdict"]
-    return "unverified"
+            return {"status": item["verdict"],
+                    **({"evidence": item["evidence"]} if isinstance(item.get("evidence"), str) else {})}
+    return {"status": "unverified"}
 
 
 def _criteria(tasks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -32,7 +33,7 @@ def _criteria(tasks: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     for rec in tasks:
         for index, text in enumerate((rec.get("task") or {}).get("acceptance_criteria") or []):
             out.append({"id": f"{rec['row']}.c{index + 1}", "text": str(text), "task_rows": [rec["row"]],
-                        "status": _evidence(rec, index, str(text))})
+                        **_evidence(rec, index, str(text))})
     return out
 
 

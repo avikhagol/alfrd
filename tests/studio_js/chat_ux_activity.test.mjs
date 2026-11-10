@@ -155,8 +155,8 @@ test("island DOM, bounded shared polling, disclosure persistence and narrow layo
         await mkdir(process.env.ALFRD_ACTIVITY_SCREENSHOTS, { recursive: true });
         await page.screenshot({ path: `${process.env.ALFRD_ACTIVITY_SCREENSHOTS}/${theme}-${width}.png`, fullPage: true });
       }
-      if (width === 1440) assert.ok(await page.locator("#activity .chat-task-island").evaluateAll((els) => new Set(els.map((e) => e.getBoundingClientRect().top)).size === 1), "three tasks compare on one row");
-      else assert.ok(await page.locator("#activity .chat-task-island").evaluateAll((els) => els.every((e) => e.getBoundingClientRect().height < 650)), "closed output allows next task within transcript height");
+      assert.ok(await page.locator("#activity .chat-task-island").evaluateAll((els) => els.every((e, i) => !i || e.getBoundingClientRect().top >= els[i - 1].getBoundingClientRect().bottom)), "task cards follow the transcript vertically");
+      assert.ok(await page.locator("#activity .chat-task-island").evaluateAll((els) => els.every((e) => e.getBoundingClientRect().height < 650)), "closed output allows next task within transcript height");
     }
   }
   await page.evaluate(() => { finished = true; calls.length = 0; api.kick(); });

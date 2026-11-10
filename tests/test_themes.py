@@ -115,7 +115,7 @@ def test_theme_link_order_and_static_export(tmp_path):
     assert html.index('href="css/studio.css"') < html.index('href="theme.css"')
     assert '<meta name="color-scheme"' not in html
     landing = (web_root().parent / "gui/templates/auth/landing.htm").read_text()
-    assert landing.index('href="/studio/css/studio.css"') < landing.index('href="/studio/theme.css"')
+    assert landing.index('href="{{ request.script_root }}/studio/css/studio.css"') < landing.index('href="{{ request.script_root }}/studio/theme.css"')
     exported = export_site(tmp_path / "exported")
     assert (exported / "theme.css").read_text() == (web_root() / "theme.css").read_text()
     assert "--chat-bg: #090D14" in (exported / "theme.css").read_text()

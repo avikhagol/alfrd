@@ -66,7 +66,7 @@ test("HTML outlines precede data, replace each region in place, and defer closed
     assert.equal(await page.locator("#chat-run").isVisible(), false, "empty snapshot releases the loading Run line");
     assert.ok(after.y <= before.y, "empty Run space returns to the transcript");
     assert.equal(await page.evaluate(() => logNode === document.querySelector("#chat-log") && listNode === document.querySelector("#chat-list") && roots.every((el) => el.isConnected)), true);
-    const deferred = ["metadata.js", "results.js", "alfrd_config.js", "skills_explorer.js", "goals_tab.js", "graph_view.js"];
+    const deferred = ["details.js", "results.js", "alfrd_config.js", "skills_explorer.js", "goals_tab.js", "graph_view.js"];
     for (const name of deferred) assert.equal(paths.some((p) => p.endsWith(`/${name}`)), false, `${name} stays deferred`);
     assert.equal(paths.some((p) => /\/(goals|overview)$/.test(p)), false, "no hidden inspector data");
     await page.getByRole("button", { name: "Show or hide the inspector", exact: true }).click();

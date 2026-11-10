@@ -1,6 +1,6 @@
 // New project wizard (Projects → New project): pure helpers for its steps, agent-command checkboxes,
 // turn order and review summary. The rows come from GET /studio/entrypoint-options; no option is
-// hard-coded here. agent_dialog.js renders the steps; tests/studio_js/create_wizard.test.mjs covers these.
+// hard-coded here. agent_modal.js renders the steps; tests/studio_js/create_wizard.test.mjs covers these.
 import { esc } from "../utils/dom.js";
 
 export const STEPS = [

@@ -75,26 +75,26 @@ _STATIC_IMPORT = re.compile(
 )
 #: Modules the Studio loads with ``import()`` on first use; never part of startup.
 LAZY_MODULES = {
-    "js/components/canvas.js", "js/components/logs.js", "js/components/metadata.js",
+    "js/components/canvas.js", "js/components/streams.js", "js/components/details.js",
     "js/components/results.js", "js/components/alfrd_config.js",
     "js/components/folder_browser.js", "js/data/paths.js",
-    "js/components/agent_dialog.js",
-    "js/components/agent_settings_dialog.js", "js/data/agent_settings.js",
+    "js/components/agent_modal.js",
+    "js/components/agent_settings_modal.js", "js/data/agent_settings.js",
     "js/components/loop_results.js", "js/data/loop_results.js",
-    "js/components/diagnostics.js", "js/components/targets_dialog.js", "js/data/targets.js",
+    "js/components/diagnostics.js", "js/components/targets_modal.js", "js/data/targets.js",
     "js/components/step_picker.js", "js/data/step_select.js", "js/components/history.js",
     "js/components/palette.js", "js/data/fuzzy.js", "js/components/usage_view.js",
     "js/components/search_view.js", "js/components/notes_panel.js", "js/data/entities.js",
-    "js/components/panels.js", "js/components/metadata_avica.js", "js/components/viewers.js",
-    "js/components/removal_dialog.js", "js/components/file_autocomplete.js",
+    "js/components/panels.js", "js/components/details_avica.js", "js/components/viewers.js",
+    "js/components/removal_modal.js", "js/components/file_autocomplete.js",
     "js/data/run_grid.js", "js/components/jobs_tray.js",
-    "js/components/folder_create.js", "js/components/settings_dialog.js", "js/utils/keep_view.js",
+    "js/components/folder_create.js", "js/components/settings_modal.js", "js/utils/keep_view.js",
     "js/components/canvas_ops.js", "js/components/shortcuts.js",
     "js/data/run_history.js",
     "js/components/yaml_form.js", "js/data/yaml_form.js", "js/data/demo.js",
     "js/data/folder_scan.js", "js/components/notifications.js",
-    "js/components/settings_plugins_view.js", "js/components/plugin_jobs.js", "js/components/plugins_install_dialog.js", "js/components/plugins_browse.js", "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
-    "js/components/plugin_config.js", "js/components/plugin_dialogs.js", "js/data/presence.js",
+    "js/components/settings_plugins_view.js", "js/components/plugin_jobs.js", "js/components/plugins_install_modal.js", "js/components/plugins_browse.js", "js/components/plugin_api.js", "js/components/settings_plugins.js", "js/vendor/purify.es.mjs",
+    "js/components/plugin_config.js", "js/components/plugin_modals.js", "js/data/presence.js",
     "js/components/plugin_pages.js", "js/components/file_explorer.js", "js/components/plugin_applicability.js",
     "js/components/chat_view.js", "js/components/chat_settings.js", "js/components/graph_view.js", "js/data/chat.js",
     "js/components/chat_dock.js", "js/components/chat_composer.js", "js/components/chat_runs.js",
@@ -115,7 +115,7 @@ def _startup_files() -> set[Path]:
         for match in _STATIC_IMPORT.finditer(path.read_text(encoding="utf-8")):
             todo.append(path.parent / (match.group(1) or match.group(2)))
     return seen | {(root / "index.html").resolve(), (root / "css" / "studio.css").resolve(),
-                   (root / "css" / "loading.css").resolve(), (root / "js" / "loading-shell.js").resolve(),
+                   (root / "css" / "startup.css").resolve(), (root / "js" / "startup-shell.js").resolve(),
                    (root / "css" / "themes" / "obsidian-orbit" / "theme.css").resolve()}
 
 
@@ -280,3 +280,25 @@ def test_js_parsers_with_node():
         timeout=255,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_web_app_manifest_deployment_identity(studio_app):
+    client = studio_app[0].test_client()
+    for prefix in ("", "/alfrd"):
+        response = client.get("/studio/assets/site.webmanifest", environ_overrides={"SCRIPT_NAME": prefix})
+        assert response.status_code == 200
+        manifest = response.get_json()
+        assert manifest["id"] == prefix + "/studio/"
+        assert manifest["scope"] == manifest["start_url"] == "../"
+        assert manifest["display"] == "standalone"
+        assert "token" not in response.get_data(as_text=True)
+        assert response.headers["Cache-Control"] == "private, no-store"
+
+
+def test_static_manifest_identity_uses_hosting_base(tmp_path):
+    import json
+    from alfrd.web import export_site
+    target = export_site(tmp_path / "export", base_path="/demo/alfrd/")
+    manifest = json.loads((target / "assets/site.webmanifest").read_text())
+    assert manifest["id"] == "/demo/alfrd/"
+    assert manifest["scope"] == manifest["start_url"] == "../"

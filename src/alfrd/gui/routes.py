@@ -118,7 +118,7 @@ def version():
     return {"version": __version__}
 
 
-@system.get("/login")
+@system.route("/login", methods=["GET", "POST"])
 def login():
     """Public page telling a browser without the token how to get the access link."""
     from alfrd.gui.auth import landing_page

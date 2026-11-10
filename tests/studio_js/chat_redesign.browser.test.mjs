@@ -5,7 +5,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 let chromium;
-try { ({ chromium } = await import(process.env.ALFRD_PLAYWRIGHT || "playwright")); } catch { /* optional */ }
+try { chromium = (await import(process.env.ALFRD_PLAYWRIGHT || "playwright"))[process.env.ALFRD_BROWSER || "chromium"]; } catch { /* optional */ }
 const web = fileURLToPath(new URL("../../src/alfrd/web/", import.meta.url));
 
 test("redesigned chat: both themes, responsive inspector, history, live tails and dock", { skip: !chromium && "Playwright not available" }, async (t) => {
@@ -22,12 +22,13 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
   t.after(() => new Promise((done) => { service.close(done); service.closeAllConnections(); }));
   const browser = await chromium.launch({ ...(process.env.ALFRD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.ALFRD_CHROMIUM_EXECUTABLE } : {}) });
   t.after(() => browser.close());
-  const open = async (theme, width, dock = false) => {
+  const open = async (theme, width, dock = false, savedInspector = false) => {
     const page = await browser.newPage({ viewport: { width, height: 980 } });
     page.setDefaultTimeout(7000);
     page.on("pageerror", (e) => console.error(e.stack));
     await page.goto(`http://127.0.0.1:${service.address().port}/?theme=${theme}`);
-    await page.evaluate(async (dock) => {
+    await page.evaluate(async ({ dock, savedInspector }) => {
+      if (savedInspector) localStorage.setItem("alfrd-studio:chat.inspector", "1");
       const { server } = await import("/js/data/server.js");
       const { DEFAULTS } = await import("/js/data/chat.js");
       const ago = (s) => new Date(Date.now() - s * 1000).toISOString();
@@ -80,17 +81,35 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       } };
       window.refresh = () => ctx.update();
       await mod.render(host, ctx, dock ? { width: Math.min(innerWidth, 500), isOpen: () => true } : undefined);
-    }, dock);
+    }, { dock, savedInspector });
     await page.locator('[data-key="run:r2"] .chat-run-row').first().waitFor();
     return page;
   };
+  for (const width of [1400, 1100, 900, 700]) await t.test(`inspector dismissal ${width}px`, async () => {
+    const page = await open("daylight-orbit", width, false, true); t.after(() => page.close());
+    const panel = page.locator("#chat-inspector"), toggle = page.locator("[data-chat=inspect]");
+    if (width > 1280) await panel.getByRole("button", { name: "Close inspector", exact: true }).click();
+    assert.equal(await panel.isVisible(), false, "narrow mount ignores saved open preference");
+    for (const method of ["button", "escape", ...(width <= 1280 ? ["backdrop"] : [])]) {
+      await toggle.click(); await panel.waitFor({ state: "visible" });
+      if (method === "button") await panel.getByRole("button", { name: "Close inspector", exact: true }).click();
+      else if (method === "escape") { await panel.focus(); await panel.press("Escape"); }
+      else await page.locator(".chat-sheet-backdrop").click({ position: { x: 2, y: 2 } });
+      assert.equal(await panel.isVisible(), false);
+      assert.equal(await page.locator(".chat-sheet-backdrop").count(), 0);
+      assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+      await page.locator("#chat-input").fill("Can use the conversation");
+      assert.equal(await page.locator("#chat-input").evaluate((e) => e.closest("[inert]") === null), true);
+    }
+  });
   for (const theme of ["obsidian-orbit", "daylight-orbit"]) await t.test(`Run card states: ${theme}`, async () => {
     const page = await open(theme, 1440); t.after(() => page.close());
     await page.evaluate(() => { document.getElementById("home").style.height = "100vh"; window.scrollTo(0, 0); });
     const run = page.locator("#chat-run");
     assert.match(await run.innerText(), /Redesign the chat.*Needs you.*0\/2 done/s);
     assert.equal(await page.locator("[data-request-scope], [data-chat=promote], #promote-save").count(), 0);
-    assert.equal(await run.locator("button").count(), 0, "Run summary is informational");
+    assert.equal(await run.locator("button").count(), 1);
+    assert.equal(await run.getByRole("button", { name: /items need you$/ }).count(), 1);
     const update = async (state) => {
       await page.evaluate((state) => {
         const req = fixture.requests.find((r) => r.id === "r2"); fixture.requests = [req];
@@ -151,6 +170,20 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
       await page.evaluate(() => { fixture.requests[1].text = "Updated request label"; window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })); });
       await page.waitForFunction(() => document.querySelector("#chat-run").textContent.includes("Updated request label"));
     }
+    await page.evaluate((id) => { document.activeElement.blur(); document.getElementById(`${id}-log`).scrollTop = 250; }, id);
+    await page.evaluate((id) => {
+      window.pollWrites = [];
+      window.pollObserver = new MutationObserver((m) => pollWrites.push(...m));
+      pollObserver.observe(document.getElementById(`${id}-log`), { attributes: true, attributeFilter: ["aria-busy"] });
+      pollObserver.observe(kept.first, { subtree: true, childList: true, attributes: true, characterData: true });
+    }, id);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })));
+      await page.waitForTimeout(400);
+      assert.equal(await page.locator(`#${id}-log`).evaluate((el) => el.scrollTop), 250);
+      assert.equal(await page.evaluate(() => kept.first === document.querySelector('[data-key="m:long-1"]')), true);
+    }
+    assert.equal(await page.evaluate(() => { pollObserver.disconnect(); return pollWrites.length; }), 0, "identical snapshot polls write no stable message/log DOM");
     // New messages retain a reader's offset; only a reader already at the bottom follows.
     await page.evaluate((id) => { document.getElementById(`${id}-log`).scrollTop = 250; }, id);
     await page.evaluate(() => { fixture.messages.push({ id: "added-away", role: "user", request: "r2", text: "New while reading" }); window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project: "p", events: [{ plan: "chat-s" }] } })); });
@@ -246,7 +279,9 @@ test("redesigned chat: both themes, responsive inspector, history, live tails an
     const page = await open("daylight-orbit", 1024); t.after(() => page.close());
     const run = page.locator('[data-key="run:r2"] .chat-details');
     const team = page.locator('[data-key="run:r2"] .chat-team');
-    await run.locator(':scope > summary').click();
+    // This test checks mailbox placement with Details closed, independently of
+    // asynchronous activity/mailbox layout settling around a native summary click.
+    await run.evaluate((el) => { el.open = false; });
     await team.waitFor();
     assert.equal(await run.getAttribute('open'), null, 'team disclosure is visible with activity Details closed');
     assert.equal(await team.getAttribute('open'), null, 'team mail starts collapsed beside activity Details');

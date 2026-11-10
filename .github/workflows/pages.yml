@@ -45,6 +45,7 @@ jobs:
           rsync -a website/public/ _site/
           cp src/alfrd/schemas/project-manifest-v1.schema.json _site/schemas/
           cmp src/alfrd/schemas/project-manifest-v1.schema.json _site/schemas/project-manifest-v1.schema.json
+          node -e 'const fs = require("fs"); const p = "_site/assets/site.webmanifest"; const m = JSON.parse(fs.readFileSync(p)); m.id = "/"; fs.writeFileSync(p, JSON.stringify(m, null, 2));'
           touch _site/.nojekyll
 
       - uses: actions/configure-pages@v5

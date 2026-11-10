@@ -96,6 +96,8 @@ def enforce_lockdown():
         return None
     from flask import jsonify
 
+    if request.endpoint == "system.login":
+        return None  # credential exchange has its own nonce/origin gate
     categories = lockdown_categories()
     message = lockdown_refusal(categories)
     if message is None:
@@ -163,6 +165,8 @@ def protect_mutation() -> None:
     # resolve to an unsafe-method handler.
     if request.url_rule is None:
         return
+    if request.endpoint == "system.login":
+        return  # exact login endpoint validates its own nonce, origin and credential
     require_local_csrf()
 
 

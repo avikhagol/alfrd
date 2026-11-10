@@ -95,7 +95,7 @@ test("graph menu: every item, shared triggers, keyboard, viewport and Markdown",
         await page.locator('.file-markdown h1').waitFor();
         assert.equal(await page.locator('.file-markdown h1').innerText(), 'Archived document');
         assert.equal(await page.locator('.file-markdown strong').innerText(), 'Markdown content');
-        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        await page.getByRole('button', { name: 'Close file', exact: true }).click();
       } else await page.waitForFunction(() => document.querySelector('[data-gv-menu]').hidden);
     }
     assert.deepEqual(await page.evaluate(() => window.calls), [['log', '.alfrd/plans/chat-test/logs/u1.log'], ['files', 'a']]);

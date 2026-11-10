@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 let chromium;
-try { ({ chromium } = await import(process.env.ALFRD_PLAYWRIGHT || "playwright")); } catch { /* optional */ }
+try { chromium = (await import(process.env.ALFRD_PLAYWRIGHT || "playwright"))[process.env.ALFRD_BROWSER || "chromium"]; } catch { /* optional */ }
 const web = fileURLToPath(new URL("../../src/alfrd/web/", import.meta.url));
 test("refresh patches only changed markup and preserves native and project dropdowns", { skip: !chromium && "Playwright unavailable" }, async (t) => {
   const service = createServer(async (req, res) => {
@@ -44,6 +44,25 @@ test("refresh patches only changed markup and preserves native and project dropd
     const latestWins = panel.querySelector("#changed").textContent === "Latest";
     observer.disconnect(); return [noWrites, patched, held, flushed, latestWins];
   }), Array(5).fill(true));
+  const appSource = await readFile(resolve(web, "js/app.js"), "utf8");
+  assert.deepEqual(await page.evaluate(async (source) => {
+    const { refreshHTML } = await import("/js/utils/refresh.js");
+    const footer = document.createElement("div"); footer.id = "foot-mode";
+    footer.innerHTML = '<span class="sys"><span></span><span></span></span>'; document.body.append(footer);
+    const fragment = source.slice(source.indexOf('const SYSTEM_HINT ='), source.indexOf('function startSystemPoll()'));
+    let cpu = 20;
+    const poll = new Function("server", "state", "$", "refreshHTML", "systemHtml", "systemTitle", "systemTimer", fragment + "; return pollSystem;")(
+      { system: async () => ({ cpu, mem_total: 8 * 1024 ** 3, mem_used: 4 * 1024 ** 3 }) }, { mode: "server" }, (sel) => document.querySelector(sel), refreshHTML, "", "", null);
+    await poll();
+    const meter = footer.querySelector('[aria-label="CPU"]'), bar = meter.querySelector("b");
+    const records = [], observer = new MutationObserver((m) => records.push(...m));
+    observer.observe(footer, { subtree: true, attributes: true, childList: true, characterData: true });
+    for (let cycle = 0; cycle < 3; cycle++) await poll();
+    await Promise.resolve(); const unchanged = records.length === 0;
+    cpu = 60; await poll(); await Promise.resolve();
+    const updated = meter === footer.querySelector('[aria-label="CPU"]') && bar === meter.querySelector("b") && meter.getAttribute("aria-valuenow") === "60";
+    observer.disconnect(); return [unchanged, updated];
+  }, appSource), [true, true]);
   await page.evaluate(async () => {
     const { mountPicker } = await import("/js/components/picker.js");
     window.items = Array.from({ length: 30 }, (_, i) => ({ value: `p${i}`, label: `Project ${i}` }));

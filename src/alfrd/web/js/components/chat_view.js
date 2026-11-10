@@ -1,4 +1,4 @@
-import { skeletonRows } from "../utils/loading.js";
+import { skeletonRows } from "../utils/startup.js";
 import { refreshHTML, refreshProtected, sourceHTML } from "../utils/refresh.js";
 import { mountPanelResize } from './panel_resize.js';
 // Chat section (#/chat/<session>?p=<project>): sessions, transcript, composer with @agent
@@ -193,7 +193,7 @@ function leave() {
 
 function render(el, ctx) {
   if (destroyed) return; suspended = false;
-  loadCss("css/loading.css");
+  loadCss("css/startup.css");
   loadCss("css/chat.css");
   ctxRef = ctx;
   if (ctx.state.mode !== "server") { host = null; el.innerHTML = `<div class="empty chat-empty"><h2>Chat</h2><p role="status">Chat needs <code>alfrd serve</code>: agents run on the server.</p></div>`; delete el.dataset.chat; return; }
@@ -240,7 +240,7 @@ function syncSheets() {
   panelResizers.forEach((r) => r.sync());
   if (insp?.isOpen()) drawInspector(ctxRef);
   else { goals?.stop(); filesModule?.leaveFiles(); filesEpoch++; }
-  if (overlay && !inspectorSheet) { closeSessions(); inspectorSheet = chatSheet($("#chat-inspector", host), () => { insp.close(); syncSheets(); }); }
+  if (overlay && !inspectorSheet) { closeSessions(); inspectorSheet = chatSheet($("#chat-inspector", host), () => { insp.close(); syncSheets(); }, { backdrop: true }); }
   else if (!overlay && inspectorSheet) { inspectorSheet({ restore: false }); inspectorSheet = null; }
 }
 function openInspector() { closeSessions(); insp?.open(); syncSheets(); }
@@ -280,7 +280,7 @@ function mount(el, ctx, p) {
       ${composerHtml("chat", { attachments: true })}
     </section>
     <aside class="chat-side" id="chat-inspector" tabindex="-1" aria-label="Inspector: request progress, decisions and tasks"><div class="chat-inspector-resize"></div><div class="chat-inspector-content">
-      <div class="chat-scope-bar"><button type="button" class="btn sm ghost chat-scope" data-chat="request-scope" aria-haspopup="menu" aria-expanded="false" aria-label="Request scope: latest request">Request scope · Latest request</button></div>
+      <div class="chat-scope-bar"><button type="button" class="icon-btn sm" data-chat="close-inspector" aria-label="Close inspector" title="Close inspector (Esc)">${icon("close")}</button><button type="button" class="btn sm ghost chat-scope" data-chat="request-scope" aria-haspopup="menu" aria-expanded="false" aria-label="Request scope: latest request">Request scope · Latest request</button></div>
       <section class="chat-insp" id="chat-insp" aria-label="Graph, files and goals"><div id="chat-insp-tabs">${tabsHtml()}</div></section>
       <section id="chat-progress" aria-labelledby="chat-progress-h"></section>
       <section id="chat-decisions" aria-labelledby="chat-decisions-h"></section>
@@ -359,6 +359,11 @@ async function loadSession(force = true) {
     if (!data || suspended || destroyed) return false;
     if (gen !== S.gen || p !== S.project || sid !== S.sid) return false; // a newer request or another session won
     if (!S.revisionReset && staleState(S.data, data)) { S.loading = false; return false; }
+    // A heartbeat can return a full identical snapshot (older servers, forced refresh).
+    // Do not enter renderers or kick activity subscriptions when nothing changed.
+    if (!S.error && !S.revisionReset && S.data && JSON.stringify(S.data) === JSON.stringify(data)) {
+      lastLoaded = Date.now(); S.loading = false; return true;
+    }
     const was = hasActivity(S.data);
     S.data = data; S.revisionReset = false; S.error = null; lastLoaded = Date.now();
     accepted = true;
@@ -790,7 +795,7 @@ async function viewPart(row, unit, part) {
   const t = S.open.get(row), a = t?.attempts?.find((x) => x.unit === unit), c = t?.parts[`${unit}|${part}`];
   if (!a || !c) return;
   try {
-    const { openFull } = await import("./logview.js");
+    const { openFull } = await import("./tails.js");
     await openFull(ctxRef, part === "prompt" ? "Prompt" : "Reply", c.content,
       c.eof ? row : `${row} · Partial text; Load more in the transcript`, null,
       { unit, attempt: a.attempt, latest: !t.attempts.some((x) => x.attempt > a.attempt) });
@@ -900,6 +905,7 @@ function bind(el) {
     else if (a === "rename-cancel") endRename(S.renaming);
     else if (a === "delete") deleteSession(b.dataset.sidAct);
     else if (a === "close-sessions") closeSessions();
+    else if (a === "close-inspector") { insp?.close(); syncSheets(); }
     else if (a === "collapse") setCollapsed(true);
     else if (a === "sessions" && wide() && $(".chat", host).classList.contains("chat-sessions-collapsed")) setCollapsed(false);
     else if (a === "refresh") { server.invalidateChatProbes(); loadSession(); loadSessions(); loadSettings(); }
@@ -935,7 +941,7 @@ function bind(el) {
     else if (a === "sessions") {
       const open = $(".chat", host).classList.toggle("chat-sessions-open");
       b.setAttribute("aria-expanded", String(open));
-      if (open) { insp?.close({ restoreFocus: false }); syncSheets(); sessionSheet = chatSheet($(".chat-sessions", host), closeSessions); }
+      if (open) { insp?.close({ restoreFocus: false }); syncSheets(); sessionSheet = chatSheet($(".chat-sessions", host), closeSessions, { backdrop: true }); }
       else closeSessions();
     }
     else if (a === "close-files") closeFilesView();
@@ -963,7 +969,7 @@ function bind(el) {
     const err = form.querySelector("[data-decision-error]");
     if (body.error) { err.textContent = body.error; return; }
     const button = form.querySelector("button[type=submit]"); button.disabled = true;
-    try { await post(S.project, `/sessions/${encodeURIComponent(S.sid)}/decisions/${encodeURIComponent(d.id)}`, body); ctxRef.toast("Decision sent; the task continues", "ok"); S.keys.decisions = null; loadSession(); }
+    try { await post(S.project, `/sessions/${encodeURIComponent(S.sid)}/decisions/${encodeURIComponent(d.id)}`, body); ctxRef.toast("Decision sent; the task continues", "ok"); S.keys.decisions = null; loadSession(); loadSessions(); }
     catch (error) { err.textContent = error.message; button.disabled = false; }
   });
   el.addEventListener("keydown", (e) => {
@@ -985,7 +991,7 @@ async function delegateDecision(id, button) {
   try {
     const out = await post(S.project, `/sessions/${encodeURIComponent(S.sid)}/decisions/${encodeURIComponent(id)}`, { delegate: true });
     ctxRef.toast(out?.decision?.needs === "user" ? "The orchestrator's replans ran out; this decision stays with you" : "The orchestrator will decide; its choice shows in the chat", out?.decision?.needs === "user" ? "warn" : "ok");
-    S.keys.decisions = null; loadSession();
+    S.keys.decisions = null; loadSession(); loadSessions();
   } catch (error) { if (err) err.textContent = error.message; button.disabled = false; }
 }
 

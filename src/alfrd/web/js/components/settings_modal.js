@@ -117,7 +117,7 @@ export function openSettings(ctx, app) {
     $("#set-clear", root).addEventListener("click", async () => {
       if (!confirm("Clear all saved Studio data?\n\nUnsaved task drafts and notes will be removed, with imported data, filters and folder attachments. Project files are not touched.")) return;
       // Demo mode stays on this page: the tab's in-memory drafts must go as well.
-      try { (await import("./agent_dialog.js")).forgetTaskDrafts(); } catch { /* never loaded: no drafts in memory */ }
+      try { (await import("./agent_modal.js")).forgetTaskDrafts(); } catch { /* never loaded: no drafts in memory */ }
       app.resetAttachments();
       storage.clear();
       app.forgetFolderHandles();
@@ -238,7 +238,7 @@ async function drawProjects(ctx, app, root) {
     const name = b.dataset.forget;
     const label = b.dataset.label || name;
     try {
-      const { openRemoval } = await import("./removal_dialog.js");
+      const { openRemoval } = await import("./removal_modal.js");
       await openRemoval(ctx, { key: name, label, root: b.closest(".set-proj")?.querySelector(".set-proj-p")?.title || "", onDone: async (res) => {
         if (!res?.deleted) ctx.log("info", `Project ${name} forgotten (runtime database only).`, "server");
         app.removeWorkspace(name);

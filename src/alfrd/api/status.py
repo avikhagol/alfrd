@@ -58,7 +58,7 @@ class StatusNotFound(LookupError):
 
 
 def strip_ansi(text: str) -> str:
-    """Same rule as ``logview.js`` ``stripAnsi``: CSI, OSC and two-byte escapes."""
+    """Same rule as ``tails.js`` ``stripAnsi``: CSI, OSC and two-byte escapes."""
     return _ANSI.sub("", text) if "\x1b" in text else text
 
 

@@ -5,7 +5,7 @@ import { $, on, esc, icon, hms, short, when, elapsed, loadUi, saveUi } from "../
 import { STEP_STATUS } from "../data/model.js";
 import { notesAt, noteMark } from "../data/notes.js";
 import { readFiles, buildBundle } from "../data/importers.js";
-import { resultStats, attemptsOf } from "../data/results_stats.js";
+import { resultStats, attemptsOf } from "../data/results_summary.js";
 import { parseYaml } from "../utils/yaml_parser.js";
 import { scoped } from "../data/workspace.js";
 

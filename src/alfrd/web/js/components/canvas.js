@@ -11,7 +11,7 @@ import { edgePath, NODE_H } from "../utils/graph_geometry.js";
 import { STEP_STATUS } from "../data/model.js";
 import { server } from "../data/server.js";
 import { targetCodes } from "./attach.js";
-import { logItem, logForTarget, projectLogs, zoomablePre } from "./logview.js";
+import { logItem, logForTarget, projectLogs, zoomablePre } from "./tails.js";
 import { scoped } from "../data/workspace.js";
 import { RUN_STATUS, CELL, activePlan, cellMenu, countsLine, loadPlan, logButtons, planAct, planOf, planOverlay, plansAvailable, releasePlanPin, renderSchedule, runTargets, usageButton, withChatRuns } from "./plans.js";
 

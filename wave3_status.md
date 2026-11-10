@@ -33,7 +33,7 @@ Studio JS: `node --test tests/studio_js/*.test.mjs` -> 440 tests, 421 pass, 1 fa
 - JS `notifications.test.mjs`: "app route selects the linked project before opening its run and deduplicates rendering" (`shown is not defined`; the same root cause as `test_js_parsers_with_node`).
 
 ### Resolved since 74c4eb4
-- `test_lazy_modules_are_not_imported_statically`: `logview.js` now imports `viewers.js` dynamically in `openFull`, and both callers await it (6b52b73).
+- `test_lazy_modules_are_not_imported_statically`: `tails.js` now imports `viewers.js` dynamically in `openFull`, and both callers await it (6b52b73).
 - `test_startup_payload_under_178kb_compressed`: the static import was the cause. Startup payload fell from 201717 to 197335 bytes gzip and the test passes.
 - `test_wheel_installs_and_public_imports_and_cli_work_outside_checkout`: not a wave-3 regression, so no code commit. See "Still failing" below.
 

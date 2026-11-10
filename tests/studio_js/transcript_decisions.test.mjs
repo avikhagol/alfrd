@@ -1,4 +1,4 @@
-// Inline decisions and the single Details disclosure (chat_thread.js, chat_mailbox.js,
+// Inline decisions and the single Details disclosure (chat_conversation.js, chat_mailbox.js,
 // chat_activity.js): a pending approval is on screen without opening anything, and one
 // Details per request holds the activity log, task outputs and raw protocol; team mail is separate.
 import test from "node:test";
@@ -14,7 +14,7 @@ class El {
 globalThis.document = { hidden: false, activeElement: null, addEventListener() {}, removeEventListener() {}, createElement: (t) => new El(t) };
 globalThis.window = { getSelection: () => "", addEventListener() {} };
 
-const { mountRequestLine } = await import("../../src/alfrd/web/js/components/chat_thread.js");
+const { mountRequestLine } = await import("../../src/alfrd/web/js/components/chat_conversation.js");
 const { mailCardHtml, decisionsFor } = await import("../../src/alfrd/web/js/components/chat_mailbox.js");
 const { sanitizeHtml } = await import("../../src/alfrd/web/js/components/chat_activity.js");
 
@@ -58,7 +58,7 @@ test("older requests read mail only once Details is opened", () => {
 
 test("exactly one Details disclosure per request; the permission hash and CSRF path are untouched", async () => {
   const dir = new URL("../../src/alfrd/web/js/components/", import.meta.url);
-  const src = Object.fromEntries(await Promise.all(["chat_activity", "chat_mailbox", "chat_thread"].map(async (f) => [f, await readFile(new URL(`${f}.js`, dir), "utf8")])));
+  const src = Object.fromEntries(await Promise.all(["chat_activity", "chat_mailbox", "chat_conversation"].map(async (f) => [f, await readFile(new URL(`${f}.js`, dir), "utf8")])));
   const opens = Object.values(src).join("\n").match(/<details class="chat-details"><summary>Details<\/summary>/g) || [];
   assert.equal(opens.length, 1, "one request Details template; output, raw, Usage and team disclosures are distinct");
   assert.match(src.chat_activity, /data-team-mailbox><\/section><details class="chat-details"><summary>Details<\/summary>[^`]*data-raw-protocol/, "team host precedes Details; attempts and raw protocol stay inside it");

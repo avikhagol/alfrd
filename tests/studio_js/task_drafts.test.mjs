@@ -20,7 +20,7 @@ globalThis.location ||= { origin: "http://localhost", protocol: "http:" };
 Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => {} } }, configurable: true });
 
 const { server } = await import("../../src/alfrd/web/js/data/server.js");
-const dialog = await import("../../src/alfrd/web/js/components/agent_dialog.js");
+const dialog = await import("../../src/alfrd/web/js/components/agent_modal.js");
 
 // ---- Fake modal: elements by id from the dialog HTML, with listeners and form state.
 const unescape = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
@@ -119,7 +119,7 @@ test("draft survives a page reload (fresh module, storage only)", async () => {
   await d.type("edited before reload");
   await wait(300); // debounced write
   assert.equal(stored().length, 1);
-  const reloaded = await import(`../../src/alfrd/web/js/components/agent_dialog.js?reload=${Date.now()}`);
+  const reloaded = await import(`../../src/alfrd/web/js/components/agent_modal.js?reload=${Date.now()}`);
   const again = await open("p1", "next", reloaded);
   assert.equal(again.text(), "edited before reload");
   assert.equal(again.banner(), true);

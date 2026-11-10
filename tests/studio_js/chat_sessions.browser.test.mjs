@@ -78,7 +78,12 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
     assert.equal(await menu.evaluate(el => el.open), false);
     assert.equal(await summary.evaluate(el => el === document.activeElement), true);
     // Programmatic opening also enforces exclusivity (including retained views).
-    await summary.click();
+    // Let this opening's native toggle finish before opening the second menu;
+    // otherwise its queued event can close the second menu first.
+    await menu.evaluate(el => new Promise(resolve => {
+      el.addEventListener('toggle', () => resolve(), { once: true });
+      el.open = true;
+    }));
     await page.evaluate(() => {
       const second = document.querySelector('.chat-session-menu').cloneNode(true);
       second.removeAttribute('open'); second.id = 'second-menu';

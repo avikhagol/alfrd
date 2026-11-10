@@ -48,7 +48,7 @@ export function mount(el, ctx) {
     load(ctx, project, select.value || null);
   });
   on(el, "click", "[data-loop-handoffs]", async (e, b) => {
-    try { await (await import("./agent_dialog.js")).openHandoffs(ctx, b.dataset.loopHandoffs, cache.get(b.dataset.loopHandoffs).status.plan.id, { unit: b.dataset.loopUnit }); }
+    try { await (await import("./agent_modal.js")).openHandoffs(ctx, b.dataset.loopHandoffs, cache.get(b.dataset.loopHandoffs).status.plan.id, { unit: b.dataset.loopUnit }); }
     catch (error) { ctx.toast(error.message, "fail"); }
   });
 }

@@ -10,11 +10,18 @@ export function filterSessions(sessions = [], query = "", needsOnly = false) {
 // One modal sheet at a time. Inert only siblings along the panel's ancestor path,
 // preserving pre-existing inert flags (including the Studio shell's own overlays).
 let releaseSheet = null;
-export function chatSheet(panel, close, { focus = true } = {}) {
+export function chatSheet(panel, close, { focus = true, backdrop = false } = {}) {
   if (releaseSheet) { const previous = releaseSheet; previous({ restore: false }); previous.close?.(); }
   const opener = document.activeElement, inert = [], role = panel.getAttribute("role");
   for (let node = panel; node.parentElement; node = node.parentElement) {
     for (const sibling of node.parentElement.children) if (sibling !== node && !sibling.inert) { sibling.inert = true; inert.push(sibling); }
+  }
+  const shade = backdrop ? document.createElement("div") : null;
+  if (shade) {
+    shade.className = "chat-sheet-backdrop";
+    shade.setAttribute("aria-hidden", "true");
+    panel.before(shade);
+    shade.addEventListener("click", () => close());
   }
   panel.setAttribute("role", "dialog"); panel.setAttribute("aria-modal", "true");
   const controls = () => [...panel.querySelectorAll('a[href],button,input,select,textarea,[tabindex]')].filter((n) => !n.disabled && n.tabIndex >= 0 && n.getClientRects().length);
@@ -31,6 +38,7 @@ export function chatSheet(panel, close, { focus = true } = {}) {
   if (focus) (controls()[0] || panel).focus();
   const release = ({ restore = true } = {}) => {
     if (releaseSheet !== release) return;
+    shade?.remove();
     panel.removeEventListener("keydown", key); inert.forEach((n) => { n.inert = false; });
     panel.removeAttribute("aria-modal");
     if (role) panel.setAttribute("role", role); else panel.removeAttribute("role");

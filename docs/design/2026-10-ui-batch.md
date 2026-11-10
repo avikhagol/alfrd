@@ -58,7 +58,7 @@ Esc cancels the inline entry first and returns focus to New folder; a subsequent
 
 ### T1.2 — Server picker everywhere
 
-**Locations:** `ctx.browseFolder` in `app.js`, `#create-browse`/`#create-folders` in `agent_dialog.js`, Import → Connect. The current create-project path already delegates to `ctx.browseFolder`, which mounts the server browser; consolidate and verify rather than introducing a second picker.
+**Locations:** `ctx.browseFolder` in `app.js`, `#create-browse`/`#create-folders` in `agent_modal.js`, Import → Connect. The current create-project path already delegates to `ctx.browseFolder`, which mounts the server browser; consolidate and verify rather than introducing a second picker.
 
 In server mode every folder Browse action uses `mountFolderBrowser` and `server.listFolders`. Never select the viewer's local machine as a server path, including when Studio is accessed through a tunnel. Use the current typed path as `start`, falling back to the existing server default when blank. An invalid path shows its error in the mounted picker with a way back to the last valid parent/default. Add a short helper **Folders on the ALFRD server** above the browser to make location clear.
 
@@ -96,7 +96,7 @@ States: **Loading projects…**; no projects **No connected projects yet.** with
 
 ### T2.1 — Preserve metadata disclosures and reading position
 
-**Locations:** every `<details>` emitted by `panels.js` (including text at line 46, files at line 76 and outer panel cards), and `metadata_avica.js` (section cards, metadata files and input files). Use existing `ui.open` section behavior as the pattern; do not replace native details.
+**Locations:** every `<details>` emitted by `panels.js` (including text at line 46, files at line 76 and outer panel cards), and `details_avica.js` (section cards, metadata files and input files). Use existing `ui.open` section behavior as the pattern; do not replace native details.
 
 Use a stable disclosure identity containing project identifier, workflow/view, panel identity, instance/workdir identity and canonical file `rel` (fallback name scoped to that instance). Outer cards use a section identity without a file. Include target/code where a project has several metadata contexts. Never use array position alone, status, bytes or modification time as a key: background changes must not change disclosure identity. Render a stable `data-detail-key` and restore explicit true **and false** values. Previously unvisited items use current defaults; reading one file must not open a same-named file elsewhere.
 
@@ -128,7 +128,7 @@ Preserve grid scrollLeft/scrollTop across polling, using stable project/run/grid
 
 ### T2.4 — Consistent log icon
 
-**Locations:** add `log` in `js/utils/dom.js`; replace log meanings in `jobs_tray.js`, `logview.js`, `overview.js`, `plans.js` and audit remaining terminal references under `web`.
+**Locations:** add `log` in `js/utils/dom.js`; replace log meanings in `jobs_tray.js`, `tails.js`, `overview.js`, `plans.js` and audit remaining terminal references under `web`.
 
 Use the current icon SVG wrapper/viewBox and stroke conventions. Inside a 24×24 viewBox, draw four rounded horizontal strokes at y=5,10,15,20, starting x=4 and ending x=20,16,20,13 respectively. This reads as a document/list of log entries at 16 px, without a command prompt glyph. Keep `terminal` for actual terminals. Log actions use `icon("log")`; accessible labels remain **View logs**, **Open run log**, **View target logs**, or contextual **Open log for [step]**. No color/style changes to existing affordances. Validate every known call site and grep all terminal references; a remaining terminal use must represent a terminal.
 
@@ -193,7 +193,7 @@ Loading: **Loading run history…** in the sheet; error: **Couldn’t load run h
 
 ### T4.1 — Recover edited text after any dialog closure
 
-**Location:** `openTask()` in `agent_dialog.js`, existing modal `beforeclose` path and UI storage helpers. This is a local browser draft, separate from task.md and its version history.
+**Location:** `openTask()` in `agent_modal.js`, existing modal `beforeclose` path and UI storage helpers. This is a local browser draft, separate from task.md and its version history.
 
 **Flow:** Open Task → edit → draft retained on every input → close by backdrop, Esc or Close → reopen same project/run → restored text + banner → continue editing → Save task → successful server save clears draft. Nothing writes to task.md or initial handoff before Save.
 
@@ -217,7 +217,7 @@ Tests cover backdrop, Esc and Close separately, reload recovery, project/run iso
 
 ## Developer handoff and verification
 
-1. Implement E2 disclosure/scroll/KPI fixes and log icon. Reuse existing metadata UI state owners; audit `metadata.js` as needed to capture DOM state around rendering.
+1. Implement E2 disclosure/scroll/KPI fixes and log icon. Reuse existing metadata UI state owners; audit `details.js` as needed to capture DOM state around rendering.
 2. Implement E4 draft persistence before changing surrounding modal flows. Protect existing hash conflicts.
 3. Implement E1: mkdir endpoint + guarded tests, shared selection/connect picker modes, sidebar persistence and Settings tabs/search.
 4. Implement E3 with explicit loop detection, run-ID-aware navigation and CSV/JSON history export; omit upload. Inspect `data/run_grid.js`, `loop_results.js` and existing storage/download utilities before extending them. Do not broaden backend scope beyond the requested mkdir/list addition.

@@ -175,6 +175,7 @@ async function loadSession(force = true) {
     if (!data) return false;
     if (gen !== D.gen || p !== D.project || sid !== D.sid) return false;
     if (staleState(D.data, data)) return false;
+    if (!D.error && D.data && JSON.stringify(D.data) === JSON.stringify(data)) return true;
     const was = hasActivity(D.data);
     D.data = data; D.error = "";
     accepted = true;
@@ -286,7 +287,7 @@ async function viewArtifact(ref) {
       if (!page.eof) ctxRef.toast("Partial text; Open full Chat for more", "warn");
       return openViewer(ctxRef, project, page.path, viewer, { text: page.content, mime: "text/markdown" });
     }
-    const { openFull } = await import("./logview.js");
+    const { openFull } = await import("./tails.js");
     await openFull(ctxRef, page.path, page.content, page.eof ? ref : `${ref} · Partial text; Open full Chat for more`, null, { reading: true });
   } catch (error) { ctxRef.toast(`Artifact: ${error.message}`, "fail"); }
 }

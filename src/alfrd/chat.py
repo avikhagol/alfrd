@@ -1919,7 +1919,10 @@ def _task_reply(runner, store: Session, conf, req, rec, unit, text: str) -> None
                                  **({"requires": blocker["requires"]} if blocker.get("requires") else {}),
                                  **({"repeat": rec["last_block"]["count"]} if repeat else {}),
                                  **({"delegated": "setting"} if delegated else {}),
-                                 **({"mailbox_message_id": mid} if mid else {})})
+                                 **({"mailbox_message_id": mid} if mid else {}),
+                                 **({"superseded_mailbox_message_id": blocker["mailbox_message_id"]}
+                                    if blocker.get("mailbox_message_id") and blocker.get("requires") else {})})
+            _cancel_superseded_mail(store, store.decision(did))
             ids.append(did)
         rec.update(status="needs_decision", decisions=list(dict.fromkeys([*rec.get("decisions", []), *ids])))
         store.save_task(rec)
@@ -2574,6 +2577,7 @@ def _resolve(runner, store: Session, req, did: str, choice: str | None, answer: 
     d.update(status="resolved", choice=choice, answer=answer, decided_by=by, resolved=now_iso(),
              **({"action": act} if act else {}))
     store.save_decision(d)
+    _cancel_superseded_mail(store, d)
     if by == "orchestrator" and d.get("delegated"):  # the user handed it over: tell them what was chosen
         store.add_message("system", f"The orchestrator decided for you on {d['task']}: "
                           f"{_clip(d.get('question') or d.get('reason'), 300)} → "
@@ -2728,6 +2732,43 @@ class _Offline:
         pass
 
 
+def _cancel_superseded_mail(store: Session, decision: Mapping[str, Any]) -> None:
+    """Sandbox grants replace mailbox requests; cancel only that obsolete request.
+
+    Read the recorded result as a fallback for decisions saved before this link was retained.
+    This also repairs old resolved decisions on the next Studio read/recovery.
+    """
+    if decision.get("mailbox_message_id") or not decision.get("requires"):
+        return
+    mid = decision.get("superseded_mailbox_message_id")
+    if not mid:
+        rec = store.task(decision["task"]) or {}
+        allowed = {f"{PLANS_REL}/{store.plan_id}/handoffs/{unit}/response.md" for unit in rec.get("units") or []}
+        for ref in (rec.get("result") or {}).get("artifacts") or []:
+            try:
+                rel, _ = proto.parse_ref(ref)
+                if rel not in allowed:
+                    continue
+                saved = proto.read_ref(store.root, ref)
+                if saved["truncated"]:
+                    continue
+                envelope = proto.extract(saved["content"])
+                blocker = next((b for b in (envelope.get("result") or {}).get("blockers") or []
+                                if b.get("id") == decision.get("blocker")), {})
+                candidate = blocker.get("mailbox_message_id")
+                if candidate:
+                    proto.validate_mailbox_blocker(blocker, store, decision["request"], Path(rel).parent.name)
+                    mid = candidate
+                    store.save_decision({**decision, "superseded_mailbox_message_id": mid})
+                    break
+            except (proto.RefError, proto.ProtocolError):
+                continue  # missing/changed archives cannot justify cancelling a request
+    if mid:
+        from alfrd.mailbox import Mailbox
+        if Mailbox(store.root, store.id, decision["request"]).cancel(message_id=mid):
+            store.bump_rev()  # conditional snapshots must see repaired attention counts
+
+
 def process_mailbox(store: Session, *, runner=None) -> bool:
     """Replay resolved mail as a durable outbox. Never queue alongside a live attempt.
 
@@ -2739,6 +2780,7 @@ def process_mailbox(store: Session, *, runner=None) -> bool:
     with store.lock():
         units = _plan_folder(store).units()
         for decision in store.decisions():
+            _cancel_superseded_mail(store, decision)
             mid = decision.get("mailbox_message_id")
             if not mid or decision.get("status") not in ("pending", "resolved"):
                 continue
@@ -2746,8 +2788,7 @@ def process_mailbox(store: Session, *, runner=None) -> bool:
             if req.get("status") not in REQUEST_ACTIVE:
                 continue
             rec = store.task(decision["task"])
-            if any(u.get("row") == rec["row"] and u.get("status") == "running" for u in units):
-                continue
+            live_attempt = any(u.get("row") == rec["row"] and u.get("status") == "running" for u in units)
             box = Mailbox(store.root, store.id, req["id"])
             state = box.status(mid, USER)
             if state["state"] != "resolved":
@@ -2764,6 +2805,8 @@ def process_mailbox(store: Session, *, runner=None) -> bool:
                                       f"{decision.get('question') or decision.get('reason')} → "
                                       f"{reply['answer'] or reply['choice_id']}", request=req["id"],
                                       decision=decision["id"], kind="delegated_decision")
+            if live_attempt:
+                continue  # the answer is durable; only re-queueing waits for the live attempt
             if rec["status"] == "needs_decision" and not any(store.decision(d)["status"] == "pending" for d in rec.get("decisions", [])):
                 if runner:
                     runner.set_cells({(rec["row"], rec["owner"]): pc.TODO}, only_if={(rec["row"], rec["owner"]): {pc.WAITING}})

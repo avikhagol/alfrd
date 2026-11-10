@@ -2,7 +2,7 @@
 //   • folder mode (a folder opened in the browser): the whole view, read by attach.js
 //   • alfrd serve: the renderers of the avica_config / avica_inputs client panels and
 //     the avica.meta file formatter used by the generic `files` panel.
-// `ui` is metadata.js's view state (open sections, chosen code/template folder, filter).
+// `ui` is details.js's view state (open sections, chosen code/template folder, filter).
 
 import { $, esc, icon, bytes } from "../utils/dom.js";
 import { avicaIndex, codeChips, ensureServerIndex, loadWorkdir, targetCodes } from "./attach.js";
@@ -10,7 +10,7 @@ import { server } from "../data/server.js";
 import { metadataHealth, metaOwner } from "../data/defs.js";
 
 let ui = { open: new Set(), code: {}, templateFolder: {}, filter: "" };
-/** Share metadata.js's state object (called once on load). */
+/** Share details.js's state object (called once on load). */
 export function useState(state) { ui = state; }
 
 const TONE = { passed: "ok", warning: "warn", failed: "fail", missing: "fail", notrun: "muted" };

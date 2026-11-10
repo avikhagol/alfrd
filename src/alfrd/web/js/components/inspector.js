@@ -88,7 +88,7 @@ export function createInspector({ chat, button, panel, store = prefsStore(), wid
     isOpen: () => chat.classList.contains(OPEN_CLASS),
     layout: () => layout(width()),
     /** The saved flag applies at mount; focus stays where it is. */
-    restore() { sync(Boolean(store.get())); return api.isOpen(); },
+    restore() { sync(api.layout() === "docked" && Boolean(store.get())); return api.isOpen(); },
     open() {
       if (api.isOpen()) return;
       opener = active();

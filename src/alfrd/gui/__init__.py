@@ -154,6 +154,14 @@ def create_app(config=None):
 
     app.before_request(enforce_lockdown)  # superuser lockdown (alfrd.superuser), after the CSRF gate
 
+    @app.after_request
+    def private_login_response(response):
+        if request.endpoint == "system.login":
+            from alfrd.gui.auth import _private
+
+            return _private(response)
+        return response
+
     @app.errorhandler(HTTPException)
     def api_http_error(error):
         if request.path.startswith("/api/"):

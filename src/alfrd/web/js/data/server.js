@@ -3,7 +3,7 @@
 // these requests simply 404 and the app stays in browser-only mode.
 
 import { manifestToWorkflows, normalizeStatus } from "./model.js";
-export { createProjectLoader, projectLoadInfo } from "./project_load.js";
+export { createProjectLoader, projectLoadInfo } from "./project_fetch.js";
 
 const API = "/api";
 const fitsCache = new Map();

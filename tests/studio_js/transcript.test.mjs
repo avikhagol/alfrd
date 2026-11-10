@@ -176,7 +176,7 @@ test("the Chat page and the dock both render through transcript.js; the accordio
     assert.match(src, /mountTranscript\(\$\("#(chat|cd)-log"/, f);
     assert.doesNotMatch(src, /mountThread/, f);
   }
-  for (const f of ["js/components/transcript.js", "js/components/chat_thread.js", "js/components/chat_view.js", "js/components/chat_dock.js", "css/chat.css"]) {
+  for (const f of ["js/components/transcript.js", "js/components/chat_conversation.js", "js/components/chat_view.js", "js/components/chat_dock.js", "css/chat.css"]) {
     const src = await read(f);
     assert.doesNotMatch(src, /chat-turn|Collapse earlier|Expand earlier|data-collapse|data-expand|ui:chat\.history/, f);
   }

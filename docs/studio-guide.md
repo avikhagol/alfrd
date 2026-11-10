@@ -40,7 +40,7 @@ Open it over HTTP. `file://` does not work (browser rule for ES modules).
 
 ### Opening the Studio (access token)
 
-`alfrd serve` creates a random access token, prints the link with it and opens it:
+`alfrd serve` creates or reuses a private access token and signing secret, prints the access link and opens it:
 
 ```
 ALFRD Studio: http://127.0.0.1:5000/studio/?token=…
@@ -53,12 +53,29 @@ alfrd url                  # link for the server on port 5000
 alfrd url --port 5055      # another port
 ```
 
-The token is in `~/.config/alfrd/server-<port>.json` (readable only by you, removed when the server stops). A restart makes a new token, so open the new link; the Studio shows the access page instead of stale data. Scripts send `Authorization: Bearer <token>` (see [status-api.md](status-api.md)).
+On loopback, both credentials persist in the platform config directory (`~/.config/alfrd/credentials-<port>.json` on Linux), with an owner-only directory and file. The separate `server-<port>.json` is live discovery and is removed on shutdown. Stopping the server no longer revokes access. Restart with the same host, port, database, project scope and access policy to retain access. Changing these settings creates a new credential generation; changing back does not restore old credentials. Unsafe credential files are refused, rather than silently replaced.
+
+Run `alfrd serve --rotate-token` to revoke saved links and cookies. It cannot be combined with `--token`, `ALFRD_TOKEN`, `ALFRD_SECRET_KEY` or `--no-token`; fixed credentials remain operator-controlled. If a saved policy changes while fixed credentials are configured, supply new fixed credentials or unset them; ALFRD refuses reuse across that change. Saved Studio project-selection changes are included in the next startup policy. Scripts send `Authorization: Bearer <token>` (see [status-api.md](status-api.md)).
 
 | Option | |
 |---|---|
 | `--token TEXT` / `ALFRD_TOKEN` | Pin the token (the same across restarts; for reverse proxies and scripts) |
+| `--rotate-token` | Replace the persisted token and signing secret; pair again in each browser |
+| `--persist-credentials` | Explicitly opt in to persistence on non-loopback; use TLS or a tunnel. Loopback persists by default |
 | `--no-token` | No token check. Only allowed on loopback (`127.0.0.1`, `::1`, `localhost`) and prints a warning: any program or account on this machine can then read your projects and start plans |
+
+### Install and launch as a Firefox or Chrome app
+
+1. Start `alfrd serve --no-browser` in the same folder and with the same options you will use later. Keep the server running while using the app.
+2. Open the clean `http://127.0.0.1:5000/studio/` address in your chosen browser profile/container. Use your configured host and port consistently: `localhost` and `127.0.0.1` have different cookies.
+3. On the access page, paste the output of `alfrd url --port 5000` into **Access link or token**. Select **Remember this device for 30 days** on a trusted device, then **Open Studio**. A raw token also works. The form posts to this server and never opens the pasted URL. If using a proxy, paste the raw token or a link with the actual proxy origin and Studio path.
+4. Firefox: use its web-app/taskbar install control if your build/platform offers it. Firefox's built-in web apps are associated with the creating profile/container. If your platform lacks the control, use a normal bookmark or your existing Firefox app wrapper, pointed at the clean Studio URL; pair inside that wrapper if it has its own profile. Chrome: use **Install page as app** / the install control in the address bar or menu. Menu wording varies by build. Keep the saved launch URL free of `?token=`.
+5. Close the app/browser, stop and restart `alfrd serve` with the same options, then launch the installed app. Remembered cookies last at most 30 days, including on the server; unchecked login uses a browser-session cookie. Cookies remain HttpOnly, SameSite=Strict, host-only and Secure over HTTPS.
+6. After expiry, clearing browser data, a different profile/container or credential rotation, launch the existing app and paste a current link/token on its access page. No app recreation is needed after ordinary server restarts. A stopped server shows the browser's connection error; start the server and reload.
+
+If an older launcher saved a token-bearing URL, migrate it once to the clean `/studio/` URL (recreate that legacy app if its launcher cannot be edited). An explicitly stale token is rejected even with a valid cookie. The manifest contains no credentials and uses a stable Studio identity and scope. Authentication is still required for local users and LAN clients; pairing does not enable remote mutations. Too many failed attempts shows a wait message; an expired form requires a reload. Remembering a shared device grants anyone using that browser profile access until expiry or rotation.
+
+For browser-only static exports, `alfrd studio --export ./site --hosting-base /your-base/` sets the manifest identity for that hosting path (default `/`). This mode has no server authentication or server-side projects.
 
 **Other machines.** With a non-loopback `--host` the token stays required, but plain HTTP sends it in clear text, and `alfrd serve` warns about it. Prefer an SSH tunnel and keep the server on loopback:
 
@@ -648,7 +665,7 @@ src/alfrd/web/
 ├── index.html
 ├── css/studio.css
 ├── js/app.js              state, shell, import, saving
-├── js/components/         overview, canvas, metadata, results, logs, logview, alfrd_config, attach
+├── js/components/         overview, canvas, details, results, streams, tails, alfrd_config, attach
 ├── js/data/               defs (alfrd.yaml), model, importers, folder_scan, avica, demo, server
 ├── js/utils/              yaml_parser, csv_parser, dom
 └── assets/templates/      avica.yaml

@@ -3,7 +3,7 @@
 // extensions (".pdf"), exact mime types ("application/pdf") or "type/*".
 // viewerFor(path, mime) tries extensions first, then the exact mime, then
 // "type/*"; later registrations win; plain text is the fallback.
-// Loaded with import() (logview.js, panels.js).
+// Loaded with import() (tails.js, panels.js).
 
 import { esc, icon } from "../utils/dom.js";
 import { server } from "../data/server.js";
@@ -262,7 +262,7 @@ export function mountConversion(button, host, status, file, viewer = viewerFor(f
   };
 }
 
-/** Full-screen view of a file with a non-text viewer (same header as logview's openFull, no Follow). */
+/** Full-screen view of a file with a non-text viewer (same header as tails's openFull, no Follow). */
 export function openViewer(ctx, project, rel, viewer = viewerFor(rel), extra = {}) {
   ctx.modal(`<header class="modal-h"><h2 class="mono trunc">${esc(rel.split("/").pop())}</h2><span class="muted small mono trunc">${esc(rel)}</span><span class="grow"></span>${conversionButton(rel, viewer)}
       <button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>

@@ -51,7 +51,7 @@ test("New project wizard: steps, checkboxes, turn order, review, create; Setting
       createProject: async (payload) => { window.created.push(payload); return { name: "wizard-2", identifier: "wizard-2", warnings: ["custom command mine: a warning"] }; },
     });
     const ctx = { modal, toast: (text, tone, opts) => window.toasts.push({ text, tone, link: opts?.link }), browseFolder() {} };
-    await (await import("/js/components/agent_dialog.js")).openCreateProject(ctx, async () => {}, "");
+    await (await import("/js/components/agent_modal.js")).openCreateProject(ctx, async () => {}, "");
   }, OPTIONS);
   const dialog = page.locator(".modal");
   const next = dialog.locator("#cw-next");

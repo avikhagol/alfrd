@@ -95,7 +95,7 @@ test("Lazy folder browser: picker, Import, Open project and cancellation", { ski
   await t.test("Open project preserves Open and Create project here actions", async () => {
     const page = await open();
     await page.evaluate(async () => {
-      const { openProject } = await import('/js/components/agent_dialog.js');
+      const { openProject } = await import('/js/components/agent_modal.js');
       await openProject(fixture.ctx, () => {}, "", (path) => created.push(path));
     });
     await page.locator('[data-fsb-create]').click();

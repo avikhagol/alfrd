@@ -5,7 +5,7 @@
 import { $, on, esc, icon, loadUi, saveUi } from "../utils/dom.js";
 import { groupLabel } from "../data/defs.js";
 import { targetCodes } from "./attach.js";
-import { logItem, logForTarget, projectLogs } from "./logview.js";
+import { logItem, logForTarget, projectLogs } from "./tails.js";
 import { loadPlan, planOf, plansAvailable } from "./plans.js";
 
 const planAsked = new Set(); // projects whose scheduled-run logs were fetched once here

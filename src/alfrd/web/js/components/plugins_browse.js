@@ -1,7 +1,7 @@
 // Settings-only installation UI. No remote runtime assets; all copy is escaped.
 import { $, esc } from "../utils/dom.js";
 import { server } from "../data/server.js";
-import { installDialog, button, kinds } from "./plugins_install_dialog.js";
+import { installDialog, button, kinds } from "./plugins_install_modal.js";
 import { currentJob, listeners, startJob, renderJob, dismissJob, hideRestart, restartServer } from "./plugin_jobs.js";
 
 const states = new WeakMap();
