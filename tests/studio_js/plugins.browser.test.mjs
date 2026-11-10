@@ -122,7 +122,7 @@ test("Studio plugins in a real browser", { skip: chromium ? false : "Playwright 
     const page = await browser.newPage(); t.after(() => page.close());
     await initialize(page, origin);
     const result = await page.evaluate(async () => {
-      const list = { theme: "good", plugins: [
+      const list = { project: "project", project_type: "generic", theme: "good", plugins: [
         { id: "bad", title: "Bad", active: true, enabled: true, status: "ok", web: { js: "/bad.js" } },
         { id: "good", title: "Good", active: true, enabled: true, status: "ok", web: { js: "/good.js", css: "/good.css" }, theme_css: "/good-theme.css" },
         { id: "disabled", active: false, enabled: false, status: "disabled", web: { js: "/disabled-never.js" } },

@@ -51,7 +51,7 @@ test("Workflow editor: minimal AVICA, graph parity, blank creation and loop Save
       const el = document.querySelector("#home");
       window.saved = [];
       const state = { mode: "static", selectedProject: "review", targets: [], trees: { review: { manifestText: text, files: [] } }, workflow: info.workflows[0] || { name: "main", steps: [], stages: [] }, workflowFile: { name: "alfrd.yaml", errors: info.errors, warnings: info.warnings, validated: !info.errors.length } };
-      window.ctx = { state, modal, target: () => null, projectName: () => "review", canWrite: () => true,
+      window.ctx = { state, modal, target: () => null, projectName: () => "review", canWrite: () => true, experimental: () => true,
         toast() {}, setFooterRight() {}, log() {}, goTo() {}, update: () => canvas.render(el, window.ctx),
         saveManifest: async (_, text) => { window.saved.push(text); state.trees.review.manifestText = text; state.workflow = resolve(text).workflows[0]; },
       };

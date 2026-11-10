@@ -18,6 +18,164 @@ from alfrd.manifest_paths import project_root as _manifest_root
 
 alfrd_cli = typer.Typer()
 
+from alfrd.mailbox_cli import cli as mailbox_cli
+alfrd_cli.add_typer(mailbox_cli, name="mailbox")
+
+
+skills_cli = typer.Typer(help="Manage the global skills library.")
+alfrd_cli.add_typer(skills_cli, name="skills")
+
+
+@skills_cli.command("add")
+def skills_add(path: Path, global_library: bool = typer.Option(False, "--global"),
+               skill_id: Optional[str] = typer.Option(None, "--id")):
+    """Copy a skill directory (or SKILL.md) into the global library, without activating it."""
+    from alfrd.skills import add_global_skill
+    import json
+
+    if not global_library:
+        raise typer.BadParameter("specify --global; project skills can be created directly in skills/<id>")
+    try:
+        result = add_global_skill(path, id=skill_id)
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(json.dumps(result))
+
+
+def _skill_scope(project, global_library, activations=()):
+    if activations and not project:
+        raise typer.BadParameter("--activate requires an explicit --project PATH, including for --global")
+    if bool(project) == global_library and not (activations and project and global_library):
+        raise typer.BadParameter('Specify exactly one of --project PATH or --global')
+    return Path(project).resolve() if project else Path.cwd(), 'global' if global_library else 'project'
+
+
+def _activate_skill(root, result, scopes):
+    if not scopes:
+        return
+    from alfrd.skills import activation_state, save_activations
+    try:
+        state = activation_state(root)
+        additions = [{'source': result['origin'], 'id': result['id'], 'scope': scope} for scope in scopes]
+        save_activations(root, {'version':1, 'activations':state['activations']+additions}, base_hash=state['hash'])
+    except (ValueError, OSError) as exc:
+        typer.echo(f'Skill saved; activation was not saved: {exc}', err=True)
+        raise typer.Exit(1) from exc
+
+
+def _skill_draft(content, file):
+    import tempfile
+    if file:
+        return (sys.stdin.read() if str(file) == '-' else file.read_text(encoding='utf-8')), None
+    fd, name = tempfile.mkstemp(prefix='alfrd-skill-', suffix='.md')
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        stream.write(content)
+    editor = os.environ.get('VISUAL') or os.environ.get('EDITOR')
+    if not editor:
+        raise typer.BadParameter(f'Set EDITOR or use --file; draft retained at {name}')
+    import shlex
+    try:
+        subprocess.run([*shlex.split(editor), name], check=True)
+        return Path(name).read_text(encoding='utf-8'), Path(name)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise typer.BadParameter(f'Editor failed; draft retained at {name}') from exc
+
+
+@skills_cli.command('new')
+def skills_new(skill_id: str, project: Optional[Path] = typer.Option(None, '--project'),
+               global_library: bool = typer.Option(False, '--global'),
+               name: Optional[str] = typer.Option(None, '--name'), description: str = typer.Option('Describe when to use this skill.', '--description'),
+               file: Optional[Path] = typer.Option(None, '--file'),
+               activate: list[str] = typer.Option([], '--activate')):
+    """Create validated guidance, without activation. --file - reads stdin."""
+    import json
+    from alfrd.skills import create_skill
+    root, origin = _skill_scope(project, global_library, activate)
+    content = f'---\nname: {json.dumps(name or skill_id)}\ndescription: {json.dumps(description)}\n---\n# Instructions\n\nDescribe the action and expected result.\n'
+    content, draft = _skill_draft(content, file)
+    try:
+        result = create_skill(root, skill_id, content, origin=origin)
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(f'{exc}' + (f'; draft retained at {draft}' if draft else '')) from exc
+    if draft:
+        draft.unlink()
+    typer.echo(json.dumps(result))
+    _activate_skill(root, result, activate)
+
+
+@skills_cli.command('edit')
+def skills_edit(skill_id: str, project: Optional[Path] = typer.Option(None, '--project'),
+                global_library: bool = typer.Option(False, '--global'), origin: str = typer.Option('project', '--origin'),
+                file: Optional[Path] = typer.Option(None, '--file')):
+    """Edit SKILL.md using EDITOR or --file, preserving supporting files."""
+    import json
+    from alfrd.skills import read_skill_document, save_skill_document
+    root, scope = _skill_scope(project, global_library)
+    if scope == 'global':
+        origin = scope
+    draft = None
+    try:
+        opened = read_skill_document(root, skill_id, origin)
+        if not opened['editable']:
+            raise ValueError(opened['read_only_reason'])
+        content, draft = _skill_draft(opened['content'], file)
+        result = save_skill_document(root, skill_id, content, origin=origin, base_revision=opened['revision'])
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(f'{exc}' + (f'; draft retained at {draft}' if draft else '')) from exc
+    if draft:
+        draft.unlink()
+    typer.echo(json.dumps(result))
+
+
+@skills_cli.command('import')
+def skills_import(url: Optional[str] = typer.Argument(None), project: Optional[Path] = typer.Option(None, '--project'),
+                  global_library: bool = typer.Option(False, '--global'), skill_id: Optional[str] = typer.Option(None, '--id'),
+                  preview_only: bool = typer.Option(False, '--preview-only'), json_output: bool = typer.Option(False, '--json'),
+                  yes: bool = typer.Option(False, '--yes'), confirm: Optional[str] = typer.Option(None, '--confirm'),
+                  from_skill: Optional[str] = typer.Option(None, '--from'),
+                  activate: list[str] = typer.Option([], '--activate')):
+    """Fetch and review public HTTPS guidance; --yes explicitly confirms after preview."""
+    import json
+    from alfrd.skill_imports import prepare_skill_import, commit_skill_import, persist_cli_preview, restore_cli_preview
+    from alfrd.skills import read_skill_document
+    root, origin = _skill_scope(project, global_library, activate)
+    owner = f'cli:{os.getuid()}'
+    try:
+        if from_skill:
+            source_origin, source_id = from_skill.split(':', 1)
+            url = read_skill_document(root, source_id, source_origin).get('provenance', {}).get('source_url')
+            if not url:
+                raise ValueError('No valid provenance; enter a URL manually')
+        if confirm:
+            if url or preview_only or not skill_id:
+                raise ValueError('--confirm requires --id and no URL/--preview-only')
+            restore_cli_preview(root, confirm, owner=owner)
+            result = commit_skill_import(root, confirm, origin, skill_id, owner=owner)
+            persist_cli_preview(confirm, owner=owner)
+            typer.echo(json.dumps(result))
+            _activate_skill(root, result, activate)
+            return
+        if not url:
+            raise ValueError('Provide a public HTTPS URL')
+        preview = prepare_skill_import(root, url, owner=owner)
+        persist_cli_preview(preview['token'], owner=owner)
+        typer.echo(json.dumps(preview, indent=None if json_output else 2))
+        if preview_only:
+            return
+        if not yes:
+            if not sys.stdin.isatty():
+                raise ValueError('Noninteractive imports need --preview-only or explicit --yes')
+            if not typer.confirm('Save this reviewed skill?'):
+                return
+        result = commit_skill_import(root, preview['token'], origin, skill_id or preview['proposed_id'], owner=owner)
+        persist_cli_preview(preview['token'], owner=owner)
+        typer.echo(json.dumps(result))
+        _activate_skill(root, result, activate)
+    except (ValueError, OSError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+
 
 try:
     if hasattr(sys.stdout, 'reconfigure'):
@@ -94,7 +252,7 @@ def _reexec_server(token: str, secret_key: str, no_token: bool) -> None:
     os.environ["ALFRD_SECRET_KEY"] = secret_key
     if not no_token:
         os.environ["ALFRD_TOKEN"] = token
-    argv = list(sys.orig_argv)
+    argv = [arg for arg in sys.orig_argv if arg != "--rotate-token"]
     if "--no-browser" not in argv:  # the Studio tab is already open
         argv.append("--no-browser")
     print("Restarting alfrd serve…", flush=True)
@@ -167,7 +325,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
                demo: bool = False, project: str | None = None, all_projects: bool = False,
                live_interval: float = 2.0, discover: bool = True, discover_depth: int = 2,
                token: str | None = None, no_token: bool = False, gui_install: bool = True,
-               plugin_actions: bool = True) -> None:
+               plugin_actions: bool = True, experimental: bool = False,
+               rotate_token: bool = False, persist_credentials: bool = False) -> None:
     try:
         from alfrd.gui import create_app
     except ImportError as error:
@@ -185,6 +344,14 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         raise typer.BadParameter("Debug mode is only available on a loopback interface.")
     if no_token and not loopback:
         raise typer.BadParameter("--no-token is only available on a loopback interface.")
+    if debug and os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        rotate_token = False  # the parent already rotated; the child inherits its credentials
+    fixed_token = token or os.environ.get("ALFRD_TOKEN")
+    fixed_secret = os.environ.get("ALFRD_SECRET_KEY")
+    if rotate_token and (fixed_token or fixed_secret or no_token):
+        raise typer.BadParameter("--rotate-token cannot be combined with --token, ALFRD_TOKEN, ALFRD_SECRET_KEY or --no-token.")
+    if rotate_token and not (loopback or persist_credentials):
+        raise typer.BadParameter("Non-loopback rotation requires --persist-credentials.")
     if no_token:
         typer.echo("Warning: --no-token disables access-token protection; any local user can access this server.", err=True)
     elif not loopback:
@@ -205,6 +372,8 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         "PLUGINS_GUI_INSTALL": gui_install,
         # --no-plugin-actions: plugins' mutating project actions are refused (plugins.json may also say so).
         "PLUGINS_ACTIONS": plugin_actions,
+        # --experimental-features: Chat mode (Settings → Preferences) and the agent-loop template.
+        "STUDIO_EXPERIMENTAL": experimental,
     }
     from alfrd.manifest_default import local_manifest
 
@@ -229,12 +398,32 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         if others:
             print(f"No alfrd.yaml here. Showing projects remembered in {database}: {', '.join(others)}.")
     from alfrd.gui import auth
+    from alfrd.gui.project_selection import restore as restore_selection
+    from types import SimpleNamespace
 
-    # One token and session secret per server. Under --debug the reloader
-    # re-runs this function in a child process: the environment carries both
-    # over, so the printed link and the cookies stay valid.
-    token = token or os.environ.get("ALFRD_TOKEN") or auth.new_token()
-    secret_key = os.environ.get("ALFRD_SECRET_KEY") or secrets.token_hex(32)
+    # create_app restores this selection too. Fingerprint the effective scope,
+    # including changes saved by Studio, rather than just the initial CLI list.
+    restore_selection(SimpleNamespace(config=config))
+    # Policy changes create a new generation rather than widening old sessions.
+    if not no_token and (loopback or persist_credentials):
+        from alfrd import superuser
+
+        policy = {"host": host.lower(), "database": str(database), "start": str(start),
+                  "projects": sorted(config["STUDIO_PROJECTS"]) if config["STUDIO_PROJECTS"] is not None else None,
+                  "all_projects": all_projects, "discover": discover, "discover_depth": discover_depth,
+                  "mutations": loopback, "gui_install": gui_install, "plugin_actions": plugin_actions,
+                  "experimental": experimental, "debug": debug,
+                  "trust_proxy": os.environ.get("ALFRD_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes"},
+                  "lockdown": superuser.load()["lockdown"]}
+        try:
+            token, secret_key = auth.durable_credentials(
+                port, policy, token=fixed_token, secret_key=fixed_secret, rotate=rotate_token)
+        except (OSError, ValueError) as error:
+            raise typer.BadParameter(f"Cannot safely load server credentials: {error}") from error
+        print("Access credentials persist after stop. Use --rotate-token to revoke saved links and cookies.")
+    else:
+        token = fixed_token or auth.new_token()
+        secret_key = fixed_secret or secrets.token_hex(32)
     if debug:
         os.environ["ALFRD_TOKEN"] = token
         os.environ["ALFRD_SECRET_KEY"] = secret_key
@@ -248,7 +437,7 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
     base = f"http://{authority}:{port}"
     query = "" if no_token else "?" + urlencode({"token": token})
     url = f"{base}/studio/{query}"
-    print(f"ALFRD Studio: {url}")
+    print(f"ALFRD Studio: {url}", flush=True)
     app = create_app(config)
     # Only the process that serves writes the token file (not the reloader parent).
     serving = not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
@@ -257,6 +446,9 @@ def _serve_web(host: str, port: int, debug: bool, runtime_db: str | None = None,
         _start_plugin_services(database)
     _reconcile_plans_later(service, config.get("STUDIO_PROJECTS"), spawn=loopback)
     stopped = threading.Event()
+    if serving:
+        _chat_watch_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
+        _chat_schedule_later(service, config.get("STUDIO_PROJECTS"), stopped, spawn=loopback)
     restart = threading.Event()
     browser_thread = None
     if not no_browser and (loopback or host in {"0.0.0.0", "::"}) and serving:
@@ -337,6 +529,85 @@ def _reconcile_plans_later(service, scope, *, spawn: bool) -> None:
     threading.Thread(target=work, name="alfrd-plan-reconcile", daemon=True).start()
 
 
+def _chat_schedule_later(service, scope, stopped: threading.Event, *, spawn: bool):
+    """Independent one-second clock, including a startup catch-up and dynamic catalogue scope."""
+    from alfrd import chat
+
+    def work():
+        while not stopped.is_set():
+            try:
+                roots = {Path(p.root_path).resolve() for p in service.list_projects()
+                         if not scope or p.identifier in scope}
+                for root in roots:
+                    if stopped.is_set():
+                        break
+                    for result in chat.dispatch_due_schedules(root, spawn=spawn):
+                        if result.get("error"):
+                            print(f"Chat schedule skipped ({root}): {result['error']}")
+            except Exception as error:
+                print(f"Chat schedule sweep failed: {error}")
+            stopped.wait(1)
+
+    thread = threading.Thread(target=work, name="alfrd-chat-schedule", daemon=True)
+    thread.start()
+    return thread
+
+
+def _chat_watch_later(service, scope, stopped: threading.Event, *, spawn: bool):
+    """Check scoped projects until the server stops.
+
+    Settings are re-read within 30 seconds, including projects initially disabled.
+    """
+    from alfrd import chat
+
+    roots = {}
+    try:
+        projects = service.list_projects()
+    except Exception as error:  # noqa: BLE001 - catalogue recovery must not block serving
+        print(f"Chat checks not started: {error}")
+        return None
+    for item in projects:
+        if scope and item.identifier not in scope:
+            continue
+        root = Path(item.root_path)
+        try:
+            roots[root] = chat.settings(root)["watch"]["interval_seconds"]
+        except Exception as error:  # noqa: BLE001 - one project's settings must not stop the server
+            print(f"Chat check skipped ({root}): {error}")
+    if not roots:
+        return None
+
+    def work() -> None:
+        import time
+
+        last = {}
+        while not stopped.is_set():
+            delay = 30.0
+            for root in roots:
+                if stopped.is_set():
+                    break
+                try:
+                    watch = chat.settings(root)["watch"]
+                    interval = watch["interval_seconds"]
+                    if not watch.get("enabled", True) or not interval:
+                        continue
+                    now = time.monotonic()
+                    remaining = last.get(root, now - interval) + interval - now
+                    if remaining <= 0:
+                        # Advance even if checking fails; retry on the next scheduled interval.
+                        last[root] = now
+                        chat.check(root, spawn=spawn, periodic=True)
+                        remaining = interval
+                    delay = min(delay, remaining)
+                except Exception as error:  # noqa: BLE001 - a failed check must not kill the watcher
+                    print(f"Chat check skipped ({root}): {error}")
+            stopped.wait(delay)
+
+    thread = threading.Thread(target=work, name="alfrd-chat-watch", daemon=True)
+    thread.start()
+    return thread
+
+
 @alfrd_cli.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="Interface to bind."),
@@ -366,12 +637,18 @@ def serve(
     ),
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    rotate_token: bool = typer.Option(False, "--rotate-token", help="Replace saved credentials; revoke saved links and cookies. Incompatible with fixed credentials."),
+    persist_credentials: bool = typer.Option(False, "--persist-credentials", help="Keep credentials after stop on non-loopback too (use TLS/tunnel). Loopback persists by default."),
     safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
     no_gui_install: bool = typer.Option(
         False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
     ),
     no_plugin_actions: bool = typer.Option(
         False, "--no-plugin-actions", help="Refuse plugin project actions that change files or external data.",
+    ),
+    experimental_features: bool = typer.Option(
+        False, "--experimental-features", envvar="ALFRD_EXPERIMENTAL_FEATURES",
+        help="Show experimental Studio features: the Chat mode preference and the agent-loop project template.",
     ),
 ):
     """Serve ALFRD Studio, backed by the runtime database."""
@@ -380,7 +657,8 @@ def serve(
         os.environ["ALFRD_NO_PLUGINS"] = "1"  # also reaches the debug reloader's child
     _serve_web(host, port, debug, runtime_db, no_browser, demo, project, all_projects, live_interval=live_interval,
                discover=discover, discover_depth=discover_depth, token=token, no_token=no_token,
-               gui_install=not no_gui_install, plugin_actions=not no_plugin_actions)
+               gui_install=not no_gui_install, plugin_actions=not no_plugin_actions,
+               experimental=experimental_features, rotate_token=rotate_token, persist_credentials=persist_credentials)
 
 
 @alfrd_cli.command()
@@ -394,6 +672,8 @@ def gui(
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the Studio in a browser."),
     token: Optional[str] = typer.Option(None, "--token", envvar="ALFRD_TOKEN", help="Use a fixed server access token."),
     no_token: bool = typer.Option(False, "--no-token", help="Disable access-token protection (loopback only)."),
+    rotate_token: bool = typer.Option(False, "--rotate-token", help="Replace saved credentials; revoke saved links and cookies. Incompatible with fixed credentials."),
+    persist_credentials: bool = typer.Option(False, "--persist-credentials", help="Keep credentials after stop on non-loopback too (use TLS/tunnel). Loopback persists by default."),
     safe_mode: bool = typer.Option(False, "--safe-mode", help="Start without plugins (same as ALFRD_NO_PLUGINS=1)."),
     no_gui_install: bool = typer.Option(
         False, "--no-gui-install", help="Don't install, update or remove plugins from the Studio (CLI only).",
@@ -401,13 +681,18 @@ def gui(
     no_plugin_actions: bool = typer.Option(
         False, "--no-plugin-actions", help="Refuse plugin project actions that change files or external data.",
     ),
+    experimental_features: bool = typer.Option(
+        False, "--experimental-features", envvar="ALFRD_EXPERIMENTAL_FEATURES",
+        help="Show experimental Studio features: the Chat mode preference and the agent-loop project template.",
+    ),
 ):
     """Alias for ``alfrd serve``."""
 
     if safe_mode:
         os.environ["ALFRD_NO_PLUGINS"] = "1"
     _serve_web(host, port, debug, runtime_db, no_browser, token=token, no_token=no_token,
-               gui_install=not no_gui_install, plugin_actions=not no_plugin_actions)
+               gui_install=not no_gui_install, plugin_actions=not no_plugin_actions,
+               experimental=experimental_features, rotate_token=rotate_token, persist_credentials=persist_credentials)
 
 
 @alfrd_cli.command()
@@ -453,6 +738,7 @@ def studio(
     export: Optional[str] = typer.Option(
         None, "--export", help="Copy the static Studio into this directory (e.g. for GitHub Pages) and exit."
     ),
+    hosting_base: str = typer.Option("/", "--hosting-base", help="URL path for the exported static Studio, e.g. /alfrd/."),
     demo: bool = typer.Option(False, "--demo", help="Open the Studio with the built-in demo data."),
     ):
     """Launch ALFRD Studio locally (browser-only, no backend)."""
@@ -464,7 +750,7 @@ def studio(
     if missing:
         raise typer.BadParameter(f"Studio assets missing from this installation: {', '.join(missing)}")
     if export:
-        target = export_site(export)
+        target = export_site(export, base_path=hosting_base)
         print(f"Studio exported to {target}")
         return
     try:
@@ -1465,6 +1751,126 @@ def plan_runner(plan_id: str, root: str = _ROOT_OPT):
     raise typer.Exit(code=scheduler.Runner(root, plan_id).run())
 
 
+su_cli = typer.Typer(help="Superuser settings for every alfrd serve / gui of this user (also the Studio page /superuser).",
+                     no_args_is_help=True)
+alfrd_cli.add_typer(su_cli, name="su")
+
+
+def _su_call(function, *args, **kwargs):
+    from alfrd import superuser
+
+    try:
+        return function(*args, **kwargs)
+    except (superuser.SuperuserError, OSError) as exc:
+        print(f"error: {exc}")
+        raise typer.Exit(code=1) from None
+
+
+@su_cli.command("show")
+def su_show(json_out: bool = typer.Option(False, "--json", help="Print the settings as JSON.")):
+    """Every setting with its value (`*` marks a value changed from the default)."""
+    import json as _json
+
+    from alfrd import superuser
+
+    data = _su_call(superuser.load, strict=True)
+    if json_out:
+        print(_json.dumps(data, indent=2))
+        return
+    defaults = superuser.flat(superuser.DEFAULTS)
+    print(f"# {superuser.path()}{'' if superuser.path().is_file() else ' (not created yet: all defaults)'}")
+    for key, value in superuser.flat(data).items():
+        shown = ", ".join(value) if isinstance(value, list) else ("null" if value is None else str(value).lower() if isinstance(value, bool) else value)
+        print(f"{'*' if value != defaults[key] else ' '} {key:<30} {shown or '-'}    # {superuser.LABELS.get(key, '')}")
+
+
+@su_cli.command("set")
+def su_set(assignments: list[str] = typer.Argument(..., help="key=value, e.g. features.experimental=true lockdown.runs=false "
+                                                          "studio.hidden_sections=results,logs limits.chat_max_cost_usd=2")):
+    """Change settings; every running Studio applies them on its next request."""
+    from alfrd import superuser
+
+    changes = {}
+    for item in assignments:
+        key, sep, value = item.partition("=")
+        if not sep:
+            print(f"error: {item!r} is not key=value")
+            raise typer.Exit(code=1)
+        changes[key.strip()] = _su_call(superuser.parse_value, key.strip(), value)
+    _su_call(superuser.merge, changes)
+    for key in changes:
+        print(f"{key} = {superuser.flat()[key]}")
+
+
+@su_cli.command("checker")
+def su_checker(enabled: bool = typer.Option(..., "--enabled/--disabled", help="Enable or disable periodic chat recovery."),
+               root: str = _ROOT_OPT):
+    """Set this project's periodic checker (local OS owner, as with other su commands)."""
+    from alfrd import chat
+
+    view = _chat_call(chat.settings_view, root)
+    block = {**view["block"], "watch": {**(view["block"].get("watch") or {}), "enabled": enabled}}
+    _chat_call(chat.save_settings, root, block, base_hash=view["hash"])
+    print(f"chat.watch.enabled = {str(enabled).lower()}")
+
+
+@su_cli.command("reset")
+def su_reset(yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation.")):
+    """Remove the superuser file: every setting back to its default."""
+    from alfrd import superuser
+
+    if not yes and not typer.confirm(f"Reset all superuser settings ({superuser.path()})?"):
+        raise typer.Exit(code=1)
+    _su_call(superuser.reset)
+    print("superuser settings reset")
+
+
+@su_cli.command("path")
+def su_path():
+    """Print where the superuser settings are stored."""
+    from alfrd import superuser
+
+    print(superuser.path())
+
+
+@su_cli.command("status")
+def su_status(runtime_db: Optional[str] = typer.Option(None, help="Runtime database (default: the one alfrd serve uses).")):
+    """Running alfrd servers, and the active runs (runners and running agents) of every known project."""
+    from alfrd.gui.auth import config_dir
+    from alfrd.runtime import scheduler
+
+    import json as _json
+
+    print("Servers:")
+    for file in sorted(config_dir().glob("server-*.json")):
+        try:
+            data = _json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pid = data.get("pid")
+        alive = bool(pid) and scheduler.pid_alive(int(pid))
+        print(f"  {'up  ' if alive else 'gone'}  {data.get('url')}  pid {pid}")
+    service = _runtime_service(runtime_db or str(_default_runtime_db()))
+    print("Active runs:")
+    found = False
+    for project in service.list_projects():
+        root = Path(project.root_path)
+        for plan in scheduler.list_plans(root, include_chat=True) if root.is_dir() else []:
+            folder = scheduler.PlanDir(root, plan.get("id") or "")
+            alive = bool(plan.get("id")) and folder.runner_alive()
+            if not (alive or plan.get("status") in scheduler.ACTIVE + ("interrupted",)):
+                continue
+            found = True
+            units = [u for u in folder.units() if u.get("status") == "running"]
+            kind = "chat" if plan.get("chat") else "run"
+            print(f"  {project.name}  {kind} {plan['id']}  {plan.get('status')}  runner {'alive' if alive else 'stopped'}"
+                  f"  {len(units)} running")
+            for unit in units:
+                print(f"      {unit.get('id')}  {','.join(unit.get('steps') or [])}  {unit.get('row') or ''}  pid {unit.get('pid')}")
+    if not found:
+        print("  none")
+
+
 chat_cli = typer.Typer(help="Project chat: an orchestrator and specialist agents on the plan runner (docs/orchestration.md).",
                        no_args_is_help=True)
 alfrd_cli.add_typer(chat_cli, name="chat")
@@ -1491,7 +1897,30 @@ def chat_list(root: str = _ROOT_OPT):
     from alfrd import chat
 
     for item in _chat_call(chat.list_sessions, Path(root).resolve()):
-        print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}")
+        schedule = item.get("schedule")
+        pending = f" · {schedule.get('queued_count', 0)} queued · {schedule.get('run_at', '')}" if schedule else ""
+        print(f"{item['id']}  {item['title']}  {item['messages']} messages  {item.get('plan_status') or ''}{pending}")
+
+
+@chat_cli.command("rename")
+def chat_rename(session: str, title: str, root: str = _ROOT_OPT):
+    """Rename a chat session."""
+    from alfrd import chat
+
+    print(_chat_call(chat.rename_session, Path(root).resolve(), session, title)["title"])
+
+
+@chat_cli.command("delete")
+def chat_delete(session: str, yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation."),
+                root: str = _ROOT_OPT):
+    """Delete a chat session with its messages, tasks, logs and mailbox (refused while it still runs)."""
+    from alfrd import chat
+
+    data = _chat_call(chat.session, Path(root).resolve(), session).load()
+    if not yes and not typer.confirm(f"Delete chat {data.get('title') or session!r}? This can't be undone."):
+        raise typer.Exit(code=1)
+    _chat_call(chat.delete_session, Path(root).resolve(), session)
+    print(f"deleted {session}")
 
 
 @chat_cli.command("send")
@@ -1500,6 +1929,9 @@ def chat_send(session: str, text: str, root: str = _ROOT_OPT):
     from alfrd import chat
 
     out = _chat_call(chat.post_message, Path(root).resolve(), session, text)
+    if out.get("queued"):
+        print(f"Queued {out['item']['id']} for {out['schedule']['run_at']}")
+        return
     print(f"{out['request']['id']}: {out['request']['mode']} → {out['task']['row']}")
 
 
@@ -1514,6 +1946,12 @@ def chat_show(session: str, json_out: bool = typer.Option(False, "--json"), root
     if json_out:
         print(_json.dumps(state, indent=2, default=str))
         return
+    if state.get("schedule"):
+        batch = state["schedule"]
+        print(f"schedule {batch['id']}: {batch['status']} · {batch['run_at']} ({batch['timezone']})")
+        for item in batch["items"]:
+            if not item.get("removed_at"):
+                print(f"  queued {item['id']}: {item['text']}")
     for m in state["messages"]:
         print(f"[{m['role']}{'/' + m['agent'] if m.get('agent') else ''}] {m['text']}")
     for t in state["tasks"]:
@@ -1532,6 +1970,24 @@ def chat_probe(root: str = _ROOT_OPT):
     from alfrd import chat
 
     print(_json.dumps(_chat_call(chat.probe, Path(root).resolve()), indent=2))
+
+
+@chat_cli.command("check")
+def chat_check(session: str | None = typer.Option(None, "--session", help="Check one session (default: all)."),
+               json_out: bool = typer.Option(False, "--json"), root: str = _ROOT_OPT):
+    """Recover interrupted chat work without an agent call; suitable for cron/systemd."""
+    import json as _json
+
+    from alfrd import chat
+
+    reports = _chat_call(chat.check, Path(root).resolve(), session)
+    if json_out:
+        print(_json.dumps(reports, indent=2))
+        return
+    for report in reports:
+        print(f"{report['session']}: " + ("; ".join(f["text"] for f in report["findings"]) or "No issues found."))
+    if not reports:
+        print("No chat sessions found.")
 
 
 @chat_cli.command("decide")

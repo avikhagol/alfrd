@@ -1,9 +1,10 @@
-import { $, esc, icon, loadUi, saveUi } from "../utils/dom.js";
+import { $, esc, icon } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { readPrefs, writePrefs } from "../data/prefs.js";
 
-const DEFAULT_KINDS = ["review.pending", "plan.failed", "plan.finished", "turn.idle"];
-const browserPrefs = loadUi("notifications", { browser: false });
-export const browserEnabled = () => browserPrefs.browser;
+const DEFAULT_KINDS = ["review.pending", "plan.failed", "plan.finished", "turn.idle", "approval.needed", "decision.needed", "permission.needed", "request.finished", "request.failed", "task.failed"];
+const seenNotifications = new Set();
+export const browserEnabled = () => readPrefs()["ui.browser_notifications"] === true;
 export function browserState() {
   if (typeof Notification !== "function" || globalThis.isSecureContext === false) return "unsupported";
   return Notification.permission;
@@ -12,8 +13,7 @@ export async function setBrowserNotifications(on) {
   let permission = browserState();
   if (on && permission === "default") permission = await Notification.requestPermission();
   const enabled = Boolean(on && permission === "granted");
-  browserPrefs.browser = enabled;
-  saveUi("notifications", browserPrefs, ["browser"]);
+  writePrefs({ "ui.browser_notifications": enabled });
   return enabled;
 }
 export function matchesKind(pattern, kind) {
@@ -23,13 +23,20 @@ export async function handleNotifications(ctx, project, events) {
   const data = await server.notificationRoutes(project);
   const patterns = data.routes.length ? data.routes.flatMap((r) => r.on) : DEFAULT_KINDS;
   for (const event of events) {
-    const title = `${event.kind.replaceAll(".", " ")}${event.target ? ` in ${event.target}` : ""}`;
-    const sticky = event.kind === "review.pending" || event.kind.endsWith(".failed");
+    if (event.notification_suppressed) continue;
+    if (event.notification_id) {
+      const key = `${project}:${event.notification_id}`;
+      if (seenNotifications.has(key)) continue;
+      seenNotifications.add(key);
+    }
+    if (event.kind.endsWith(".finished") && event.status && !["done", "finished"].includes(event.status)) continue;
+    const title = event.title || `${event.kind.replaceAll(".", " ")}${event.target ? ` in ${event.target}` : ""}`;
+    const sticky = event.kind.endsWith(".needed") || event.kind === "review.pending" || event.kind.endsWith(".failed");
     const link = event.link?.slice(event.link.indexOf("#"));
-    if (patterns.some((p) => matchesKind(p, event.kind))) ctx.toast(title, sticky ? "warn" : "info", { sticky, link });
+    if (patterns.some((p) => matchesKind(p, event.kind))) ctx.toast(event.body ? `${title}: ${event.body.slice(0, 700)}` : title, sticky ? "warn" : "info", { sticky, link });
     if (browserEnabled() && browserState() === "granted" && DEFAULT_KINDS.includes(event.kind)) {
       try {
-        const notification = new Notification(title, { body: event.turn ? `Turn ${event.turn}/${event.turns || "?"}` : "ALFRD", tag: `${event.plan}:${event.kind}`, silent: true });
+        const notification = new Notification(title, { body: event.body || (event.turn ? `Turn ${event.turn}/${event.turns || "?"}` : "ALFRD"), tag: event.notification_id || `${event.plan}:${event.kind}`, silent: true });
         notification.onclick = () => { window.focus(); if (link) window.location.replace(link); notification.close(); };
       } catch (error) { ctx.log?.("warn", `Browser notification: ${error.message}`, "studio"); }
     }
@@ -46,9 +53,7 @@ export function mountNotifications(ctx, root) {
   const toggle = $("[data-notify-browser]", root), hint = $("[data-notify-hint]", root);
   const drawToggle = () => {
     const permission = browserState();
-    if (permission === "denied" && browserPrefs.browser) {
-      browserPrefs.browser = false; saveUi("notifications", browserPrefs, ["browser"]);
-    }
+    if (permission === "denied" && browserEnabled()) writePrefs({ "ui.browser_notifications": false });
     toggle.disabled = permission === "unsupported";
     toggle.checked = permission === "granted" && browserEnabled();
     hint.className = permission === "denied" ? "callout warn small notify-blocked" : "muted small";
@@ -56,7 +61,7 @@ export function mountNotifications(ctx, root) {
       // A browser never prompts again for a blocked site: only its own site settings can unblock it.
       hint.innerHTML = `<div><b>Blocked for <span class="mono">${esc(globalThis.location?.origin || "this site")}</span>.</b> Allow notifications in the browser's site settings (icon left of the address bar).</div>
         <button type="button" class="btn sm" data-notify-ask>Ask again</button>`;
-    } else hint.textContent = permission === "unsupported" ? "This browser can't show notifications here" : toggle.checked ? "On for this browser" : "Reviews pending, failed or finished runs and idle turns, while a Studio tab is open.";
+    } else hint.textContent = permission === "unsupported" ? "This browser can't show notifications here" : toggle.checked ? "On for this browser" : "Approvals, questions, permissions, reviews, failed or finished requests and runs, and idle turns while a Studio tab is open.";
   };
   drawToggle();
   hint.addEventListener("click", async (e) => {
@@ -67,7 +72,7 @@ export function mountNotifications(ctx, root) {
     drawToggle();
   });
   // Allowed in the browser's site settings while this dialog is open: follow it without a reload.
-  const following = browserPrefs.browser || browserState() === "denied";
+  const following = browserEnabled() || browserState() === "denied";
   navigator.permissions?.query({ name: "notifications" }).then((status) => {
     status.onchange = async () => {
       if (!root.isConnected) { status.onchange = null; return; }

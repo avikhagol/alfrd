@@ -1,3 +1,4 @@
+import { refreshHTML } from "../utils/refresh.js";
 // On-demand resource and token usage for plan commands.
 import { $, esc, icon, bytes, short, loadCss } from "../utils/dom.js";
 import { server } from "../data/server.js";
@@ -72,10 +73,10 @@ export function openUsage(ctx, project, unit, refresh = null) {
         try { rows = parseUsage(await server.projectFile(project, unit.usage_file)); } catch { /* not written yet */ }
       }
       const last = rows[rows.length - 1];
-      box.innerHTML = `${agentUsageHtml([u])}${summaryHtml(u.usage)}
+      refreshHTML(box, `${agentUsageHtml([u])}${summaryHtml(u.usage)}
         <h5>Cores <span class="muted small">${last ? `now ${esc(last.cores)}` : ""}</span></h5>${spark(rows, "cores", { cls: "s-cpu" })}
         <h5>Memory <span class="muted small">${last ? `now ${bytes(last.mem)}` : ""}</span></h5>${spark(rows, "mem", { cls: "s-mem" })}
-        <p class="muted small">${rows.length} sample(s) · every ${esc(u.usage?.interval_s ?? "5")} s · summed over every process of the command, MPI ranks on this machine included (ranks on other nodes are not seen).</p>`;
+        <p class="muted small">${rows.length} sample(s) · every ${esc(u.usage?.interval_s ?? "5")} s · summed over every process of the command, MPI ranks on this machine included (ranks on other nodes are not seen).</p>`);
       if (u.status === "running") timer = setTimeout(draw, 3000);
     };
     draw();

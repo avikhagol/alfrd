@@ -1,0 +1,2 @@
+{"id":"m0001","at":"2026-01-01T12:00:00Z","role":"user","text":"Inspect the legacy output","request":"r0001"}
+{"id":"m0002","at":"2026-01-01T12:00:00Z","role":"assistant","text":"Legacy output inspected.","request":"r0001"}

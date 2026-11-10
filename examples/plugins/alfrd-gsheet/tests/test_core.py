@@ -522,3 +522,16 @@ def test_filename_code_disambiguation(case):
     state = case.engine.before(ctx)
     assert state.row_numbers == {"T1@P1": 2, "T2@P2": 3}
     assert case.engine.after(ctx, state).changes == {"'Targets'!B2": "done"}
+
+
+@pytest.mark.parametrize("code,message", [("auth_required", "Sign in to Google again"),
+                                          ("file_access", "ALFRD lost access")])
+def test_oauth_recovery_code_reaches_file_only_panel(case, gsheet, code, message):
+    from alfrd_gsheet import studio
+    case.client.error = gsheet.client.SyncError("safe auth failure", code=code)
+    with pytest.raises(gsheet.client.SyncError) as caught:
+        case.engine.before(case.ctx)
+    assert caught.value.code == code
+    assert history(case)[-1]["error_code"] == code
+    model = studio.evaluate(case.root, {}, {}, {})
+    assert message in model["rows"][0]["error"]

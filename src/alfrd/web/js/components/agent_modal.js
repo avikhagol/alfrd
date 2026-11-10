@@ -1,0 +1,613 @@
+import { agentRows, reviewRows, applyAgentSettings, replaceSection, personaRows, turnRoleRows, applyPersonaSettings, nextTaskName, turnSettingRows, applyTurnSettings } from "../data/agent_settings.js";
+import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
+import { DEFAULT_ITERATIONS, MAX_TURNS, sequenceAgents } from "../data/defs.js";
+import { hasDirtyHandoff } from "./loop_helpers.js";
+import { dockLog } from "./tails.js";
+import { activePlan } from "./plans.js";
+import { mountMarkdown } from "./handoff_markdown.js";
+import { tabFrame, tabRail } from "./tab_frame.js";
+import { server } from "../data/server.js";
+import { esc, icon, storage, copyText, loadCss } from "../utils/dom.js";
+
+// Register a folder that already has alfrd.yaml (Open project; Create's "Open instead"), then show it.
+async function openPath(ctx, onOpened, close, alert, path) {
+  try {
+    const project = await server.connect(path);
+    close();
+    await onOpened(project);
+    ctx.toast(`Project ${project.display_name || project.name} opened`, "ok");
+  } catch (error) { alert.hidden = false; alert.textContent = error.message; }
+}
+
+/** Open project…: server folders; projects show Open, other folders Create project here (never the default manifest). */
+export async function openProject(ctx, onOpened, path, create) {
+  let mountFolderBrowser;
+  try { ({ mountFolderBrowser } = await import("./folder_browser.js")); }
+  catch (error) { ctx.toast(`Folder browser not loaded: ${error.message}`, "fail"); return; }
+  ctx.modal(`<header class="modal-h"><h2>Open project</h2><span class="grow"></span><button class="btn sm" id="open-new">${icon("plus")} New project…</button><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header><div class="modal-b"><div id="open-folders"></div><p id="create-error" class="callout fail" role="alert" hidden></p></div>`, (root, close) => {
+    root.querySelector("#open-new").onclick = () => { close(); create(""); };
+    const browser = mountFolderBrowser(root.querySelector("#open-folders"), { list: (p, o) => server.listFolders(p, o), start: path, close,
+      connect: (paths) => openPath(ctx, onOpened, close, root.querySelector("#create-error"), paths[0]),
+      create: (folder) => { close(); create(folder); } });
+    root.addEventListener("beforeclose", () => browser.destroy());
+  });
+}
+
+/** New project: a four-step wizard (Folder → Agent commands → Agents (loops only) → Review & create).
+ *  One <form>; each step is a <fieldset hidden>. The agent-command checkboxes come from the server
+ *  (GET /studio/entrypoint-options), so they show what is installed here. */
+export async function openCreateProject(ctx, onCreated, path = "") {
+  loadCss("css/lazy.css");
+  const wizard = await import("./create_wizard.js");
+  const { templates } = await server.projectTemplates();
+  const canOpen = server.canBrowse();
+  ctx.modal(`<header class="modal-h"><h2>New project</h2><span class="grow"></span>${canOpen ? `<button class="btn sm" id="create-open" title="Open a folder that already has alfrd.yaml">${icon("folder")} Open existing project…</button>` : ""}<a class="btn sm" href="#/new-project" id="create-canvas" title="Plan steps, dependencies, agents and targets on a canvas first">${icon("workflow")} Design on canvas…</a><button class="btn" data-close>Close</button></header>
+    <form id="create-project" novalidate><div class="modal-b">
+    <ol class="cw-steps" aria-label="Steps"></ol>
+    <fieldset data-step="folder" class="cw-step"><legend class="sr-only">Folder</legend><h3 tabindex="-1">Folder</h3>
+      <label class="field"><span>Folder</span><div class="row gap"><input class="input grow" name="path" required placeholder="/path/to/project" value="${esc(path)}"><button type="button" class="btn" id="create-browse">Browse…</button></div></label><div id="create-folders" hidden></div>
+      <label class="field"><span>Name</span><input class="input" name="name" placeholder="Folder name" maxlength="200"></label>
+      <label class="field"><span>Template</span><select class="input" name="template">${templates.map((t) => `<option value="${esc(t.name)}" ${t.name === "basic" ? "selected" : ""}>${esc(t.name)} — ${esc(t.description)}</option>`).join("")}</select></label>
+      <p class="muted small" id="create-experimental" hidden></p>
+      <label class="field"><span>Configuration file</span><select class="input" name="manifest"><option value=".alfrd/alfrd.yaml" selected>.alfrd/alfrd.yaml (default)</option><option value="alfrd.yaml">alfrd.yaml in the project root (lower precedence)</option></select></label></fieldset>
+    <fieldset data-step="commands" class="cw-step" hidden><legend class="sr-only">Agent commands</legend><h3 tabindex="-1">Agent commands <span class="muted small">(entrypoints)</span></h3>
+      <p class="muted small">An agent command is the program ALFRD starts for an agent's turn or chat task. Each ticked command is written to this project's alfrd.yaml with a chat agent of the same name. You can change them later in Settings → Entrypoints.</p>
+      <div id="cw-options" class="cw-opts" role="group" aria-label="Agent commands"><p class="muted">Checking what is installed…</p></div>
+      <div id="cw-custom" class="cw-custom" hidden>
+        <label class="field"><span>Custom command name</span><input class="input mono" id="cw-custom-name" maxlength="40" placeholder="my-agent" aria-describedby="cw-custom-hint"></label>
+        <label class="field"><span>Command (program and arguments; quote paths with spaces; no shell)</span><input class="input mono" id="cw-custom-cmd" placeholder="./scripts/agent.sh --flag" aria-describedby="cw-custom-hint"></label>
+        <label class="field"><span>Model option (optional)</span><input class="input mono" id="cw-custom-model" placeholder="--model"></label>
+        <p class="muted small" id="cw-custom-hint">A script in this project, run directly or as python3 script.py: use a relative path (it is checked and stored as {project_dir}/…, so the project keeps working when moved). The prompt arrives on stdin; the response is read from stdout.</p></div></fieldset>
+    <fieldset data-step="agents" class="cw-step" hidden><legend class="sr-only">Agents</legend><h3 tabindex="-1">Agents</h3>
+      <label class="field"><span>Initial task</span><textarea class="input" name="task" rows="5"></textarea></label>
+      <div class="field"><span id="cw-order-label">Agents in turn order (one pass; it repeats)</span><div id="cw-order" class="row gap wrap" role="list" aria-labelledby="cw-order-label"></div><div id="cw-order-add" class="row gap wrap small"></div></div>
+      <label class="field"><span>Iterations (total turns; the project maximum)</span><input class="input" name="iterations" type="number" min="1" max="${MAX_TURNS}" value="${DEFAULT_ITERATIONS}"></label>
+      <p id="loop-preview" class="muted small" role="status"></p><p class="muted small">Each iteration is one agent turn; the order repeats until the total is reached. Start runs in Workflow.</p></fieldset>
+    <fieldset data-step="review" class="cw-step" hidden><legend class="sr-only">Review and create</legend><h3 tabindex="-1">Review &amp; create</h3><div id="cw-review"></div></fieldset>
+    <ul id="cw-problems" class="msgs" role="alert"></ul>
+    <p id="create-error" class="callout fail" role="alert" hidden></p></div>
+    <footer class="modal-f row gap"><button class="btn" type="button" id="cw-back">Back</button><span class="grow"></span><button class="btn primary" type="submit" id="cw-next">Next</button></footer></form>`, (root, close) => {
+    let browser, options = [], steps = [], at = 0, order = [], orderFor = null, optionsGeneration = 0; // orderFor: the agents `order` was drawn for
+    const $r = (s) => root.querySelector(s);
+    const alert = $r("#create-error"), form = $r("form"), template = $r('[name="template"]'), iterations = $r('[name="iterations"]');
+    $r("#create-canvas").addEventListener("click", () => close());
+    $r("#create-open")?.addEventListener("click", () => { close(); openProject(ctx, onCreated, "", (folder) => openCreateProject(ctx, onCreated, folder)); });
+    const open = (folder) => openPath(ctx, onCreated, close, alert, folder);
+    $r("#create-browse").onclick = () => { browser?.destroy(); browser = ctx.browseFolder($r("#create-folders"), $r('[name="path"]'), { connect: (paths) => open(paths[0]) }); };
+    root.addEventListener("beforeclose", () => browser?.destroy());
+    const selected = () => [...root.querySelectorAll('[name="agent"]:checked')].map((i) => i.value);
+    const custom = () => (selected().includes("custom") ? { name: $r("#cw-custom-name").value.trim(), cmd: $r("#cw-custom-cmd").value, model_option: $r("#cw-custom-model").value.trim() } : null);
+    const agents = () => wizard.loopAgents(options, new Set(selected()), custom()?.name ? [custom().name] : []);
+    const state = () => {
+      const fields = Object.fromEntries(new FormData(form));
+      return { ...fields, template: template.value, iterations: Number(iterations.value), maxTurns: MAX_TURNS, selected: selected(), custom: custom(),
+        agents: agents(), sequence: wizard.sequenceFrom(agents(), order), taken: options.map((o) => o.id) };
+    };
+    const turnsText = () => {
+      const turns = sequenceAgents({ sequence: wizard.sequenceFrom(agents(), order), iterations: Number(iterations.value) }).slice(0, -1);
+      return `${turns.length} turns: ${turns.slice(0, 12).join(" → ")}${turns.length > 12 ? " → …" : ""}`;
+    };
+    const drawOrder = () => {
+      const list = agents();
+      order = wizard.sequenceFrom(list, order, orderFor); orderFor = list;
+      $r("#cw-order").innerHTML = order.map((a, i) => `<span class="chip" role="listitem">${i + 1}. ${esc(a)} <button type="button" class="icon-btn xs" data-order-rm="${i}" ${order.length > 1 ? "" : "disabled"} aria-label="Remove turn ${i + 1} (${esc(a)})">${icon("close")}</button></span>`).join("") || '<span class="muted small">No turns.</span>';
+      $r("#cw-order-add").innerHTML = list.map((a) => `<button type="button" class="btn sm" data-order-add="${esc(a)}">${icon("plus")} ${esc(a)}</button>`).join("");
+      $r("#loop-preview").textContent = order.length ? turnsText() : "";
+    };
+    const loadOptions = async () => {
+      const generation = ++optionsGeneration;
+      $r("#cw-options").innerHTML = '<p class="muted">Checking what is installed…</p>';
+      try {
+        const body = await server.entrypointOptions(template.value);
+        if (generation !== optionsGeneration) return;
+        options = body.options;
+        $r("#cw-options").innerHTML = wizard.optionRows(options, new Set(options.filter((o) => o.default).map((o) => o.id)));
+        const hint = $r("#create-experimental");
+        hint.hidden = !body.experimental;
+        hint.textContent = body.experimental ? `${body.experimental_templates.join(", ")} is not offered here: it needs alfrd serve --experimental-features.` : "";
+        syncCustom(); order = []; orderFor = null; drawOrder();
+      } catch (error) { if (generation === optionsGeneration) $r("#cw-options").innerHTML = `<p class="fail-t">${esc(error.message)}</p>`; }
+    };
+    const syncCustom = () => { $r("#cw-custom").hidden = !selected().includes("custom"); };
+    const problems = (list) => { $r("#cw-problems").innerHTML = list.map((m) => `<li class="lvl-error">${esc(m)}</li>`).join(""); return list.length; };
+    const show = async (index, { focus = true } = {}) => {
+      at = index;
+      root.querySelectorAll("fieldset[data-step]").forEach((f) => { f.hidden = f.dataset.step !== steps[at].id; });
+      $r(".cw-steps").innerHTML = steps.map((s, i) => `<li ${i === at ? 'aria-current="step" class="on"' : i < at ? 'class="done"' : ""}>${esc(s.title)}</li>`).join("");
+      $r("#cw-back").hidden = at === 0;
+      $r("#cw-next").textContent = at === steps.length - 1 ? "Create project" : "Next";
+      problems([]);
+      if (steps[at].id === "agents") drawOrder();
+      if (steps[at].id === "review") {
+        const s = state(), payload = wizard.createPayload(s);
+        $r("#cw-review").innerHTML = '<p class="muted">Checking the commands in this folder…</p>';
+        let reviewed = { entries: [], warnings: [] }; // the server's check of the custom command in this folder
+        if (payload.custom) {
+          try { reviewed = await server.entrypointCheck(payload.path, payload.custom); }
+          catch (error) { $r("#cw-review").innerHTML = ""; problems([error.message]); $r("#cw-next").disabled = true; return; }
+        }
+        $r("#cw-next").disabled = false;
+        $r("#cw-review").innerHTML = wizard.reviewSummary(payload, options, { ...reviewed, turns: s.template === "agent-loop" ? turnsText() : "" });
+      } else $r("#cw-next").disabled = false;
+      if (focus) root.querySelector(`fieldset[data-step="${steps[at].id}"] h3`)?.focus();
+    };
+    const restep = () => { steps = wizard.stepsFor(template.value); if (at >= steps.length) at = steps.length - 1; };
+    template.addEventListener("change", () => { restep(); show(at, { focus: false }); loadOptions(); });
+    root.addEventListener("change", (event) => {
+      if (event.target.name === "agent") { syncCustom(); drawOrder(); problems([]); }
+    });
+    iterations.addEventListener("input", drawOrder);
+    $r("#cw-custom-name").addEventListener("input", drawOrder);
+    root.addEventListener("click", (event) => {
+      const rm = event.target.closest("[data-order-rm]"), add = event.target.closest("[data-order-add]");
+      if (rm && order.length > 1) { order.splice(Number(rm.dataset.orderRm), 1); drawOrder(); }
+      if (add) { order = [...wizard.sequenceFrom(agents(), order), add.dataset.orderAdd]; drawOrder(); }
+    });
+    $r("#cw-back").addEventListener("click", () => { if (at > 0) show(at - 1); });
+    restep(); show(0, { focus: false }); loadOptions();
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const s = state();
+      if (problems(wizard.stepProblems(steps[at].id, s))) return;
+      if (at < steps.length - 1) { show(at + 1); return; }
+      const button = $r("#cw-next");
+      button.disabled = true;
+      try {
+        const payload = wizard.createPayload(s);
+        const project = await server.createProject(payload);
+        close();
+        await onCreated(project, payload.template);
+        ctx.toast(payload.template === "agent-loop" ? "Project created · start a run in Workflow" : "Project created · follow Get started on Overview", "ok", { link: "#/config", linkLabel: "Review agent commands" });
+        if (project.warnings?.length) ctx.toast(project.warnings.join(" "), "warn", { sticky: true });
+      } catch (error) {
+        alert.hidden = false; alert.textContent = error.message;
+        // 409: the folder already holds ALFRD files (alfrd.yaml): offer to register it instead.
+        if (error.status === 409) {
+          const folder = $r('[name="path"]').value;
+          alert.insertAdjacentHTML("beforeend", ` <button type="button" class="btn sm">Open it instead</button>`);
+          alert.lastChild.onclick = () => open(folder);
+        }
+      }
+      finally { button.disabled = false; }
+    });
+  });
+}
+
+export async function openHandoffs(ctx, project, id, { unit = null } = {}) {
+  loadCss("css/lazy.css");
+  let { handoffs } = await server.handoffs(project, id);
+  const target = handoffs[0]?.target || storage.get(`task:selected:${project}`, null) || "task";
+  const info = await server.executionInfo(project, target);
+  const files = [...new Set(info.steps.flatMap((s) => Object.values(s.handoff || {})).map((f) => f.replaceAll("{target}", target)))];
+  let active = handoffs.find((h) => h.phase === "awaiting_response" && !h.response_bytes);
+  let review = handoffs.find((h) => h.review_status === "pending" && h.status === "running");
+  const canWrite = Boolean(server.session?.mutations_enabled);
+  const tabs = [
+    { id: "review", icon: "check", label: "Review", hidden: !review, dot: 1 },
+    { id: "manual", icon: "log", label: "Chat reply", hidden: !active, dot: 1 },
+    { id: "turns", icon: "file", label: "Responses" },
+    { id: "plan", icon: "clock", label: "Run turns" },
+    { id: "next", icon: "edit", label: "Next step" },
+  ];
+  ctx.modal(`<header class="modal-h"><h2>Agent handoffs</h2><span class="mono muted small">${esc(id)}</span><span class="grow"></span>
+      <button class="btn sm" id="handoff-refresh">${icon("sync")} Refresh</button><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    ${tabFrame("ho", "Handoff sections", tabs, {
+      review: `<div id="review-section"><h3>Human adjustment</h3><p class="muted small">Review the response, then approve to continue.</p><label for="review-response">Response for review</label><textarea class="input" id="review-response" rows="14" disabled></textarea><p id="review-error" class="fail-t small" role="alert"></p>
+    <div class="ho-actions"><button class="btn primary" id="review-approve" disabled>Approve and continue</button></div>
+    <label class="field"><span>Reason for rejecting (optional)</span><input class="input" id="review-reason" maxlength="2000"></label><div class="ho-actions"><button class="btn danger" id="review-reject" disabled>Reject and stop</button></div></div>`,
+      manual: `<div id="manual-section"><h3>Submit a chat response</h3><p class="muted small">Copy the prompt into chat; paste the full Markdown response.</p><div class="ho-actions"><button class="btn" id="manual-copy">${icon("copy")} Copy prompt</button></div><label for="manual-response">Manual response</label><textarea class="input" id="manual-response" rows="10"></textarea><p id="manual-error" class="fail-t small" role="alert"></p><div class="ho-actions"><button class="btn primary" id="manual-submit" ${canWrite ? "" : "disabled"}>Submit response</button></div></div>`,
+      turns: `<h3>Prompts and responses</h3><p class="muted small">One entry per turn. Open a turn to read its prompt and archived response.</p><div id="handoff-turns" class="ho-turns"></div>`,
+      plan: `<h3>Turns of this run</h3><p class="muted small">Review, human turn and delay. Changes apply to this run only. Review can still be added to the running turn; other settings only to turns that have not started.</p><div id="plan-turns" class="ho-table">Loading…</div>`,
+      next: `<h3>Edit a next step</h3><p class="muted small">Pause before editing the next prompt; active input is frozen.</p>
+    <label for="handoff-file">Next-step file</label><select class="input" id="handoff-file">${files.map((f) => `<option>${esc(f)}</option>`).join("")}</select>
+    <label for="handoff-text">Next-step text</label><textarea class="input" id="handoff-text" rows="12"></textarea>
+    <div class="ho-actions"><button class="btn primary" id="handoff-save" ${canWrite ? "" : "disabled"}>Save next step</button></div>`,
+    })}
+    <footer class="modal-f row gap"><p id="handoff-message" class="muted small" role="status"></p><span class="grow"></span><button class="btn sm" data-close>Done</button></footer>`, (root) => {
+    const select = root.querySelector("#handoff-file"), text = root.querySelector("#handoff-text"), message = root.querySelector("#handoff-message");
+    const showTab = tabRail(root, "ho", (name) => { if (name === "plan") loadPlanTurns(); });
+    // Review and chat reply exist only while a turn waits for them; open the one that needs a person first.
+    const syncTabs = () => {
+      root.querySelector("#ho-tab-review").hidden = !review;
+      root.querySelector("#ho-tab-manual").hidden = !active;
+      const current = root.querySelector(".set-tabs .on");
+      if (!current || current.hidden) showTab(review ? "review" : active ? "manual" : "turns");
+    };
+    let loaded = null, generation = 0;
+    let reviewHash = null, reviewOriginal = "";
+    const fullArtifact = async (unit, kind) => {
+      let result = "", offset = 0;
+      do {
+        const page = await server.handoffArtifact(project, id, unit.id, kind, offset);
+        result += page.content; offset += page.returned_bytes;
+        if (!page.truncated) return result;
+        if (!page.returned_bytes) throw new Error("Unable to advance artifact page");
+      } while (true);
+    };
+    const loadReview = async () => {
+      const field = root.querySelector("#review-response"), button = root.querySelector("#review-approve");
+      syncTabs();
+      reviewHash = null; button.disabled = true; root.querySelector("#review-reject").disabled = true;
+      if (!review) { field.value = ""; reviewOriginal = ""; return; }
+      try {
+        const target = review;
+        const content = await fullArtifact(target, "response");
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+        if (review !== target) return;
+        reviewHash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+        field.value = content; reviewOriginal = content; field.disabled = !canWrite; button.disabled = !canWrite;
+        root.querySelector("#review-reject").disabled = !canWrite || review.review_gate === "shim";
+      } catch (error) { root.querySelector("#review-error").textContent = error.message; }
+    };
+    const dirty = () => hasDirtyHandoff(loaded, text.value) || root.querySelector("#manual-response").value.trim() || root.querySelector("#review-response").value !== reviewOriginal;
+    root.querySelector("#manual-copy").addEventListener("click", async () => {
+      try { if (active) await navigator.clipboard.writeText(await fullArtifact(active, "prompt")); message.textContent = "Prompt copied"; }
+      catch (error) { root.querySelector("#manual-error").textContent = error.message; }
+    });
+    root.addEventListener("beforeclose", (event) => {
+      if (dirty() && !confirm("Discard unsaved handoff edits?")) event.preventDefault();
+    });
+    const loadPlanTurns = async () => {
+      const box = root.querySelector("#plan-turns");
+      try {
+        const { turns } = await server.planTurns(project, id);
+        const can = (t, key) => canWrite && t.editable.includes(key);
+        box.innerHTML = `<table class="turn-table"><thead><tr><th>Turn</th><th>Agent</th><th>Review before handoff</th><th>Human writes</th><th>Start after</th><th>State</th></tr></thead><tbody>${turns.map((t) => `<tr data-step="${esc(t.step)}">
+          <td class="mono">${esc(t.step)}</td><td>${esc(t.agent || "")}</td>
+          <td><input type="checkbox" data-set="human_review" aria-label="Review ${esc(t.step)}" ${t.human_review ? "checked" : ""} ${can(t, "human_review") ? "" : "disabled"}></td>
+          <td><input type="checkbox" data-set="manual" aria-label="Human writes ${esc(t.step)}" ${t.manual ? "checked" : ""} ${can(t, "manual") ? "" : "disabled"}></td>
+          <td><input type="text" class="input" data-set="after" aria-label="Delay before ${esc(t.step)}" placeholder="${can(t, "after") ? "+1h or 02:00" : ""}" value="${t.after || t.at ? esc(t.overrides.after ?? (t.at || `${Math.round(t.after / 60)}m`)) : ""}" ${can(t, "after") ? "" : "disabled"}>${(t.after || t.at) && can(t, "after") ? ` <button class="btn sm" data-run-now>Run now</button>` : ""}</td>
+          <td>${esc(t.state)}</td></tr>`).join("")}</tbody></table><p id="plan-turns-error" role="alert"></p>`;
+        box.querySelectorAll("tr[data-step]").forEach((row) => {
+          const send = async (payload) => {
+            try { await server.planTurnSet(project, id, row.dataset.step, payload); await loadPlanTurns(); }
+            catch (error) { box.querySelector("#plan-turns-error").textContent = error.message; }
+          };
+          row.querySelectorAll("input[type=checkbox]").forEach((input) => input.addEventListener("change", () => send({ [input.dataset.set]: input.checked })));
+          row.querySelector('[data-set="after"]')?.addEventListener("change", (event) => send({ after: event.target.value.trim() || null }));
+          row.querySelector("[data-run-now]")?.addEventListener("click", () => send({ after: 0 }));
+        });
+      } catch (error) { box.textContent = error.message; }
+    };
+    root.querySelector("#review-reject").addEventListener("click", async (event) => {
+      if (!review || !confirm("Reject this response? Nothing is published and the run stops.")) return;
+      event.target.disabled = true;
+      try { await server.planReject(project, id, { unit: review.id, reason: root.querySelector("#review-reason").value }); ctx.toast("Response rejected · the run stops", "ok"); root.querySelector("#handoff-refresh").click(); }
+      catch (error) { root.querySelector("#review-error").textContent = error.message; event.target.disabled = false; }
+    });
+    const renderTurns = () => {
+      const list = root.querySelector("#handoff-turns");
+      list.innerHTML = handoffs.map((h, index) => `<details class="ho-turn" data-turn="${index}"><summary><b>${/^t\d{3}-/.test(h.steps?.[0] || "") ? "Turn" : "Iteration"} ${esc(h.iteration_label)}</b><span>${esc(h.agent)}</span><span class="badge">${esc(h.phase)}</span><span class="grow"></span><span class="muted small">${esc(h.model || (h.requested_model ? `${h.requested_model} (requested)` : "Model not reported"))} · <span class="tabular">${h.prompt_bytes} / ${h.response_bytes} B</span></span></summary>
+        ${h.error ? `<pre class="handoff-artifact">${esc(h.error)}</pre><p>${/heading|sections/i.test(h.error) ? "Fix the response and resubmit" : "Review the unit log, fix the cause, and retry the turn"}</p>` : ""}
+        ${h.log ? `<div class="ho-actions"><button class="btn sm" data-unit-log>${icon("log")} Open unit log</button></div>` : ""}
+        ${["prompt", "response"].map((kind) => `<section class="ho-artifact" data-artifact="${kind}"><div class="row gap"><h4 class="grow">${kind === "prompt" ? "Incoming prompt" : "Response"}</h4><button class="btn sm" data-copy>${icon("copy")} Copy</button></div><div class="seg" role="group" aria-label="${kind === "prompt" ? "Incoming prompt" : "Response"} format"><button type="button" data-mode="rendered" aria-pressed="false">Rendered</button><button type="button" data-mode="source" aria-pressed="false">Source</button></div><pre class="handoff-artifact" tabindex="0" aria-label="${kind} source"></pre><div class="handoff-artifact ho-markdown" data-rendered tabindex="0" aria-label="${kind} rendered" hidden></div><p class="muted small" data-render-status role="status"></p><p class="muted small" data-notice role="status"></p><button class="btn sm" data-more>Load more</button></section>`).join("")}</details>`).join("") || '<p class="muted">No turns have started.</p>';
+      list.querySelectorAll("details").forEach((details) => {
+        const h = handoffs[Number(details.dataset.turn)];
+        details.querySelector("[data-unit-log]")?.addEventListener("click", () => dockLog(ctx, project, h.log));
+        details.querySelectorAll("[data-artifact]").forEach((section) => {
+          let offset = 0, busy = false, started = false;
+          const append = mountMarkdown(section, { project, path: `${h.id}/${section.dataset.artifact}.md` });
+          const more = section.querySelector("[data-more]"), notice = section.querySelector("[data-notice]");
+          const page = async () => {
+            if (busy) return;
+            busy = true; more.disabled = true;
+            try {
+              const result = await server.handoffArtifact(project, id, h.id, section.dataset.artifact, offset);
+              append(result.content);
+              offset += result.returned_bytes;
+              notice.textContent = result.truncated ? `Showing ${(offset / 1024).toFixed(1)} of ${(result.total_bytes / 1024).toFixed(1)} KiB — incomplete ${section.dataset.artifact}; Load more to continue` : "";
+              more.hidden = !result.truncated; started = true;
+            } catch (error) { notice.textContent = error.message; }
+            finally { busy = false; more.disabled = false; }
+          };
+          more.addEventListener("click", page);
+          section.querySelector("[data-copy]").addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(await fullArtifact(h, section.dataset.artifact)); ctx.toast("Copied", "ok");
+            } catch (error) { message.textContent = error.message; }
+          });
+          details.addEventListener("toggle", () => { if (details.open && !started) page(); });
+        });
+        if (h.id === unit) {
+          details.open = true;
+          requestAnimationFrame(() => details.scrollIntoView({ block: "start" }));
+        }
+      });
+    };
+    showTab(unit ? "turns" : review ? "review" : active ? "manual" : "turns");
+    renderTurns();
+    const load = async () => {
+      const current = ++generation;
+      try { const result = await server.handoff(project, select.value); if (current === generation) { loaded = result; text.value = result.text; } }
+      catch (error) { message.textContent = error.message; }
+    };
+    select.addEventListener("change", () => {
+      if (hasDirtyHandoff(loaded, text.value) && !confirm("Discard unsaved next-step edits?")) { select.value = loaded.file; return; }
+      load();
+    });
+    root.querySelector("#handoff-refresh").addEventListener("click", async () => {
+      if (dirty() && !confirm("Discard unsaved handoff edits and refresh?")) return;
+      try {
+        ({ handoffs } = await server.handoffs(project, id));
+        active = handoffs.find((h) => h.phase === "awaiting_response" && !h.response_bytes);
+        review = handoffs.find((h) => h.phase === "awaiting_review");
+        root.querySelector("#manual-response").value = "";
+        await loadReview();
+        syncTabs();
+        root.querySelector("#manual-submit").disabled = !canWrite;
+        renderTurns();
+        await load();
+      } catch (error) { message.textContent = error.message; }
+    });
+    if (files.length) load();
+    loadReview();
+    root.querySelector("#handoff-save").addEventListener("click", async () => {
+      if (!loaded || loaded.file !== select.value) return;
+      try { loaded = await server.handoffSave(project, { file: loaded.file, text: text.value, base_hash: loaded.hash }); message.textContent = "Saved"; }
+      catch (error) { message.textContent = error.status === 409 ? "The file changed. Reopen Handoffs to review the current version before saving." : error.message; }
+    });
+    root.querySelector("#manual-submit")?.addEventListener("click", async (event) => {
+      if (!active) return;
+      event.target.disabled = true;
+      try { await server.planResponse(project, id, { unit: active.id, text: root.querySelector("#manual-response").value }); root.querySelector("#manual-response").value = ""; message.textContent = "Response submitted"; }
+      catch (error) { root.querySelector("#manual-error").textContent = error.message; event.target.disabled = false; }
+    });
+    root.querySelector("#review-approve")?.addEventListener("click", async (event) => {
+      if (!review || !reviewHash) return;
+      event.target.disabled = true;
+      try { await server.planReview(project, id, { unit: review.id, text: root.querySelector("#review-response").value, base_hash: reviewHash }); reviewOriginal = root.querySelector("#review-response").value; message.textContent = "Approved. The next agent will receive your adjusted response."; ctx.update(); }
+      catch (error) { root.querySelector("#review-error").textContent = error.message; event.target.disabled = false; }
+    });
+  }, "set-dlg ho-dlg");
+}
+
+export async function openAgentSettings(ctx, project, text, apply) {
+  loadCss("css/lazy.css");
+  const data = parseYaml(text), agents = agentRows(data), reviews = reviewRows(data);
+  let turnRows = [];
+  try { turnRows = turnSettingRows(data); } catch { /* invalid workflow: edit it in the YAML */ }
+  let personas = personaRows(data);
+  const turns = turnRoleRows(data).map((turn) => ({ ...turn, rows: turn.keys.map((key) => personas.findIndex((p) => p.key === key)).filter((i) => i >= 0) }));
+  const access = data.project_settings?.agent_access || {};
+  const enabled = Boolean(data.project_settings?.human_review) || reviews.some((r) => r.enabled);
+  const tabs = [
+    { id: "models", icon: "gear", label: "Models" },
+    { id: "personas", icon: "edit", label: "Personalities" },
+    { id: "roles", icon: "list", label: "Turn roles" },
+    { id: "access", icon: "folder", label: "Folders & shell" },
+    { id: "review", icon: "check", label: "Human review" },
+  ];
+  ctx.modal(`<header class="modal-h"><h2>Agents &amp; review</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
+    <form>${tabFrame("ag", "Agent settings sections", tabs, {
+      models: `<h3>Models</h3><p class="muted small">Changes apply to new runs. Blank models use CLI defaults.</p>
+    ${agents.map((a, i) => `<fieldset><legend>${esc(a.name)} <span class="muted small">(${esc(a.adapter)})</span></legend><label class="field"><span>Model name or alias</span><input class="input" data-model="${i}" value="${esc(a.model)}" placeholder="CLI default"></label><label class="field"><span>Fallback models, in order (comma-separated)</span><input class="input" data-fallback="${i}" value="${esc(a.fallback_models.join(", "))}" placeholder="none"></label><label><input type="checkbox" data-manual="${i}" ${a.manual ? "checked" : ""}> Run every turn of this agent through chat</label></fieldset>`).join("") || "<p>No agent CLI entrypoints configured.</p>"}`,
+      personas: `<h3>Personalities</h3><div id="personas" class="ho-turns"></div><div class="ho-actions"><button class="btn" type="button" id="persona-add">Add personality</button></div>`,
+      roles: `<h3>Turn roles</h3><div id="turn-roles" class="ho-turns"></div>`,
+      access: `<h3>Folders and shell commands</h3>
+    <label class="field"><span>Additional folders (one per line)</span><textarea class="input" id="agent-folders" rows="4">${esc((access.folders || []).join("\n"))}</textarea></label>
+    <p class="muted small">Paths are relative to the project. Claude gets tool access; Codex gets writable folders under workspace-write.</p>
+    <label class="field"><span>Claude Bash commands to approve (one pattern per line)</span><textarea class="input" id="agent-bash" rows="3" placeholder="git status *">${esc((access.bash_commands || []).join("\n"))}</textarea></label>
+    <label class="field"><span>Codex shell and file permissions</span><select class="input" id="agent-sandbox"><option value="">Keep CLI settings</option><option value="read-only" ${access.sandbox === "read-only" ? "selected" : ""}>Read only</option><option value="workspace-write" ${access.sandbox === "workspace-write" ? "selected" : ""}>Write in workspace and added folders</option></select></label>`,
+      review: `<h3>Human in the loop</h3><label><input type="checkbox" id="review-enabled" ${enabled ? "checked" : ""}> Enable review</label>
+    <p class="muted small">Approval releases the handoff to the next agent; code changes remain.</p>
+    ${reviews.map((r, i) => `<label><input type="checkbox" data-review="${i}" ${r.enabled ? "checked" : ""} ${enabled ? "" : "disabled"}> Review after every ${esc(r.id)} turn</label>`).join("")}
+    ${turnRows.length ? `<h3>Per-turn settings (${turnRows.length} turns)</h3><p class="muted small">Choose single turns a person writes or reviews, or delay. A running plan is changed under Handoffs → Run turns.</p>
+    <div class="ho-table"><table class="turn-table"><thead><tr><th>Turn</th><th>Agent</th><th>Human writes</th><th>Review</th><th>Start after</th></tr></thead><tbody>${turnRows.map((t, i) => `<tr><td class="mono">${esc(t.id)}</td><td>${esc(t.agent)}</td>
+      <td><input type="checkbox" data-turn-manual="${i}" aria-label="Human writes ${esc(t.id)}" ${t.manual ? "checked" : ""}></td><td><input type="checkbox" data-turn-review="${i}" aria-label="Review ${esc(t.id)}" ${t.human_review ? "checked" : ""}></td>
+      <td><input type="text" class="input" data-turn-after="${i}" aria-label="Delay before ${esc(t.id)}" placeholder="+1h" value="${esc(t.after)}"></td></tr>`).join("")}</tbody></table></div>` : ""}`,
+    })}
+    <footer class="modal-f row gap"><p role="alert" id="agent-settings-error" class="fail-t small"></p><span class="grow"></span><button class="btn primary" type="submit">Apply settings</button></footer></form>`, (root, close) => {
+    // A hidden field cannot show its validation message: open its section.
+    const form = root.querySelector("form"), showTab = tabRail(root, "ag");
+    showTab("models");
+    form.addEventListener("invalid", () => showTab(form.querySelector(":invalid").closest(".set-panel").id.slice(9)), true);
+    const readPersonas = () => {
+      personas = personas.map((p, i) => ({ ...p, key: root.querySelector(`[data-persona-key="${i}"]`).value,
+        label: root.querySelector(`[data-persona-label="${i}"]`).value, instructions: root.querySelector(`[data-persona-instructions="${i}"]`).value }));
+    };
+    const readTurns = () => {
+      turns.forEach((turn, i) => { turn.rows = [...root.querySelectorAll(`[data-turn="${i}"]:checked`)].map((el) => Number(el.dataset.persona)); });
+    };
+    const renderTurns = () => {
+      root.querySelector("#turn-roles").innerHTML = turns.map((turn, i) => `<fieldset><legend>${turn.iteration}/${turn.iterations} · ${esc(turn.agent)}</legend>${personas.map((p, j) => `<label><input type="checkbox" data-turn="${i}" data-persona="${j}" ${turn.rows.includes(j) ? "checked" : ""}> ${esc(p.label || p.key || "New personality")}</label>`).join(" ")}</fieldset>`).join("");
+    };
+    const renderPersonas = () => {
+      root.querySelector("#personas").innerHTML = personas.map((p, i) => `<fieldset><legend>Personality ${i + 1}</legend>
+        <label class="field"><span>Key</span><input class="input" data-persona-key="${i}" value="${esc(p.key)}" maxlength="40" required pattern="[a-z0-9][a-z0-9_-]{0,39}"></label>
+        <label class="field"><span>Label</span><input class="input" data-persona-label="${i}" value="${esc(p.label)}" maxlength="60" required></label>
+        <label class="field"><span>Instructions</span><textarea class="input" data-persona-instructions="${i}" rows="4" maxlength="4000">${esc(p.instructions)}</textarea></label>
+        <button class="btn" type="button" data-persona-remove="${i}">Remove personality</button></fieldset>`).join("");
+      root.querySelectorAll("[data-persona-remove]").forEach((button) => button.addEventListener("click", () => {
+        readTurns(); readPersonas(); const index = Number(button.dataset.personaRemove);
+        personas.splice(index, 1); turns.forEach((turn) => { turn.rows = turn.rows.filter((i) => i !== index).map((i) => i > index ? i - 1 : i); });
+        renderPersonas(); renderTurns();
+      }));
+      root.querySelectorAll("[data-persona-key], [data-persona-label]").forEach((input) => input.addEventListener("change", () => {
+        readTurns(); readPersonas(); renderTurns();
+      }));
+    };
+    renderPersonas(); renderTurns();
+    root.querySelector("#persona-add").addEventListener("click", () => {
+      readTurns(); readPersonas(); personas.push({ key: "", label: "", instructions: "" }); renderPersonas(); renderTurns();
+    });
+    root.querySelector("#review-enabled").addEventListener("change", (event) => {
+      root.querySelectorAll("[data-review]").forEach((input) => { input.disabled = !event.target.checked; if (event.target.checked) input.checked = true; });
+    });
+    root.querySelector("form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = root.querySelector("button[type=submit]"); button.disabled = true;
+      try {
+        let next = applyAgentSettings(data, agents.map((a, i) => ({ ...a, model: root.querySelector(`[data-model="${i}"]`).value, manual: root.querySelector(`[data-manual="${i}"]`).checked,
+          fallback_models: root.querySelector(`[data-fallback="${i}"]`).value.split(",").map((m) => m.trim()).filter(Boolean) })),
+          root.querySelector("#review-enabled").checked, reviews.map((r, i) => ({ ...r, enabled: root.querySelector(`[data-review="${i}"]`).checked })));
+        next = applyTurnSettings(next, turnRows.map((t, i) => {
+          const row = { ...t, manual: root.querySelector(`[data-turn-manual="${i}"]`).checked, human_review: root.querySelector(`[data-turn-review="${i}"]`).checked,
+            after: root.querySelector(`[data-turn-after="${i}"]`).value.trim() };
+          return { ...row, changed: row.manual !== t.manual || row.human_review !== t.human_review || row.after !== String(t.after ?? "") };
+        }));
+        readTurns(); readPersonas();
+        next = applyPersonaSettings(next, personas, turns.map((turn) => ({ keys: turn.rows.map((i) => personas[i].key) })));
+        const lines = (selector) => root.querySelector(selector).value.split("\n").map((line) => line.trim()).filter(Boolean);
+        const agentAccess = { folders: lines("#agent-folders"), bash_commands: lines("#agent-bash") };
+        const sandbox = root.querySelector("#agent-sandbox").value;
+        if (sandbox) agentAccess.sandbox = sandbox;
+        if (JSON.stringify(agentAccess) !== JSON.stringify({ folders: access.folders || [], bash_commands: access.bash_commands || [], ...(access.sandbox ? { sandbox: access.sandbox } : {}) }))
+          next.project_settings = { ...(next.project_settings || {}), agent_access: agentAccess };
+        let updated = text;
+        for (const key of ["entrypoint", "project_settings", "workflows"]) if (next[key] && JSON.stringify(next[key]) !== JSON.stringify(data[key])) updated = replaceSection(updated, key, dumpYaml({ [key]: next[key] }));
+        await apply(updated); close();
+      } catch (error) { root.querySelector("#agent-settings-error").textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+  }, "set-dlg ag-dlg");
+}
+
+// Local drafts retain their original file hash until saved or discarded.
+const DRAFT_V = 1;
+const drafts = new Map(); // Storage failure fallback
+export function forgetTaskDrafts() { drafts.clear(); }
+const draftPrefix = (project, target = null) => `draft:task:${location.origin}|${project}|${target ? `${target}|` : ""}`;
+function readDraft(key) {
+  const d = drafts.get(key) || storage.get(key, null);
+  return d?.v === DRAFT_V && typeof d.text === "string" && typeof d.base_hash === "string" ? d : null;
+}
+function otherDrafts(project, run, target = null) {
+  const prefix = draftPrefix(project, target);
+  let stored = [];
+  try { stored = Object.keys(localStorage).filter((k) => k.startsWith(`alfrd-studio:${prefix}`)).map((k) => k.slice(13)); } catch { /* storage unavailable */ }
+  return [...new Set([...drafts.keys(), ...stored])].filter((k) => k.startsWith(prefix) && readDraft(k)).map((k) => k.slice(prefix.length)).filter((r) => r !== run);
+}
+
+export async function openTask(ctx, project, { run = null, target = null } = {}) {
+  let tasks = [], folderLayout = true;
+  try { const list = await server.tasks(project); tasks = list.tasks; folderLayout = list.folder_layout !== false; }
+  catch (error) { if (error.status && error.status !== 404) throw error; }
+  if (tasks.length) {
+    const preferred = target || storage.get(`task:selected:${project}`, null) || ctx.target?.()?.name;
+    target = tasks.some((t) => t.name === preferred) ? preferred : tasks[0].name;
+    storage.set(`task:selected:${project}`, target);
+  }
+  run ||= activePlan(project, target)?.plan?.id || "next";
+  const key = `${draftPrefix(project, target)}${run}`;
+  let loaded = await server.task(project, target);
+  const kept = readDraft(key);
+  let base = kept ? { hash: kept.base_hash, text: kept.base_text ?? "" } : { hash: loaded.hash, text: loaded.text };
+  const others = otherDrafts(project, run, target);
+  const runName = (r) => (r === "next" ? "the next run" : `run ${r}`);
+  loadCss("css/lazy.css");
+  ctx.modal(`<header class="modal-h"><h2>Task</h2><button class="btn" data-close>Close</button></header><div class="modal-b">
+    ${tasks.length ? `<div class="row gap wrap"><label class="field grow"><span>Task</span><select class="input" id="task-picker">${tasks.map((t) => `<option value="${esc(t.name)}" ${t.name === target ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></label><button class="btn" id="task-new" ${folderLayout ? "" : "hidden"} ${server.session?.mutations_enabled ? "" : "disabled"}>New task</button><button class="btn" id="task-rename" ${folderLayout ? "" : "hidden"} ${server.session?.mutations_enabled && !activePlan(project, target) ? "" : "disabled"} title="An active task cannot be renamed">Rename</button></div>
+    <section id="task-name-panel" hidden><label class="field"><span>Task name</span><input class="input" id="task-name" maxlength="64" aria-describedby="task-name-hint"></label><p class="muted small" id="task-name-hint">1–64 letters, digits, . _ or -; no leading dot. Each task has its own folder.</p><label class="field" id="task-new-goal-field"><span>Goal for the new task</span><textarea class="input" id="task-new-goal" rows="5"></textarea></label><button class="btn primary" id="task-name-save">Create task</button> <button class="btn" id="task-name-cancel">Cancel</button></section>` : ""}
+    <p>Edit ${esc(loaded.file || (folderLayout && target ? `${target}/task.md` : "task.md"))}. Include goal, constraints and acceptance criteria.</p>
+    ${others.length ? `<p class="muted small">Unsaved draft also kept for ${others.map((r) => `<button type="button" class="link-btn" data-task-run="${esc(r)}">${esc(runName(r))}</button>`).join(", ")}.</p>` : ""}
+    <div class="callout warn task-draft" id="task-draft" hidden>${icon("file")}<span class="grow"><b>Unsaved draft</b> <span id="task-draft-note">Kept in this browser. Save task to update task.md.</span></span>
+      <span id="task-draft-acts"><button type="button" class="link-btn" id="task-copy" hidden>Copy text</button> <button type="button" class="link-btn" id="task-discard">Discard</button></span>
+      <span id="task-draft-confirm" hidden>Discard this unsaved task draft? <button type="button" class="btn sm danger" id="task-discard-yes">Discard draft</button> <button type="button" class="btn sm" id="task-discard-no">Keep editing</button></span></div>
+    <p class="sr-only" role="status" id="task-draft-status"></p>
+    <textarea class="input" id="task-text" rows="16" aria-label="task.md">${esc(kept ? kept.text : loaded.text)}</textarea>
+    <label><input type="checkbox" id="task-seed" ${(kept ? kept.seed : true) ? "checked" : ""}> Use this goal for the next run (replace the initial handoff)</label>
+    <p class="muted small">Replacing the initial handoff requires finishing or cancelling this task’s run. Saving task.md leaves active input frozen.</p><p id="task-message" role="status"></p><p id="task-error" class="fail-t" role="alert"></p>
+    <details id="task-current" hidden><summary>View current file</summary><pre class="code small"></pre></details>
+    </div><footer class="modal-f row gap"><button class="btn primary" id="task-save" ${server.session?.mutations_enabled ? "" : "disabled"}>Save task</button><span class="muted small">Closing keeps your draft.</span></footer>`, (root, close) => {
+    const $r = (s) => root.querySelector(s);
+    const text = $r("#task-text"), seed = $r("#task-seed"), save = $r("#task-save");
+    let nameAction = "new";
+    const reopen = async (name) => { close(); await openTask(ctx, project, { target: name }); ctx.update?.(); };
+    $r("#task-picker")?.addEventListener("change", async (event) => {
+      try { await reopen(event.target.value); } catch (error) { ctx.toast(error.message, "fail"); }
+    });
+    const namePanel = (action) => {
+      nameAction = action;
+      $r("#task-name-panel").hidden = false;
+      $r("#task-name").value = action === "new" ? nextTaskName(tasks) : target;
+      $r("#task-new-goal-field").hidden = action !== "new";
+      $r("#task-name-save").textContent = action === "new" ? "Create task" : "Rename task";
+      $r("#task-name").focus();
+    };
+    $r("#task-new")?.addEventListener("click", () => namePanel("new"));
+    $r("#task-rename")?.addEventListener("click", () => namePanel("rename"));
+    $r("#task-name-cancel")?.addEventListener("click", () => { $r("#task-name-panel").hidden = true; $r("#task-picker").focus(); });
+    $r("#task-name-save")?.addEventListener("click", async (event) => {
+      const name = $r("#task-name").value.trim();
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name)) { $r("#task-error").textContent = "Enter a valid task name."; return; }
+      event.target.disabled = true;
+      try {
+        if (nameAction === "new") await server.taskCreate(project, { name, task: $r("#task-new-goal").value });
+        else {
+          await server.taskRename(project, target, name);
+          if (text.value !== base.text) {
+            const nextKey = `${draftPrefix(project, name)}${run}`;
+            const kept = { ...draft(), target: name };
+            drafts.set(nextKey, kept); storage.set(nextKey, kept);
+            drafts.delete(key); storage.remove(key);
+          }
+        }
+        await reopen(name);
+      } catch (error) { $r("#task-error").textContent = error.message; }
+      finally { event.target.disabled = false; }
+    });
+    let stored = true, timer = 0;
+    const draft = () => ({ v: DRAFT_V, project, target, run, text: text.value, base_hash: base.hash, base_text: base.text, seed: seed.checked, updated: new Date().toISOString() });
+    const persist = () => {
+      clearTimeout(timer);
+      const d = drafts.get(key);
+      if (d) stored = storage.set(key, d); else storage.remove(key);
+      $r("#task-draft-note").textContent = stored ? "Kept in this browser. Save task to update task.md."
+        : "Draft kept for this tab only. Browser storage is unavailable; copy your text before closing this tab.";
+      $r("#task-copy").hidden = stored;
+    };
+    const changed = () => {
+      if (text.value === base.text) drafts.delete(key); else drafts.set(key, draft());
+      $r("#task-draft").hidden = !drafts.has(key);
+      clearTimeout(timer);
+      timer = setTimeout(persist, 250);
+    };
+    text.addEventListener("input", changed);
+    seed.addEventListener("change", changed);
+    window.addEventListener("pagehide", persist);
+    root.addEventListener("beforeclose", () => { persist(); window.removeEventListener("pagehide", persist); });
+    queueMicrotask(() => text.focus());
+    if (kept) {
+      drafts.set(key, kept);
+      $r("#task-draft").hidden = false;
+      $r("#task-draft-status").textContent = `Unsaved draft restored for ${runName(run)}.`;
+    }
+    root.querySelectorAll("[data-task-run]").forEach((b) => b.addEventListener("click", () => { close(); openTask(ctx, project, { run: b.dataset.taskRun, target }).catch((e) => ctx.toast(e.message, "fail")); }));
+    $r("#task-copy").addEventListener("click", async () => ctx.toast((await copyText(text.value)) ? "Copied" : "Copy failed", "ok"));
+    const confirming = (on) => { $r("#task-draft-acts").hidden = on; $r("#task-draft-confirm").hidden = !on; (on ? $r("#task-discard-no") : $r("#task-discard")).focus(); };
+    $r("#task-discard").addEventListener("click", () => confirming(true));
+    $r("#task-discard-no").addEventListener("click", () => { confirming(false); text.focus(); });
+    $r("#task-discard-yes").addEventListener("click", async () => {
+      try { loaded = await server.task(project, target); } catch (error) { $r("#task-error").textContent = error.message; confirming(false); return; }
+      base = { hash: loaded.hash, text: loaded.text };
+      text.value = loaded.text;
+      seed.checked = true;
+      drafts.delete(key);
+      persist();
+      confirming(false);
+      $r("#task-draft").hidden = true;
+      $r("#task-current").hidden = true;
+      $r("#task-error").textContent = "";
+      text.focus();
+    });
+    save.addEventListener("click", async () => {
+      const submitted = text.value;
+      save.disabled = true; save.textContent = "Saving…"; text.readOnly = true; seed.disabled = true;
+      $r("#task-error").textContent = ""; $r("#task-message").textContent = "";
+      try {
+        loaded = await server.taskSave(project, { text: submitted, base_hash: base.hash, use_for_next_run: seed.checked }, target);
+        base = { hash: loaded.hash, text: loaded.text };
+        drafts.delete(key);
+        persist();
+        $r("#task-draft").hidden = true;
+        $r("#task-current").hidden = true;
+        $r("#task-message").textContent = "Saved. Start a new run for this task.";
+      } catch (error) {
+        persist();
+        const conflict = error.status === 409 && typeof error.body?.current === "string";
+        $r("#task-error").textContent = conflict ? "task.md changed since this draft started. Your draft is kept. Review the current file before saving." : error.message;
+        if (conflict) { $r("#task-current pre").textContent = error.body.current; $r("#task-current").hidden = false; }
+      } finally { save.disabled = false; save.textContent = "Save task"; text.readOnly = false; seed.disabled = false; }
+    });
+  });
+}

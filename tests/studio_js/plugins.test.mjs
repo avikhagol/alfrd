@@ -90,8 +90,11 @@ test("custom text viewers receive fetched content and panels can pass existing c
   server.projectFile = async () => { requests++; return "# Report"; };
   const rendered = [];
   const viewer = { id: "markdown", render(file) { rendered.push(file.text); } };
-  await renderViewer(viewer, fileObject("p", "README.md"), {});
-  await renderViewer(viewer, fileObject("p", "README.md", { text: "# Panel report" }), {});
+  const classes = [];
+  const host = { classList: { add: value => classes.push(value) }, querySelectorAll: () => [] };
+  await renderViewer(viewer, fileObject("p", "README.md"), host);
+  await renderViewer(viewer, fileObject("p", "README.md", { text: "# Panel report" }), host);
+  assert.deepEqual(classes, ["file-markdown", "file-markdown"]);
   assert.deepEqual(rendered, ["# Report", "# Panel report"]);
   assert.equal(requests, 1);
 });

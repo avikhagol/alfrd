@@ -16,7 +16,8 @@ import yaml
 from alfrd.extensions import ProjectAction
 from alfrd.yaml_text import dump
 
-from . import a1, columns, mapping, project, settings, studio
+from . import a1, columns, loopback, mapping, oauth, project, settings, studio
+from .client import SyncError
 
 ORDER = ("version", "enabled", "spreadsheet_id", "worksheet", "gid", "header_row", "rows",
          "read_range", "verify_before_write", "outbound", "inbound")
@@ -189,15 +190,16 @@ def state(root: Path, values: dict, payload: dict) -> dict:
                for name, label, keys in (("usage.*", "Resource usage", sorted(mapping.USAGE)),
                                           ("agent_usage.*", "Agent usage", []), ("results.*", "Results", []))]
     fields.append({"id": "template", "label": "Template", "takes_key": False})
-    return {"attached": bool(sha), "enabled": data.get("enabled", True) if data else False,
+    auth = settings.auth_state(values)
+    return {"auth": auth, "attached": bool(sha), "enabled": data.get("enabled", True) if data else False,
             "path": project.MAPPING, "mapping": _ordered(data) if data else None, "mapping_sha256": sha,
             "intrinsic_errors": errors, "steps": list(steps), "fields": fields,
             "formats": sorted(mapping.FORMATS), "statuses": sorted(mapping.STATUSES),
-            "credentials": bool(values.get("credentials_json")),
+            "credentials": auth["signed_in"],
             "default_spreadsheet": bool(values.get("default_spreadsheet_id")),
             "spreadsheet_id": (data or {}).get("spreadsheet_id") or values.get("default_spreadsheet_id") or "",
             "dry_run": bool(values.get("dry_run", False)), "comments_notice": COMMENTS_NOTICE,
-            "last_sync": {k: latest[k] for k in ("at", "result", "cells_written", "steps") if k in latest}}
+            "last_sync": {k: latest[k] for k in ("at", "result", "cells_written", "steps", "error_code") if k in latest}}
 
 
 def sheet_info(root: Path, values: dict, payload: dict) -> dict:
@@ -322,6 +324,75 @@ def backfill(root: Path, values: dict, payload: dict) -> dict:
     return _push(root, values, payload, preview_only=False)
 
 
+def _oauth_mode(values):
+    if settings.auth_mode(values) != "oauth":
+        raise SyncError("Choose oauth as the Sign-in method in Settings first.")
+
+
+def auth_start(root, values, payload):
+    _oauth_mode(values)
+    cfg = oauth.require_config()
+    session = loopback.start("auth", cfg=cfg)
+    return {"session": session.id, "auth_url": oauth.authorization_url(cfg, session.redirect_uri, session.nonce, session.verifier),
+            "expires_in": session.expires_in}
+
+
+def auth_status(root, values, payload):
+    _oauth_mode(values)
+    return loopback.get(payload.get("session"), "auth").status()
+
+
+def auth_cancel(root, values, payload):
+    session = loopback.get(payload.get("session"), "auth")
+    session.finish("cancelled")
+    return session.status()
+
+
+def sign_out(root, values, payload):
+    _oauth_mode(values)
+    if payload.get("confirm") is not True:
+        raise SyncError("Confirm sign-out: revocation signs out ALFRD on all computers for this Google project.")
+    return {"revoked": oauth.sign_out()}
+
+
+def picker_start(root, values, payload):
+    _oauth_mode(values)
+    cfg = oauth.require_config(picker=True)
+    if payload.get("file_id") is not None and (not isinstance(payload["file_id"], str) or not loopback.ID.fullmatch(payload["file_id"])):
+        raise SyncError("Invalid spreadsheet id.")
+    token = oauth.access_token(deadline=time.monotonic() + TIMEOUT)
+    session = loopback.start("picker", cfg=cfg, token=token)
+    return {"session": session.id, "picker_url": session.origin + "/picker?n=" + session.nonce,
+            "expires_in": session.expires_in}
+
+
+def picker_cancel(root, values, payload):
+    session = loopback.get(payload.get("session"), "picker")
+    session.finish("cancelled")
+    return session.status()
+
+
+def picker_status(root, values, payload):
+    _oauth_mode(values)
+    session = loopback.get(payload.get("session"), "picker")
+    result = session.status()
+    if result["state"] == "picked":
+        with session.lock:
+            if "can_edit" not in session.file:
+                try:
+                    client = settings.make_client(values)
+                    session.file = client.drive_file(session.file["id"], deadline=time.monotonic() + TIMEOUT)
+                except SyncError:
+                    session.state, session.message = "error", "The chosen sheet could not be opened. Choose it again or sign in again."
+                    return session.status()
+            result["file"] = session.file
+    return result
+
+
+def create_spreadsheet(root, values, payload):
+    return settings.make_client(values).create_spreadsheet(payload.get("title"), deadline=time.monotonic() + TIMEOUT)
+
+
 def _redact(value: Any, values: dict) -> Any:
     """Remove configured credential material even if a cell/error contains it."""
     raw = values.get("credentials_json")
@@ -332,6 +403,11 @@ def _redact(value: Any, values: dict) -> Any:
             secrets += [v for v in parsed.values() if isinstance(v, str) and v]
     except (ValueError, TypeError):
         pass
+
+    try:
+        secrets += [v for v in oauth.secret_values() if v]
+    except SyncError:
+        pass  # config errors contain variable names only
 
     def clean(item):
         if isinstance(item, str):
@@ -355,6 +431,10 @@ def _guard(run):
             return _redact(run(Path(root).resolve(), values, payload), values)
         except mapping.MappingError as exc:
             raise ValueError(_redact(" ".join(str(exc).split())[:800], values)) from None
+        except SyncError as exc:
+            if run in (auth_start, auth_status, auth_cancel, sign_out, picker_start, picker_status, picker_cancel, create_spreadsheet) or exc.code in ("auth_required", "file_access"):
+                raise ValueError(_redact(" ".join(str(exc).split())[:800], values)) from None
+            raise ValueError("Google Sheet action failed (SyncError). Check the mapping and connection settings.") from None
         except Exception as exc:  # noqa: BLE001 - transport/auth text is untrusted, including ValueError
             raise ValueError(f"Google Sheet action failed ({type(exc).__name__}). Check the mapping and connection settings.") from None
     return guarded
@@ -362,6 +442,11 @@ def _guard(run):
 
 ACTIONS = tuple(ProjectAction(name, _guard(run), mutating=mutating, timeout=timeout)
                 for name, run, mutating, timeout in (
+                    ("auth_start", auth_start, True, 30), ("auth_status", auth_status, False, 30),
+                    ("auth_cancel", auth_cancel, False, 10), ("sign_out", sign_out, True, 30),
+                    ("picker_start", picker_start, False, 30), ("picker_status", picker_status, False, 30),
+                    ("picker_cancel", picker_cancel, False, 10),
+                    ("create_spreadsheet", create_spreadsheet, True, 60),
                     ("state", state, False, 30), ("sheet_info", sheet_info, False, 30),
                     ("headers", headers, False, 30), ("validate", validate, False, 30),
                     ("save", save, True, 60), ("attach", attach, True, 60), ("detach", detach, True, 30),

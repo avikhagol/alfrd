@@ -58,7 +58,7 @@ test("Handoff Markdown: themes, mobile, paging, source, copy and fallback", { sk
         },
         planTurns: async () => ({ turns: [] }),
       });
-      await (await import('/js/components/agent_dialog.js')).openHandoffs(ctx, 'p', 'run-1');
+      await (await import('/js/components/agent_modal.js')).openHandoffs(ctx, 'p', 'run-1');
     }, { first, last, pluginEnabled });
     await page.locator('.ho-turn summary').click();
     await page.locator('[data-artifact="response"] [data-notice]').filter({ hasText: 'incomplete response' }).waitFor();

@@ -58,7 +58,7 @@ class StatusNotFound(LookupError):
 
 
 def strip_ansi(text: str) -> str:
-    """Same rule as ``logview.js`` ``stripAnsi``: CSI, OSC and two-byte escapes."""
+    """Same rule as ``tails.js`` ``stripAnsi``: CSI, OSC and two-byte escapes."""
     return _ANSI.sub("", text) if "\x1b" in text else text
 
 
@@ -161,8 +161,9 @@ def _entity(project: Mapping[str, str], row: pc.PlanRow | Mapping[str, Any] | No
 
 
 def _duration(unit: Mapping[str, Any]) -> float | None:
-    start, end = sch._parse_stamp(unit.get("started")), sch._parse_stamp(unit.get("finished"))
-    return round((end - start).total_seconds(), 1) if start and end else None
+    from alfrd.agent_io import elapsed_seconds
+
+    return elapsed_seconds(unit) if unit.get("finished") else None
 
 
 # ---------------------------------------------------------------------------

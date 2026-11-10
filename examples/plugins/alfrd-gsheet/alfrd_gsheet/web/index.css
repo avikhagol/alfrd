@@ -100,3 +100,7 @@
   .gs-connection-dialog .check, .gs-connection-modal .btn, [data-plugin-action="gsheet"] .btn { min-height: 44px; }
   .gs-connection-modal .modal-b { padding: 16px; }
 }
+
+.gs-account { border: 1px solid var(--border, #8885); padding: 12px; border-radius: 6px; margin: 12px 0; }
+.gs-account .wrap { flex-wrap: wrap; }
+@media (max-width: 480px) { .gs-account button, .gs-account .field { width: 100%; } }

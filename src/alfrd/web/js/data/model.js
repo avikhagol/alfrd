@@ -1,7 +1,7 @@
 // Domain model: canonical AVICA steps, status vocabulary, manifest -> workflow
 // normalization and per-target rollups. Pure functions, no DOM access.
 
-import { resolveAlias, AliasLog } from "../utils/csv_parser.js";
+import { AliasLog } from "../utils/csv_parser.js";
 import { studioManifest, applyFieldAliases, expandWorkflowSteps } from "./defs.js";
 
 // Step labels, stages, categories, descriptions, icons, metadata and logs are

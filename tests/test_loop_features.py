@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from test_agent_loop import RESPONSE, project, rewrite_plan_csv, service, task_client, wait  # noqa: F401
-from alfrd.agent_io import agent_totals, codex_report, token_usage
+from alfrd.agent_io import agent_totals, codex_report, token_usage, elapsed_seconds
 from alfrd.agent_loop import approve_response, compact_report, expand_steps, reject_response, sha256, task_iterations
 from alfrd.execution import ExecutionError, load_execution, parse_delay
 from alfrd.runtime import scheduler
@@ -96,6 +96,7 @@ def test_generic_agent_in_a_sequence(project, tmp_path):
     assert folder.units()[1]["handoff"]["output"] == "task/next-step-claude.md"
     assert (project / "task/next-step-gemini.md").exists()
     assert folder.units()[1]["usage_source"] == "unavailable"
+    assert elapsed_seconds(folder.units()[1]) is not None
 
 
 def test_task_turns_are_capped_by_the_project_maximum(service, tmp_path, project):
@@ -211,6 +212,8 @@ def test_outcomes_and_labels(project, monkeypatch, failure, outcome):
     scheduler.Runner(project, folder.id).run()
     unit = folder.units()[0]
     assert unit["outcome"] == outcome
+    assert unit["started"] and unit["finished"]
+    assert elapsed_seconds(unit) is not None
     assert unit["treatment"] == "baseline" and unit["run_kind"] == "production"
     assert unit["attempt_number"] == 1 and unit["retry_of"] is None and unit["logical_turn_id"]
     assert unit["handoff"]["raw_input_chars"] >= unit["handoff"]["trimmed_handoff_chars"]
@@ -249,6 +252,7 @@ def test_retries_keep_one_logical_turn_across_plans(project, monkeypatch):
     assert [a["attempt_number"] for a in attempts] == [1, 2, 3]
     assert attempts[1]["retry_of"] == f"{first.id}/{attempt['id']}"
     assert attempts[2]["outcome"] == "accepted"
+    assert all(a["started"] and a["finished"] and elapsed_seconds(a) is not None for a in attempts)
 
 
 def test_fresh_plan_gets_a_new_logical_turn(project):

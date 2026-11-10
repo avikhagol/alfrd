@@ -120,6 +120,8 @@ test("chat settings: presets merge, the written block round-trips, problems mirr
   assert.match(problems, /orchestrator must be one of/);
   assert.match(problems, /max_retries/);
   assert.match(problems, /max_cost_usd/);
+  assert.equal(C.mergeChat({}).bounds.max_replans, 3);
+  assert.match(C.chatProblems(C.mergeChat({ bounds: { max_replans: -1 } })).join(" "), /max_replans/);
   assert.match(C.chatProblems({ ...s, agents: { "Bad Key": {} }, orchestrator: "Bad Key" }).join(" "), /Agent key/);
 });
 
@@ -140,7 +142,7 @@ test("the transcript shows each specialist's result once, in time order, besides
   assert.deepEqual(C.timeline({}), []);
 });
 
-test("token report: new input, cache read, cache write, output and cost; warnings; promotable request", () => {
+test("token report: new input, cache read, cache write, output and cost; warnings", () => {
   const u = { input_tokens: 1200, input_uncached_tokens: 1200, cache_read_input_tokens: 45000, cache_creation_input_tokens: 3000, output_tokens: 900, total_cost_usd: 0.042 };
   assert.deepEqual(C.tokenReport(u), { fresh: 1200, read: 45000, write: 3000, out: 900, cost: 0.042 });
   assert.equal(C.tokenLine(u), "new 1.2k · cache read 45k · cache write 3.0k · out 900 · $0.042");
@@ -150,8 +152,6 @@ test("token report: new input, cache read, cache write, output and cost; warning
     tasks: [{ row: "r0001.a", request: "r0001", cost_warning: { bound: 0.5, value: 0.7 } }, { row: "r0001.b", request: "r0001" }] };
   assert.deepEqual(C.costWarnings(state, "r0001").map((t) => t.row), ["r0001.a"]);
   assert.deepEqual(C.costWarnings(state, "r0002"), []);
-  assert.equal(C.promotable(state).id, "r0001", "the newest request that has tasks");
-  assert.equal(C.promotable({ requests: [{ id: "r1", tasks: [] }] }), null);
 });
 
 test("chat settings: orchestrator / escalation models, final summary off, task cost warning, lean presets", () => {
@@ -164,4 +164,45 @@ test("chat settings: orchestrator / escalation models, final summary off, task c
   assert.equal(C.chatBlock({ ...s, agents: { ...s.agents, qa: { label: "QA", lean: false } } }).agents.qa.lean, undefined, "off is not written for new agents");
   assert.match(C.chatProblems({ ...s, warn_task_cost_usd: -1 }).join(" "), /Task cost warning/);
   assert.deepEqual(C.chatProblems({ ...s, warn_task_cost_usd: "" }), []);
+});
+
+
+test("public messages separate protocol results and preserve authored JSON and prose", () => {
+  const envelope = { protocol: "alfrd.orchestration/1", kind: "result", result: { status: "done", summary: "Updated the chat.", artifacts: ["chat.css@abc"] } };
+  const raw = JSON.stringify(envelope);
+  const m = C.presentMessage({ role: "assistant", text: "Review complete.\n\n```json\n" + raw + "\n```" });
+  assert.equal(m.text, "Review complete.\n\nUpdated the chat.");
+  assert.deepEqual(m.artifacts, ["chat.css@abc"]);
+  assert.ok(m.technical.includes(raw));
+  assert.equal(C.presentMessage({ role: "user", text: raw }).text, raw);
+  assert.equal(C.presentMessage({ role: "assistant", text: '{"example":true}' }).text, '{"example":true}');
+  assert.match(C.presentMessage({ role: "assistant", text: '{"protocol":"alfrd.orchestration/1",' }).text, /could not be read/);
+  const example = 'Use this example:\n```json\n{"hello":"world"}\n```';
+  assert.equal(C.presentMessage({ role: "assistant", text: example }).text, example);
+});
+
+test("history groups overlapping requests by identity; active and unanswered work stays open", () => {
+  const state = { requests: [{ id: "r1", text: "First request", status: "done" }, { id: "r2", text: "Second", status: "running" }, { id: "r3", text: "Third", status: "done" }],
+    messages: [{ id: "a", request: "r1", role: "user", text: "first", at: "1" }, { id: "b", request: "r2", role: "user", text: "second", at: "2" }, { id: "c", request: "r1", role: "assistant", text: "answer", at: "3" }, { id: "old", role: "system", text: "legacy" }], tasks: [] };
+  const groups = C.threadGroups(state);
+  assert.deepEqual(groups[0].messages.map((m) => m.id), ["a", "c"]);
+  assert.equal(groups[0].open, false);
+  assert.equal(groups[1].open, true);
+  assert.equal(groups.find((g) => g.id === "r3").open, true);
+  assert.ok(groups.some((g) => g.id === "message:old"));
+  state.requests[0].mailbox = { pending_user: 1 };
+  assert.equal(C.threadGroups(state)[0].open, true);
+  assert.match(C.requestSummary(state, state.requests[0]), /First request.*—/);
+});
+
+test("activity keeps parallel same-agent tasks and retry attempts distinct, unknown cost stays unknown", () => {
+  const state = { tasks: [{ row: "a", request: "r", owner: "codex", status: "done", task: { title: "Build" }, logs: [{ unit: "u1", status: "failed" }, { unit: "u2", status: "done", total_cost_usd: 0 }] },
+    { row: "b", request: "r", owner: "codex", status: "waiting", task: { title: "Test" } }] };
+  const rows = C.activityRows(state, [{ row: "a", request: "r", unit: "u2", status: "running", display_tail: ["last line"] }], "r");
+  assert.equal(new Set(rows.map(C.activityKey)).size, 3);
+  assert.deepEqual(rows.map((r) => r.status), ["failed", "done", "waiting"]);
+  assert.equal(rows[1].cost_usd, 0);
+  assert.equal(rows[1].display_tail[0], "last line");
+  assert.equal(C.money(rows[2].cost_usd), "—");
+  assert.equal(C.activityRows(state, [], "other").length, 0);
 });

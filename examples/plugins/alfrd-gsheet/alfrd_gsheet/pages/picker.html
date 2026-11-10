@@ -1,0 +1,35 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choose a Google spreadsheet · ALFRD</title><body>
+<h1>Choose a Google spreadsheet</h1><p id="status" role="status">Loading Google Picker…</p><button id="cancel" type="button">Cancel</button>
+<script type="application/json" id="cfg">__CONFIG__</script>
+<script>
+const cfg = JSON.parse(document.getElementById('cfg').textContent);
+document.getElementById('cfg').remove();
+let completed = false;
+async function send(data) {
+  if (completed) return;
+  completed = true;
+  try {
+    const response = await fetch('/picked', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({nonce: cfg.nonce, ...data})});
+    if (!response.ok) throw new Error();
+    document.getElementById('status').textContent = 'Return to ALFRD. You can close this tab.';
+  } catch { document.getElementById('status').textContent = 'Could not return the selection. Close this tab and choose again in ALFRD.'; }
+}
+document.getElementById('cancel').onclick = () => send({action: 'cancel'});
+function onApiLoad() {
+  gapi.load('picker', {callback: () => {
+    const view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS).setMode(google.picker.DocsViewMode.LIST);
+    const picker = new google.picker.PickerBuilder().addView(view).setOAuthToken(cfg.token)
+      .setDeveloperKey(cfg.key).setAppId(cfg.appId).setOrigin(location.origin).setCallback(data => {
+        if (data.action === google.picker.Action.PICKED) {
+          const doc = data.docs[0];
+          send({action: 'picked', id: doc.id, mimeType: doc.mimeType});
+        } else if (data.action === google.picker.Action.CANCEL) send({action: 'cancel'});
+      }).build();
+    picker.setVisible(true);
+    document.getElementById('status').textContent = 'Choose a spreadsheet in Google Picker.';
+    cfg.token = null;
+  }, onerror: () => {document.getElementById('status').textContent = 'Picker could not load. Check your connection and try again.';}});
+}
+</script><script async defer src="https://apis.google.com/js/api.js" onload="onApiLoad()" onerror="document.getElementById('status').textContent='Google Picker could not load. Return to ALFRD and try again.'"></script>
+</body></html>

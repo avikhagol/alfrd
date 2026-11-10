@@ -5,7 +5,7 @@ import { registerViewer, setConverters, convertFile } from "./viewers.js";
 import { registerPanel } from "./panels.js";
 
 import { registerProjectSection, registerOverviewAction } from "./project_sections.js";
-import { dialog, confirm } from "./plugin_dialogs.js";
+import { dialog, confirm } from "./plugin_modals.js";
 import { bindPages, registerPage, setAvailability, pagesReady, applies } from "./plugin_pages.js";
 
 export const pluginErrors = [];

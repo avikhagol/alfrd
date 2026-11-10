@@ -7,10 +7,16 @@ decisions and retries add plan rows and (re)start the session's detached runner.
 
 from __future__ import annotations
 
-from flask import jsonify, request
+from dataclasses import asdict
+from pathlib import Path
+from urllib.parse import quote
 
-from alfrd import chat
+from flask import Response, current_app, jsonify, request
+
+from alfrd import attachments as att
+from alfrd import chat, mailbox
 from alfrd import orchestration as proto
+from alfrd import skills as saved_skills
 from alfrd.execution import ExecutionError
 
 from .studio import _json_error, _poke, _project_root, studio_api
@@ -18,11 +24,24 @@ from .studio import _json_error, _poke, _project_root, studio_api
 _BASE = "/studio/projects/<project_name>/chat"
 
 
+_ATTACHMENT_STATUS = {"unsupported_type": 415, "too_large": 413, "too_many": 413, "quota": 413, "invalid": 400}
+
+
 def _fail(error: Exception):
+    if isinstance(error, saved_skills.SkillError):
+        return jsonify(error={"code": error.status, "message": str(error), "reason": error.reason, **error.details}), error.status
+    if isinstance(error, chat.ScheduleConflictError):
+        return jsonify(error={"code": 409, "message": str(error), "reason": error.reason}, **error.state), 409
+    if isinstance(error, att.AttachmentError):
+        return _json_error(error, _ATTACHMENT_STATUS.get(error.code, 400), reason=error.code)
+    if isinstance(error, mailbox.MailboxError):
+        return jsonify(error={"code": error.status, "message": str(error)}, **error.details), error.status
     if isinstance(error, proto.RefError):
         return _json_error(error, error.status)
     if isinstance(error, LookupError):
         return _json_error(error, 404)
+    if isinstance(error, OSError) and not isinstance(error, PermissionError):
+        return _json_error(ValueError('Skill filesystem operation was denied or unavailable'), 403, reason='filesystem_denied')
     if isinstance(error, PermissionError):
         return _json_error(error, 409)
     if isinstance(error, (ExecutionError, ValueError)):
@@ -44,7 +63,7 @@ def chat_settings(project_name: str):
 @studio_api.post(_BASE + "/settings")
 def chat_settings_save(project_name: str):
     """``{chat: <block>, base_hash?, force?}``: validate and replace the ``chat:`` block of the active alfrd.yaml
-    through its history. 200 ``{settings, hash, version}``; 400 invalid; 409 ``{current_hash, current_text, diff}``."""
+    through its history. 200 ``{settings, hash, version, warnings}`` (commands that will not start here); 400 invalid; 409 ``{current_hash, current_text, diff}``."""
     from alfrd import history
 
     payload = request.get_json(silent=True) or {}
@@ -61,7 +80,7 @@ def chat_settings_save(project_name: str):
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
-    return jsonify(settings=view, hash=view["hash"], version=saved["version"])
+    return jsonify(settings=view, hash=view["hash"], version=saved["version"], warnings=saved.get("warnings") or [])
 
 
 @studio_api.get(_BASE + "/probe")
@@ -73,9 +92,196 @@ def chat_probe(project_name: str):
         return _fail(error)
 
 
+@studio_api.get(_BASE + "/skills")
+def chat_skills(project_name: str):
+    """Saved skills in the project and, per chat agent, what its native skill, plugin and MCP switches do at
+    startup (a dry run of the adapter's args; nothing is launched). Errors: 400 invalid manifest or settings."""
+    from alfrd.execution import merged_manifest
+
+    try:
+        root = _project_root(project_name)
+        entries = {str(e["name"]): e for e in merged_manifest(root).get("entrypoint") or [] if isinstance(e, dict) and e.get("name")}
+        specs = {}
+        for key, agent in chat.settings(root)["agents"].items():
+            name = agent.get("entrypoint") or key
+            entry = {} if agent.get("cmd") else (entries.get(name) or chat.BUILTIN_ENTRYPOINTS.get(name) or {})
+            specs[key] = {**entry, "argv": chat._agent_argv(agent, key, entries),
+                          **{k: agent[k] for k in ("model", "adapter", "model_option", "lean", "skills", "plugins", "mcp")
+                             if agent.get(k) is not None}}
+        return jsonify(skills=saved_skills.discover_skills(root), agents=saved_skills.agent_view(specs))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/skills/inventory")
+def chat_skill_inventory(project_name: str):
+    """Read-only metadata and provider delivery policy; never creates native skill links."""
+    try:
+        root = _project_root(project_name)
+        return jsonify(skills=saved_skills.skill_inventory(root, chat.settings(root).get("skill_selection")), project_path=str(root), global_path=str(saved_skills.global_skills_root()))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/skills/preview")
+def chat_skill_preview(project_name: str):
+    """Bounded plain text from the same safe discovery roots; never accepts a file path."""
+    try:
+        return jsonify(saved_skills.preview(_project_root(project_name), request.args.get("id"), request.args.get("origin")))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+def _skill_payload(allowed, limit=512*1024):
+    if request.content_length is not None and request.content_length > limit:
+        raise saved_skills.SkillError('manifest_too_large', 'Request exceeds size limit', 413)
+    raw = request.stream.read(limit+1)
+    if len(raw) > limit:
+        raise saved_skills.SkillError('manifest_too_large', 'Request exceeds size limit', 413)
+    import json
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise ValueError('Send a JSON object') from None
+    if not isinstance(value, dict) or set(value)-set(allowed):
+        raise ValueError('Unexpected skill request fields')
+    return value
+
+
+def _skill_owner():
+    from flask import session
+    import secrets
+    if 'skill_import_owner' not in session:
+        session['skill_import_owner'] = secrets.token_urlsafe(32)
+    return session['skill_import_owner']
+
+
+@studio_api.post(_BASE + '/skills/validate')
+def chat_skill_validate(project_name):
+    try:
+        _project_root(project_name)
+        content = _skill_payload(['content']).get('content')
+        fields = saved_skills.validate_skill_document(content)
+        import yaml
+        match = saved_skills._FRONT.match(content)
+        node = yaml.compose(match.group(1), Loader=yaml.SafeLoader)
+        spans = {}
+        for key, value in node.value:
+            if key.value in ('name', 'description'):
+                # Browser string offsets are UTF-16 code units, including astral characters.
+                spans[key.value] = [len(content[:match.start(1)+mark.index].encode('utf-16-le'))//2
+                                    for mark in (value.start_mark, value.end_mark)]
+        return jsonify(fields=fields, scalar_spans=spans)
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.put(_BASE + '/skills/content')
+def chat_skill_content(project_name):
+    try:
+        p = _skill_payload(['origin', 'id', 'content', 'base_revision'])
+        result = saved_skills.save_skill_document(_project_root(project_name), p.get('id'), p.get('content'), origin=p.get('origin'), base_revision=p.get('base_revision'))
+        _poke(project_name)
+        return jsonify(result)
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/create')
+def chat_skill_create(project_name):
+    try:
+        p = _skill_payload(['origin', 'id', 'content'])
+        result = saved_skills.create_skill(_project_root(project_name), p.get('id'), p.get('content'), origin=p.get('origin'))
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/copy')
+def chat_skill_copy(project_name):
+    try:
+        p = _skill_payload(['source_origin', 'source_id', 'base_revision', 'target_origin', 'id'])
+        result = saved_skills.copy_skill(_project_root(project_name), p.get('source_id'), source_origin=p.get('source_origin'), id=p.get('id'), target_origin=p.get('target_origin'), base_revision=p.get('base_revision'))
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/imports/preview')
+def chat_skill_import_preview(project_name):
+    from alfrd.skill_imports import prepare_skill_import
+    try:
+        p = _skill_payload(['url'], 8192)
+        return jsonify(prepare_skill_import(_project_root(project_name), p.get('url'), owner=_skill_owner()))
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.post(_BASE + '/skills/imports/confirm')
+def chat_skill_import_confirm(project_name):
+    from alfrd.skill_imports import commit_skill_import
+    try:
+        p = _skill_payload(['token', 'origin', 'id'], 8192)
+        result = commit_skill_import(_project_root(project_name), p.get('token'), p.get('origin'), p.get('id'), owner=_skill_owner())
+        _poke(project_name)
+        return jsonify(result), 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.delete(_BASE + '/skills/imports/<token>')
+def chat_skill_import_discard(project_name, token):
+    from alfrd.skill_imports import discard_skill_import
+    try:
+        return jsonify(discard_skill_import(_project_root(project_name), token, owner=_skill_owner()))
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.route(_BASE + "/skills/activations", methods=["GET", "PUT"])
+def chat_skill_activations(project_name: str):
+    """Project-owned activation state, guarded against stale modal saves."""
+    try:
+        root = _project_root(project_name)
+        conf = chat.settings(root)
+        if request.method == "PUT":
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict) or "base_hash" not in payload:
+                raise ValueError("send version, activations and base_hash")
+            saved_skills.save_activations(root, {k: payload.get(k) for k in ("version", "activations")},
+                                          base_hash=payload["base_hash"])
+            _poke(project_name)
+        roles = [role for agent in conf["agents"].values() for role in agent.get("roles", [])]
+        state = saved_skills.activation_state(root, conf.get("skill_selection"), roles=roles)
+        scope_models = {}
+        for agent in conf["agents"].values():
+            if agent.get("model"):
+                label = agent.get("label") or agent["model"]
+                for role in agent.get("roles", []):
+                    labels = scope_models.setdefault("role:" + role, [])
+                    if label not in labels:
+                        labels.append(label)
+        orchestrator = conf["agents"].get(conf["orchestrator"], {})
+        model = conf.get("orchestrator_model") or orchestrator.get("model")
+        if model:
+            # An override can differ from the model described by the agent's label.
+            label = orchestrator.get("label") if model == orchestrator.get("model") else None
+            scope_models["orchestrator"] = [label or model]
+        state["scope_models"] = {scope: ", ".join(labels) for scope, labels in scope_models.items()}
+        return jsonify(state)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
 @studio_api.get(_BASE + "/sessions")
 def chat_sessions(project_name: str):
-    return jsonify(sessions=chat.list_sessions(_project_root(project_name)))
+    try:
+        root = _project_root(project_name)
+        return jsonify(sessions=chat.list_sessions(root))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
 
 
 @studio_api.post(_BASE + "/sessions")
@@ -89,14 +295,54 @@ def chat_session_create(project_name: str):
     return jsonify(session=data), 201
 
 
+@studio_api.patch(_BASE + "/sessions/<session_id>")
+def chat_session_rename(project_name: str, session_id: str):
+    """``{title}``: rename a session. 200 ``{session}``; 400 empty title; 404 unknown session."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = chat.rename_session(_project_root(project_name), session_id, payload.get("title"))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    _poke(project_name)
+    return jsonify(session=data)
+
+
+@studio_api.delete(_BASE + "/sessions/<session_id>")
+def chat_session_delete(project_name: str, session_id: str):
+    """Delete a session and its plan folder. 409 while a request is active or its runner is alive."""
+    try:
+        out = chat.delete_session(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    _poke(project_name)
+    return jsonify(out)
+
+
 @studio_api.get(_BASE + "/sessions/<session_id>")
 def chat_session_state(project_name: str, session_id: str):
     """Messages, requests, tasks with statuses, graph (nodes, edges, Mermaid), blockers, decisions and usage."""
     try:
-        return jsonify(chat.session_state(_project_root(project_name), session_id,
-                                          messages=request.args.get("messages", default=500, type=int)))
+        _recover_mailbox_delivery(chat.session(_project_root(project_name), session_id))
+        out = chat.session_state(_project_root(project_name), session_id,
+                                 messages=request.args.get("messages", default=500, type=int),
+                                 since_rev=request.args.get("since_rev", default=None, type=int))
+        if not out.get("unchanged"):
+            out["schedule_service"] = chat.schedule_state(_project_root(project_name), session_id,
+                                                         available=_schedule_available())["schedule_service"]
+        return jsonify(out)
     except Exception as error:  # noqa: BLE001
         return _fail(error)
+
+
+@studio_api.post(_BASE + "/sessions/<session_id>/check")
+def chat_session_check(project_name: str, session_id: str):
+    """Check and recover this session; returns the durable report and its findings."""
+    try:
+        [report] = chat.check(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    _poke(project_name)
+    return jsonify(report)
 
 
 @studio_api.get(_BASE + "/sessions/<session_id>/activity")
@@ -104,41 +350,105 @@ def chat_activity(project_name: str, session_id: str):
     """Running units of the session (orchestrator calls too) with the last ``?lines=`` (≤ 400) lines of each log."""
     try:
         return jsonify(chat.activity(_project_root(project_name), session_id,
-                                     lines=request.args.get("lines", default=60, type=int)))
+                                     lines=int(request.args.get("lines", "60")),
+                                     request_id=request.args.get("request"),
+                                     units=request.args.get("units", "").split(",") if request.args.get("units") else None))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
 
 
 @studio_api.post(_BASE + "/sessions/<session_id>/messages")
 def chat_message(project_name: str, session_id: str):
+    """``{text, attachments?: ref[], client_message_id?}``. Text may be empty with at least one image.
+    A repeated ``client_message_id`` with the same content returns the original (200); other content: 409."""
     payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return _json_error(ValueError("send a JSON object"), 400)
     try:
-        out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""))
+        out = chat.post_message(_project_root(project_name), session_id, str(payload.get("text") or ""),
+                                attachments=payload.get("attachments"),
+                                client_message_id=payload.get("client_message_id"),
+                                schedule_id=payload.get("schedule_id"),
+                                expected_schedule_revision=payload.get("expected_schedule_revision"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
-    return jsonify(out), 201
+    return jsonify(out), 200 if out.get("replayed") else 201
+
+
+@studio_api.post(_BASE + "/sessions/<session_id>/attachments")
+def chat_attachment_upload(project_name: str, session_id: str):
+    """Multipart ``file``: store an image in the session. 201 ``{ref, sha256, media_type, bytes, width, height, name}``;
+    413 too large or over quota; 415 not PNG/JPEG/WebP; 400 unreadable image; 404 unknown session."""
+    upload = request.files.get("file")
+    if upload is None:
+        return _json_error(ValueError("send the image as multipart field 'file'"), 400)
+    try:
+        store = chat.session(_project_root(project_name), session_id)
+        data = upload.stream.read(att.MAX_IMAGE_BYTES + 1)
+        with store.lock():
+            item = att.store_image(store.dir, data, upload.mimetype, upload.filename or "")
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    return jsonify(asdict(item)), 201
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/attachments/<ref>/content")
+def chat_attachment_content(project_name: str, session_id: str, ref: str):
+    """The stored image bytes of a ref in this session (404 for unknown refs and other sessions' refs)."""
+    try:
+        store = chat.session(_project_root(project_name), session_id)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    item = att.get_attachment(store.dir, ref)
+    path = att.attachment_path(store.dir, ref)
+    if item is None or path is None:
+        return _json_error(LookupError(f"unknown attachment {ref!r}"), 404)
+    return Response(path.read_bytes(), mimetype=item.media_type,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable",
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'"})
 
 
 @studio_api.post(_BASE + "/sessions/<session_id>/decisions/<decision_id>")
 def chat_decision(project_name: str, session_id: str, decision_id: str):
     payload = request.get_json(silent=True) or {}
     try:
-        decision = chat.decide(_project_root(project_name), session_id, decision_id,
-                               choice=payload.get("choice"), answer=payload.get("answer"))
+        if payload.get("delegate") is True:  # "let the orchestrator decide"
+            decision = chat.delegate_decision(_project_root(project_name), session_id, decision_id)
+        else:
+            decision = chat.decide(_project_root(project_name), session_id, decision_id,
+                                   choice=payload.get("choice"), answer=payload.get("answer"))
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
     return jsonify(decision=decision)
 
 
+@studio_api.get(_BASE + "/sessions/<session_id>/tasks/<task_id>/retry-preview")
+def chat_retry_preview(project_name: str, session_id: str, task_id: str):
+    """``{eligible, reason, affected_rows, current_status, current_unit}``: the rows a retry would requeue."""
+    try:
+        return jsonify(chat.retry_preview(_project_root(project_name), session_id, task_id))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
 @studio_api.post(_BASE + "/sessions/<session_id>/tasks/<task_id>/<action>")
 def chat_task_action(project_name: str, session_id: str, task_id: str, action: str):
+    """Cancel or retry a task. Optional ``{expected_status, expected_unit}``: 409 with the task's
+    ``current_status`` and ``current_unit`` when either no longer matches; none sent, none checked."""
     if action not in ("cancel", "retry"):
         return _json_error(ValueError(f"unknown action {action!r}"), 404)
+    payload = request.get_json(silent=True)
+    payload = payload if isinstance(payload, dict) else {}
     try:
         call = chat.cancel_task if action == "cancel" else chat.retry_task
-        out = call(_project_root(project_name), session_id, task_id)
+        out = call(_project_root(project_name), session_id, task_id,
+                   expected_status=payload.get("expected_status") or None,
+                   expected_unit=payload.get("expected_unit") or None)
+    except chat.TaskConflict as conflict:
+        return jsonify(error={"code": 409, "message": str(conflict)}, current_status=conflict.current_status,
+                       current_unit=conflict.current_unit), 409
     except Exception as error:  # noqa: BLE001
         return _fail(error)
     _poke(project_name)
@@ -204,4 +514,140 @@ def chat_artifact(project_name: str, session_id: str):
         return _fail(error)
 
 
+@studio_api.get(_BASE + "/sessions/<session_id>/overview")
+def chat_overview(project_name: str, session_id: str):
+    """``{rev, goal:{text, source}, criteria, files}``: one projection for the inspector."""
+    try:
+        return jsonify(chat.overview(_project_root(project_name), session_id))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_BASE + "/sessions/<session_id>/artifacts/raw")
+def chat_artifact_raw(project_name: str, session_id: str):
+    """The bytes of ``?ref=<path>@<sha256>``: 409 when the file changed, 403 for traversal and symlinks, 413 over 20 MB."""
+    try:
+        data, media_type, path = chat.raw_artifact(_project_root(project_name), session_id, request.args.get("ref", ""))
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+    # SVG must remain sandboxed when opened as a document in the app origin.
+    inline = request.args.get("inline") == "1" and media_type in {
+        "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml",
+        "image/bmp", "image/x-icon", "image/vnd.microsoft.icon", "application/pdf"}
+    disposition = "inline" if inline else "attachment"
+    return Response(data, mimetype=media_type,
+                    headers={"Cache-Control": "private, max-age=31536000, immutable",
+                             "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+                             "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(Path(path).name)})
+
+
 __all__: list[str] = []
+
+
+_MAILBOX = _BASE + "/sessions/<session_id>/requests/<request_id>/mailbox"
+
+
+def _recover_mailbox_delivery(store):
+    # A previous server may have died after committing a reply but before resume.
+    if chat.process_mailbox(store):
+        chat.resume(store)
+        chat.acknowledge_mailbox_delivery(store)
+
+
+def _mailbox(project_name, session_id, request_id):
+    box = mailbox.Mailbox(_project_root(project_name), session_id, request_id)
+    _recover_mailbox_delivery(box.session)
+    return box
+
+
+@studio_api.route(_MAILBOX + "/messages", methods=["GET", "POST"])
+def mailbox_messages(project_name, session_id, request_id):
+    try:
+        box = _mailbox(project_name, session_id, request_id)
+        if request.method == "GET":
+            return jsonify(box.list(after=request.args.get("after"), limit=int(request.args.get("limit", "100"))))
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        out = box.send(mailbox.USER, payload)
+        chat.server_event(box.session, "mailbox.message", request=request_id, message=out["message"]["id"])
+        _poke(project_name)
+        return jsonify(out), 201 if out["created"] else 200
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.get(_MAILBOX + "/pending")
+def mailbox_pending(project_name, session_id, request_id):
+    try:
+        return jsonify(_mailbox(project_name, session_id, request_id).pending())
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+@studio_api.post(_MAILBOX + "/messages/<message_id>/<operation>")
+def mailbox_action(project_name, session_id, request_id, message_id, operation):
+    try:
+        box = _mailbox(project_name, session_id, request_id)
+        if operation == "ack":
+            out = box.ack(message_id, mailbox.USER)
+        elif operation == "reply":
+            out = box.reply(message_id, mailbox.USER, request.get_json(silent=True))
+            chat.server_event(box.session, "mailbox.resolved", request=request_id, message=message_id)
+            _recover_mailbox_delivery(box.session)
+        else:
+            raise LookupError("unknown mailbox operation")
+        _poke(project_name)
+        return jsonify(out)
+    except Exception as error:  # noqa: BLE001
+        return _fail(error)
+
+
+_SCHEDULE = _BASE + "/sessions/<session_id>/schedule"
+
+
+def _schedule_available():
+    return current_app.config.get("RUNTIME_MUTATIONS_ENABLED", True)
+
+
+@studio_api.route(_SCHEDULE, methods=["GET", "POST"])
+def chat_schedule_state(project_name, session_id):
+    try:
+        root = _project_root(project_name)
+        if request.method == "GET":
+            return jsonify(chat.schedule_state(root, session_id, available=_schedule_available()))
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        out = chat.create_schedule(root, session_id, run_at=payload.get("run_at"), timezone=payload.get("timezone"),
+                                   client_schedule_id=payload.get("client_schedule_id"),
+                                   expected_schedule_revision=payload.get("expected_schedule_revision"), spawn=_schedule_available())
+        _poke(project_name)
+        return jsonify(out), 200 if out.get("replayed") else 201
+    except Exception as error:
+        return _fail(error)
+
+
+@studio_api.patch(_SCHEDULE + "/<schedule_id>")
+@studio_api.route(_SCHEDULE + "/<schedule_id>/items/<item_id>", methods=["PATCH", "DELETE"])
+@studio_api.post(_SCHEDULE + "/<schedule_id>/<action>")
+def chat_schedule_update(project_name, session_id, schedule_id, item_id=None, action=None):
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("send a JSON object")
+        if item_id:
+            action = "remove" if request.method == "DELETE" else "edit"
+        elif request.method == "PATCH":
+            action = "time"
+        elif action not in ("run", "cancel"):
+            raise LookupError("unknown schedule action")
+        out = chat.mutate_schedule(_project_root(project_name), session_id, schedule_id, action,
+                                  expected_schedule_revision=payload.get("expected_schedule_revision"),
+                                  operation_id=payload.get("operation_id"), item_id=item_id, text=payload.get("text"),
+                                  attachments=payload.get("attachments"), run_at=payload.get("run_at"),
+                                  timezone=payload.get("timezone"), spawn=_schedule_available())
+        _poke(project_name)
+        return jsonify(out), 202 if action == "run" else 200
+    except Exception as error:
+        return _fail(error)

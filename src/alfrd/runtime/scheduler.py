@@ -1337,6 +1337,10 @@ class Runner:
             from alfrd.events import EVENTS_FILE, EventLog
 
             unit = unit or {}
+            if kind in {"turn.started", "turn.finished", "turn.failed"} and unit.get("row"):
+                # Enough identity to replay attempts, including failed launches
+                # and re-adoption, without consulting mutable unit snapshots.
+                data = {"row": unit.get("row"), "attempt": unit.get("attempt_number") or 1, **data}
             record = {
                 "at": now_iso(), "kind": kind, "plan": self.folder.id, "project": str(self.folder.root),
                 "target": unit.get("target") or self.plan.get("target") or None, "unit": unit.get("id"),
@@ -1789,6 +1793,17 @@ class Runner:
 
                 argv = list(agent_command(argv, chat_model, adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
                 unit.update(requested_model=chat_model)
+            if self.plan.get("chat") and step and argv:
+                from alfrd.agent_io import adapter_for, agent_command
+
+                # what this task was granted (decisions), and the mailbox command its prompt describes
+                extra = chat.launch_access(self, spec)
+                if extra:
+                    before = list(argv)
+                    argv = list(agent_command(argv, None, access=extra,
+                                              adapter=adapter_for(name=step.adapter, model_option=step.model_option))[0])
+                    if argv != before:
+                        unit["access_extra"] = {k: v for k, v in extra.items() if k in ("folders", "bash_commands") and v}
             fallback = self._fallback_model(step, unit) if step else None
             if fallback:
                 from alfrd.agent_io import adapter_for, agent_command
@@ -1798,6 +1813,10 @@ class Runner:
                 self.event("turn.fallback_model", f"{unit['id']}: retrying with fallback model {fallback}", unit=unit, model=fallback)
             if step and step.manual:
                 argv = [sys.executable, "-c", "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]);\nwhile not p.is_file(): time.sleep(0.2)", values["response_file"]]
+            elif step and step.adapter == "codex":
+                from alfrd.agent_io import codex_model
+
+                unit["model"] = codex_model(argv, {**(self.cfg.settings.get("env") or {}), **env})
         except (ExecutionError, OSError, ValueError) as exc:
             unit.update(status="failed", error=str(exc), finished=now_iso(),
                         outcome="failed_runtime", outcome_reason=f"cannot start: {exc}")
@@ -1815,6 +1834,14 @@ class Runner:
         if step and step.cwd:
             cwd = Path(render([step.cwd], values)[0]).expanduser()
             cwd = cwd if cwd.is_absolute() else self.folder.root / cwd
+        if self.plan.get("chat") and step and step.adapter == "codex" and not step.manual:
+            from alfrd import skills as saved_skills
+
+            store = chat._store_of(self)
+            rec = store.task(row.key)
+            snapshot = store.request(rec["request"]).get("skill_snapshot") if rec else None
+            unit["skill_delivery"] = saved_skills.expose_codex_skills(
+                store.root, cwd, saved_skills.launch_snapshot(snapshot, rec), enabled=step.native_skills)
         unit.update(argv=argv, cwd=str(cwd), log=str(log_path.relative_to(self.folder.root)),
                     exit_file=str(exit_path.relative_to(self.folder.root)), timeout=timeout,
                     usage_file=str(exit_path.with_suffix(".usage.jsonl").relative_to(self.folder.root)))
@@ -1828,6 +1855,12 @@ class Runner:
                             # Marks every process of this command for usage. Unit ids repeat across plans
                             # (0001-<target>-<step>), so the plan id keeps two live plans apart.
                             "ALFRD_UNIT": f"{self.folder.id}/{unit['id']}"})
+        if self.plan.get("chat"):
+            from alfrd import chat, mailbox
+            chat_store = chat._store_of(self)
+            chat_rec = chat_store.task(unit["row"])
+            process_env.update(mailbox.execution_env(chat_store, chat_rec, unit))
+            self.folder.save_unit(unit)  # bind mailbox context before the child can issue its first command
         usage_dir = self._workdir_path(spec)
         if usage_dir:
             process_env["ALFRD_USAGE_DIR"] = usage_dir
@@ -1847,6 +1880,9 @@ class Runner:
         with open(log_path, "a", encoding="utf-8") as log:
             log.write(f"# alfrd plan {self.folder.id} · {spec.target or 'batch'} · {', '.join(spec.steps)} · {now_iso()}\n")
             log.write(f"# cwd {cwd}\n$ {' '.join(argv)}\n")
+            if unit.get("access_extra"):
+                log.write("# access added for this task: " + "; ".join(
+                    f"{k} {', '.join(v)}" for k, v in unit["access_extra"].items()) + "\n")
             log.flush()
             try:
                 shim_args = []
@@ -2051,10 +2087,23 @@ class Runner:
             del self.live[unit_id]
             self.finalize(live.unit, process=live.process, reason=live.reason)
 
+    def _finalize_telemetry(self, unit: dict[str, Any]) -> None:
+        """Close the unit's telemetry sidecar at exit; the raw events log is only read."""
+        if not unit.get("log"):
+            return
+        try:
+            from alfrd.agent_io import unit_adapter
+            from alfrd.telemetry import advance
+
+            advance((self.folder.root / unit["log"]).with_suffix(".events.jsonl"), unit_adapter(unit).name, finalize=True)
+        except Exception as exc:  # never stop the runner for counters
+            self.log(f"{unit.get('id')}: telemetry finalize failed: {exc}")
+
     def agent_metadata(self, unit: dict[str, Any]) -> None:
         if not unit.get("handoff") and not unit.get("agent_step"):
             return
         from alfrd.agent_io import codex_report, unit_adapter
+        from alfrd.model_prices import token_cost
 
         adapter = unit_adapter(unit)
         exit_path = self.folder.root / unit.get("exit_file", "-")
@@ -2089,6 +2138,14 @@ class Runner:
                     changes["model"] = match.group(1)
             except OSError:
                 pass
+        if adapter.name == "codex":
+            cost, missing = token_cost(changes.get("model") or unit.get("model") or unit.get("requested_model"),
+                                       changes.get("agent_usage", unit.get("agent_usage")))
+            changes.update(total_cost_usd=cost, cost_reason=missing,
+                           cost_source="api_estimate" if cost is not None else "unavailable")
+            if metadata and any(metadata.get(k) != changes[k] for k in ("total_cost_usd", "cost_reason", "cost_source")):
+                metadata.update(total_cost_usd=cost, cost_reason=missing, cost_source=changes["cost_source"])
+                _write_json(metadata_path, metadata)
         review = _read_json(exit_path.with_suffix(".review.json"), {}) or {}
         if review.get("status") == "pending":
             changes["review_status"] = ("approved" if exit_path.with_suffix(".approval.json").exists() else
@@ -2181,6 +2238,7 @@ class Runner:
     def finalize(self, unit: dict[str, Any], *, process: subprocess.Popen | None, reason: str | None,
                  adopted: bool = False) -> None:
         self.agent_metadata(unit)
+        self._finalize_telemetry(unit)
         exit_data = _read_json(self.folder.root / str(unit.get("exit_file") or "-"), None)
         exit_code: int | None = None
         note = None
@@ -2464,20 +2522,26 @@ def plan_activity(root: str | Path, plan: Mapping[str, Any]) -> dict[str, Any]:
     review = [u for u in units if u.get("review_status") == "pending"]
     manual = [u for u in running if u.get("manual")]
     live = [u for u in running if pid_alive(u.get("pid"), u.get("proc_start"), u.get("host"), root)]
-    if review:
+    if plan.get("status") in {"paused", "interrupted"}:
+        phase = plan["status"]
+    elif live:
+        phase = "running"
+    elif review:
         phase = "review"
     elif manual:
         phase = "manual"
-    elif live:
-        phase = "running"
-    elif plan.get("status") == "paused":
-        phase = "paused"
     elif plan.get("start_at"):
         phase = "scheduled"
     else:
         phase = "waiting"
     current = (review or manual or live or running or [u for u in units if u.get("iteration")] or [{}])[-1]
-    return {"working": bool(review or manual or live), "phase": phase, "turn": current.get("iteration"),
+    if plan.get("chat") and plan.get("status") == "running" and not live:
+        from alfrd.chat import Session, _session_attention
+
+        store = Session(Path(root).resolve(), plan["chat"]["session"])
+        if _session_attention(store)["pending_user"]:
+            phase = "decision"
+    return {"start_at": plan.get("start_at"), "working": bool(review or manual or live), "phase": phase, "turn": current.get("iteration"),
             "turns": (plan.get("loop") or {}).get("iterations"), "agent": current.get("agent")}
 
 
@@ -2564,7 +2628,7 @@ def chat_runs(root: str | Path, limit: int = 20) -> list[dict[str, Any]]:
     """Chat sessions' plans for run pickers (newest ``limit`` plus active ones): never workflow runs."""
     out = []
     for i, p in enumerate(chat_plans(root)):
-        if i >= limit and p.get("status") not in ACTIVE:
+        if i >= limit and p.get("status") not in (*ACTIVE, "interrupted"):
             continue
         out.append({"id": p["id"], "status": p.get("status"), "created": p.get("created"), "csv": p.get("csv"),
                     "run_kind": "chat", "chat": p.get("chat"), "title": chat_title(root, p),
@@ -2576,7 +2640,7 @@ def _listed(plans: Sequence[Mapping[str, Any]], plan_id: str, limit: int = 20) -
     """The newest ``limit`` plans plus every active one and the shown one (so the switcher sees them all)."""
     head = list(plans[:limit])
     ids = {p["id"] for p in head}
-    return head + [p for p in plans[limit:] if p["id"] not in ids and (p.get("status") in ACTIVE or p["id"] == plan_id)]
+    return head + [p for p in plans[limit:] if p["id"] not in ids and (p.get("status") in (*ACTIVE, "interrupted") or p["id"] == plan_id)]
 
 
 def waiting_rows(plan: Mapping[str, Any], table: pc.PlanTable, units: Sequence[Mapping[str, Any]],

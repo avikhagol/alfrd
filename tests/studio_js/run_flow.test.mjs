@@ -7,7 +7,7 @@ const { loadPlan, activePlan, openRunDialog, renderSchedule, planAct, RUN_MODE, 
 const { STEP_STATUS } = await import("../../src/alfrd/web/js/data/model.js");
 const { renderHome } = await import("../../src/alfrd/web/js/components/overview.js");
 const { showRun } = await import("../../src/alfrd/web/js/components/canvas.js");
-const { showLogs, render: renderLogs } = await import("../../src/alfrd/web/js/components/logs.js");
+const { showLogs, render: renderLogs } = await import("../../src/alfrd/web/js/components/streams.js");
 
 function context(project) {
   return { state: { mode: "server", selectedProject: project, selectedTarget: null,

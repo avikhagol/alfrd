@@ -1,11 +1,14 @@
-import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget, setRoute, isEditable, keyLabel } from "./utils/dom.js";
+import { outlineHtml } from "./utils/startup.js";
+import { refreshProtected, refreshHTML, sourceHTML } from "./utils/refresh.js";
+import { $, $$, on, esc, icon, LOGO, watchThemeAccent, storage, bytes, download, hms, loadUi, saveUi, parseRoute, routeHash, chooseTarget, setRoute, isEditable, keyLabel, loadCss } from "./utils/dom.js";
 import { projectLabels } from "./utils/text_fit.js";
 import { mountPicker } from "./components/picker.js";
 import { stepParamsFromConfig } from "./data/avica.js";
 import { clearWorkdirCache, resetAttachments } from "./components/attach.js";
-import { toCsv, aliasRules } from "./utils/csv_parser.js";
+import { toCsv } from "./utils/csv_parser.js";
 import { dumpYaml, parseYaml } from "./utils/yaml_parser.js";
 import { readFiles, buildBundle, entriesFromScanBundle } from "./data/importers.js";
+import { readPrefs, writePrefs } from "./data/prefs.js";
 let folderScan = null;
 const folderMod = () => (folderScan ||= import("./data/folder_scan.js"));
 const canPickDirectory = () => typeof window.showDirectoryPicker === "function";
@@ -17,38 +20,43 @@ import { server, createProjectLoader, projectLoadInfo } from "./data/server.js";
 import { defaultWorkflow, manifestToWorkflows, rollup, OVERALL_STATUS } from "./data/model.js";
 import { loadTemplate, loadDefaultManifest, templateName, studioManifest, applyFieldAliases } from "./data/defs.js";
 import { projectNotes } from "./data/notes.js";
-import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull, dockedLogs, undockLog, mountDock, dockInfo, setDockFollow, onDock } from "./components/logview.js";
-import * as logs from "./components/logs.js";
+import { bindLogs, nudgeLogs, forgetLogs, setTails, openFileFull, dockedLogs, undockLog, mountDock, dockInfo, setDockFollow, onDock } from "./components/tails.js";
+const loadLogs = () => import("./components/streams.js");
 import * as overview from "./components/overview.js";
-import * as canvas from "./components/canvas.js";
-import * as metadata from "./components/metadata.js";
-import * as results from "./components/results.js";
-import * as config from "./components/alfrd_config.js";
+let canvas = null;
+const loadCanvas = () => import("./components/canvas.js").then((m) => (canvas = m));
+const compactWorkflow = () => storage.get("ui:shell.v2.compact", false) === true;
+let results = null;
 import { setActive, meta as wsMeta, owner, isDirty, dropWorkspace, unsaved } from "./data/workspace.js";
-import { forgetPlan, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
+import { forgetPlan, syncPlanCatalog, releasePlanPin, activeJobs, loadPlan, planOf, plansAvailable, openLinkedRun } from "./components/plans.js";
 watchThemeAccent(); // tab icon follows the theme accent
 const DEMO_ALFRD_PROJECT = "avica-demo"; // data/demo.js's key; the demo data itself loads on demand
 
 export let VERSION = "standalone";
 
 /** A section whose module loads on its first visit (chat, New project canvas). */
-function lazyView(load) {
+function lazyView(load, styles = []) {
   let mod = null, loading = null;
-  return { leave: (c) => mod?.leave?.(c), render(el, c) {
-    if (mod) return mod.render(el, c);
-    if (!el.firstChild) el.innerHTML = '<p class="empty" role="status">Loading…</p>';
-    loading ||= load().then((m) => { mod = m; scheduleRender(); }, (e) => { loading = null; el.innerHTML = `<p class="callout fail" role="alert">${esc(e.message)}</p>`; });
+  const mounted = new WeakSet();
+  return { leave: (c) => mod?.leave?.(c), restore: (el, c) => mod?.restore?.(el, c), render(el, c) {
+    if (mod) {
+      if (!mounted.has(el)) { mod.mount?.(el, c); mounted.add(el); }
+      return mod.render(el, c);
+    }
+    if (!el.firstChild) el.innerHTML = outlineHtml();
+    loading ||= Promise.all([load(), ...styles.map(loadCss)]).then(([m]) => { mod = m; scheduleRender(); }, (e) => { loading = null; el.innerHTML = `<div class="callout fail" role="alert">${esc(e.message)} <button type="button" class="btn sm">Retry</button></div>`; el.querySelector("button").onclick = () => { el.replaceChildren(); scheduleRender(); }; });
   } };
 }
 const VIEWS = [
   { id: "overview", label: "Overview", icon: "overview", mod: overview },
-  { id: "workflow", label: "Workflow", icon: "workflow", mod: canvas },
-  { id: "metadata", label: "Metadata", icon: "metadata", mod: metadata },
-  { id: "results", label: "Results", icon: "results", mod: results },
-  { id: "logs", label: "Logs", icon: "log", mod: logs },
-  { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js")) },
-  { id: "config", label: "Settings", icon: "project", mod: config },
+  { id: "workflow", label: "Workflow", icon: "workflow", mod: lazyView(loadCanvas) },
+  { id: "metadata", label: "Metadata", icon: "metadata", mod: lazyView(() => import("./components/details.js")) },
+  { id: "results", label: "Results", icon: "results", mod: lazyView(() => import("./components/results.js").then((m) => (results = m))) },
+  { id: "logs", label: "Logs", icon: "log", mod: lazyView(loadLogs) },
+  { id: "chat", label: "Chat", icon: "chat", mod: lazyView(() => import("./components/chat_view.js"), ["css/chat.css"]) },
+  { id: "config", label: "Settings", icon: "project", mod: lazyView(() => import("./components/alfrd_config.js")) },
   { id: "new-project", label: "New project", icon: "plus", page: true, mod: lazyView(() => import("./components/project_canvas.js")) },
+  { id: "superuser", label: "Superuser", icon: "power", page: true, mod: lazyView(() => import("./components/superuser.js")) },
   // #/plugin/<id>: pages from api.registerPage (components/plugin_pages.js lists them under "Plugins" in the rail).
   { id: "plugin", label: "Plugin page", icon: "metadata", page: true, mod: { render: (el) => ctx.renderPluginPage ? ctx.renderPluginPage(el)
     : (el.innerHTML = `<div class="empty"><h2>Plugin page</h2><p>${state.mode === "server" ? "Loading plugins…" : "Plugin pages need alfrd serve."}</p></div>`) } },
@@ -79,15 +87,17 @@ const state = {
   selectedTarget: null,
   consoleLines: [],
   consoleOpen: false,
-  consoleTab: "studio", // "studio" or the key of a docked log (see logview.js dockLog)
+  consoleTab: "studio", // "studio" or the key of a docked log (see tails.js dockLog)
   notes: storage.get("notes", {}),
-  prefs: { pageSize: 25, live: true, ...storage.get("prefs", {}) },
+  prefs: { pageSize: readPrefs()["ui.rows_per_page"], live: readPrefs()["ui.live_updates"] },
   scans: {}, // server mode: ALFRD project -> last /scan JSON (patched by live updates)
   targetOrigin: {}, // ALFRD project -> "tree" | "runtime" (where its target rows came from)
   liveStatus: { state: "off", detail: "", last: null, interval: null },
 };
 
 const listeners = new Set();
+let bootPending = true;
+let bootDefinitions = Promise.resolve();
 let renderQueued = false;
 let renderFrame = 0;
 
@@ -149,8 +159,8 @@ export const ctx = {
     setTimeout(() => el.classList.add("out"), tone === "fail" || tone === "warn" ? 8000 : 3600);
     setTimeout(() => el.remove(), tone === "fail" || tone === "warn" ? 8400 : 4000);
   },
-  openRun(project, id = null) { canvas.showRun(ctx, project, id); },
-  openLogs(opts = {}) { logs.showLogs(ctx, opts); },
+  openRun(project, id = null) { return loadCanvas().then((m) => m.showRun(ctx, project, id)).catch((e) => ctx.toast(e.message, "fail")); },
+  openLogs(opts = {}) { return loadLogs().then((m) => m.showLogs(ctx, opts)).catch((e) => ctx.toast(e.message, "fail")); },
   /** Pick a folder on the ALFRD server (never the viewer's machine) into `input`; Create project still decides. */
   browseFolder(host, input, more) {
     let browser, cancelled = false;
@@ -211,13 +221,13 @@ export const ctx = {
   },
   setPrefs(patch) {
     Object.assign(state.prefs, patch);
-    storage.set("prefs", state.prefs);
+    writePrefs({ ...("pageSize" in patch && { "ui.rows_per_page": patch.pageSize }), ...("live" in patch && { "ui.live_updates": patch.live }) });
   },
   openImport,
 
   async openTargets(action = "import", project = null, names = []) {
     try {
-      lazy.targets ||= import("./components/targets_dialog.js");
+      lazy.targets ||= import("./components/targets_modal.js");
       return await (await lazy.targets).openTargets(ctx, action, project, names);
     } catch (error) {
       lazy.targets = null;
@@ -509,6 +519,7 @@ function resolveInitialProject() {
 function switchProject(project, { render = true, restoreView = true, syncUrl = true, push = false } = {}) {
   const next = project && project !== "all" ? project : "all";
   const before = state.selectedProject || "all";
+  if (before !== next && !skillsCanLeave()) return false;
   if (before !== next) {
     if (pendingLink) pendingLink = null;
     linkedRoute = "";
@@ -518,6 +529,7 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
     out.view = state.view;
     out.scroll[state.view] = $("#main")?.scrollTop || 0;
   }
+  if (before !== next) state.chatSession = "";
   state.selectedProject = next;
   projectLoader?.promote(next); // a project still queued for loading goes first
   setActive(next);
@@ -533,7 +545,10 @@ function switchProject(project, { render = true, restoreView = true, syncUrl = t
     const top = incoming.scroll[incoming.view || state.view] || 0;
     requestAnimationFrame(() => requestAnimationFrame(() => { const m = $("#main"); if (m) m.scrollTop = top; }));
   }
-  if (render) scheduleRender();
+  if (render) {
+    if (state.view === "chat") VIEWS.find((v) => v.id === "chat")?.mod.restore?.($("#view-chat"), ctx);
+    scheduleRender();
+  }
 }
 
 
@@ -559,7 +574,7 @@ function syncWorkflow() {
     applyWorkflowInfo(info, tree.manifestFile || "alfrd.yaml", tree.manifestText, { quiet: true });
   }
   state.workflowProject = p;
-  canvas.resetSimulation?.();
+  canvas?.resetSimulation?.();
   applyAvicaParams(state.avica?.[p], { quiet: true });
 }
 
@@ -579,7 +594,7 @@ function applyWorkflowInfo(info, fileName, text, { quiet = false } = {}) {
     if (!state.aliases.some((x) => x.from === a.from)) state.aliases.push(a);
   });
   if (!quiet) ctx.log(info.errors.length ? "error" : "info", `Workflow "${wf?.name ?? "?"}" loaded from ${fileName}: ${wf ? wf.steps.length : 0} steps, ${info.errors.length} error(s), ${info.warnings.length} warning(s).`, "workflow");
-  canvas.resetSimulation?.();
+  canvas?.resetSimulation?.();
   scheduleRender();
 }
 
@@ -609,7 +624,7 @@ function loadPending(p) {
 async function loadServer() {
   if (!projectLoader) {
     projectLoader = createProjectLoader({ scan: (p) => server.projectScan(p.name), runtime: (p) => server.loadProjectRuntime(p), onSettle: settleProject, onChange: scheduleRender });
-    server.onAuthRequired(() => projectLoader.invalidate()); // expired access: drop late responses
+    server.onAuthRequired(() => { projectLoader.invalidate(); syncPlanCatalog([]); }); // expired access: drop late responses
   }
   projectLoader.invalidate();
   catalogPending = true;
@@ -622,6 +637,7 @@ async function loadServer() {
     catalogPending = false;
     const keep = { project: state.selectedProject, target: state.selectedTarget }; // the header, across a Re-scan
     const names = new Set(projects.map((p) => p.name));
+    syncPlanCatalog(names);
     state.serverWorkflows = (state.serverWorkflows || []).filter((w) => names.has(w.project));
     state.projectTitles = Object.fromEntries(projects.map((p) => [p.name, p.title || p.description || p.name]));
     state.projectNames = Object.fromEntries(projects.map((p) => [p.name, p.title || p.manifest_name || p.name]));
@@ -765,6 +781,7 @@ function keepWorkflow(project, bundle) {
 
 
 async function ensureTemplatesFor(text) {
+  await bootDefinitions;
   try {
     const name = templateName(parseYaml(text || ""));
     if (name) await loadTemplate(name, parseYaml);
@@ -1293,11 +1310,13 @@ function menu(anchor, items) {
   el.id = `studio-menu-${Date.now()}`;
   anchor.setAttribute("aria-controls", el.id);
   anchor.setAttribute("aria-expanded", "true");
-  el.innerHTML = items.map((it, i) => (it === "-" ? `<hr>` : `<button role="menuitem" data-i="${i}" ${it.disabled ? "disabled" : ""}>${icon(it.icon || "caret")}<span>${esc(it.label)}</span>${it.hint ? `<small>${esc(it.hint)}</small>` : ""}</button>`)).join("");
+  el.innerHTML = items.map((it, i) => (it === "-" ? `<hr>` : `<button role="menuitem" class="${it.danger ? "danger" : ""}" data-i="${i}" ${it.disabled ? "disabled" : ""}>${icon(it.icon || "caret")}<span>${esc(it.label)}</span>${it.hint ? `<small>${esc(it.hint)}</small>` : ""}</button>`)).join("");
   (document.fullscreenElement || document.body).appendChild(el); // visible in fullscreen too
   const r = anchor.getBoundingClientRect();
-  el.style.top = `${r.bottom + 6}px`;
-  el.style.left = `${Math.min(r.left, window.innerWidth - el.offsetWidth - 12)}px`;
+  const edge = 12, gap = 6, w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = `${Math.max(edge, Math.min(r.left, window.innerWidth - w - edge))}px`;
+  const below = r.bottom + gap;
+  el.style.top = `${below + h > window.innerHeight - edge && r.top - gap - h >= edge ? r.top - gap - h : Math.max(edge, Math.min(below, window.innerHeight - h - edge))}px`;
   el.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-i]");
     if (!b) return;
@@ -1329,7 +1348,7 @@ ctx.menu = menu;
 
 async function openSettings() {
   try {
-    lazy.settings ||= import("./components/settings_dialog.js");
+    lazy.settings ||= import("./components/settings_modal.js");
     (await lazy.settings).openSettings(ctx, { live, setLive, newProject, openProject, quitServer, loadServer, loadDemo, switchProject, removeWorkspace, resetAttachments, forgetFolderHandles });
   } catch (error) { lazy.settings = null; ctx.toast(`Settings: ${error.message}`, "fail"); }
 }
@@ -1340,7 +1359,7 @@ const showProject = async (project, template) => {
   ctx.navigate(template === "agent-loop" ? "workflow" : "overview");
 };
 async function newProject(path, open) {
-  try { await (await import("./components/agent_dialog.js"))[open ? "openProject" : "openCreateProject"](ctx, showProject, path, newProject); }
+  try { await (await import("./components/agent_modal.js"))[open ? "openProject" : "openCreateProject"](ctx, showProject, path, newProject); }
   catch (error) { ctx.toast(error.message, "fail"); }
 }
 const openProject = () => newProject("", 1);
@@ -1364,7 +1383,7 @@ function removeWorkspace(project) {
   delete state.trees[project];
   workflowCache.delete(project);
   overview.forgetProject(project);
-  results.forgetProject(project);
+  results?.forgetProject(project);
   forgetPlan(project);
   dockedLogs().filter((d) => d.project === project).forEach((d) => undockLog(d.key));
   [...tabErrors.keys()].filter((k) => k.startsWith(`${project}\u0000`)).forEach((k) => tabErrors.delete(k));
@@ -1419,18 +1438,61 @@ const bumpSelection = () => { selectionAc.abort(); selectionAc = new AbortContro
 /** AbortSignal for a request made for the selected target; aborted (so the reply is stale) after a switch. */
 ctx.selection = () => selectionAc.signal;
 
+function skillsCanLeave() {
+  return [...document.querySelectorAll('[data-skills-body]')].every((el) => el.skillsCanLeave?.() !== false);
+}
 function goTo(view) {
+  if (view !== state.view && !skillsCanLeave()) return;
   rememberTarget();
   if (setRoute(routeHash(view, state.selectedProject, state.selectedTarget))) route();
 }
 ctx.openAliasRules = openAliasRules;
 
 ctx.palette = { providers: [], register(fn) { if (!this.providers.includes(fn)) this.providers.push(fn); } };
-// Chat mode (Studio settings → Preferences, per browser, off by default): the Chat section, dock and chat runs.
-function chatOn() { return storage.get("ui:chat.enabled", false) === true; }
+// --experimental-features or alfrd su
+const experimentalOn = () => server.session?.experimental === true;
+ctx.experimental = experimentalOn;
+// Chat mode (Preferences, per browser, off by default): Chat section, dock, chat runs
+function chatOn() {
+  return experimentalOn() && shown("chat") && readPrefs()["ui.experimental_chat"] === true;
+}
+let chatProjects, chatProjectsLoading;
+function syncChatProjects() {
+  if (chatProjects) {
+    if (!chatOn() || state.mode !== "server") { chatProjects.stop(); chatProjects = chatProjectsLoading = null; }
+    else chatProjects.sync();
+    return;
+  }
+  if (!chatOn() || state.mode !== "server" || chatProjectsLoading) return;
+  chatProjectsLoading = import("./data/chat_projects.js").then((m) => {
+    chatProjects = m.mountChatProjects(ctx, pickers.project, projectsFollowed); chatProjects.sync();
+  }).catch(() => { chatProjectsLoading = null; });
+}
 ctx.chatOn = chatOn;
-ctx.setChat = (on) => { storage.set("ui:chat.enabled", Boolean(on)); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
-Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
+// Superuser-hidden sections (Overview stays)
+const shown = (id) => id == "overview" || !server.session?.superuser?.hidden_sections?.includes(id);
+ctx.refreshSession = async (throttle) => (await import("./data/session_refresh.js")).refreshSession(ctx, { views: VIEWS, shown, chatOn, goTo, render: scheduleRender, throttle });
+const su = () => !document.hidden && ctx.refreshSession(true).catch(() => {});
+document.addEventListener("visibilitychange", su); addEventListener("alfrd-events", su);
+addEventListener("alfrd-events", ({ detail }) => {
+  if (detail?.project && plansAvailable(ctx, detail.project)) loadPlan(ctx, detail.project, { quiet: true });
+});
+let jobSummaryRefresh;
+function refreshJobSummaries() {
+  if (jobSummaryRefresh) return jobSummaryRefresh;
+  jobSummaryRefresh = refreshJobCatalog().finally(() => { jobSummaryRefresh = null; });
+  return jobSummaryRefresh;
+}
+async function refreshJobCatalog() {
+  if (document.hidden || state.mode !== "server") return;
+  const queue = ctx.projects().map((p) => p.id);
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (queue.length) { const p = queue.shift(); if (plansAvailable(ctx, p)) await loadPlan(ctx, p, { quiet: true }); }
+  }));
+}
+document.addEventListener("visibilitychange", refreshJobSummaries);
+ctx.setChat = (on) => { writePrefs({ "ui.experimental_chat": Boolean(on) }); if (!on && state.view === "chat") goTo("overview"); scheduleRender(); };
+Object.defineProperty(ctx, "views", { get: () => VIEWS.filter((v) => !v.page && shown(v.id) && (v.id !== "chat" || chatOn())).map(({ id, label, icon: ic }) => ({ id, label, icon: ic })) });
 ctx.goTo = goTo;
 ctx.rescan = () => rescan();
 ctx.reloadAll = () => reloadAll();
@@ -1489,8 +1551,13 @@ document.addEventListener("keydown", (e) => {
   if (e.altKey && e.shiftKey && !mod && e.code === "KeyA" && dockAvailable()) { e.preventDefault(); setChatDock(); }
   if (e.key === "?" && !mod && !e.altKey && $("#modal-host").hidden) { e.preventDefault(); ctx.openShortcuts(); }
 });
-function toggleCompact() {
-  if (state.view !== "workflow") { canvas.setCompact(ctx, true); goTo("workflow"); } else canvas.setCompact(ctx);
+async function toggleCompact() {
+  const view = state.view;
+  try {
+    const m = await loadCanvas();
+    if (view !== state.view) return;
+    if (view !== "workflow") { m.setCompact(ctx, true); goTo("workflow"); } else m.setCompact(ctx);
+  } catch (e) { ctx.toast(e.message, "fail"); }
 }
 // The chat dock's own composer keeps Alt+Shift+A (the handler above ignores fields).
 document.addEventListener("keydown", (e) => {
@@ -1500,22 +1567,21 @@ document.addEventListener("keydown", (e) => {
 const dockUi = { open: false, width: 380, ...storage.get("ui:chat.dock", {}) };
 let dockMod = null, dockExplicit = false;
 const dockAvailable = () => chatOn() && state.mode === "server" && Boolean(activeProject()) && !["chat", "new-project"].includes(state.view);
+let dockOpener;
 function setChatDock(open = !dockUi.open) {
+  if (open && !dockUi.open) dockOpener = document.activeElement;
   dockUi.open = open;
   dockExplicit = open; // opened by hand: shown in compact workflow mode too (a remembered open state is not)
   storage.set("ui:chat.dock", { open, width: dockUi.width });
   renderChatDock({ focus: true });
 }
 async function renderChatDock({ focus = false } = {}) {
-  const el = $("#chat-dock"), btn = $("#btn-chat-dock");
-  if (!el || !btn) return;
+  const el = $("#chat-dock");
+  if (!el) return;
   const avail = dockAvailable(), show = avail && dockUi.open;
-  btn.hidden = !avail;
-  btn.setAttribute("aria-expanded", String(show));
-  btn.classList.toggle("on", show);
   $("#app").dataset.dock = show ? (dockExplicit ? "explicit" : "open") : "closed";
   if (!show) {
-    if (!el.hidden) { dockMod?.hide(); el.hidden = true; if (focus && avail) btn.focus(); }
+    if (!el.hidden) { dockMod?.hide(); el.hidden = true; if (focus && avail) (dockOpener?.isConnected ? dockOpener : $('.rail a[data-view="chat"]'))?.focus(); }
     return;
   }
   try { dockMod ||= await import("./components/chat_dock.js"); } catch (error) { ctx.toast(`Chat dock: ${error.message}`, "fail"); return; }
@@ -1527,7 +1593,7 @@ ctx.palette.register(() => (dockAvailable() ? [{ id: "chat-dock", group: "action
 ctx.openShortcuts = () => import("./components/shortcuts.js").then((m) => m.openShortcuts(ctx)).catch((e) => ctx.toast(`Shortcuts: ${e.message}`, "fail"));
 ctx.palette.register(() => [
   { id: "shortcuts", group: "action", icon: "info", label: "Keyboard shortcuts", detail: "action · ?", run: ctx.openShortcuts },
-  { id: "compact", group: "action", icon: "fold", label: canvas.compact() ? "Exit compact workflow mode" : "Compact workflow mode", detail: `action · ${keyLabel("Alt+Shift+C")}`, run: toggleCompact },
+  { id: "compact", group: "action", icon: "fold", label: compactWorkflow() ? "Exit compact workflow mode" : "Compact workflow mode", detail: `action · ${keyLabel("Alt+Shift+C")}`, run: toggleCompact },
 ]);
 // Unsaved edits (alfrd.yaml editor, workflow draft, step Configure form) survive switching views and
 // projects in this tab, but not a reload or closing it.
@@ -1651,7 +1717,7 @@ function liveRuntime() {
 
 const live = createLive({
   mode: () => state.mode,
-  watchHidden: () => state.mode === "server" && loadUi("notifications", {}).browser === true, // saved by notifications.js
+  watchHidden: () => state.mode === "server" && readPrefs()["ui.browser_notifications"] === true, // saved by notifications.js
   available: () => server.session?.live?.enabled !== false,
   projects: projectsFollowed,
   folders: () => (state.mode === "server" ? [] : Object.entries(state.folders).filter(([p, h]) => h && state.trees?.[p]).map(([project, handle]) => ({ project, handle }))),
@@ -1664,8 +1730,8 @@ const live = createLive({
   onRuntime: liveRuntime,
   onPluginJob: () => renderJobs(),
   onAlfrd: (project, events) => (window.dispatchEvent(new CustomEvent("alfrd-events", { detail: { project, events } })), import("./components/notifications.js").then((m) => m.handleNotifications(ctx, project, events)).catch((error) => ctx.log("warn", `Notifications: ${error.message}`, "server"))),
-  onResync: (project) => (loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
-  onStatus: (status) => { state.liveStatus = status; renderLiveBadge(); },
+  onResync: (project) => (window.dispatchEvent(new CustomEvent("alfrd-chat-resync", { detail: { project } })), refreshJobSummaries(), chatProjects?.invalidate(project), loadJob(project) && busy(loadJob(project).scan)) || queueRefresh(project, { full: true }), // a startup scan is already on its way
+  onStatus: (status) => { if (status.state !== state.liveStatus?.state && ["live", "polling"].includes(status.state)) window.dispatchEvent(new CustomEvent("alfrd-chat-resync")); state.liveStatus = status; chatProjects?.sync(); renderLiveBadge(); },
 });
 live.enabled = state.prefs.live !== false;
 setTails(live.enabled);
@@ -1680,6 +1746,8 @@ let renderWaiting = false;
 ["keydown", "input", "compositionstart", "compositionupdate"].forEach((t) => document.addEventListener(t, (e) => {
   if (e.target?.closest?.("#main") && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) typingUntil = Date.now() + 2500;
 }, true));
+document.addEventListener("click", () => { if (renderWaiting) setTimeout(liveRender, 0); });
+document.addEventListener("toggle", () => { if (renderWaiting) setTimeout(liveRender, 0); }, true);
 document.addEventListener("focusout", () => { if (renderWaiting) setTimeout(liveRender, 50); }, true);
 const released = () => { pointerDown = 0; if (renderWaiting) setTimeout(liveRender, 0); };
 document.addEventListener("pointerdown", () => { pointerDown = Date.now(); }, true);
@@ -1713,7 +1781,7 @@ function findByKey(key, root) {
 function liveRender() {
   if (pointerDown && Date.now() - pointerDown < 15000) { renderWaiting = true; return; }
   const act = document.activeElement;
-  const editing = act?.tagName === "TEXTAREA" && act.closest("#main");
+  const editing = Boolean(act?.matches?.("input,textarea,select,[contenteditable]") || document.querySelector(".picker-pop, .menu[role=menu], .chat-session-menu[open], dialog[open]"));
   if (editing || Date.now() < typingUntil) {
     renderWaiting = true;
     if (!editing) setTimeout(liveRender, Math.max(200, typingUntil - Date.now() + 50));
@@ -1761,16 +1829,19 @@ function renderLiveBadge() {
   if (!b) return;
   const st = state.liveStatus || {};
   const kind = st.state || "off";
-  b.className = `live-badge live-${kind}`;
-  b.querySelector("span").textContent = LIVE_LABEL[kind] || kind;
+  const cls = `live-badge live-${kind}`, label = LIVE_LABEL[kind] || kind;
+  if (b.className !== cls) b.className = cls;
+  if (b.querySelector("span").textContent !== label) b.querySelector("span").textContent = label;
   const ago = st.last ? Math.max(0, Math.round((Date.now() - st.last.getTime()) / 1000)) : null;
-  b.title = [
+  const title = [
     kind === "permission" ? "Click to allow reading the folder again" : live.enabled ? "Click to turn live updates off" : "Click to turn live updates on",
     st.detail,
     ago != null ? `last check ${ago < 2 ? "just now" : `${ago} s ago`}` : "",
     st.interval ? `every ${st.interval < 10 ? st.interval.toFixed(1) : Math.round(st.interval)} s while busy` : "",
   ].filter(Boolean).join(" · ");
-  b.setAttribute("aria-pressed", live.enabled ? "true" : "false");
+  if (b.title !== title) b.title = title;
+  const pressed = live.enabled ? "true" : "false";
+  if (b.getAttribute("aria-pressed") !== pressed) b.setAttribute("aria-pressed", pressed);
   const lost = state.mode === "server" && (kind === "reconnecting" || navigator.onLine === false);
   const notice = $("#conn-notice");
   if (notice && notice.hidden === lost) {
@@ -1794,6 +1865,7 @@ async function onLiveBadge() {
 
 
 const shellUi = loadUi("shell.v2", { sidebarCollapsed: true });
+let railResize;
 function setSidebar(collapsed) {
   shellUi.sidebarCollapsed = collapsed === true;
   $("#app").dataset.sidebar = shellUi.sidebarCollapsed ? "collapsed" : "expanded";
@@ -1804,7 +1876,8 @@ function setSidebar(collapsed) {
     b.setAttribute("aria-label", label);
     b.title = `${label} (Alt+Shift+S)`;
   }
-  storage.set("ui:shell.v2", { sidebarCollapsed: shellUi.sidebarCollapsed }); // at once: a reload right after must keep it
+  railResize?.sync();
+  storage.set("ui:shell.v2", { ...shellUi, sidebarCollapsed: shellUi.sidebarCollapsed }); // at once: a reload right after must keep it
 }
 document.addEventListener("keydown", (e) => {
   if (!(e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyS") || e.isComposing) return;
@@ -1855,7 +1928,8 @@ ctx.palette.register(() => [
 
 function renderShell() {
   $("#app").dataset.sidebar = shellUi.sidebarCollapsed === true ? "collapsed" : "expanded";
-  $("#app").innerHTML = `
+  const shell = document.createElement("template");
+  shell.innerHTML = `
     <header class="topbar">
       <div class="brand">${LOGO}<h1>alfrd</h1></div>
       <span class="mode-badge" id="mode-badge"></span>
@@ -1868,7 +1942,6 @@ function renderShell() {
       <div class="picker"><button class="picker-btn" id="pick-target">${icon("target")}<span class="picker-l">Target</span><span class="picker-val"></span>${icon("chevron", "picker-chev")}</button></div>
       <button class="btn sm jobs-btn" id="btn-jobs" aria-haspopup="dialog" hidden>${icon("play")} <span id="jobs-label">Jobs</span></button><span class="sr-only" id="jobs-live" aria-live="polite"></span>
       <span class="grow"></span>
-      <button class="icon-btn" id="btn-chat-dock" aria-label="Chat dock" aria-controls="chat-dock" aria-expanded="false" aria-keyshortcuts="Alt+Shift+A" title="Chat with the agents beside this view (Alt+Shift+A)" hidden>${icon("chat")}</button>
       <button class="icon-btn" id="btn-palette" aria-label="Command palette" title="Go to anything, run an action (${keyLabel("Ctrl+K")})">${icon("search")}</button>
       <button class="live-badge live-off" id="btn-live" aria-pressed="false"><i></i><span>Live off</span></button>
       <button class="icon-btn" id="btn-rescan" aria-label="Re-scan" title="Re-read the whole project folder now (live updates only re-read what changed)">${icon("sync")}</button>
@@ -1876,11 +1949,11 @@ function renderShell() {
       <button class="icon-btn" id="btn-settings" aria-label="Studio settings" title="Studio settings">${icon("gear")}</button>
       <button class="icon-btn" id="btn-quit" aria-label="Quit alfrd" title="Quit alfrd" hidden>${icon("power")}</button>
     </header>
-    <nav class="rail" aria-label="Workspace">
+    <nav class="rail" id="workspace-rail" aria-label="Workspace"><div id="rail-resize"></div>
       <div class="rail-head"><span class="rail-label">Workspace</span></div>
-      <div class="rail-links" id="rail-links">${VIEWS.filter((v) => !v.page).map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span></a>`).join("")}</div>
+      <div class="rail-links" id="rail-links">${VIEWS.filter((v) => !v.page).map((v) => `<a href="${esc(routeHash(v.id, state.selectedProject, state.selectedTarget))}" data-view="${v.id}" title="${v.label}">${icon(v.icon)}<span>${v.label}</span>${v.id === "chat" ? '<b class="badge" data-inbox-count hidden></b>' : ""}</a>`).join("")}</div>
       <div id="rail-plugins" class="rail-plugins" hidden></div>
-      <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
+      <div class="rail-foot"><button class="icon-btn rail-toggle" id="btn-rail" aria-label="Toggle sidebar" aria-controls="rail-links" aria-keyshortcuts="Alt+Shift+S">${icon("sidebar")}</button></div>
     </nav>
     <span id="project-load-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
     <main id="main" tabindex="-1"><div id="conn-notice" class="callout warn small" role="status" hidden></div><div id="project-load-notice" hidden></div>${VIEWS.map((v) => `<section class="view" id="view-${v.id}" data-view="${v.id}" hidden></section>`).join("")}</main>
@@ -1889,7 +1962,7 @@ function renderShell() {
       <span class="vsep"></span>
       <span id="foot-mode"></span>
       <span class="vsep"></span>
-      <button class="link-btn" id="foot-logs">${icon("log")} <span id="foot-logcount"></span></button>
+      <button class="link-btn" id="foot-logs" aria-label="Studio logs">${icon("log")} <span id="foot-logcount"></span></button>
       <span class="vsep"></span>
       <button class="link-btn" id="foot-keys" aria-keyshortcuts="?" title="Keyboard shortcuts (?)">${icon("info")} Shortcuts</button>
       <span class="grow"></span>
@@ -1898,7 +1971,15 @@ function renderShell() {
     <aside id="chat-dock" class="chat-dock" hidden aria-label="Chat"></aside>
     <section class="dock-strip" id="dock-strip" hidden aria-label="Followed log"></section>
     <section class="console" id="console" hidden aria-label="Log stream"></section>`;
-  $("#btn-chat-dock").addEventListener("click", () => setChatDock());
+  // Adopt the HTML shell roots so startup does not discard the layout geometry.
+  const app = $("#app");
+  for (const node of [...shell.content.children]) {
+    const old = [...app.children].find((el) => node.id ? el.id === node.id : el.tagName === node.tagName);
+    if (old) { old.replaceChildren(...node.childNodes); for (const a of node.attributes) old.setAttribute(a.name, a.value); old.removeAttribute("aria-hidden"); }
+    else app.append(node);
+  }
+  $(".topbar").inert = true; $("#workspace-rail").inert = true;
+  $("#main").insertAdjacentHTML("beforeend", `<div id="startup-outline">${outlineHtml()}</div>`);
   $("#btn-jobs").addEventListener("click", async (e) => {
     try {
       lazy.jobs ||= import("./components/jobs_tray.js");
@@ -1918,6 +1999,15 @@ function renderShell() {
 
   $("#btn-rail").addEventListener("click", () => setSidebar(!shellUi.sidebarCollapsed));
   setSidebar(shellUi.sidebarCollapsed);
+  import("./components/panel_resize.js").then(({ mountPanelResize }) => {
+    railResize?.destroy();
+    railResize = mountPanelResize({ panel: $(".rail"), handle: $("#rail-resize"), width: shellUi.navWidth,
+      min: 180, max: 360, defaultWidth: 240, label: "Resize Workspace navigation",
+      enabled: () => window.innerWidth >= 1280 && !shellUi.sidebarCollapsed,
+      available: () => window.innerWidth - 400,
+      apply: (w) => $("#app").style.setProperty("--nav-width", `${w}px`),
+      save: (w) => { shellUi.navWidth = w; storage.set("ui:shell.v2", { ...shellUi }); } });
+  });
   $("#btn-projects").addEventListener("click", projectsAction);
   $("#btn-rescan").addEventListener("click", () => rescan());
   $("#btn-live").addEventListener("click", onLiveBadge);
@@ -1925,7 +2015,7 @@ function renderShell() {
   $("#btn-data").addEventListener("click", (e) => menu(e.currentTarget, dataItems()));
   $("#btn-settings").addEventListener("click", openSettings);
   $("#btn-quit").addEventListener("click", quitServer);
-  pickers.project = mountPicker($("#pick-project"), { label: "Project", onChange: (value) => switchProject(value, { push: true }) });
+  pickers.project = mountPicker($("#pick-project"), { label: "Project", onChange: (value) => switchProject(value, { push: true, restoreView: state.view !== "chat" }) });
   $("#main").addEventListener("click", (e) => {
     const b = e.target.closest("[data-ws-open]");
     if (b) switchProject(b.dataset.wsOpen, { restoreView: false, push: true });
@@ -1942,15 +2032,16 @@ function renderShell() {
 }
 
 function renderHeader() {
-  VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) { a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); a.hidden = v.id === "chat" && !chatOn(); } });
+  syncChatProjects();
+  VIEWS.forEach((v) => { const a = $(`[data-view="${v.id}"]`); if (a) { a.href = routeHash(v.id, state.selectedProject, state.selectedTarget); a.hidden = (v.id === "chat" && !chatOn()) || !shown(v.id); } });
   const badge = $("#mode-badge");
   const live = state.mode === "server";
   $("#btn-projects").title = live ? (server.session?.mutations_enabled ? "New project or open a project" : PROJECTS_LOCAL) : "Choose a project";
   badge.className = `mode-badge ${live ? "live" : ""}`;
   const quit = $("#btn-quit");
   if (quit) quit.hidden = !(live && server.session?.can_quit);
-  const modeText = `${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}`;
-  badge.innerHTML = `<i></i><span>${modeText}</span>`;
+  const modeText = `${live ? "Server mode" : "Browser mode"}${state.source === "demo" ? " · demo" : state.source === "imported" ? " · imported" : state.source === "server" ? " · runtime" : ""}${live && server.session?.superuser?.read_only ? " · read-only" : ""}`;
+  sourceHTML(badge, `<i></i><span>${modeText}</span>`);
   badge.title = `${modeText}: ${live ? "projects come from the runtime database; re-queue runs through the runtime API." : "everything runs in this browser; no pipeline code is executed."}`;
 
   const rescanBtn = $("#btn-rescan");
@@ -1962,6 +2053,7 @@ function renderHeader() {
   pickers.project.set([{ value: "all", label: `All projects (${projects.length})` }, ...projects.map((p) => ({
     value: p.id, label: labels[p.id], detail: state.projectRoots?.[p.id] || "", badge: [isDirty(p.id) ? "unsaved" : "", ctx.loadInfo(p.id).badge].filter(Boolean).join(" · "),
   }))], state.selectedProject || "all");
+  $("#pick-project").disabled = catalogPending;
   $("#project-picker-description").textContent = [ctx.loadInfo(activeProject()).badge, state.projectRoots?.[activeProject()]].filter(Boolean).join(". ");
   pickers.target.set(ctx.scopedTargets().map((t) => ({
     value: t.id, label: t.name, detail: state.selectedProject === "all" ? state.projectTitles[t.project] || ctx.projectName(t.project) : "",
@@ -1988,7 +2080,7 @@ async function pollSystem() {
     systemHtml = sysMeter("CPU", s.cpu) + sysMeter("RAM", s.mem_total ? (100 * s.mem_used) / s.mem_total : 0);
     systemTitle = `${SYSTEM_HINT}\nCPU ${Math.round(s.cpu)}% · RAM ${gib(s.mem_used)} / ${gib(s.mem_total)} GB`;
     const el = $("#foot-mode .sys");
-    if (el) { el.title = systemTitle; el.lastElementChild.innerHTML = systemHtml; }
+    if (el) { if (el.title !== systemTitle) el.title = systemTitle; refreshHTML(el.lastElementChild, systemHtml); }
   } catch { clearInterval(systemTimer); systemTimer = null; } // older server or offline: keep the label
 }
 function startSystemPoll() {
@@ -2001,15 +2093,15 @@ function renderFooter() {
   const st = $("#foot-storage");
   if (!st) return;
   st.textContent = `Local Storage: ${bytes(storage.size())} / Saved`;
-  $("#foot-mode").innerHTML = state.mode === "server"
+  sourceHTML($("#foot-mode"), state.mode === "server"
     ? `<span class="sys" title="${esc(systemTitle || SYSTEM_HINT)}">${icon("server")}<span class="sys-meters">${systemHtml || "alfrd serve"}</span></span>`
-    : `${icon("info")} Browser mode · preview workflows and import results`;
+    : `${icon("info")} Browser mode · preview workflows and import results`);
   const errors = state.consoleLines.filter((l) => l.level === "error").length;
   const warns = state.consoleLines.filter((l) => l.level === "warn").length;
   const info = state.consoleLines.length - errors - warns;
   const followed = dockedLogs().length;
   $("#foot-logcount").textContent = `Logs [${errors} errors, ${warns} warnings, ${info} info]${followed ? ` · ${followed} followed` : ""}`;
-  $("#footer-right").innerHTML = ctx.footerRight;
+  sourceHTML($("#footer-right"), ctx.footerRight);
 }
 
 const consoleUi = loadUi("console", { height: 280 });
@@ -2050,7 +2142,9 @@ onDock(() => renderStrip());
 /** Jobs · N running: every active run across projects (switching never stops them). */
 const jobStatus = new Map(); // `${project}\u0000${run}` -> label, for polite announcements
 function jobLabel(s) {
-  if (s.plan.start_at || s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
+  if (["paused", "interrupted"].includes(s.plan.status)) return s.plan.status === "paused" ? "Paused" : "Interrupted";
+  if (s.plan.phase === "running") return "Running";
+  if (["scheduled", "manual", "review", "decision"].includes(s.plan.phase) || s.plan.start_at || s.loop?.phase === "awaiting_response" || s.loop?.phase === "awaiting_review" || s.waiting?.length) return "Waiting";
   return { running: "Running", paused: "Paused", interrupted: "Interrupted" }[s.plan.status] || s.plan.status;
 }
 function renderJobs() {
@@ -2100,17 +2194,19 @@ function renderConsole() {
       <button class="btn sm" data-act="clear">Clear</button>`
     : `<span class="muted small mono trunc ctab-path" title="${esc(active.rel)}">${esc(ctx.projectName(active.project))} · ${esc(active.rel)}</span>
       <button class="btn sm" data-act="full" title="Open full screen">${icon("expand")} Full screen</button>`;
-  $(".console-h", el).innerHTML = `<b class="console-title">${icon("log")} Log stream</b>
+  refreshHTML($(".console-h", el), `<b class="console-title">${icon("log")} Log stream</b>
       <div class="ctabs" role="tablist" aria-label="Log stream tabs">${tabBtn("studio", "Studio")}${docks.map((d) => tabBtn(d.key, dockLabel(d), `<span class="live-dot" ${d.live ? "" : "hidden"}></span>`, `${ctx.projectName(d.project)} · ${d.rel} (following)`)).join("")}</div>
       <span class="grow"></span>${tools}
-      <button class="icon-btn sm" data-act="close" aria-label="Hide log stream" title="Hide the panel (docked logs stay as tabs)">${icon("minus")}</button>`;
+      <button class="icon-btn sm" data-act="close" aria-label="Hide log stream" title="Hide the panel (docked logs stay as tabs)">${icon("minus")}</button>`);
   const body = $(".console-b", el);
   if (tab === "studio") {
     const lines = state.consoleLines.filter((l) => filter === "all" || l.level === filter);
+    const oldPre = $("pre", body);
+    const following = body.dataset.tab !== "studio" || !oldPre || oldPre.scrollHeight - oldPre.scrollTop - oldPre.clientHeight <= 24;
     body.dataset.tab = "studio";
-    body.innerHTML = `<pre class="log">${lines.map((l) => `<span class="lvl-${l.level}"><span class="log-time">${l.t.toISOString().slice(11, 19)}</span> [${esc(l.scope)}] <span class="log-level">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.text)}</span>`).join("\n") || '<span class="muted">No log lines yet.</span>'}</pre>`;
+    refreshHTML(body, `<pre class="log">${lines.map((l) => `<span class="lvl-${l.level}"><span class="log-time">${l.t.toISOString().slice(11, 19)}</span> [${esc(l.scope)}] <span class="log-level">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.text)}</span>`).join("\n") || '<span class="muted">No log lines yet.</span>'}</pre>`);
     const pre = $("pre", body);
-    pre.scrollTop = pre.scrollHeight;
+    if (following) pre.scrollTop = pre.scrollHeight;
   } else if (body.dataset.tab !== tab || !body.querySelector("pre[data-dock-log]")) {
     body.dataset.tab = tab;
     mountDock(ctx, body, tab).then(() => { if (state.consoleOpen && state.consoleTab === tab) renderConsole(); });
@@ -2227,7 +2323,12 @@ function renderLoading() {
   }
 }
 
+let renderedViewScope = "";
+document.addEventListener("change", () => { renderedViewScope = ""; }, true);
 function renderAll() {
+  if (bootPending) return;
+  $(".topbar").inert = false; $("#workspace-rail").inert = false;
+  $("#startup-outline")?.remove();
   const focusedHeading = document.activeElement?.matches("#main h2");
   syncWorkflow();
   saveUi("app", state, ["selectedProject", "selectedTarget"]);
@@ -2237,7 +2338,12 @@ function renderAll() {
     const active = v.id === state.view;
     el.hidden = !active;
     if (active) {
-      if (!askForProject(el, v.id)) v.mod.render(el, ctx);
+      const viewScope = JSON.stringify([v.id, state.selectedProject, state.selectedTarget]);
+      if (v.id !== "chat" && viewScope === renderedViewScope && (refreshProtected(el) || document.querySelector(".picker-pop, .menu[role=menu]"))) renderWaiting = true;
+      else {
+        if (!askForProject(el, v.id)) v.mod.render(el, ctx);
+        renderedViewScope = viewScope;
+      }
       const ek = errorKey(activeProject() || "all", v.id); // only the active project's errors show
       const error = tabErrors.get(ek);
       el.querySelector(".tab-error")?.remove();
@@ -2270,15 +2376,16 @@ function route() {
   const url = parseRoute(location.hash);
   const [id, page] = url.view.split("/");
   if (id === "plugin") state.pluginPage = page || "";
-  if (id === "chat") state.chatSession = page || "";
   if (url.project && (url.project === "all" || ctx.projects().some((p) => p.id === url.project))) {
-    if (state.selectedProject !== url.project) switchProject(url.project, { render: false, restoreView: false, syncUrl: false });
+    if (state.selectedProject !== url.project && switchProject(url.project, { render: false, restoreView: false, syncUrl: false }) === false) { setRoute(routeHash(state.view, state.selectedProject, state.selectedTarget)); return; }
     state.selectedTarget = chooseTarget(ctx.scopedTargets(), url.target, storage.get("ui:app.targets", {})[url.project], state.selectedTarget);
     rememberTarget();
   }
-  const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) ? id : "overview";
+  if (id === "chat") state.chatSession = page || "";
+  const next = VIEWS.some((v) => v.id === id) && (id !== "chat" || chatOn()) && shown(id) ? id : "overview";
   if (next !== state.view) {
-    VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx);
+    if (!skillsCanLeave()) { setRoute(routeHash(state.view, state.selectedProject, state.selectedTarget)); return; }
+    if (VIEWS.find((v) => v.id === state.view)?.mod.leave?.(ctx) === false) return;
     const watch = { config: ["settings"], workflow: ["workflow", "inspector"] }[state.view] || [];
     const kept = unsaved().filter(([, what]) => watch.includes(what)).map(([p]) => ctx.projectName(p));
     if (kept.length) ctx.toast(`Unsaved changes in ${[...new Set(kept)].join(", ")} are kept in this tab. Save them before closing or reloading it.`, "warn");
@@ -2305,17 +2412,19 @@ async function boot() {
     else goTo(url.view);
   });
   route();
-  await loadTemplate("avica", parseYaml);
-  await loadDefaultManifest();
-  await ensureTemplatesFor(storage.get("workflow")?.text);
+  bootDefinitions = Promise.all([loadTemplate("avica", parseYaml), loadDefaultManifest()]);
 
   const session = await server.detect();
   if (server.authRequired) return;
+  bootPending = false;
+  if (!session) await ensureTemplatesFor(storage.get("workflow")?.text);
   if (session?.version) VERSION = session.version;
   ctx.log("info", `Studio ${VERSION} started (${location.protocol === "file:" ? "file" : location.origin}).`);
   state.demoEnabled = Boolean(session?.demo) || new URLSearchParams(location.search).has("demo");
   if (session) {
     state.mode = "server";
+    // route() ran before the session: #/chat and #/superuser need it
+    if (["chat", "superuser"].includes(parseRoute(location.hash).view.split("/")[0])) route();
     startSystemPoll();
     ctx.log("info", `Connected to alfrd ${session.version} (runtime ${session.runtime_enabled ? "on" : "off"}, mutations ${session.mutations_enabled ? "on" : "off"}).`, "server");
     const data = await loadServer();
@@ -2355,7 +2464,7 @@ async function boot() {
 
 window.alfrdStudio = { ctx, loadDemo, loadServer, applyBundle, rescan, importEntries };
 
-server.onAuthRequired(() => location.replace("/login"));
+server.onAuthRequired(() => location.replace(new URL("../login", location.href || "http://localhost/studio/").pathname));
 
 boot().catch((error) => {
   if (server.authRequired) return;

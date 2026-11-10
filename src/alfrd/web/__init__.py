@@ -11,6 +11,7 @@ and can be served three ways:
 
 from __future__ import annotations
 
+import json
 import shutil
 from importlib import resources
 from pathlib import Path
@@ -39,11 +40,11 @@ REQUIRED_ASSETS = (
     "js/app.js",
     "js/components/overview.js",
     "js/components/canvas.js",
-    "js/components/metadata.js",
+    "js/components/details.js",
     "js/components/results.js",
     "js/components/alfrd_config.js",
-    "js/components/logs.js",
-    "js/components/logview.js",
+    "js/components/streams.js",
+    "js/components/tails.js",
     "js/utils/yaml_parser.js",
     "js/utils/csv_parser.js",
     "js/utils/dom.js",
@@ -77,8 +78,11 @@ def missing_assets(root: Path | None = None) -> list[str]:
     return [name for name in REQUIRED_ASSETS if not (base / name).is_file()]
 
 
-def export_site(destination: str | Path) -> Path:
+def export_site(destination: str | Path, *, base_path: str = "/") -> Path:
     """Copy the Studio into ``destination`` (e.g. for GitHub Pages)."""
+    if not base_path.startswith("/") or any(c in base_path for c in "?#\\") or ".." in base_path.split("/"):
+        raise ValueError("Static hosting base must be an absolute URL path")
+    base_path = base_path.rstrip("/") + "/"
     target = Path(destination).expanduser().resolve()
     source = web_root()
     target.mkdir(parents=True, exist_ok=True)
@@ -88,6 +92,10 @@ def export_site(destination: str | Path) -> Path:
         out = target / item.relative_to(source)
         out.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item, out)
+    manifest_path = target / "assets/site.webmanifest"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["id"] = base_path
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     (target / ".nojekyll").write_text("", encoding="utf-8")
     return target
 

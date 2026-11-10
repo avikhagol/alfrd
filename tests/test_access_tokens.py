@@ -123,7 +123,7 @@ def test_browser_401_is_the_landing_page(app):
     assert response.status_code == 401
     assert response.mimetype == "text/html"
     body = response.get_data(as_text=True)
-    assert "needs its access link" in body
+    assert "paste the access link here" in body
     assert "alfrd url --port 80" in body  # test client host "localhost" has no port
     assert TOKEN not in body
     page = anon(app).get("/login", base_url="http://127.0.0.1:5055").get_data(as_text=True)
@@ -373,3 +373,317 @@ def test_system_usage_for_the_footer_needs_the_token(app):
     data = app.test_client().get("/api/studio/system").get_json()
     assert 0 <= data["cpu"] <= 100 and data["cores"] >= 1
     assert 0 < data["mem_used"] <= data["mem_total"]
+
+
+# --- durable launch and in-app pairing ---------------------------------------
+
+def _login(client, credential=TOKEN, remember=False, **kwargs):
+    client.get("/login", **{k: v for k, v in kwargs.items() if k in {"base_url", "environ_overrides"}})
+    with client.session_transaction(**{k: v for k, v in kwargs.items() if k == "base_url"}) as saved:
+        nonce = saved["_alfrd_login_nonce"]
+    return client.post("/login", data={"login_nonce": nonce, "credential": credential,
+                                      "remember": "on" if remember else ""}, **kwargs)
+
+
+@pytest.mark.parametrize("remember", [False, True])
+def test_pairing_cookie_and_clean_redirect(app, remember):
+    client = anon(app)
+    response = _login(client, "http://localhost/studio/?token=" + TOKEN, remember)
+    assert response.status_code == 303
+    assert response.location == "/studio/"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    cookie = response.headers["Set-Cookie"]
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
+    assert "Domain=" not in cookie and "Secure;" not in cookie
+    assert ("Expires=" in cookie) == remember
+    assert app.permanent_session_lifetime.days == 30
+    assert client.get("/api/studio/session").status_code == 200
+    with client.session_transaction() as saved:
+        assert "_alfrd_login_nonce" not in saved
+        assert saved["_alfrd_csrf_token"]
+
+
+def test_https_pairing_sets_secure_cookie(app):
+    response = _login(anon(app), base_url="https://localhost")
+    assert response.status_code == 303
+    assert "Secure;" in response.headers["Set-Cookie"]
+
+
+@pytest.mark.parametrize("origin", ["null", None, "http://localhost"])
+@pytest.mark.parametrize("fetch_site", ["same-origin", None])
+def test_login_private_form_origin(app, origin, fetch_site):
+    # no-referrer suppresses Referer and makes Firefox's form POST Origin null.
+    headers = {"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+    if origin is not None:
+        headers["Origin"] = origin
+    if fetch_site is not None:
+        headers["Sec-Fetch-Site"] = fetch_site
+    client = anon(app)
+    response = _login(client, "http://localhost/studio/?token=" + TOKEN, headers=headers)
+    assert response.status_code == 303
+    assert response.location == "/studio/"
+    assert client.get("/api/studio/session").status_code == 200
+
+
+def test_login_firefox_loopback_form_headers(app):
+    client = anon(app)
+    base_url = "http://127.0.0.1:5000"
+    response = _login(client, base_url + "/studio/?token=" + TOKEN, base_url=base_url,
+                      headers={"Origin": "null", "Sec-Fetch-Site": "same-origin",
+                               "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"})
+    assert response.status_code == 303
+    assert response.location == "/studio/"
+    assert client.get("/api/studio/session", base_url=base_url).status_code == 200
+
+
+@pytest.mark.parametrize("headers", [
+    {"Origin": "https://evil.example", "Sec-Fetch-Site": "same-origin"},
+    {"Origin": "http://localhost:5000"},
+    {"Origin": "http://127.0.0.1"},
+    {"Origin": "null", "Referer": "https://evil.example/page"},
+    {"Referer": "https://evil.example/page"},
+    {"Origin": "null", "Sec-Fetch-Site": "cross-site"},
+    {"Origin": "null", "Sec-Fetch-Site": "same-site"},
+    {"Origin": "malformed"},
+])
+def test_login_foreign_source_shows_recovery(app, headers):
+    client = anon(app)
+    response = _login(client, headers=headers)
+    assert response.status_code == 403
+    assert b'role="alert"' in response.data
+    assert b"Reload the access page" in response.data
+    assert TOKEN.encode() not in response.data
+    assert client.get("/api/studio/session").status_code == 401
+
+
+@pytest.mark.parametrize("nonce", [None, "wrong"])
+def test_login_private_form_requires_nonce(app, nonce):
+    client = anon(app)
+    client.get("/login")
+    data = {"credential": TOKEN}
+    if nonce is not None:
+        data["login_nonce"] = nonce
+    response = client.post("/login", headers={"Origin": "null", "Sec-Fetch-Site": "same-origin"}, data=data)
+    assert response.status_code == 403
+    assert b'role="alert"' in response.data
+    assert b"Reload the access page" in response.data
+    assert client.get("/api/studio/session").status_code == 401
+
+
+def test_login_private_form_expired_session_nonce(app, monkeypatch):
+    from itsdangerous import TimestampSigner
+    now = 2_000_000_000
+    monkeypatch.setattr(TimestampSigner, "get_timestamp", lambda self: now)
+    client = anon(app)
+    client.get("/login")
+    with client.session_transaction() as saved:
+        nonce = saved["_alfrd_login_nonce"]
+    now += 30 * 24 * 60 * 60 + 1
+    response = client.post("/login", headers={"Origin": "null"},
+                           data={"credential": TOKEN, "login_nonce": nonce})
+    assert response.status_code == 403
+    assert b"form has expired" in response.data
+    assert client.get("/api/studio/session").status_code == 401
+
+
+@pytest.mark.parametrize("credential", ["", "wrong", "https://foreign.example/studio/?token=" + TOKEN,
+    "http://localhost/other/?token=" + TOKEN, "http://localhost/studio/?token=" + TOKEN + "&token=other",
+    "http://localhost:5000/studio/?token=" + TOKEN])
+def test_paste_rejects_invalid_or_foreign_link(app, credential):
+    client = anon(app)
+    response = _login(client, credential)
+    assert response.status_code == 401
+    assert b'role="alert"' in response.data
+    assert b"Run alfrd url" in response.data
+    assert TOKEN.encode() not in response.data
+    if credential:
+        assert credential.encode() not in response.data
+    assert client.get("/api/studio/session").status_code == 401
+
+
+def test_login_nonce_origin_body_limit_and_throttle(tmp_path):
+    app = _app(tmp_path, ACCESS_THROTTLE_LIMIT=2)
+    client = anon(app)
+    refused = client.post("/login", data={"credential": TOKEN})
+    assert refused.status_code == 403
+    assert refused.headers["Cache-Control"] == "no-store"
+    assert refused.headers["Referrer-Policy"] == "no-referrer"
+    assert _login(client, headers={"Origin": "https://foreign.example"}).status_code == 403
+    assert _login(client, "x" * 9000).status_code == 413
+    assert _login(client, "wrong").status_code == 401
+    assert _login(client, "wrong").status_code == 401
+    response = _login(client)
+    assert response.status_code == 429 and response.headers["Retry-After"]
+    assert b"Too many attempts" in response.data
+
+
+def test_login_only_exception_works_on_lan_read_only(tmp_path, monkeypatch):
+    from alfrd import superuser
+    original = superuser.load
+    def locked():
+        data = original()
+        data["lockdown"]["read_only"] = True
+        return data
+    monkeypatch.setattr(superuser, "load", locked)
+    app = _app(tmp_path, RUNTIME_MUTATIONS_ENABLED=False)
+    client = anon(app)
+    assert _login(client, environ_overrides={"REMOTE_ADDR": "10.0.0.5"}).status_code == 303
+    assert client.get("/api/studio/session").status_code == 200
+    assert client.post("/api/projects/connect", json={"path": "/tmp"}).status_code == 403
+
+
+def test_proxy_login_form_link_and_redirect(app):
+    client = anon(app)
+    env = {"SCRIPT_NAME": "/prefix"}
+    response = client.get("/login", environ_overrides=env)
+    assert b'action="/prefix/login"' in response.data
+    assert b'href="/prefix/studio/assets/site.webmanifest"' in response.data
+    with client.session_transaction() as saved:
+        nonce = saved["_alfrd_login_nonce"]
+    response = client.post("/login", environ_overrides=env, data={"login_nonce": nonce,
+                           "credential": "http://localhost/prefix/studio/?token=" + TOKEN})
+    assert response.status_code == 303 and response.location == "/prefix/studio/"
+
+
+def test_durable_restart_rotation_policy_and_cookie(tmp_path):
+    policy = {"host": "127.0.0.1", "database": "test"}
+    token, secret = auth.durable_credentials(5999, policy)
+    app = _app(tmp_path, ACCESS_TOKEN=token, SECRET_KEY=secret)
+    client = anon(app)
+    assert _login(client, token, True).status_code == 303
+    cookie = client.get_cookie(app.config["SESSION_COOKIE_NAME"]).value
+    auth.write_server_file(5999, "u", token, secret)
+    auth.remove_server_file(5999)
+    assert auth.durable_credentials(5999, policy) == (token, secret)
+    restarted = anon(_app(tmp_path, ACCESS_TOKEN=token, SECRET_KEY=secret))
+    restarted.set_cookie(app.config["SESSION_COOKIE_NAME"], cookie)
+    assert restarted.get("/api/studio/session").status_code == 200
+    new_token, new_secret = auth.durable_credentials(5999, policy, rotate=True)
+    assert new_token != token and new_secret != secret
+    rotated = anon(_app(tmp_path, ACCESS_TOKEN=new_token, SECRET_KEY=new_secret))
+    rotated.set_cookie(app.config["SESSION_COOKIE_NAME"], cookie)
+    assert rotated.get("/api/studio/session").status_code == 401
+    assert rotated.get("/studio/?token=" + token).status_code == 401
+    changed = auth.durable_credentials(5999, {**policy, "all_projects": True})
+    assert changed != (new_token, new_secret)
+    assert auth.durable_credentials(5999, policy) != (token, secret)
+    path = auth.config_dir() / "credentials-5999.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+
+
+def test_durable_concurrent_starts_share_generation():
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pairs = list(pool.map(lambda _: auth.durable_credentials(5998, {"policy": "same"}), range(20)))
+    assert len(set(pairs)) == 1
+
+
+@pytest.mark.parametrize("unsafe", ["mode", "symlink", "directory", "malformed", "lock_symlink", "parent_mode", "parent_symlink"])
+def test_durable_refuses_unsafe_files(tmp_path, unsafe, monkeypatch):
+    auth.durable_credentials(5997, {})
+    path = auth.config_dir() / "credentials-5997.json"
+    if unsafe == "mode":
+        path.chmod(0o644)
+    elif unsafe == "symlink":
+        path.unlink()
+        path.symlink_to(tmp_path / "missing")
+    elif unsafe == "directory":
+        path.unlink()
+        path.mkdir()
+    elif unsafe == "malformed":
+        path.write_text("{}")
+    elif unsafe == "lock_symlink":
+        lock = path.with_suffix(".lock")
+        lock.unlink()
+        lock.symlink_to(path)
+    elif unsafe == "parent_mode":
+        path.parent.chmod(0o755)
+    else:
+        link = tmp_path / "config-link"
+        link.symlink_to(path.parent)
+        monkeypatch.setattr(auth, "config_dir", lambda: link)
+    with pytest.raises((OSError, ValueError)):
+        auth.durable_credentials(5997, {})
+
+
+def test_serve_restart_rotate_and_nonloopback_opt_in(monkeypatch):
+    configs = []
+    class FakeApp:
+        def run(self, **kwargs):
+            pass
+    monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: configs.append(config) or FakeApp())
+    runner = CliRunner()
+    args = ["serve", "--port", "5996", "--no-browser", "--no-discover"]
+    for extra in ([], [], ["--rotate-token"]):
+        result = runner.invoke(alfrd_cli, args + extra)
+        assert result.exit_code == 0, result.output
+    keys = [(c["ACCESS_TOKEN"], c["SECRET_KEY"]) for c in configs]
+    assert keys[0] == keys[1] and keys[2][0] != keys[0][0] and keys[2][1] != keys[0][1]
+    for fixed in (["--token", "fixed"], ["--no-token"]):
+        assert runner.invoke(alfrd_cli, args + ["--rotate-token"] + fixed).exit_code != 0
+    for _ in range(2):
+        assert runner.invoke(alfrd_cli, args + ["--host", "0.0.0.0"]).exit_code == 0
+    assert configs[-1]["ACCESS_TOKEN"] != configs[-2]["ACCESS_TOKEN"]
+    for _ in range(2):
+        result = runner.invoke(alfrd_cli, args + ["--host", "0.0.0.0", "--persist-credentials"])
+        assert result.exit_code == 0, result.output
+    assert configs[-1]["ACCESS_TOKEN"] == configs[-2]["ACCESS_TOKEN"]
+
+
+def test_remembered_cookie_server_age_is_bounded(app, monkeypatch):
+    from itsdangerous import TimestampSigner
+    now = 2_000_000_000
+    monkeypatch.setattr(TimestampSigner, "get_timestamp", lambda self: now)
+    client = anon(app)
+    assert _login(client, remember=True).status_code == 303
+    now += 30 * 24 * 60 * 60 + 1
+    assert client.get("/api/studio/session").status_code == 401
+
+
+def test_fixed_credentials_precedence_and_policy_reuse_refusal():
+    assert auth.durable_credentials(5995, {}, token="operator", secret_key="operator-key") == ("operator", "operator-key")
+    assert auth.durable_credentials(5995, {}) == ("operator", "operator-key")
+    with pytest.raises(ValueError, match="policy changed"):
+        auth.durable_credentials(5995, {"wider": True}, token="operator", secret_key="operator-key")
+
+
+def test_global_paste_throttle_bounds_distributed_attempts(app):
+    client = anon(app)
+    for i in range(100):
+        assert _login(client, "wrong", environ_overrides={"REMOTE_ADDR": f"192.0.2.{i}"}).status_code == 401
+    assert _login(client, environ_overrides={"REMOTE_ADDR": "192.0.2.200"}).status_code == 429
+
+
+def test_cli_fingerprints_restored_project_scope(monkeypatch):
+    import alfrd.gui.project_selection as selection
+    seen = []
+    original = auth.durable_credentials
+    def capture(port, policy, **kwargs):
+        seen.append(policy)
+        return original(port, policy, **kwargs)
+    class FakeApp:
+        def run(self, **kwargs):
+            pass
+    monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: FakeApp())
+    monkeypatch.setattr(auth, "durable_credentials", capture)
+    monkeypatch.setattr(selection, "restore", lambda app: app.config.update(STUDIO_PROJECTS=["restored-project"]))
+    result = CliRunner().invoke(alfrd_cli, ["serve", "--port", "5994", "--no-browser", "--no-discover"])
+    assert result.exit_code == 0, result.output
+    assert seen[0]["projects"] == ["restored-project"]
+
+
+def test_debug_rotation_is_not_repeated_by_reloader_child(monkeypatch):
+    configs = []
+    class FakeApp:
+        def run(self, **kwargs):
+            pass
+    monkeypatch.setattr("alfrd.gui.create_app", lambda config=None: configs.append(config) or FakeApp())
+    args = ["serve", "--port", "5993", "--debug", "--rotate-token", "--no-browser", "--no-discover"]
+    assert CliRunner().invoke(alfrd_cli, args).exit_code == 0
+    monkeypatch.setenv("WERKZEUG_RUN_MAIN", "true")
+    result = CliRunner().invoke(alfrd_cli, args)
+    assert result.exit_code == 0, result.output
+    assert configs[0]["ACCESS_TOKEN"] == configs[1]["ACCESS_TOKEN"]
+    assert configs[0]["SECRET_KEY"] == configs[1]["SECRET_KEY"]

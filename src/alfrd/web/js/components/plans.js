@@ -1,7 +1,7 @@
 
 import { $, $$, esc, icon, short, bytes, keepScroll, storage } from "../utils/dom.js";
 import { server } from "../data/server.js";
-import { addLogSource, dockLog, openFileFull } from "./logview.js";
+import { addLogSource, dockLog, openFileFull } from "./tails.js";
 import { notesAt } from "../data/notes.js";
 
 async function attachFits(ctx, project, root) {
@@ -145,18 +145,21 @@ export function runTargets(s) {
 export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) {
   if (!plansAvailable(ctx, project)) return null;
   usageCtx = ctx;
-  const entry = cache.get(project) || {};
+  const connection = server.session?.csrf_token;
+  if (cache.has(project) && cache.get(project).connection !== connection) forgetPlan(project);
+  const entry = cache.get(project) || { connection };
   // Explicit run selection wins over in-flight reads.
   if (id && entry.pinned !== id) { entry.pinned = id; entry.pinActive = false; }
   if (id && (entry.loading || entry.status?.plan?.id !== id)) { entry.want = id; entry.status = null; entry.error = null; }
   cache.set(project, entry);
-  if (entry.loading) return new Promise((resolve) => (entry.waiters ||= []).push(resolve));
+  if (entry.loading) { entry.again = true; return new Promise((resolve) => (entry.waiters ||= []).push(resolve)); }
   const before = JSON.stringify([entry.status, entry.error]);
   entry.loading = true;
   const asked = entry.want || entry.pinned || null;
   try {
     const status = await server.planStatus(project, asked);
     if (entry.want && status.plan?.id !== entry.want) throw Object.assign(new Error("stale"), { stale: asked !== entry.want, status: 404 });
+    if (cache.get(project) !== entry) throw Object.assign(new Error("stale project"), { stale: true });
     delete entry.want;
     if (entry.pinned && entry.pinActive && !isActive(status.plan) && (status.plans || []).some((p) => p.id !== entry.pinned && p.working)) {
       entry.releasedTarget = status.plan?.target || entry.pinned;
@@ -196,7 +199,8 @@ export async function loadPlan(ctx, project, { id = null, quiet = false } = {}) 
   } finally {
     entry.loading = false;
   }
-  if (entry.want) return loadPlan(ctx, project, { quiet });
+  if (cache.get(project) !== entry) { (entry.waiters || []).splice(0).forEach((resolve) => resolve(null)); return null; }
+  if (entry.want || entry.again) { entry.again = false; return loadPlan(ctx, project, { quiet }); }
   schedulePoll(ctx, project);
   if (before !== JSON.stringify([entry.status, entry.error])) ctx.update();
   (entry.waiters || []).splice(0).forEach((resolve) => resolve(entry.status));
@@ -208,7 +212,7 @@ function schedulePoll(ctx, project) {
   clearTimeout(pollTimers.get(project));
   pollTimers.delete(project);
   const s = planOf(project);
-  const busy = s?.plan && (isActive(s.plan) || s.plans?.some(isActive) || s.running?.length || s.runner?.alive);
+  const busy = isActive(s?.plan) || [...(s?.plans || []), ...(s?.chat_plans || [])].some(isActive) || s?.running?.length || s?.runner?.alive;
   if (!busy) return;
   const timer = setTimeout(() => {
     if (document.hidden) { schedulePoll(ctx, project); return; }
@@ -224,10 +228,25 @@ export function forgetPlan(project) {
   cache.delete(project);
 }
 
+// Catalog identities and connection tokens own cache entries, including in-flight reads.
+export function syncPlanCatalog(projects) {
+  const allowed = new Set(projects);
+  for (const [project, entry] of cache) {
+    if (!allowed.has(project) || entry.connection !== server.session?.csrf_token) forgetPlan(project);
+  }
+}
+
 // Active cached runs for Jobs.
 export function activeJobs() {
-  return [...cache.entries()].map(([project, e]) => ({ project, status: e.status }))
-    .filter((j) => j.status?.plan && ["running", "paused", "interrupted"].includes(j.status.plan.status));
+  return [...cache.entries()].flatMap(([project, e]) => {
+    const s = e.status;
+    if (!s) return [];
+    const jobs = new Map();
+    for (const plan of [...(s.plans || []), ...(s.chat_plans || [])]) jobs.set(plan.id, { plan });
+    if (s.plan) jobs.set(s.plan.id, { ...s, plan: { ...jobs.get(s.plan.id)?.plan, ...s.plan } });
+    return [...jobs.values()].filter((v) => ["running", "paused", "interrupted"].includes(v.plan.status))
+      .map((status) => ({ project, status }));
+  });
 }
 
 
@@ -280,7 +299,7 @@ function moreMenu(ctx, project, anchor) {
   const log = `.alfrd/plans/${p.id}/runner.log`;
   ctx.menu(anchor, [
     canAct && !p.loop && { icon: "plus", label: "Add target…", hint: "append a row to this run's CSV", run: act("add-row") },
-    p.loop && { icon: "file", label: "Handoffs…", run: async () => { try { const { openHandoffs } = await import("./agent_dialog.js"); await openHandoffs(ctx, project, p.id); } catch (error) { ctx.toast(error.message, "fail"); } } },
+    p.loop && { icon: "file", label: "Handoffs…", run: async () => { try { const { openHandoffs } = await import("./agent_modal.js"); await openHandoffs(ctx, project, p.id); } catch (error) { ctx.toast(error.message, "fail"); } } },
     canAct && { icon: "play", label: "New run…", run: act("new") },
     (s.units || []).some((u) => u.usage || u.agent_usage || u.handoff) && { icon: "graph", label: "Usage", hint: "Tokens, cost, CPU / memory", run: act("usage") },
     { icon: "log", label: "Runner log", hint: "follow in the Log Stream", run: () => { dockLog(ctx, project, log); } },
@@ -450,7 +469,7 @@ export async function planAct(ctx, project, action, el, opts = {}) {
   const id = s?.plan?.id;
   try {
     if (action === "task" || action === "agents") {
-      const dialog = await import("./agent_settings_dialog.js");
+      const dialog = await import("./agent_settings_modal.js");
       if (action === "task") return dialog.openTask(ctx, project);
       const text = ctx.state.trees?.[project]?.manifestText || ctx.state.workflowFile.text;
       return dialog.openAgentSettings(ctx, project, text, async (updated) => {
@@ -460,7 +479,7 @@ export async function planAct(ctx, project, action, el, opts = {}) {
         ctx.toast("Agent and review settings saved", "ok");
       });
     }
-    if (action === "handoffs") return (await import("./agent_dialog.js")).openHandoffs(ctx, project, id);
+    if (action === "handoffs") return (await import("./agent_modal.js")).openHandoffs(ctx, project, id);
     if (action === "new") return openRunDialog(ctx, project, opts);
     if (action === "dry") return openRunDialog(ctx, project, { ...opts, dry: true });
     if (action === "refresh") return loadPlan(ctx, project);
@@ -544,9 +563,9 @@ export function cellMenu(ctx, project, anchor) {
 }
 
 
-export async function openLog(ctx, project, rel) {
+export async function openLog(ctx, project, rel, meta = null) {
   try {
-    await openFileFull(ctx, project, rel);
+    await openFileFull(ctx, project, rel, meta);
   } catch (error) {
     ctx.toast(`${rel}: ${error.message}`, "warn");
   }
@@ -790,7 +809,7 @@ export async function openLinkedRun(ctx, project, plan, unit = null) {
   const item = status.units?.find((u) => u.id === unit);
   if (!item) { ctx.toast?.("This turn is no longer available.", "warn"); return; }
   if (item.handoff) {
-    const { openHandoffs } = await import("./agent_dialog.js");
+    const { openHandoffs } = await import("./agent_modal.js");
     await openHandoffs(ctx, project, plan, { unit });
   } else if (item.log) await openLog(ctx, project, item.log);
 }

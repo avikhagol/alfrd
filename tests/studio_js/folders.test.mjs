@@ -8,7 +8,7 @@ const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../sr
 globalThis.document ||= { hidden: false, addEventListener: () => {}, querySelectorAll: () => [] };
 
 const { pathCrumbs, projectEntries } = await import(path.join(web, "data/paths.js"));
-const logview = await import(path.join(web, "components/logview.js"));
+const tails = await import(path.join(web, "components/tails.js"));
 
 test("pathCrumbs: POSIX, Windows drive and UNC paths", () => {
   assert.deepEqual(pathCrumbs("/home/avi/data_reductions"), [
@@ -38,29 +38,29 @@ test("projectEntries: project rows only, never MS folders", () => {
 test("docked logs: tab order, de-duplication, cap and undock", () => {
   const shown = [];
   const ctx = { showDock: (key) => shown.push(key) };
-  const { docked, MAX_DOCKED } = logview._internals;
+  const { docked, MAX_DOCKED } = tails._internals;
   docked.length = 0;
-  const k1 = logview.dockLog(ctx, "host.proj.a", "avica.logs/run.log");
-  logview.dockLog(ctx, "host.proj.a", "avica.logs/run.log");
+  const k1 = tails.dockLog(ctx, "host.proj.a", "avica.logs/run.log");
+  tails.dockLog(ctx, "host.proj.a", "avica.logs/run.log");
   assert.equal(k1, "host.proj.a::avica.logs/run.log");
-  assert.deepEqual(logview.dockedLogs().map((d) => [d.project, d.rel, d.name]), [["host.proj.a", "avica.logs/run.log", "run.log"]]);
+  assert.deepEqual(tails.dockedLogs().map((d) => [d.project, d.rel, d.name]), [["host.proj.a", "avica.logs/run.log", "run.log"]]);
   assert.deepEqual(shown, [k1, k1]);
   // At the cap a followed log is never evicted silently: the user is asked to close a tab.
   const warned = [];
   ctx.toast = (text, tone) => warned.push([text, tone]);
-  for (let i = 0; i < MAX_DOCKED + 2; i += 1) logview.dockLog(ctx, "p", `wd/l${i}.log`);
-  assert.equal(logview.dockedLogs().length, MAX_DOCKED);
-  assert.equal(logview.dockedLogs()[0].key, k1);
-  assert.equal(logview.dockLog(ctx, "p", "wd/extra.log"), null);
+  for (let i = 0; i < MAX_DOCKED + 2; i += 1) tails.dockLog(ctx, "p", `wd/l${i}.log`);
+  assert.equal(tails.dockedLogs().length, MAX_DOCKED);
+  assert.equal(tails.dockedLogs()[0].key, k1);
+  assert.equal(tails.dockLog(ctx, "p", "wd/extra.log"), null);
   assert.ok(warned.length >= 1 && warned.every(([text, tone]) => tone === "warn" && /Close a tab/.test(text)));
-  logview.undockLog(k1);
-  assert.equal(logview.dockedLogs()[0].rel, "wd/l0.log");
-  assert.equal(logview.dockLog(ctx, "p", "wd/extra.log"), "p::wd/extra.log");
-  assert.deepEqual(logview.splitKey("a.b::c::d.log"), { project: "a.b", rel: "c::d.log" });
+  tails.undockLog(k1);
+  assert.equal(tails.dockedLogs()[0].rel, "wd/l0.log");
+  assert.equal(tails.dockLog(ctx, "p", "wd/extra.log"), "p::wd/extra.log");
+  assert.deepEqual(tails.splitKey("a.b::c::d.log"), { project: "a.b", rel: "c::d.log" });
 });
 
-test("logview: an ANSI escape split across tail reads is stripped once complete", () => {
-  const { stripAnsi, takeChunk } = logview._internals;
+test("tails: an ANSI escape split across tail reads is stripped once complete", () => {
+  const { stripAnsi, takeChunk } = tails._internals;
   const c = { pending: "" };
   const first = stripAnsi(takeChunk(c, "a\x1b[1"));
   const second = stripAnsi(takeChunk(c, "mb\x1b[0m"));

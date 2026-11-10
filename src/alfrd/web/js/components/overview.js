@@ -6,7 +6,7 @@ import { avicaIndex, codeChips, detachCode, openAttachPicker, targetCodes } from
 import { STEP_STATUS, OVERALL_STATUS, targetText } from "../data/model.js";
 import { server } from "../data/server.js";
 import { openRunDialog, plansAvailable, planOf, loadPlan, RUN_STATUS } from "./plans.js";
-import { PRESETS, NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
+import { NO_CODE, FILTER_DEFAULTS, filterTargets, activeFilters } from "../data/filters.js";
 import { renderProjectSections, renderOverviewActions } from "./project_sections.js";
 import { scoped } from "../data/workspace.js";
 
@@ -220,7 +220,7 @@ export function mount(el, ctx) {
     ctx.navigate("results");
   });
   on(el, "click", "[data-rh-task]", async (e, b) => {
-    try { await (await import("./agent_settings_dialog.js")).openTask(ctx, b.dataset.rhTask); } catch (error) { ctx.toast(error.message, "fail"); }
+    try { await (await import("./agent_settings_modal.js")).openTask(ctx, b.dataset.rhTask); } catch (error) { ctx.toast(error.message, "fail"); }
   });
   on(el, "click", "[data-rh-workflow]", (e, b) => { ctx.switchProject?.(b.dataset.rhWorkflow, { restoreView: false }); ctx.navigate("workflow"); });
   on(el, "click", "[data-rh-page]", (e, b) => { histPage.set(b.dataset.rhPage, (histPage.get(b.dataset.rhPage) || 0) + Number(b.dataset.step)); renderGrid(el, ctx); });

@@ -1,9 +1,9 @@
-"""Per-user access token for `alfrd serve`: the token file and the request check.
+"""Per-user server credentials, request authentication and in-app pairing.
 
-Every data route needs the token, either as the session cookie set by opening
-``/studio/?token=…`` once, or as ``Authorization: Bearer <token>``. The token
-and the session secret are written to ``<config dir>/server-<port>.json``
-(mode 0600) so `alfrd url` can print the link again.
+Data routes require a signed session or a Bearer token. Opening an access link
+or submitting the login form establishes the session. Durable token/signing-key
+generations live in owner-only ``credentials-<port>.json`` records, separately
+from the removable ``server-<port>.json`` discovery file used by ``alfrd url``.
 """
 
 from __future__ import annotations
@@ -13,11 +13,14 @@ import hmac
 import json
 import os
 import secrets
+import stat
+import tempfile
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from flask import (
     current_app,
@@ -25,6 +28,7 @@ from flask import (
     render_template,
     request,
     session,
+    url_for,
 )
 from flask.sessions import SecureCookieSessionInterface
 from werkzeug.datastructures import WWWAuthenticate
@@ -117,6 +121,92 @@ def remove_server_file(port: int) -> bool:
     return True
 
 
+# Durable credentials are separate from the removable live discovery file.
+def _safe_stat(info, *, directory=False):
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not kind(info.st_mode) or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+            or (os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077)
+            or (not directory and info.st_nlink != 1)):
+        raise ValueError("Unsafe ALFRD credential path: require owner-only directory/file")
+
+
+def _credential_directory():
+    path = config_dir().absolute()
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise ValueError("Symlinks are not allowed in ALFRD credential paths")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _safe_stat(path.lstat(), directory=True)
+    return path
+
+
+@contextmanager
+def _credential_lock(path):
+    # Keep the lock inode: unlinking it would allow a third writer to bypass a waiter.
+    if path.exists():
+        _safe_stat(path.lstat())
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
+    try:
+        _safe_stat(os.fstat(fd))
+        if path.is_symlink() or path.stat().st_ino != os.fstat(fd).st_ino:
+            raise ValueError("Unsafe credential lock")
+        if os.name == "nt":  # pragma: no cover - Windows
+            import msvcrt
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def durable_credentials(port, policy, *, token=None, secret_key=None, rotate=False):
+    """Load/create one policy-scoped generation; changing policy revokes the old one.
+
+    Fixed operator credentials take precedence. Never recover from an unsafe or
+    malformed file by silently overwriting it. All readers/writers use the lock.
+    """
+    directory = _credential_directory()
+    path = directory / f"credentials-{int(port)}.json"
+    fingerprint = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+    with _credential_lock(directory / f"credentials-{int(port)}.lock"):
+        data = None
+        if path.is_symlink():
+            raise ValueError("Unsafe credential symlink")
+        if path.exists():
+            _safe_stat(path.lstat())
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                _safe_stat(os.fstat(handle.fileno()))
+                data = json.load(handle)
+            if (not isinstance(data, dict) or data.get("version") != 1
+                    or not all(isinstance(data.get(k), str) and data[k] for k in ("policy", "token", "secret_key"))):
+                raise ValueError("Invalid ALFRD credential record")
+        if (data and data["policy"] != fingerprint
+                and ((token and token == data["token"]) or (secret_key and secret_key == data["secret_key"]))):
+            raise ValueError("Access policy changed: supply new fixed credentials or unset them to generate a new pair")
+        reuse = (data and not rotate and data["policy"] == fingerprint
+                 and (token is None or token == data["token"])
+                 and (secret_key is None or secret_key == data["secret_key"]))
+        if reuse:
+            return data["token"], data["secret_key"]
+        data = {"version": 1, "policy": fingerprint, "token": token or new_token(),
+                "secret_key": secret_key or secrets.token_hex(32)}
+        fd, temporary = tempfile.mkstemp(prefix=".credentials-", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return data["token"], data["secret_key"]
+
+
 # --- request check -----------------------------------------------------------
 
 def _digest(token: str) -> str:
@@ -162,11 +252,11 @@ def _wants_json() -> bool:
 def _unauthorized(message: str):
     if not _wants_json():
         response = current_app.make_response(
-            (render_template("auth/landing.htm", port=_request_port()), 401)
+            (_landing(), 401)
         )
         response.headers["WWW-Authenticate"] = 'Bearer realm="alfrd"'
         response.headers["Cache-Control"] = "no-store"
-        return response
+        return _private(response)
     raise Unauthorized(description=message,
                        www_authenticate=WWWAuthenticate("bearer", {"realm": "alfrd"}))
 
@@ -256,8 +346,7 @@ def require_access():
     if request.method == "GET" and "token" in request.args:
         if not _check_attempt(request.args.get("token", "")):
             return _unauthorized("invalid access token")
-        session[SESSION_KEY] = _digest(_expected_token())
-        session.permanent = False
+        _authenticate(False)
         query = [(k, v) for k, v in request.args.items(multi=True) if k != "token"]
         # script_root keeps a reverse proxy's path prefix (SCRIPT_NAME).
         target = request.script_root + request.path + (f"?{urlencode(query)}" if query else "")
@@ -281,9 +370,97 @@ def require_access():
     return _unauthorized("access token required: open the link printed by `alfrd serve`")
 
 
+def _authenticate(remember):
+    from alfrd.gui.security import csrf_token
+
+    session.clear()
+    session[SESSION_KEY] = _digest(_expected_token())
+    session.permanent = remember
+    csrf_token()
+
+
+def _landing(error=None):
+    nonce = session.get("_alfrd_login_nonce")
+    if not nonce:
+        nonce = session["_alfrd_login_nonce"] = secrets.token_urlsafe(32)
+    return render_template("auth/landing.htm", port=_request_port(), nonce=nonce, error=error)
+
+
+def _landing_response(error=None, status=200):
+    return _private(current_app.make_response((_landing(error), status)))
+
+
+def _pasted_token(value):
+    value = value.strip()
+    if len(value) > 4096:
+        return ""
+    if "://" not in value:
+        return value
+    from alfrd.gui.security import _same_origin
+
+    try:
+        parsed = urlsplit(value)
+        query = parse_qs(parsed.query)
+        if (not _same_origin(value) or parsed.username or parsed.password or parsed.fragment
+                or parsed.path != url_for("studio.studio_index") or len(query.get("token", [])) != 1):
+            return ""
+        return query["token"][0]
+    except ValueError:
+        return ""
+
+
+def _check_login_attempt(value):
+    # The paste endpoint is usable on LAN; bound distributed guessing as well.
+    throttle = current_app.extensions.setdefault("alfrd_login_global_throttle", _Throttle())
+    window = float(current_app.config.get("ACCESS_THROTTLE_WINDOW", 60))
+    wait = throttle.retry_after("global", 100, window)
+    if wait:
+        raise TooManyRequests(description="too many failed attempts", retry_after=wait)
+    if _check_attempt(value):
+        return True
+    throttle.fail("global", window)
+    return False
+
+
 def landing_page():
-    """``GET /login``: the same page a browser gets without the token, with 200."""
-    return render_template("auth/landing.htm", port=_request_port())
+    """Pair in this browser context without putting pasted credentials in a URL."""
+    error = None
+    status = 200
+    if request.method == "POST":
+        from alfrd.gui.security import _same_origin
+
+        # Require a bounded form body before parsing it, including on Flask
+        # releases that do not support per-request max_content_length setters.
+        if request.content_length is None or request.content_length > 8192:
+            return _landing_response("Access form is too large. Reload the access page and paste only the access link or token.", 413)
+        # no-referrer makes Firefox send Origin: null on this HTML form POST.
+        # An opaque/missing origin is not proof of same-origin: the signed
+        # session nonce AND access token below remain mandatory. Fetch metadata
+        # rejects known foreign submissions, including opaque-origin forms.
+        origin = request.headers.get("Origin")
+        source = origin if origin and origin != "null" else request.headers.get("Referer")
+        fetch_site = request.headers.get("Sec-Fetch-Site")
+        if (source and not _same_origin(source)) or fetch_site in {"cross-site", "same-site"}:
+            return _landing_response("Login from another site was blocked. Reload the access page in this app and paste a fresh link from alfrd url.", 403)
+        if not _matches(request.form.get("login_nonce", ""), session.get("_alfrd_login_nonce", "")) or not session.get("_alfrd_login_nonce"):
+            return _landing_response("This access form has expired or is invalid. Reload the access page and paste the link again.", 403)
+        try:
+            valid = _check_login_attempt(_pasted_token(request.form.get("credential", "")))
+        except TooManyRequests as exc:
+            response = _landing_response("Too many attempts. Wait a minute and try again.", 429)
+            response.headers["Retry-After"] = str(exc.retry_after)
+            return _private(response)
+        if valid:
+            _authenticate(request.form.get("remember") == "on")
+            return _private(redirect(url_for("studio.studio_index"), code=303))
+        error, status = "Access link or token not accepted. Run alfrd url for this server and try again.", 401
+    return _landing_response(error, status)
+
+
+def _private(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 class AlfrdSessionInterface(SecureCookieSessionInterface):
@@ -297,6 +474,7 @@ __all__ = [
     "PUBLIC_ENDPOINTS",
     "AlfrdSessionInterface",
     "config_dir",
+    "durable_credentials",
     "landing_page",
     "new_token",
     "read_server_file",

@@ -168,13 +168,18 @@ def apply_draft(data: dict[str, Any], draft: Any, *, looping: bool) -> list[str]
 
 def create_project(service, path: str | Path, *, name: str | None = None,
                    template: str = "basic", task: str = "", iterations: int = DEFAULT_ITERATIONS,
-                   sequence: list | None = None, manifest: str = NESTED_MANIFEST, draft: Any = None):
+                   sequence: list | None = None, manifest: str = NESTED_MANIFEST, draft: Any = None,
+                   agents: list | None = None, custom: list | None = None, warnings: list | None = None):
     """Create and register a project from a template.
 
     ``manifest`` is where the new alfrd.yaml goes, relative to the project:
     ``.alfrd/alfrd.yaml`` (the default, CLI and Studio) or a root ``alfrd.yaml``;
     see alfrd.manifest_paths for the precedence when reading. ``draft`` is the Studio's
     New-project canvas (see :func:`apply_draft`): initial workflow steps and targets.
+    ``agents`` / ``custom`` (the Studio wizard) replace the template's agent commands with the ticked
+    options of :mod:`alfrd.entrypoint_options` and custom commands, and their chat agents; without a
+    sequence, a loop takes them in that order. Their warnings (e.g. a program not on PATH) are appended
+    to ``warnings``.
     """
     if manifest not in (MANIFEST_FILENAME, NESTED_MANIFEST):
         raise ValueError(f"manifest must be {MANIFEST_FILENAME!r} or {NESTED_MANIFEST!r}")
@@ -188,6 +193,17 @@ def create_project(service, path: str | Path, *, name: str | None = None,
     data = copy.deepcopy(yaml.safe_load(source.read_text()))
     data.update(version=1, name=title, template=template)
     looping = bool(data.get("workflows") and data["workflows"][0].get("repeat"))
+    if agents is not None or custom:
+        from alfrd.entrypoint_options import apply_to_manifest
+
+        loop_agents, notes = apply_to_manifest(data, root, agents or [], custom)
+        if warnings is not None:
+            warnings.extend(notes)
+        if looping and not loop_agents:
+            raise ValueError("agents: an agent-loop project needs at least one agent command that edits files. "
+                             "Tick Claude Code, Codex or add a custom command.")
+        if looping and sequence is None and is_sequence(data["workflows"][0]):
+            sequence = loop_agents
     if looping:
         workflow = data["workflows"][0]
         limit = MAX_TURNS if is_sequence(workflow) else MAX_ITERATIONS
@@ -203,7 +219,8 @@ def create_project(service, path: str | Path, *, name: str | None = None,
             flat = [a for p in (sequence if sequence and all(isinstance(p, list) for p in sequence) else [sequence]) for a in (p or [])]
             unknown = sorted({str(a) for a in flat} - names)
             if not flat or unknown:
-                raise ValueError("sequence agents must be entrypoints: " + (", ".join(unknown) if unknown else "none given"))
+                raise ValueError("sequence agents must be entrypoints: " + (", ".join(unknown) if unknown else "none given")
+                                 + f". Valid names: {', '.join(sorted(names)) or 'none'}")
             workflow["repeat"]["sequence"] = sequence
         workflow["repeat"].pop("passes", None)
         workflow["repeat"]["iterations"] = iterations

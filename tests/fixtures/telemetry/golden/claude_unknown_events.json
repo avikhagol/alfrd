@@ -1,0 +1,74 @@
+{
+  "adapter": "claude",
+  "counts": {
+    "file_edit": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": null
+    },
+    "file_read": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": null
+    },
+    "files_changed": {
+      "coverage": "unavailable",
+      "reason": "adapter does not report this counter",
+      "value": null
+    },
+    "mailbox": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": null
+    },
+    "mcp": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": 1
+    },
+    "shell": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": null
+    },
+    "subagent": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": null
+    },
+    "tool_calls": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped",
+      "value": 2
+    },
+    "tool_errors": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped",
+      "value": null
+    },
+    "turns": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped",
+      "value": 1
+    },
+    "web_fetch": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": null
+    },
+    "web_search": {
+      "coverage": "partial",
+      "reason": "invalid JSON lines skipped; missing event identifiers; non-object events skipped; unknown tool names",
+      "value": null
+    }
+  },
+  "coverage": "partial",
+  "oversize_lines": 0,
+  "oversize_sniffs": [],
+  "parser_version": "1",
+  "partial_tail": false,
+  "source": "parsed",
+  "unknown": [
+    "FutureSearchTool"
+  ]
+}

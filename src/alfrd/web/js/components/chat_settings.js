@@ -4,11 +4,27 @@
 // draft; "Apply and save" saves it through Settings' save path (the active file, with the conflict guard).
 import { $, $$, esc, icon } from "../utils/dom.js";
 import { server } from "../data/server.js";
+import { mountSkills } from "./skills_settings.js";
 import { parseYaml, dumpYaml } from "../utils/yaml_parser.js";
 import { replaceSection } from "../data/agent_settings.js";
 import { DEFAULTS, chatBlock, chatProblems, mergeChat, freeKey, AGENT_KEY } from "../data/chat.js";
 
+import { permissionBadge } from "./permission_ui.js";
+
 const ADAPTERS = ["", "claude", "codex", "generic"];
+// chat.delegate_decisions: who decides a blocked task's question (see chat._delegable)
+const DELEGATE_OPTIONS = [["off", "Off: ask me"], ["questions", "Questions (not access)"], ["all", "Questions and access grants"]];
+// Always in the DOM (a live region and an aria-describedby target): empty unless "all", so the select's
+// description and the announcement only carry the warning when it applies.
+const delegateWarn = (v) => (v === "all" ? `<p class="callout warn small">${icon("alert")}<span>The orchestrator may grant the folders and commands a blocked task asks for, without asking you.</span></p>` : "");
+
+/** Agent `key`'s row of GET chat/probe (the saved file) while the draft `agent` still runs the same command
+ *  (entrypoint name and its draft `entrypoint:` cmd, or its own cmd); else null: "not checked". */
+export function probeFor(probe, key, agent = {}, entries = []) {
+  const p = probe?.agents?.[key], name = agent?.entrypoint || key;
+  const cmd = agent?.cmd || (Array.isArray(entries) ? entries : []).find((e) => e?.name === name)?.cmd;
+  return p && p.entrypoint === name && JSON.stringify(p.cmd ?? null) === JSON.stringify(cmd ? cmd.map(String) : null) ? p : null;
+}
 
 /** Open the editor for draft `text`; `apply(text, save)` writes the new text into the Settings draft (and saves). */
 export function openChatSettings(ctx, project, text, apply) {
@@ -16,24 +32,33 @@ export function openChatSettings(ctx, project, text, apply) {
   try { data = parseYaml(text) || {}; } catch (error) { ctx.toast(`Fix the YAML first: ${error.message}`, "fail"); return; }
   let s = mergeChat(data.chat || {});
   const personas = Object.keys(data.project_settings?.personas || {});
-  const entrypoints = (data.entrypoint || []).map((e) => e?.name).filter(Boolean);
+  const own = (data.entrypoint || []).map((e) => e?.name).filter(Boolean);
+  // Until GET chat/settings answers with the server's list (the project's + built-ins): own names and the two common CLIs.
+  let entrypoints = [...new Set([...own, "claude", "codex"])];
+  let probe = null; // GET chat/probe: is each agent's program installed here (saved file)
   let catalogue = {}; // GET chat/settings → presets (Ollama, Claude on Ollama, Hugging Face, OpenAI-compatible)
   const num = (name, label, value, attrs = "") => `<label class="field small"><span>${label}</span><input class="input sm" type="number" data-s="${name}" value="${esc(value)}" ${attrs}></label>`;
+  const epChip = (key) => {
+    const found = probeFor(probe, key, s.agents[key], data.entrypoint);
+    return found ? `<span id="cs-ep-${esc(key)}" class="badge ${found.available ? "tone-ok" : "tone-warn"}" title="${esc(found.detail || "")}">${found.available ? "found" : "missing"}</span>` : `<span id="cs-ep-${esc(key)}"></span>`;
+  };
+  const datalist = () => entrypoints.map((e) => `<option value="${esc(e)}">`).join("");
   const row = (key, a) => `<tr data-agent="${esc(key)}">
     <th scope="row"><span class="mono">@${esc(key)}</span></th>
     <td><input class="input sm" data-a="label" value="${esc(a.label || "")}" aria-label="Label of @${esc(key)}"></td>
-    <td><input class="input sm mono" data-a="entrypoint" value="${esc(a.entrypoint || "")}" list="cs-entrypoints" placeholder="${esc(key)}" aria-label="Entrypoint of @${esc(key)}" ${a.cmd ? `disabled title="Uses its own cmd from alfrd.yaml"` : ""}></td>
+    <td><input class="input sm mono" data-a="entrypoint" value="${esc(a.entrypoint || "")}" list="cs-entrypoints" placeholder="${esc(key)}" aria-label="Entrypoint of @${esc(key)}" aria-describedby="cs-ep-${esc(key)}" ${a.cmd ? `disabled title="Uses its own cmd from alfrd.yaml"` : ""}>${epChip(key)}</td>
     <td><input class="input sm" data-a="model" value="${esc(a.model || "")}" placeholder="CLI default" aria-label="Model of @${esc(key)}"></td>
     <td><select class="input sm" data-a="adapter" aria-label="Adapter of @${esc(key)}">${ADAPTERS.map((x) => `<option value="${x}" ${x === (a.adapter || "") ? "selected" : ""}>${x || "auto"}</option>`).join("")}</select></td>
     <td><select class="input sm" data-a="persona" aria-label="Persona of @${esc(key)}"><option value="">none</option>${personas.map((p) => `<option ${p === a.persona ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></td>
     <td><select class="input sm" data-a="fallback" aria-label="Fallback agent of @${esc(key)} (when it hits a usage limit)"><option value="">none</option>${Object.keys(s.agents).filter((k) => k !== key).map((k) => `<option ${k === a.fallback ? "selected" : ""}>${esc(k)}</option>`).join("")}</select></td>
     <td><input class="input sm" data-a="roles" value="${esc((a.roles || []).join(", "))}" placeholder="design, development" aria-label="Roles of @${esc(key)} (comma separated)"></td>
-    <td><input type="checkbox" data-a="lean" ${a.lean ? "checked" : ""} aria-label="Lean startup for @${esc(key)} (Claude: no MCP servers, user plugins or skills)" title="Claude: start without MCP servers, user plugins or skills"></td>
+
     <td><button type="button" class="icon-btn xs" data-rm="${esc(key)}" aria-label="Remove @${esc(key)}">${icon("trash")}</button></td></tr>`;
   ctx.modal(`<header class="modal-h"><h2>Agent chat</h2><span class="grow"></span><button class="icon-btn" data-close aria-label="Close">${icon("close")}</button></header>
     <div class="modal-b cs">
+      <p class="small" data-permissions role="status"></p>
       <p class="muted small">Who does what in the project chat: roles are words the orchestrator reads when it assigns tasks, not capabilities. Writes the <code>chat:</code> block of this project's alfrd.yaml.</p>
-      <datalist id="cs-entrypoints">${[...new Set([...entrypoints, "claude", "codex", "agy"])].map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
+      <datalist id="cs-entrypoints">${datalist()}</datalist>
       <div class="row gap wrap">
         <label class="field small"><span>Orchestrator</span><select class="input sm" data-s="orchestrator" id="cs-orch"></select></label>
         <label class="field small"><span>Orchestrator model</span><input class="input sm" data-s="orchestrator_model" value="${esc(s.orchestrator_model || "")}" placeholder="agent's own model" title="Plans (and the summary call)"></label>
@@ -45,15 +70,29 @@ export function openChatSettings(ctx, project, text, apply) {
       <fieldset><legend>Defaults per request (bounds)</legend><div class="row gap wrap">
         ${num("bounds.max_depth", "Delegation depth", s.bounds.max_depth, 'min="1"')}${num("bounds.max_retries", "Retries per task", s.bounds.max_retries, 'min="0" max="5"')}
         ${num("bounds.max_cost_usd", "Cost limit (USD)", s.bounds.max_cost_usd, 'min="0" step="0.5"')}${num("bounds.max_seconds", "Time limit (s)", s.bounds.max_seconds, 'min="1"')}
-        ${num("bounds.max_tasks", "Tasks per request", s.bounds.max_tasks, 'min="1"')}</div></fieldset>
-      <div class="cs-table"><table class="tbl small"><caption class="sr-only">Chat agents</caption><thead><tr><th scope="col">Agent</th><th scope="col">Label</th><th scope="col">Entrypoint</th><th scope="col">Model</th><th scope="col">Adapter</th><th scope="col">Persona</th><th scope="col" title="Takes over when this agent reports a usage limit or a missing model">Fallback</th><th scope="col">Roles</th><th scope="col" title="Claude: start without MCP servers, user plugins or skills">Lean</th><th scope="col"><span class="sr-only">Remove</span></th></tr></thead><tbody id="cs-agents"></tbody></table></div>
+        ${num("bounds.max_tasks", "Tasks per request", s.bounds.max_tasks, 'min="1"')}${num("bounds.max_replans", "Replans per request", s.bounds.max_replans ?? 3, 'min="0" title="Times the orchestrator is woken for blockers; past it, you decide"')}</div></fieldset>
+      <fieldset><legend>Scheduled checks</legend><div class="row gap wrap">
+        ${num("watch.interval_seconds", "Check interval (seconds; 0 = off)", s.watch.interval_seconds, 'min="0" step="1" aria-describedby="cs-watch-help"')}
+        ${num("watch.stall_seconds", "Stall after (seconds)", s.watch.stall_seconds, 'min="60" step="1" aria-describedby="cs-watch-help"')}
+        <label class="row gap small"><input type="checkbox" data-s="watch.wake_orchestrator" ${s.watch.wake_orchestrator ? "checked" : ""}> Wake the orchestrator when a request stalls</label>
+        ${num("watch.max_checks", "Orchestrator checks per request", s.watch.max_checks, 'min="0" step="1"')}</div>
+        <p class="muted small" id="cs-watch-help">Checks recover interrupted work while the server runs. Use 0 to turn scheduling off, or at least 30 seconds. A request can be finished after its tasks have ended and it has been idle for the stall period. Paused runners stay paused. If all projects have checks off, restart the server after enabling them.</p></fieldset>
+      <fieldset><legend>Blocked tasks</legend>
+        <label class="field small"><span>Let the orchestrator decide</span><select class="input sm" data-s="delegate_decisions" aria-describedby="cs-delegate-help cs-delegate-warn">
+          ${DELEGATE_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === (s.delegate_decisions || "off") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <p class="muted small" id="cs-delegate-help">Questions an agent would ask you go to the orchestrator first (within the replans per request); each choice it makes shows in the chat. Repeated blockers and an agent's own approval requests still come to you.</p>
+        <div id="cs-delegate-warn" role="status">${delegateWarn(s.delegate_decisions)}</div></fieldset>
+      <div class="cs-table"><table class="tbl small"><caption class="sr-only">Chat agents</caption><thead><tr><th scope="col">Agent</th><th scope="col">Label</th><th scope="col">Entrypoint</th><th scope="col">Model</th><th scope="col">Adapter</th><th scope="col">Persona</th><th scope="col" title="Takes over when this agent reports a usage limit or a missing model">Fallback</th><th scope="col">Roles</th><th scope="col"><span class="sr-only">Remove</span></th></tr></thead><tbody id="cs-agents"></tbody></table></div>
       <div class="row gap wrap"><label class="sr-only" for="cs-new">New agent key</label><input class="input sm mono" id="cs-new" placeholder="new-agent" aria-describedby="cs-errors">
         <button type="button" class="btn sm" data-cs="add">${icon("plus")} Add agent</button>
         <select class="input sm" id="cs-preset" aria-label="Add a preset agent"></select></div>
-      <div id="cs-errors" role="alert" class="fail-t small"></div>
+      <div data-skills-settings></div><div id="cs-errors" role="alert" class="fail-t small"></div>
     </div>
     <footer class="modal-f row gap"><span class="grow"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn" data-cs="apply">Apply to draft</button><button type="button" class="btn primary" data-cs="save">${icon("save")} Apply and save</button></footer>`, (root, close) => {
+    permissionBadge($("[data-permissions]", root), project);
+    const skills = mountSkills(project, $("[data-skills-settings]", root), s, ctx);
     const draw = () => {
+      skills.refresh();
       $("#cs-agents", root).innerHTML = Object.entries(s.agents).map(([k, a]) => row(k, a)).join("");
       $("#cs-orch", root).innerHTML = Object.keys(s.agents).map((k) => `<option ${k === s.orchestrator ? "selected" : ""}>${esc(k)}</option>`).join("");
       presets();
@@ -69,19 +108,28 @@ export function openChatSettings(ctx, project, text, apply) {
       .then((r) => (r.ok ? r.json() : null)).then((body) => {
         const list = body?.presets;
         catalogue = Array.isArray(list) ? Object.fromEntries(list.map((x) => [x.key || x.id, x])) : list || {};
+        if (Array.isArray(body?.entrypoints)) { entrypoints = [...new Set([...own, ...body.entrypoints])]; if (root.isConnected) $("#cs-entrypoints", root).innerHTML = datalist(); }
         if (root.isConnected && Object.keys(catalogue).length) presets();
       }).catch(() => {});
+    // found/missing per agent (the saved alfrd.yaml; an agent added here shows after saving)
+    const chip = (key) => { const old = root.querySelector(`[id="cs-ep-${CSS.escape(key)}"]`); if (old) old.outerHTML = epChip(key); };
+    server.chatProbe?.(project).then((result) => {
+      probe = result;
+      if (root.isConnected) for (const key of Object.keys(s.agents)) chip(key);
+    }).catch(() => {});
     root.addEventListener("input", (e) => {
       const t = e.target;
       if (t.dataset.s) {
         const v = t.type === "checkbox" ? t.checked : t.type === "number" ? (t.value === "" ? "" : Number(t.value)) : t.value;
         const [a, b] = t.dataset.s.split(".");
-        if (b) s.bounds[b] = v; else s[a] = v;
+        if (b && ["bounds", "watch"].includes(a)) s[a][b] = v; else if (!b) s[a] = v;
+        if (a === "delegate_decisions") $("#cs-delegate-warn", root).innerHTML = delegateWarn(v);
       }
       const tr = t.closest("[data-agent]");
       if (tr && t.dataset.a) {
         const a = s.agents[tr.dataset.agent];
         a[t.dataset.a] = t.dataset.a === "roles" ? t.value.split(",").map((r) => r.trim()).filter(Boolean) : t.type === "checkbox" ? t.checked : t.value;
+        if (t.dataset.a === "entrypoint") chip(tr.dataset.agent);
       }
     });
     root.addEventListener("change", (e) => {
@@ -101,6 +149,7 @@ export function openChatSettings(ctx, project, text, apply) {
       }
       if (b.dataset.cs === "apply" || b.dataset.cs === "save") {
         const errors = chatProblems(s, personas);
+        if (skills.problem()) errors.push(skills.problem());
         $("#cs-errors", root).innerHTML = errors.length ? `<ul>${errors.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : "";
         if (errors.length) return;
         const next = replaceSection(text, "chat", dumpYaml({ chat: chatBlock(s) }));

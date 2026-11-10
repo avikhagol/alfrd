@@ -12,16 +12,6 @@ const RESULT_SUFFIX = /_result\.(csv|tsv)$/i;
 // File-name-only result CSV patterns (no folders), newest AVICA name first.
 const RESULT_NAMES = ["result__{target}__{project_code}__{workdirname}.csv", "result_{target}_{project_code}_{workdirname}.csv"];
 
-function baseName(path) {
-  return String(path).split(/[\\/]/).pop();
-}
-
-function dirParts(path) {
-  const parts = String(path).split(/[\\/]/);
-  parts.pop();
-  return parts.filter(Boolean);
-}
-
 function seconds(a, b) {
   const s = Date.parse(a);
   const e = Date.parse(b);

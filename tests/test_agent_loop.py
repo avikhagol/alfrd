@@ -107,6 +107,15 @@ def test_scaffold_and_register_ordered_workflow(service, tmp_path):
     assert (project_manifest(root)).read_bytes() == before
 
 
+def test_creation_without_wizard_agents_keeps_the_template_commands(service, tmp_path):
+    root = tmp_path / "p"
+    create_project(service, root, template="agent-loop", task="Build it")
+    data = yaml.safe_load(project_manifest(root).read_text())
+    assert [e["name"] for e in data["entrypoint"]] == ["claude", "codex"]
+    assert data["workflows"][0]["repeat"]["sequence"] == ["claude", "codex"]
+    assert "chat" not in data
+
+
 @pytest.mark.parametrize("iterations", [0, -1, 201, True, "5"])
 def test_invalid_iterations_leave_no_files(service, tmp_path, iterations):
     root = tmp_path / "p"
@@ -236,7 +245,8 @@ def test_studio_create_handoffs_and_status_api(service, tmp_path, project):
 
     app = create_app({"TESTING": True, "SECRET_KEY": "k", "RUNTIME_SERVICE": service,
                       "CATALOG_READER": RuntimeCatalogReader(service),
-                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'catalog.sqlite'}", "STUDIO_PROJECTS": []})
+                      "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'catalog.sqlite'}", "STUDIO_PROJECTS": [],
+                      "STUDIO_EXPERIMENTAL": True})
     client = app.test_client()
     headers = {"X-CSRF-Token": client.get("/api/studio/session").get_json()["csrf_token"]}
     payload = {"path": str(tmp_path / "new"), "template": "agent-loop", "task": "task", "iterations": 2}
@@ -595,7 +605,9 @@ def test_project_agent_folder_and_bash_settings(project):
     assert claude[claude.index("--add-dir") + 1] == expected
     assert claude[claude.index("--add-dir") + 2] == str((project / "../other notes").resolve())
     assert codex.count("--add-dir") == 2
-    assert claude[claude.index("--allowedTools") + 1] == "Bash(git status *),Bash(pytest *)"
+    rules = claude[claude.index("--allowedTools") + 1].split(",")
+    assert rules[:2] == ["Bash(git status *)", "Bash(pytest *)"]
+    assert {"Bash(cd *)", "Bash(head *)", "Bash(cat *)"} <= set(rules)  # read-only defaults for compound commands
     assert codex[codex.index("--add-dir") + 1] == expected
     assert codex[codex.index("--sandbox") + 1] == "workspace-write"
     assert codex[-1] == "-"

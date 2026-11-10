@@ -64,14 +64,23 @@ export function when(iso) {
   return d.toISOString().replace("T", " ").slice(0, 19);
 }
 
-/** Add a stylesheet once (css/lazy.css for features loaded on first use). */
+/** Deduplicated stylesheet readiness. Failed loads can be retried by the owning view. */
+const stylesheetLoads = new Map();
 export function loadCss(href) {
-  if (document.querySelector(`link[data-lazy="${href}"]`)) return;
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = href;
-  link.dataset.lazy = href;
-  document.head.appendChild(link);
+  if (stylesheetLoads.has(href)) return stylesheetLoads.get(href);
+  let link = document.querySelector(`link[data-lazy="${href}"], link[href="${href}"]`);
+  if (link?.sheet) return Promise.resolve();
+  const fresh = !link;
+  if (!link) { link = document.createElement("link"); link.rel = "stylesheet"; link.href = href; link.dataset.lazy = href; }
+  const ready = new Promise((resolve, reject) => {
+    link.addEventListener("load", resolve, { once: true });
+    link.addEventListener("error", () => { stylesheetLoads.delete(href); link.remove(); reject(new Error(`Could not load ${href}`)); }, { once: true });
+  });
+  // Callers that only initiate CSS need no catch; awaiting views still receive the rejection.
+  ready.catch(() => {});
+  stylesheetLoads.set(href, ready);
+  if (fresh) document.head.appendChild(link);
+  return ready;
 }
 
 /** Trigger a client-side download of text content. */
@@ -216,6 +225,7 @@ const P = {
   reset: '<path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5"/><path d="M4 4v4.5h4.5"/>',
   map: '<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>',
   graph: '<rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="15" width="7" height="6" rx="1"/><path d="M6.5 9v5a2 2 0 0 0 2 2H14"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.5M3 12h.5M3 18h.5"/>',
   validate: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 12l3 3 5-6"/>',
   sync: '<path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 12a8 8 0 0 1-14 5.3L4 15"/><path d="M20 4v5h-5M4 20v-5h5"/>',
@@ -231,6 +241,7 @@ const P = {
   log: '<path d="M4 5h16M4 10h12M4 15h16M4 20h9"/>', // every log affordance; `terminal` only for a real terminal
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
   terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5L5 20"/>',
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
   edit: '<path d="M12 20h9M16 3l5 5-12 12H4v-5zM14 5l5 5"/>',
   convert: '<path d="M4 7h11l-3-3M20 17H9l3 3"/>',

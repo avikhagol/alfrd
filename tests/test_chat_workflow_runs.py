@@ -122,3 +122,43 @@ def test_studio_plans_api_shows_chat_runs_and_refuses_workflow_edits(project, tm
     assert res.status_code == 400 and "chat" in res.get_json()["error"]["message"]
     res = client.post(f"{base}/chat-{sid}/resume", json={"retry_failed": True}, headers=head)
     assert res.status_code == 404 and "chat" in res.get_json()["error"]["message"]
+
+
+def test_jobs_chat_wait_summaries_without_conversation_or_artifacts(project, monkeypatch):
+    sid = chat.create_session(project, 'Waiting chat')['id']
+    store = chat.session(project, sid)
+    say(project, sid, '@codex work')
+    store.save_decision({'id': 'ask', 'status': 'pending', 'needs': 'user'})
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Jobs must not load conversation, task graphs or logs')
+    monkeypatch.setattr(chat.Session, 'messages', forbidden)
+    monkeypatch.setattr(chat.Session, 'tasks', forbidden)
+    st = scheduler.plan_status(project)
+    assert st['plan'] is None and st['plans'] == []
+    assert st['chat_plans'][0]['phase'] == 'decision'
+    folder = scheduler.PlanDir(project, store.plan_id)
+    data = folder.load()
+    folder.save({**data, 'status': 'paused'})
+    assert scheduler.chat_runs(project)[0]['phase'] == 'paused'
+    folder.save({**data, 'status': 'interrupted'})
+    assert scheduler.chat_runs(project)[0]['phase'] == 'interrupted'
+    folder.save({**data, 'status': 'finished'})
+    assert scheduler.chat_runs(project)[0]['phase'] == 'finished'
+    folder.save({**data, 'status': 'running'})
+    monkeypatch.setattr(scheduler.PlanDir, 'units', lambda self: [{'status': 'running', 'pid': 1}])
+    monkeypatch.setattr(scheduler, 'pid_alive', lambda *args: True)
+    assert scheduler.chat_runs(project)[0]['phase'] == 'running', 'other executing work takes precedence over a decision'
+
+
+def test_jobs_keeps_all_active_summaries_beyond_history_limit(project):
+    for i in range(24):
+        pid = f'workflow-{i:02}'
+        _workflow_plan(project, pid, 'running' if i == 0 else 'finished')
+        folder = scheduler.PlanDir(project, f'chat-s{i:02}')
+        folder.save({'id': f'chat-s{i:02}', 'created': f'2026-01-{i+1:02}T00:00:00',
+                     'run_kind': 'chat', 'chat': {'session': f's{i:02}'}, 'status': 'running' if i < 2 else 'finished'})
+    chats = scheduler.chat_runs(project, limit=3)
+    assert {p['id'] for p in chats} >= {'chat-s00', 'chat-s01'}
+    assert len(chats) == 5
+    summaries = scheduler.plan_status(project)['plans']
+    assert any(p['id'] == 'workflow-00' for p in summaries)
