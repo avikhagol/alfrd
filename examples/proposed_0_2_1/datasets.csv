@@ -1,3 +1,0 @@
-TARGET_NAME,INPUT_FILE,WORKDIR
-target-a,/data/input-a.fits,/work/target-a
-target-b,/data/input-b.fits,/work/target-b
