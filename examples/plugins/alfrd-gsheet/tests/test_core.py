@@ -525,6 +525,7 @@ def test_filename_code_disambiguation(case):
 
 
 @pytest.mark.parametrize("code,message", [("auth_required", "Sign in to Google again"),
+                                          ("auth_config", "OAuth client ID and secret"),
                                           ("file_access", "ALFRD lost access")])
 def test_oauth_recovery_code_reaches_file_only_panel(case, gsheet, code, message):
     from alfrd_gsheet import studio

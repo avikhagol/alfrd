@@ -199,13 +199,14 @@ export function registerProjectUI(api) {
       if (!current()) { tab?.close(); return; }
       const url = kind === "auth" ? start.auth_url : start.picker_url;
       if (tab) tab.location.href = url;
-      status.textContent = kind === "auth" ? "Waiting for Google sign-in…" : "Waiting for your spreadsheet selection…";
+      status.textContent = kind === "auth" ? "Waiting for Google sign-in… If Google shows an error, choose Sign in with Google again to start a fresh attempt." : "Waiting for your spreadsheet selection…";
       const fallback = h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "Open Google in a new tab" });
       host.append(fallback);
       const cancel = h("button", { type: "button", class: "btn", text: "Cancel", onclick: async () => {
         cancelled = true;
-        await call(project, `${kind}_cancel`, { session });
-        if (current()) status.textContent = "Cancelled. You can try again.";
+        try { await call(project, `${kind}_cancel`, { session }); }
+        catch (error) { if (current()) status.textContent = error.message; return; }
+        if (current()) status.textContent = kind === "auth" ? "Cancelled. Choose Sign in with Google to try again." : "Cancelled. Choose a spreadsheet to try again.";
         tab?.close();
       } });
       host.append(cancel);
@@ -213,6 +214,7 @@ export function registerProjectUI(api) {
       try {
         const until = Date.now() + start.expires_in * 1000;
         while (current() && !cancelled && Date.now() < until) {
+          if (tab?.closed) throw new Error(kind === "auth" ? "Google browser window closed before completion. Choose Sign in with Google to try again." : "Google Picker window closed. Choose a spreadsheet to try again.");
           const result = await call(project, `${kind}_status`, { session });
           if (!current() || cancelled) return;
           if (result.state === "signed_in" || result.state === "picked") { await done(result); return; }
@@ -225,17 +227,19 @@ export function registerProjectUI(api) {
       tab?.close();
       if (current()) status.textContent = error.message;
     } finally {
+      if (!current()) tab?.close();
       if (session) call(project, `${kind}_cancel`, { session }).catch(() => {});
     }
   }
 
   function accountRow(project, state, body, handle, canWrite, current) {
+    let attempt = 0;
     const auth = state.auth;
     if (auth?.mode !== "oauth") return;
     const status = h("p", { role: "status", "aria-live": "polite", text: auth.signed_in
       ? `✓ Signed in${auth.email ? ` as ${auth.email}` : " to Google"}`
       : auth.status === "needs_reauth" ? auth.status_reason === "client_changed" ? "Sign in again (the Google client changed)." : "Google sign-in expired or was revoked. Sign in again."
-        : auth.available ? "Not signed in to Google" : "Google sign-in isn't available in this build. Install the official ALFRD release to sign in with Google, or use Advanced → service account in Settings." });
+        : auth.available ? "Not signed in to Google" : "Google sign-in isn't configured (missing OAuth client ID or secret). Ask the maintainer to configure Google sign-in, or use Advanced → service account in Settings." });
     const row = h("section", { class: "gs-account" }, h("h3", { text: "Google account" }), status);
     const buttons = h("div", { class: "row gap wrap" });
     if (auth.signed_in) buttons.append(h("button", { type: "button", class: "btn", text: "Sign out…", disabled: !canWrite, onclick: async () => {
@@ -249,11 +253,20 @@ export function registerProjectUI(api) {
       } catch (error) { if (current()) status.textContent = error.message; }
     } }));
     else buttons.append(h("button", { type: "button", class: "btn primary", text: "Sign in with Google…", disabled: !auth.available || !canWrite, onclick: async (event) => {
-      event.currentTarget.disabled = true;
-      await browserSession(project, "auth", row, status, current, async () => {
+      const button = event.currentTarget;
+      const mine = ++attempt;
+      const active = () => current() && mine === attempt;
+      // Google error pages may never call back. Keep a fresh sign-in available.
+      // auth_start cancels the old server session and generates fresh PKCE/state.
+      await browserSession(project, "auth", row, status, active, async () => {
         handle.close(); refresh(project); await openConnection(project);
       });
-      if (current()) event.target.disabled = false;
+      if (active()) {
+        try {
+          state.auth = (await call(project, "state")).auth;
+          if (active()) button.disabled = !state.auth?.available || !canWrite;
+        } catch (error) { if (active()) status.textContent += ` ${error.message}`; }
+      }
     } }));
     buttons.append(h("button", { type: "button", class: "btn", text: "Advanced / sign-in settings…", onclick: () => { handle.close(); openPluginSettings(); } }));
     row.append(buttons);

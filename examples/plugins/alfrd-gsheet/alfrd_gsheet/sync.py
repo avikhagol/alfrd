@@ -476,7 +476,7 @@ class Sync:
         record = {"at": _now(), "plan_id": ctx.plan_id, "unit_id": ctx.unit_id, "steps": list(ctx.steps),
                   "phase": phase, "result": result.result, "cells_written": result.cells_written,
                   "conflicts": result.conflicts, "changed_cells": list(result.changes), "error": error}
-        if error_code in ("auth_required", "file_access"):
+        if error_code in ("auth_required", "auth_config", "file_access"):
             record["error_code"] = error_code
         if state is not None:
             record.update(spreadsheet_id=state.config.spreadsheet_id, worksheet=state.worksheet, read_at=state.read_at)

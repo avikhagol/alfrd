@@ -41,8 +41,8 @@ _cache = OrderedDict()
 
 
 CLIENT_FILE_ENV = "ALFRD_GSHEET_OAUTH_CLIENT_FILE"
-SIGN_IN_UNAVAILABLE = ("Google sign-in isn't available in this build. Install the official ALFRD release "
-                       "to sign in with Google, or use Advanced → service account in Settings.")
+SIGN_IN_UNAVAILABLE = ("Google sign-in isn't configured (missing OAuth client ID or secret). Ask the maintainer "
+                       "to configure Google sign-in, or use Advanced → service account in Settings.")
 _log = logging.getLogger(__name__)
 
 
@@ -133,8 +133,24 @@ def require_config(*, picker=False):
     keys = ENV if picker else ("client_id", "client_secret")
     if any(not cfg[k] for k in keys):
         raise SyncError(SIGN_IN_UNAVAILABLE
-                        if not picker else "Choosing existing files isn't set up in this build (missing Picker API key or project number).")
+                        if not picker else "Choosing existing files isn't set up in this build (missing Picker API key or project number).",
+                        code="auth_config")
     return cfg
+
+
+def authorization_error(error):
+    """Allowlisted advice only: never replay Google's untrusted description."""
+    messages = {
+        "access_denied": "Google denied sign-in (access_denied). Consent may have been cancelled. If the consent screen is in Testing, ask the maintainer to add your account as a test user; also check your organisation's app policy.",
+        "admin_policy_enforced": "Google sign-in is blocked by organisation policy (admin_policy_enforced). Ask your Workspace administrator to allow this OAuth app.",
+        "org_internal": "This Google app is restricted to its organisation (org_internal). Use an account in that organisation or ask the maintainer to change the consent screen audience.",
+        "redirect_uri_mismatch": "Google rejected the redirect URI (redirect_uri_mismatch). Ask the maintainer to configure a Desktop OAuth client with loopback redirects.",
+        "invalid_client": "Google rejected the OAuth client (invalid_client). Ask the maintainer to check the client ID and secret.",
+        "deleted_client": "The Google OAuth client was deleted (deleted_client). Ask the maintainer to restore or replace the Desktop client.",
+        "disabled_client": "The Google OAuth client is disabled (disabled_client). Ask the maintainer to check the client and Google Cloud project status.",
+        "temporarily_unavailable": "Google sign-in is temporarily unavailable. Try again shortly.",
+    }
+    return SyncError(messages.get(error, "Google sign-in failed. Ask the maintainer to check the consent screen publishing status, test users and organisation policy.") + " Choose Sign in with Google to try again.", code="auth_required")
 
 
 def token_path():

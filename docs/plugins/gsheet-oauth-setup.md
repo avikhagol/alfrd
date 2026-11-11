@@ -50,7 +50,7 @@ The plugin ships a defaults file, `alfrd_gsheet/oauth_client.json` (package data
 - Validation: client ID must end with `.apps.googleusercontent.com`; project number is 6–20 digits; an invalid value produces an error naming the variable, never the value.
 - Without client ID + secret Studio and the API say: "Google sign-in isn't available in this build. Install the official ALFRD release to sign in with Google, or use Advanced → service account in Settings." Maintainer hints naming the env vars and per-user path appear in the server log at INFO level, not in this UI message. Without the API key or project number, sign-in and **Create new spreadsheet** work but **Choose from Google Drive** is disabled.
 
-The release workflow builds and publishes the host and `alfrd-gsheet` distributions. Before building the plugin it fills the packaged defaults from repository secrets `GSHEET_OAUTH_CLIENT_ID`, `GSHEET_OAUTH_CLIENT_SECRET`, `GSHEET_PICKER_API_KEY`, and `GSHEET_GCP_PROJECT_NUMBER` using JSON serialization without logging values. If any secret is empty, it warns and keeps the empty defaults. Configure the PyPI token to allow publishing both projects.
+The release workflow builds and publishes the host and `alfrd-gsheet` distributions. Before building the plugin it fills the packaged defaults from Environment secrets in **`Plugin oauth secret for google`** (referenced by the `deploy` job in `.github/workflows/publish-pypi.yml`): `GSHEET_OAUTH_CLIENT_ID`, `GSHEET_OAUTH_CLIENT_SECRET`, `GSHEET_PICKER_API_KEY`, and `GSHEET_GCP_PROJECT_NUMBER` using JSON serialization without logging values. Repository secrets also work. Missing or invalid client ID/secret fails release preparation; missing Picker credentials only disables Picker. After building, CI validates the OAuth defaults in every plugin wheel and fails if required defaults are absent or invalid. Configure the PyPI token to allow publishing both projects.
 
 ## 1. Create the Google Cloud project
 
@@ -128,13 +128,13 @@ If the spike (S0 in the brief) proves loopback referrers work you may add a webs
 
 Do these in order once the smoke test passes. Console wording that could not be confirmed against the live console is marked **(unconfirmed)**.
 
-1. **Add the four GitHub repository secrets.** In the ALFRD repository: **Settings → Secrets and variables → Actions → New repository secret**. Names must match exactly (the release workflow `.github/workflows/publish-pypi.yml` reads them):
+1. **Add the four GitHub Environment secrets.** In the ALFRD repository: **Settings → Environments → Plugin oauth secret for google → Environment secrets → Add secret**. The `deploy` job in `.github/workflows/publish-pypi.yml` references this exact environment. Repository secrets also work. Names must match exactly:
    - `GSHEET_OAUTH_CLIENT_ID`
    - `GSHEET_OAUTH_CLIENT_SECRET`
    - `GSHEET_PICKER_API_KEY`
    - `GSHEET_GCP_PROJECT_NUMBER`
 
-   If any is empty the release build warns and ships empty defaults, so sign-in would show "Google sign-in isn't available in this build."
+   Missing or invalid client ID/secret fails the release before publishing; CI also checks the built wheel. Picker API key and project number are optional for basic sign-in but required for Picker. `PYPI_API_TOKEN` can remain a repository secret.
 2. **Verify the domain `avikhagol.dev` in Google Search Console.** Open <https://search.google.com/search-console>, signed in with the **same Google account that owns the Cloud project** (brand verification checks ownership against the project owners/editors). **Add property → Domain** (not URL prefix), enter `avikhagol.dev`, and add the **TXT** record Google shows at your DNS provider for the root domain (host `@`). Wait for DNS to propagate, then click **Verify**. Keep the TXT record in place afterwards. Do not remove it.
 3. **Fill in Branding** (**Google Auth Platform → Branding**):
    - Application home page: `https://alfrd.avikhagol.dev/`

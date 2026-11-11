@@ -53,6 +53,7 @@ test("Google Sheet project UI: attach, edit, validate, conflict, guard, themes",
       const backend = {
         auth_start: () => ({ session: "auth-test", auth_url: "https://accounts.example.test/consent", expires_in: 300 }),
         auth_status: () => {
+          if (window.authFailure) return { state: "denied", message: "Google denied sign-in (access_denied). Check test users." };
           if (window.authWaiting) return { state: "waiting" };
           window.stateOverrides = { ...window.stateOverrides, credentials: true, auth: { ...window.stateOverrides.auth, signed_in: true, status: "ok", email: "ada@example.org" } };
           return { state: "signed_in", email: "ada@example.org" };
@@ -116,6 +117,28 @@ test("Google Sheet project UI: attach, edit, validate, conflict, guard, themes",
     assert(calls.some(([id]) => id === "auth_cancel"));
     assert(calls.some(([id]) => id === "picker_cancel"));
     assert.equal(await page.locator('script[src*="google.com"]').count(), 0);
+  });
+
+  await t.test("OAuth failure and a Google error page both leave fresh sign-in available", async () => {
+    const page = await open(false); t.after(() => page.close());
+    await page.evaluate(() => {
+      window.open = () => ({ opener: null, location: {}, close() {} });
+      window.authFailure = true;
+      window.stateOverrides = { credentials: false, auth: { mode: "oauth", available: true, signed_in: false } };
+      window.showConnection();
+    });
+    const signIn = page.getByRole("button", { name: "Sign in with Google" });
+    await signIn.click();
+    await page.getByText("Google denied sign-in (access_denied). Check test users.", { exact: true }).waitFor();
+    assert.equal(await signIn.isEnabled(), true);
+    await page.evaluate(() => { window.authFailure = false; window.authWaiting = true; });
+    await signIn.click();
+    await page.getByText(/If Google shows an error/).waitFor();
+    assert.equal(await signIn.isEnabled(), true);
+    await signIn.click();
+    await page.waitForFunction(() => calls.filter(([id]) => id === "auth_start").length === 3);
+    await page.evaluate(() => { window.authWaiting = false; });
+    await page.getByText("✓ Signed in as ada@example.org").waitFor();
   });
 
   await t.test("attach flow: gid preselects the tab, guessed key, plan matches, inert header text, opens editor", async () => {

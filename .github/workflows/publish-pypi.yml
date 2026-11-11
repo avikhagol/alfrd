@@ -36,6 +36,7 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    environment: Plugin oauth secret for google
 
     steps:
       - uses: actions/checkout@v4
@@ -69,28 +70,11 @@ jobs:
           GSHEET_OAUTH_CLIENT_SECRET: ${{ secrets.GSHEET_OAUTH_CLIENT_SECRET }}
           GSHEET_PICKER_API_KEY: ${{ secrets.GSHEET_PICKER_API_KEY }}
           GSHEET_GCP_PROJECT_NUMBER: ${{ secrets.GSHEET_GCP_PROJECT_NUMBER }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          names = {
-              "client_id": "GSHEET_OAUTH_CLIENT_ID",
-              "client_secret": "GSHEET_OAUTH_CLIENT_SECRET",
-              "picker_api_key": "GSHEET_PICKER_API_KEY",
-              "project_number": "GSHEET_GCP_PROJECT_NUMBER",
-          }
-          values = {key: os.environ.get(name, "") for key, name in names.items()}
-          if not all(values.values()):
-              print("::warning::Skipping Google Sheet OAuth defaults: one or more GSHEET_* secrets are empty.")
-          else:
-              path = Path("examples/plugins/alfrd-gsheet/alfrd_gsheet/oauth_client.json")
-              with path.open("w", encoding="utf-8") as stream:
-                  json.dump(values, stream)
-          PY
+        run: python scripts/gsheet_release.py fill
       - name: Build Google Sheet plugin
         run: python -m build examples/plugins/alfrd-gsheet --outdir dist
+      - name: Verify Google Sheet wheel OAuth defaults
+        run: python scripts/gsheet_release.py check dist
       - name: Check distributions
         run: python -m pip install twine && python -m twine check dist/*
       - name: Publish package
