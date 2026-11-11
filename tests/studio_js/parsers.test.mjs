@@ -24,8 +24,8 @@ test("demo: app.js keeps the demo project key without loading the demo data", ()
   assert.match(readFileSync(path.join(web, "app.js"), "utf8"), new RegExp(`const DEMO_ALFRD_PROJECT = "${DEMO_ALFRD_PROJECT}";`));
 });
 
-test("yaml: example manifests parse and round-trip", () => {
-  for (const f of ["examples/avica_0.3/alfrd.yaml", "examples/proposed_0_2_1/alfrd.yaml"]) {
+test("yaml: shipped manifests parse and round-trip", () => {
+  for (const f of ["examples/avica_0.3/alfrd.yaml", "src/alfrd/web/assets/defaults/alfrd.yaml"]) {
     const value = parseYaml(readFileSync(path.join(root, f), "utf8"));
     assert.ok(value.workflows, f);
     assert.deepEqual(parseYaml(dumpYaml(value)), value, f);
