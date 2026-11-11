@@ -332,7 +332,10 @@ def _oauth_mode(values):
 def auth_start(root, values, payload):
     _oauth_mode(values)
     cfg = oauth.require_config()
-    session = loopback.start("auth", cfg=cfg)
+    try:
+        session = loopback.start("auth", cfg=cfg)
+    except OSError:
+        raise SyncError("Could not open the local Google sign-in callback. Check local firewall/listener permissions, then choose Sign in with Google to try again.", code="auth_required") from None
     return {"session": session.id, "auth_url": oauth.authorization_url(cfg, session.redirect_uri, session.nonce, session.verifier),
             "expires_in": session.expires_in}
 
@@ -432,7 +435,7 @@ def _guard(run):
         except mapping.MappingError as exc:
             raise ValueError(_redact(" ".join(str(exc).split())[:800], values)) from None
         except SyncError as exc:
-            if run in (auth_start, auth_status, auth_cancel, sign_out, picker_start, picker_status, picker_cancel, create_spreadsheet) or exc.code in ("auth_required", "file_access"):
+            if run in (auth_start, auth_status, auth_cancel, sign_out, picker_start, picker_status, picker_cancel, create_spreadsheet) or exc.code in ("auth_required", "auth_config", "file_access"):
                 raise ValueError(_redact(" ".join(str(exc).split())[:800], values)) from None
             raise ValueError("Google Sheet action failed (SyncError). Check the mapping and connection settings.") from None
         except Exception as exc:  # noqa: BLE001 - transport/auth text is untrusted, including ValueError

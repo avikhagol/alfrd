@@ -123,7 +123,12 @@ class Session:
         with self.lock:
             if self.state != "waiting":
                 return
+            if not message and state == "expired":
+                message = "Google sign-in timed out. Choose Sign in with Google to try again; on a remote server use a service account."
+            if not message and state == "cancelled":
+                message = "Browser session cancelled. Choose Sign in with Google to try again."
             self.state, self.message, self.token = state, message, None
+            self.verifier = ""
             self.timer.cancel()
         # shutdown must run outside the serving thread; also close its socket.
         def close():
@@ -141,7 +146,7 @@ class Session:
                 self.finish("mismatch", "Sign-in state did not match. Start sign-in again.")
                 return
             if args.get("error"):
-                self.finish("denied", "Google sign-in was declined. Try again or check your organisation's policy.")
+                self.finish("denied", str(oauth.authorization_error(args["error"][0])))
                 return
         try:
             codes = args.get("code", [])

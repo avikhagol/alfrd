@@ -236,8 +236,8 @@ def test_unconfigured_message_and_maintainer_log(config_files, monkeypatch, capl
     monkeypatch.delenv(oauth.CLIENT_FILE_ENV)
     packaged.write_text("{}")
     from alfrd_gsheet import actions
-    message = ("Google sign-in isn't available in this build. Install the official ALFRD release "
-               "to sign in with Google, or use Advanced → service account in Settings.")
+    message = ("Google sign-in isn't configured (missing OAuth client ID or secret). Ask the maintainer "
+               "to configure Google sign-in, or use Advanced → service account in Settings.")
     with caplog.at_level("INFO"), pytest.raises(ValueError) as exc:
         actions.auth_start(tmp_path, {}, {})
     assert str(exc.value) == message
