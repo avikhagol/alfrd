@@ -158,3 +158,36 @@ test("mutation gate rejects upload/send and both production surfaces opt into th
     assert.doesNotMatch(source, /drafts: new Map/);
   }
 });
+
+test("text chips persist across reload, send in named blocks and preserve retry identity", async () => {
+  const d = sessionDraft("text", "reload");
+  d.chips.set("text1", { id: "text1", kind: "text", type: "text/plain", name: "pasted-text-1.txt", text: "λ\n<test>", status: "done" }); d.sync();
+  const fresh = await import(`../../src/alfrd/web/js/data/chat_draft.js?text=${Date.now()}`);
+  const recovered = fresh.sessionDraft("text", "reload");
+  assert.equal(recovered.chips.get("text1").text, "λ\n<test>");
+  const payload = recovered.beginSend(); recovered.finish();
+  assert.match(payload.text, /BEGIN TEXT ATTACHMENT "pasted-text-1.txt"/);
+  assert.ok(payload.text.includes(JSON.stringify("λ\n<test>")));
+  assert.equal(recovered.beginSend().client_message_id, payload.client_message_id);
+  recovered.accepted(201, payload); recovered.finish(); assert.equal(recovered.chips.size, 0);
+  const a = mount(); server.request = async () => ({ ok: true, json: async () => ({}) });
+  a.c.select("text", "mounted"); const model = sessionDraft("text", "mounted");
+  model.chips.set("t", { id: "t", kind: "text", name: "code.py", text: "print('hello')", status: "done" }); model.sync();
+  assert.equal(a.root.querySelector("#chat-send").disabled, false);
+  server.request = async (_url, init) => {
+    assert.match(JSON.parse(init.body).text, /code.py/); assert.match(JSON.parse(init.body).text, /print/);
+    return { ok: true, status: 201, json: async () => ({}) };
+  };
+  assert.equal(await a.c.send(), true); assert.equal(model.chips.size, 0); a.c.destroy();
+  const large = sessionDraft("text", "large");
+  large.chips.set("t", { kind: "text", name: "x", text: "x".repeat(16384) }); large.sync(); large.edit("x".repeat(4000), []);
+  assert.throws(() => large.beginSend(), /20,000/); assert.equal(large.sending(), false);
+});
+
+test("storage quota errors stay visible while text attachments remain recoverable in memory", () => {
+  const original = globalThis.sessionStorage;
+  globalThis.sessionStorage = { getItem: () => null, setItem: () => { throw new Error('quota'); } };
+  const d = sessionDraft('quota', 'text'); d.chips.set('t', { id:'t', kind:'text', text:'keep me', name:'keep.txt', status:'done' }); d.sync();
+  assert.match(d.error(), /memory.*storage/); assert.match(d.beginSend().text, /keep me/); d.finish();
+  globalThis.sessionStorage = original;
+});

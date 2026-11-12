@@ -23,12 +23,13 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
   const browser = await chromium.launch({ ...(process.env.ALFRD_CHROMIUM_EXECUTABLE ? { executablePath: process.env.ALFRD_CHROMIUM_EXECUTABLE } : {}) });
   t.after(() => browser.close());
 
+  let initialize;
   const open = async (width) => {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     page.setDefaultTimeout(7000);
     const errors = []; page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(`http://127.0.0.1:${service.address().port}/`);
-    await page.evaluate(async () => {
+    initialize = async () => {
       const { server } = await import("/js/data/server.js");
       const { DEFAULTS } = await import("/js/data/chat.js");
       window.sessions = [{ id: "a", title: "Alpha", messages: 0, active_requests: 0 }, { id: "b", title: "Beta", messages: 0, active_requests: 0 },
@@ -57,7 +58,8 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
         activeProject: () => window.project || "p", toast(m) { window.lastToast = m; }, update() { mod.render(host, ctx); } };
       window.ctx = ctx;
       mod.render(host, ctx);
-    });
+    };
+    await page.evaluate(initialize);
     await page.locator('.chat-session[data-sid="a"].on').waitFor({ state: "attached" });
     return { page, errors };
   };
@@ -114,6 +116,51 @@ test("chat list: rename, delete and fold the sessions sidebar", { skip: !chromiu
       await page.setViewportSize({ width: 390, height: 844 });
       await page.screenshot({ path: `${process.env.ALFRD_UI_CHAT_REPORTS}/ui-chat-fixes-phone.png`, fullPage: true });
     }
+    assert.deepEqual(errors, []);
+  });
+
+  await t.test("text attachments: paste, preview, restore, reload, responsive composer and dock", async () => {
+    const { page, errors } = await open(1440); t.after(() => page.close());
+    const paste = async () => page.locator('#chat-input').evaluate(el => {
+      const clipboardData = new DataTransfer(); clipboardData.setData('text/plain', 'A long pasted note\n' + 'text '.repeat(410));
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+    });
+    await page.locator('#chat-input').fill('Please review'); await paste();
+    assert.equal(await page.locator('#chat-input').inputValue(), 'Please review');
+    await page.getByRole('button', { name: 'Preview pasted-text-1.txt', exact: true }).click();
+    await page.locator('dialog.text-attachment-preview').waitFor();
+    assert.match(await page.locator('dialog pre').innerText(), /A long pasted note/);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Put text back in input' }).click();
+    assert.match(await page.locator('#chat-input').inputValue(), /A long pasted note/);
+    assert.equal(await page.locator('[data-attach-chip]').count(), 0);
+    await page.locator('#chat-input').fill('Please review'); await paste();
+    await page.reload(); await page.evaluate(initialize);
+    await page.getByRole('button', { name: 'Preview pasted-text-1.txt', exact: true }).waitFor();
+    assert.equal(await page.locator('#chat-input').inputValue(), 'Please review');
+    await page.locator('[data-chat=collapse]').click();
+    for (const [width, height, suffix] of [[1440,900,'desktop'], [390,844,'phone']]) {
+      await page.setViewportSize({width, height});
+      assert.equal(await page.locator('#chat-form').evaluate(el => el.scrollWidth <= el.clientWidth), true);
+      const controls = await page.locator('#chat-form > .chat-composer-row > button').evaluateAll(els => els.map(el => ({ label: el.getAttribute('aria-label'), title: el.title, text: [...el.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim() })));
+      assert.ok(controls.every(c => c.label && c.title)); assert.ok(controls.every(c => !c.text));
+      if (process.env.ALFRD_TEXT_ATTACH_REPORTS) await page.screenshot({ path: `${process.env.ALFRD_TEXT_ATTACH_REPORTS}/chat-text-attach-${suffix}.png`, fullPage: true });
+    }
+    await page.getByRole('button', { name: 'Remove pasted-text-1.txt', exact: true }).click();
+    assert.equal(await page.locator('[data-attach-chip]').count(), 0);
+    // The shared composer in the dock's narrow host, with the production draft binding.
+    await page.evaluate(async () => {
+      const { composerHtml, bindComposer } = await import('/js/components/chat_composer.js');
+      const { mountComposerDraft } = await import('/js/components/composer_draft.js');
+      const box = document.createElement('aside'); box.className = 'chat-dock'; box.style.width = '320px';
+      box.innerHTML = composerHtml('testdock', { attachments: true }); document.body.append(box);
+      const draft = mountComposerDraft(box, 'testdock', { settings: () => ({orchestrator:'claude'}) });
+      draft.select('p','a'); bindComposer(box,'testdock',{agents:()=>({}),orchestrator:()=>'',send:()=>{},onDraft: t=>draft.edit(t)});
+      const data = new DataTransfer(); data.setData('text/plain', 'd'.repeat(2001));
+      box.querySelector('textarea').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+    });
+    assert.equal(await page.locator('#testdock-form [data-attach-chip]').count(), 1);
+    assert.equal(await page.locator('#testdock-form').evaluate(el => el.scrollWidth <= el.clientWidth), true);
     assert.deepEqual(errors, []);
   });
 

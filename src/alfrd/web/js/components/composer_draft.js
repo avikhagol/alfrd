@@ -23,13 +23,14 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
   const refresh = () => {
     if (model && input.value !== model.read().text) { input.value = model.read().text; autogrow(input); }
     tray?.refresh();
-    const draft = model?.read(), sending = !!model?.sending(), uploading = !!model?.busy() && !sending, failed = !!model?.failed(), empty = !draft?.text.trim() && !draft?.refs.length;
+    const draft = model?.read(), sending = !!model?.sending(), uploading = !!model?.busy() && !sending, failed = !!model?.failed(), empty = !draft?.text.trim() && !draft?.refs.length && !draft?.texts?.length;
     const reason = !session ? "Choose a session to send a message."
       : blocked() || !server.session?.mutations_enabled ? "Sending is unavailable: this session is read-only or not ready."
       : uploading ? "Wait for uploads to finish." : failed ? "Retry or remove failed images before sending." : "";
     button.disabled = !!reason || sending || empty || schedule?.read()?.schedule?.status === "dispatching";
     button.setAttribute("aria-busy", String(sending));
     const label = $("[data-send-label]", button); if (label) label.textContent = sending ? (schedule?.read()?.schedule ? "Adding…" : "Sending…") : schedule?.read()?.schedule ? "Add to queue" : "Send";
+    button.setAttribute("aria-label", label?.textContent || "Send"); button.title = label?.textContent || "Send";
     const note = $(`#${id}-send-reason`, root); if (note) note.textContent = reason;
     warning.textContent = [model?.error(), model?.read().refs.length ? imageWarning(input.value, settings(), probe, !!schedule?.read()?.schedule) : ""].filter(Boolean).join(" ");
   };
@@ -76,6 +77,7 @@ export function mountComposerDraft(root, id, { settings, createSession = null, b
         tray = mountComposerAttachments(root, id, { chips: draft.chips, sendButton: null, uploadUrl: `${url}/attachments`,
           csrfToken: server.session?.csrf_token || "", fetchImpl: (...args) => server.request(...args),
           canUpload: () => !!server.session?.mutations_enabled && !draft.sending(),
+          onRestore: (text) => { draft.edit([draft.read().text, text].filter(Boolean).join("\n"), draft.read().refs); input.focus(); },
           onChange: () => draft.sync(), onError: (error) => { if (model === draft) onError(error.message); } });
         unsubscribe = draft.subscribe(refresh);
       }

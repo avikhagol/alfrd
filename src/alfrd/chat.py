@@ -1312,6 +1312,11 @@ def task_prompt(store: Session, conf: Mapping[str, Any], rec: Mapping[str, Any])
         if persona.get("instructions"):
             lines += ["", f"## Persona: {persona.get('label')}", persona["instructions"]]
     lines += ["", "## Your task", "```json", json.dumps(task, indent=2, ensure_ascii=False), "```"]
+    # Direct tasks use the protocol's 8000-character description limit. Preserve the
+    # complete accepted user message (including inline text attachments) in the prompt.
+    request = store.request(rec["request"])
+    if request and request.get("mode") == "direct" and len(request.get("text", "")) > 8000:
+        lines += ["", "## Full direct request", request["text"]]
     lines += output_lines(task_outputs(store, rec))
     if str(rec.get("error") or "").startswith("expected output(s) missing:"):
         lines += ["", "## Previous attempt: missing expected outputs", rec["error"]]

@@ -38,9 +38,9 @@
 
 .chat-composer .attach-tray:not(:has([data-attach-chips]:not(:empty))):not(:has([data-attach-reason]:not(:empty))) { display: none; }
 
-/* Keep the input and primary controls on one row, including while focused and in the dock. */
-.chat-composer-row { display: flex; align-items: flex-end; gap: var(--chat-space-2); min-width: 0; }
-.chat-composer-row .chat-input-wrap { flex: 1 1 0; min-width: 0; }
+/* The growing input spans one row; glyph controls share a compact toolbar below. */
+.chat-composer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--chat-space-2); min-width: 0; }
+.chat-composer-row .chat-input-wrap { flex: 1 1 100%; min-width: 0; }
 .chat-composer-row > button { flex: 0 0 auto; align-self: center; }
 .chat-composer .chat-schedule-toggle > span { display: flex; align-items: center; justify-content: center; line-height: 1; }
 .chat-composer-row > [hidden], .chat-composer .chat-schedule[hidden] { display: none; }
@@ -84,3 +84,13 @@
 .chat-composer .chat-send:not(:disabled):hover { background: var(--accent); }
 .chat-composer .chat-stop { border-color: transparent; background: transparent; color: var(--fail-text); box-shadow: none; }
 .chat-composer .chat-stop:not(:disabled):hover { background: var(--fail-bg); }
+
+/* One rounded composer, chips above the growing input, tools below on narrow screens. */
+.chat-composer-row .chat-send { margin-left: auto; }
+.chat-composer .chat-send, .chat-composer .chat-stop { width: 34px; height: 34px; padding: 7px; }
+.attach-preview { display: flex; align-items: center; gap: 6px; min-width: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.attach-preview span { min-width: 0; overflow-wrap: anywhere; }
+.attach-preview small { display: block; color: var(--chat-muted); font-size: 11px; }
+.text-attachment-preview { max-width: min(800px, 90vw); max-height: 80dvh; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 14px; }
+.text-attachment-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60dvh; overflow: auto; }
+.text-attachment-preview::backdrop { background: #0008; }

@@ -131,7 +131,7 @@ test("markup: single line, placeholder helper and icon-only schedule/attach in r
     for (const part of [`id="${id}-input"`, `id="${id}-send"`, `id="${id}-stop"`, `id="${id}-mentions"`, `id="${id}-send-error"`, `id="${id}-send-reason"`]) assert.ok(html.includes(part), part);
     assert.match(html, /rows="1" placeholder="To orchestrate/);
     assert.doesNotMatch(html, /chat-composer-info|chat-target|chat-hint|Images are resized/);
-    for (const [suffix, label] of [["schedule-toggle", "Schedule messages"], ["attach", "Attach images"]]) {
+    for (const [suffix, label] of [["schedule-toggle", "Schedule messages"], ["attach", "Attach images or text files"]]) {
       const button = html.match(new RegExp(`<button[^>]*id="${id}-${suffix}"[^>]*>([\\s\\S]*?)</button>`));
       assert.ok(button); assert.ok(button[0].includes(`title="${label}"`)); assert.ok(button[0].includes(`aria-label="${label}"`));
       assert.doesNotMatch(button[1], /Schedule messages|Attach images/);
@@ -140,7 +140,7 @@ test("markup: single line, placeholder helper and icon-only schedule/attach in r
     assert.ok(html.indexOf(`${id}-schedule-toggle`) < html.indexOf(`${id}-attach"`));
     assert.ok(html.indexOf(`${id}-attach"`) < html.indexOf(`${id}-send"`));
     assert.match(html, /class="chat-schedule"[^>]*hidden/);
-    assert.ok(html.includes(icon("image")));
+    assert.ok(html.includes(icon("plus")));
   }
   assert.doesNotMatch(composerHtml("chat"), /attach-tray/);
 });

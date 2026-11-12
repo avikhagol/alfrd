@@ -145,3 +145,32 @@ def test_text_only_post_message_is_unchanged(project):
     out = chat.post_message(project, sid, "@claude hello", spawn=False)
     assert "attachments" not in out["message"] and "client_message_id" not in out["message"]
     assert "replayed" not in out
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_text_attachment_inline_payload_reaches_agent_prompt(web, direct):
+    """Use the JS serializer's actual output, then the real Studio route and prompt builder."""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    client, hdr, base, sid, root = web
+    text = "print('λ')\n" + "# source line\n" * 700  # exercises the former 8000-char truncation
+    script = """
+      import { attachmentPrompt } from './src/alfrd/web/js/data/text_attachments.js';
+      const file = JSON.parse(process.argv[1]);
+      console.log(JSON.stringify({text: attachmentPrompt(process.argv[2], new Map([['t', file]]))}));
+    """
+    result = subprocess.run(["node", "--input-type=module", "-e", script,
+                             json.dumps({"kind": "text", "name": "source.py", "text": text}),
+                             "@claude review" if direct else "Review this file"],
+                            cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, check=True)
+    payload = json.loads(result.stdout)
+    response = client.post(f"{base}/sessions/{sid}/messages", headers=hdr, json=payload)
+    assert response.status_code == 201, response.get_json()
+    data = response.get_json()
+    assert data["message"]["text"] == payload["text"]
+    store = chat.session(root, sid)
+    prompt = chat.plan_prompt(store, chat.settings(root), data["request"]) if not direct else chat.task_prompt(store, chat.settings(root), data["task"])
+    assert "source.py" in prompt
+    assert json.dumps(text, ensure_ascii=False) in prompt

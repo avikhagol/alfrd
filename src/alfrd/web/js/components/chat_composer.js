@@ -22,6 +22,7 @@ export function autogrow(textarea) {
 /** The form's HTML; ids start with `id` (e.g. "chat" → #chat-input, #chat-mentions, #chat-send, #chat-stop …). */
 export function composerHtml(id, { attachments = false } = {}) {
   return `<form class="chat-composer" id="${id}-form" autocomplete="off">
+    ${attachments ? attachmentTrayHtml(id) : ""}
     <div class="chat-composer-row">
     <div class="chat-input-wrap">
       <label class="sr-only" for="${id}-input">Message</label>
@@ -31,13 +32,13 @@ export function composerHtml(id, { attachments = false } = {}) {
     </div>
     <button type="button" class="icon-btn chat-schedule-toggle" id="${id}-schedule-toggle" title="Schedule messages" aria-label="Schedule messages" aria-pressed="false" aria-expanded="false" aria-controls="${id}-schedule"><span aria-hidden="true">◷</span></button>
     ${attachments ? attachmentButtonHtml(id) : ""}
-    <button type="button" class="btn sm chat-stop" id="${id}-stop" hidden>${icon("stop")} <span data-stop-label>Stop request</span></button>
-    <button type="submit" class="btn primary sm chat-send" id="${id}-send">${icon("play")} <span data-send-label>Send</span></button>
+    <button type="button" class="btn sm chat-stop" id="${id}-stop" aria-label="Stop request" title="Stop request" hidden>${icon("stop")} <span data-stop-label class="sr-only">Stop request</span></button>
+    <button type="submit" class="btn primary sm chat-send" id="${id}-send" aria-label="Send" title="Send">${icon("play")} <span data-send-label class="sr-only">Send</span></button>
     </div>
     <div class="chat-schedule" id="${id}-schedule" hidden></div>
-    ${attachments ? attachmentTrayHtml(id) + `<p id="${id}-image-warning" class="chat-composer-note warn-t small" role="status"></p>` : ""}
+    ${attachments ? `<p id="${id}-image-warning" class="chat-composer-note warn-t small" role="status"></p>` : ""}
     <p id="${id}-send-reason" class="chat-composer-note muted small" role="status"></p>
-    <div class="chat-error-row"><p id="${id}-send-error" class="chat-composer-note fail-t small" role="alert"></p><button type="button" class="btn sm" id="${id}-retry" hidden>Retry</button></div>
+    <div class="chat-error-row"><p id="${id}-send-error" class="chat-composer-note fail-t small" role="alert"></p><button type="button" class="btn sm" id="${id}-retry" aria-label="Retry send" title="Retry send" hidden>↻</button></div>
   </form>`;
 }
 
@@ -68,7 +69,7 @@ export function bindComposer(root, id, { agents, orchestrator, send, onDraft = (
       const s = stopState?.() || {};
       stop.hidden = !s.visible;
       stop.disabled = !!s.disabled; stop.setAttribute("aria-disabled", String(!!s.disabled));
-      stop.title = s.reason || "";
+      stop.title = s.reason || s.label || "Stop request"; stop.setAttribute("aria-label", s.label || "Stop request");
       const label = $("[data-stop-label]", stop); if (label) label.textContent = s.label || "Stop request";
     }
     if (retry) { const err = $(`#${id}-send-error`, root)?.textContent || ""; retry.hidden = !/^(Couldn't send|Not sent)/.test(err); }
